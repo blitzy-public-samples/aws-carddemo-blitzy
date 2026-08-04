@@ -17,8 +17,6 @@ import com.carddemo.events.TransactionAuthorized;
  * <p>An implementation is free of side effects. It may read through the sibling {@code repository}
  * interfaces, and it performs no insert, no update, no delete and no publish. It holds no mutable
  * state, so one instance serves every call.
- *
- * <p>Rationale for this design is recorded in {@code card-platform/docs/decision-log.md}.
  */
 public interface RiskRule {
 

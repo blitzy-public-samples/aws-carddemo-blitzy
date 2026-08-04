@@ -24,8 +24,9 @@ import java.util.regex.Pattern;
  *        no other.
  * @param route the route template of the failing endpoint, with each path variable left as its
  *        brace-delimited name. The caller supplies the mapping pattern, for example
- *        {@code /cards/{cardNumber}}, so no card number and no account identifier reaches the
- *        response body or a log line that copies it.
+ *        {@code /cards} or {@code /cards/detail}, so no card number and no account identifier
+ *        reaches the response body or a log line that copies it. No route of this service carries a
+ *        card number as a path variable at all: a card number arrives in a request body.
  */
 public record ApiErrorResponse(int status, String message, String route) {
 

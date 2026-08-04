@@ -2,7 +2,6 @@ package com.carddemo.account.repository;
 
 import com.carddemo.account.entity.AccountEntity;
 import jakarta.persistence.LockModeType;
-import java.math.BigDecimal;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.repository.ListCrudRepository;
@@ -24,7 +23,7 @@ import org.springframework.data.repository.ListCrudRepository;
  * reproduces the write {@code 'W'} at {@code app/cbl/CBSTM03B.CBL:L107} and the rewrite
  * {@code 'Z'} at {@code L108}.
  */
-public interface AccountRepository extends ListCrudRepository<AccountEntity, BigDecimal> {
+public interface AccountRepository extends ListCrudRepository<AccountEntity, String> {
 
     /**
      * Reproduces the keyed read {@code 'K'}, which {@code 9300-GETACCTDATA-BYACCT.} at
@@ -35,22 +34,24 @@ public interface AccountRepository extends ListCrudRepository<AccountEntity, Big
      * @param accountId the eleven-digit account identifier
      * @return the matching account, or an empty {@link Optional} when no row carries that key
      */
-    Optional<AccountEntity> findByAccountId(BigDecimal accountId);
+    Optional<AccountEntity> findByAccountId(String accountId);
 
     /**
      * Reproduces the keyed read for update at {@code app/cbl/COACTUPC.cbl:L3894-L3903}, inside
      * {@code 9600-WRITE-PROCESSING.} at {@code app/cbl/COACTUPC.cbl:L3888}, where the source issues
      * a Customer Information Control System (CICS) {@code READ} with {@code UPDATE} against
-     * {@code LIT-ACCTFILENAME}. A response other than {@code DFHRESP(NORMAL)} at
-     * {@code app/cbl/COACTUPC.cbl:L3907} makes the source set
-     * {@code COULD-NOT-LOCK-ACCT-FOR-UPDATE} at {@code L3912} and exit at {@code L3914}; that
-     * condition carries the text {@code 'Could not lock account record for update'} at
+     * {@code LIT-ACCTFILENAME}.
+     *
+     * <p>A response other than {@code DFHRESP(NORMAL)} at {@code app/cbl/COACTUPC.cbl:L3907} makes
+     * the source set {@code COULD-NOT-LOCK-ACCT-FOR-UPDATE} at {@code L3912} and exit at
+     * {@code L3914}. That condition carries the text
+     * {@code 'Could not lock account record for update'} at
      * {@code app/cbl/COACTUPC.cbl:L517-L518}, and the domain layer reports that message. A miss
-     * returns an empty {@link Optional}.
+     * returns an empty {@link Optional}.</p>
      *
      * @param accountId the eleven-digit account identifier
      * @return the locked account, or an empty {@link Optional} when no row carries that key
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
-    Optional<AccountEntity> findForUpdateByAccountId(BigDecimal accountId);
+    Optional<AccountEntity> findForUpdateByAccountId(String accountId);
 }

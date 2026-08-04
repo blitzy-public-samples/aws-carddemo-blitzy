@@ -1,7 +1,10 @@
 package com.carddemo.fraud.entity;
 
+import com.carddemo.events.EventEnvelope;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
@@ -31,23 +34,43 @@ import java.util.UUID;
  * published    BOOLEAN                     NOT NULL DEFAULT FALSE
  * created_at   TIMESTAMP(6) WITH TIME ZONE NOT NULL
  * published_at TIMESTAMP(6) WITH TIME ZONE
- * index        ix_outbox_event_unpublished (published, created_at)
+ * index        ix_outbox_event_pending (created_at, event_id) WHERE published = FALSE
  * </pre>
  *
- * <p>The relay reads unpublished rows in {@code created_at} order, publishes each one, then calls
- * {@link #setPublished(boolean)} and {@link #setPublishedAt(Instant)}.
+ * <p>The relay claims unpublished rows in {@code created_at} then {@code event_id} order, publishes
+ * each one, then calls {@link #markPublished(Instant)}.
  *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Entity
 @Table(name = "outbox_event",
-        indexes = @Index(name = "ix_outbox_event_unpublished",
-                columnList = "published, created_at"))
+        indexes = {
+                @Index(name = "ix_outbox_event_pending",
+                        columnList = "created_at, event_id"),
+                @Index(name = "ix_outbox_event_claimable",
+                        columnList = "relay_state, next_attempt_at"),
+                @Index(name = "ix_outbox_event_published_at", columnList = "published_at")})
 public class OutboxEventEntity {
 
     /**
+     * Characters the {@code event_type} column holds, and the width every service of this platform
+     * declares for it.
+     *
+     * <p>The longest value any service writes is {@code TransactionAuthorized} at twenty-one
+     * characters, so this width leaves room for a longer event type without a migration.
+     */
+    public static final int EVENT_TYPE_MAX_LENGTH = 50;
+
+    /**
+     * Characters the {@code aggregate_id} column holds, from {@code XREF-ACCT-ID PIC 9(11)} at
+     * {@code app/cpy/CVACT03Y.cpy:L7}, whose key width is {@code KEYS(11 0)} at
+     * {@code app/jcl/XREFFILE.jcl:L39}.
+     */
+    public static final int AGGREGATE_ID_LENGTH = 11;
+
+    /**
      * The event identifier the writer assigned, a Universally Unique Identifier (UUID), and the
-     * value each consumer deduplicates on.
+     * deduplication key for this event.
      */
     @Id
     @Column(name = "event_id", nullable = false, updatable = false)
@@ -57,7 +80,8 @@ public class OutboxEventEntity {
      * The routing discriminator, exactly {@code FraudFlagged} or {@code FraudCleared}. Both event
      * types travel on the topic {@code fraud.assessed}.
      */
-    @Column(name = "event_type", length = 32, nullable = false, updatable = false)
+    @Column(name = "event_type", length = EVENT_TYPE_MAX_LENGTH, nullable = false,
+            updatable = false)
     private String eventType;
 
     /**
@@ -65,8 +89,8 @@ public class OutboxEventEntity {
      * reports the fixed-width type of this column through Java Database Connectivity (JDBC)
      * metadata as {@code bpchar}, and {@link Column#columnDefinition()} names that type verbatim.
      */
-    @Column(name = "aggregate_id", length = 11, nullable = false, updatable = false,
-            columnDefinition = "bpchar(11)")
+    @Column(name = "aggregate_id", length = AGGREGATE_ID_LENGTH, nullable = false,
+            updatable = false, columnDefinition = "bpchar(11)")
     private String aggregateId;
 
     /**
@@ -78,22 +102,18 @@ public class OutboxEventEntity {
     @Column(name = "payload", nullable = false, updatable = false, columnDefinition = "TEXT")
     private String payload;
 
-    /** False on insert, and true once the relay has published this row. */
+    /** False on insert, and true once this row has been published. */
     @Column(name = "published", nullable = false)
     private boolean published;
 
-    /** The time the writer inserted this row, and the column the relay orders its batch by. */
+    /** The time the writer inserted this row, and the column a relay batch is ordered by. */
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
-    /** The time the relay published this row, and null until it does. */
+    /** The time this row was published, and null until it is. */
     @Column(name = "published_at")
     private Instant publishedAt;
 
-    /**
-     * Required by the persistence provider. Application code calls
-     * {@link #OutboxEventEntity(UUID, String, String, String, Instant)}.
-     */
     protected OutboxEventEntity() {
         // The provider assigns every field from the row it read.
     }
@@ -102,7 +122,8 @@ public class OutboxEventEntity {
      * Builds one unpublished row.
      *
      * @param eventId     the event identifier the writer assigned
-     * @param eventType   the event type, not blank and at most thirty-two characters
+     * @param eventType   the event type, not blank and at most
+     *                    {@value #EVENT_TYPE_MAX_LENGTH} characters
      * @param aggregateId the account identifier, exactly eleven decimal digits with leading zeros
      *                    kept
      * @param payload     one serialized event, not blank
@@ -121,6 +142,7 @@ public class OutboxEventEntity {
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt");
         this.published = false;
         this.publishedAt = null;
+        this.nextAttemptAt = createdAt;
     }
 
     /**
@@ -146,9 +168,9 @@ public class OutboxEventEntity {
      */
     private static String requireEventType(String value) {
         requireText(value, "eventType");
-        if (value.length() > 32) {
+        if (value.length() > EVENT_TYPE_MAX_LENGTH) {
             throw new IllegalArgumentException("eventType is " + value.length()
-                    + " characters, over the 32 its column holds");
+                    + " characters, over the " + EVENT_TYPE_MAX_LENGTH + " its column holds");
         }
         return value;
     }
@@ -170,85 +192,68 @@ public class OutboxEventEntity {
         return value;
     }
 
-    /**
-     * Returns the event identifier the writer assigned.
-     *
-     * @return the value each consumer deduplicates on
-     */
     public UUID getEventId() {
         return eventId;
     }
 
-    /**
-     * Returns the routing discriminator.
-     *
-     * @return {@code FraudFlagged} or {@code FraudCleared}
-     */
     public String getEventType() {
         return eventType;
     }
 
-    /**
-     * Returns the account identifier, eleven digits with leading zeros kept.
-     *
-     * @return the Kafka message key the relay publishes this row under
-     */
     public String getAggregateId() {
         return aggregateId;
     }
 
-    /**
-     * Returns the serialized event this row carries.
-     *
-     * @return one flat JSON object, envelope properties beside payload properties
-     */
     public String getPayload() {
         return payload;
     }
 
-    /**
-     * Reports whether the relay has published this row.
-     *
-     * @return {@code false} until the relay publishes it
-     */
     public boolean isPublished() {
         return published;
     }
 
-    /**
-     * Returns the time the writer inserted this row.
-     *
-     * @return the creation time the caller supplied
-     */
     public Instant getCreatedAt() {
         return createdAt;
     }
 
-    /**
-     * Returns the time the relay published this row.
-     *
-     * @return the publication time, or {@code null} while the row is unpublished
-     */
     public Instant getPublishedAt() {
         return publishedAt;
     }
 
     /**
-     * Records whether the relay has published this row.
+     * Records that the relay published this row, moving it to its terminal successful state.
      *
-     * @param published {@code true} once one publish has succeeded
-     */
-    public void setPublished(boolean published) {
-        this.published = published;
-    }
-
-    /**
-     * Records the time the relay published this row.
+     * <p>Two independent setters stood here, one for the flag and one for the timestamp. A caller
+     * could set either without the other, and now also without {@code relay_state}, which the
+     * check constraints refuse at flush. One method that moves all three is the only way to leave
+     * the row consistent.
      *
-     * @param publishedAt the publication time, or {@code null} while the row is unpublished
+     * <p>Three values move together, and they have to: {@code published}, {@code relay_state} and
+     * {@code published_at}. Two check constraints in
+     * {@code src/main/resources/db/migration/V1__schema.sql} tie them, so a flush that set only the
+     * boolean would be refused by the database rather than quietly leave a published row looking
+     * pending. The claim is released, because a published row needs none.
+     *
+     * <p>A second call on an already published row is ignored, so a relay that publishes and then
+     * fails before its own transaction commits does not corrupt the row on the retry that follows.
+     *
+     * @param publishedAt when the publish succeeded
+     * @throws NullPointerException  if {@code publishedAt} is null
+     * @throws IllegalStateException if this row was abandoned, which is the other terminal state
      */
-    public void setPublishedAt(Instant publishedAt) {
+    public void markPublished(Instant publishedAt) {
+        Objects.requireNonNull(publishedAt, "publishedAt");
+        if (this.relayState == RelayState.ABANDONED) {
+            throw new IllegalStateException("an ABANDONED row cannot be marked published");
+        }
+        if (this.published) {
+            return;
+        }
+        this.published = true;
+        this.relayState = RelayState.PUBLISHED;
         this.publishedAt = publishedAt;
+        this.claimedBy = null;
+        this.claimedAt = null;
     }
 
     /**
@@ -280,17 +285,252 @@ public class OutboxEventEntity {
     }
 
     /**
-     * Describes this row by its identifier, its type, its key and its publication flag. The text
-     * omits {@link #getPayload()}.
+     * Describes this row by its identifier, its type and its publication flag, and withholds its
+     * key. The text omits {@link #getPayload()}.
      *
-     * @return one line naming four fields
+     * <p>The key is an account identifier, so it appears as {@link EventEnvelope#WITHHELD}, the
+     * platform-wide redaction marker.
+     *
+     * @return one line naming four fields, with the aggregate identifier withheld
      */
     @Override
     public String toString() {
         return "OutboxEventEntity{eventId=" + eventId
                 + ", eventType=" + eventType
-                + ", aggregateId=" + aggregateId
-                + ", published=" + published
-                + "}";
+                + ", aggregateId=" + EventEnvelope.WITHHELD
+                + ", published=" + published + "}";
+    }
+
+    // ------------------------------------------------------------------------------------
+    // Relay state. ADDITIVE: the CardDemo source has no relay and therefore no lease. Its one
+    // asynchronous handoff, the transient data queue write at app/cbl/CORPT00C.cbl:L517, is
+    // picked up by a single scheduled job, so nothing there can claim a row twice or give up on
+    // one. The enum, the four constants, the seven columns and the three operations below are
+    // one concern and are kept together rather than scattered through the class.
+    //
+    // Two failures are what these columns exist to prevent. Without a claim, two relay instances
+    // read the same unpublished row and publish the same event twice, which a consumer then has
+    // to deduplicate. Without an attempt count and a next-attempt time, one undeliverable row is
+    // retried forever and every row behind it waits.
+    // ------------------------------------------------------------------------------------
+
+    /**
+     * How one row stands with the relay.
+     *
+     * <p>{@link #PENDING} is awaiting a first or a further attempt, {@link #CLAIMED} is held by
+     * one relay instance, and {@link #PUBLISHED} and {@link #ABANDONED} are terminal. The names
+     * are stored as text in {@code relay_state VARCHAR(16)}, which a check constraint in
+     * {@code src/main/resources/db/migration/V1__schema.sql} restricts to exactly these four.
+     */
+    public enum RelayState {
+
+        /** Written and awaiting an attempt. Every new row starts here. */
+        PENDING,
+
+        /** Held by the relay instance named in {@code claimed_by}. */
+        CLAIMED,
+
+        /** Published. Terminal, and the only state in which {@code published} is true. */
+        PUBLISHED,
+
+        /** Given up on after {@value #MAX_DELIVERY_ATTEMPTS} attempts. Terminal. */
+        ABANDONED
+    }
+
+    /**
+     * How many attempts a row takes before the relay abandons it.
+     *
+     * <p>The ceiling lives here and not in a check constraint on purpose: abandoning a row is a
+     * decision the relay records, and a constraint would instead turn the attempt that crosses
+     * the ceiling into a failed statement.
+     */
+    public static final int MAX_DELIVERY_ATTEMPTS = 10;
+
+    /**
+     * Widest value {@code last_error} holds, from {@code last_error VARCHAR(500)} in
+     * {@code src/main/resources/db/migration/V1__schema.sql}. The column is bounded so that a
+     * stack trace cannot be stored in it by accident, and a longer reason is truncated rather
+     * than refused: losing the tail of a diagnostic is better than losing the row.
+     */
+    public static final int LAST_ERROR_MAX_LENGTH = 500;
+
+    /** Widest value {@code claimed_by} holds, from {@code claimed_by VARCHAR(64)}. */
+    public static final int CLAIMED_BY_MAX_LENGTH = 64;
+
+    /** Widest value {@code relay_state} holds, from {@code relay_state VARCHAR(16)}. */
+    public static final int RELAY_STATE_MAX_LENGTH = 16;
+
+    /** Where this row stands with the relay. Never null. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "relay_state", nullable = false, length = RELAY_STATE_MAX_LENGTH)
+    private RelayState relayState = RelayState.PENDING;
+
+    /** How many publish attempts this row has taken. Zero until the first attempt. */
+    @Column(name = "attempt_count", nullable = false)
+    private int attemptCount;
+
+    /** When the relay may next attempt this row. Equal to the creation time for a new row. */
+    @Column(name = "next_attempt_at", nullable = false)
+    private Instant nextAttemptAt;
+
+    /** When the last attempt ran, or null before the first. */
+    @Column(name = "last_attempt_at")
+    private Instant lastAttemptAt;
+
+    /** A short, redacted reason for the last failure. Never a payload and never an event value. */
+    @Column(name = "last_error", length = LAST_ERROR_MAX_LENGTH)
+    private String lastError;
+
+    /** Which relay instance holds the claim, or null when none does. */
+    @Column(name = "claimed_by", length = CLAIMED_BY_MAX_LENGTH)
+    private String claimedBy;
+
+    /** When the claim was taken, or null when no claim is held. */
+    @Column(name = "claimed_at")
+    private Instant claimedAt;
+
+    /**
+     * Returns where this row stands with the relay.
+     *
+     * @return the relay state, never null
+     */
+    public RelayState getRelayState() {
+        return relayState;
+    }
+
+    /**
+     * Returns how many publish attempts this row has taken.
+     *
+     * @return the attempt count, zero before the first attempt
+     */
+    public int getAttemptCount() {
+        return attemptCount;
+    }
+
+    /**
+     * Returns when the relay may next attempt this row.
+     *
+     * @return the due time, never null
+     */
+    public Instant getNextAttemptAt() {
+        return nextAttemptAt;
+    }
+
+    /**
+     * Returns when the last attempt ran.
+     *
+     * @return the time of the last attempt, or null before the first
+     */
+    public Instant getLastAttemptAt() {
+        return lastAttemptAt;
+    }
+
+    /**
+     * Returns the short reason the last attempt failed.
+     *
+     * @return a redacted reason, or null when no attempt has failed
+     */
+    public String getLastError() {
+        return lastError;
+    }
+
+    /**
+     * Returns which relay instance holds the claim.
+     *
+     * @return the claiming instance, or null when no claim is held
+     */
+    public String getClaimedBy() {
+        return claimedBy;
+    }
+
+    /**
+     * Returns when the claim was taken.
+     *
+     * @return the claim time, or null when no claim is held
+     */
+    public Instant getClaimedAt() {
+        return claimedAt;
+    }
+
+    /**
+     * Reports whether this row is in a terminal state.
+     *
+     * @return true once the row is published or abandoned, after which the relay leaves it alone
+     */
+    public boolean isTerminal() {
+        return relayState == RelayState.PUBLISHED || relayState == RelayState.ABANDONED;
+    }
+
+    /**
+     * Takes the claim for one relay instance.
+     *
+     * <p>Selecting the row is what excludes a competing instance, through
+     * {@code FOR UPDATE SKIP LOCKED} in the repository's claim query; this method records who won.
+     * A row already in a terminal state is refused rather than silently re-claimed, because a
+     * second publish of a published row is the duplicate this machinery exists to prevent.
+     *
+     * @param relayId the claiming instance, not blank and at most
+     *                {@value #CLAIMED_BY_MAX_LENGTH} characters
+     * @param at      when the claim was taken
+     * @throws NullPointerException     if either argument is null
+     * @throws IllegalArgumentException if {@code relayId} is blank or too long
+     * @throws IllegalStateException    if this row is already in a terminal state
+     */
+    public void claim(String relayId, Instant at) {
+        Objects.requireNonNull(relayId, "relayId");
+        Objects.requireNonNull(at, "at");
+        if (relayId.isBlank()) {
+            throw new IllegalArgumentException("relayId is blank");
+        }
+        if (relayId.length() > CLAIMED_BY_MAX_LENGTH) {
+            throw new IllegalArgumentException("relayId is " + relayId.length()
+                    + " characters, over the " + CLAIMED_BY_MAX_LENGTH + " its column holds");
+        }
+        if (isTerminal()) {
+            throw new IllegalStateException("a " + relayState + " row cannot be claimed");
+        }
+        this.claimedBy = relayId;
+        this.claimedAt = at;
+        this.relayState = RelayState.CLAIMED;
+    }
+
+    /**
+     * Records one failed attempt and either schedules a retry or abandons the row.
+     *
+     * <p>The attempt count rises by one. Below {@value #MAX_DELIVERY_ATTEMPTS} the row returns to
+     * {@link RelayState#PENDING} and becomes due again at {@code retryAt}; at the ceiling it moves
+     * to {@link RelayState#ABANDONED} and the relay leaves it alone. Either way the claim is
+     * released, so a relay instance that dies mid-attempt does not strand the row.
+     *
+     * <p>A reason longer than {@value #LAST_ERROR_MAX_LENGTH} characters is truncated rather than
+     * refused. The caller is responsible for passing a reason that names a failure and quotes no
+     * event value, which is why this method neither reads nor writes the payload.
+     *
+     * @param reason  a short, redacted reason, or null when none is available
+     * @param at      when the attempt ran
+     * @param retryAt when the row becomes due again, ignored once the row is abandoned
+     * @throws NullPointerException  if {@code at} or {@code retryAt} is null
+     * @throws IllegalStateException if this row is already in a terminal state
+     */
+    public void recordFailure(String reason, Instant at, Instant retryAt) {
+        Objects.requireNonNull(at, "at");
+        Objects.requireNonNull(retryAt, "retryAt");
+        if (isTerminal()) {
+            throw new IllegalStateException("a " + relayState + " row takes no further attempt");
+        }
+        this.attemptCount = this.attemptCount + 1;
+        this.lastAttemptAt = at;
+        this.lastError = reason == null || reason.length() <= LAST_ERROR_MAX_LENGTH
+                ? reason
+                : reason.substring(0, LAST_ERROR_MAX_LENGTH);
+        this.claimedBy = null;
+        this.claimedAt = null;
+        if (this.attemptCount >= MAX_DELIVERY_ATTEMPTS) {
+            this.relayState = RelayState.ABANDONED;
+            this.nextAttemptAt = at;
+        } else {
+            this.relayState = RelayState.PENDING;
+            this.nextAttemptAt = retryAt;
+        }
     }
 }

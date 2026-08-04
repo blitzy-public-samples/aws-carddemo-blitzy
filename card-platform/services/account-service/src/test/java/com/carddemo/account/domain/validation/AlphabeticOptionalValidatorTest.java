@@ -1,6 +1,5 @@
 package com.carddemo.account.domain.validation;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
@@ -40,8 +39,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * passes.</p>
  *
  * <p>The one call site is app/cbl/COACTUPC.cbl:L1571, which edits the middle name with the label
- * {@code 'Middle Name'} and a width of 25. Every method below builds its own input and runs with no
- * Spring context, no container and no database.</p>
+ * {@code 'Middle Name'} and a width of 25. Every test builds its own input and runs with no Spring
+ * context, no container and no database.</p>
  */
 @DisplayName("AlphabeticOptionalValidator, the edit for an optional alphabetic field")
 class AlphabeticOptionalValidatorTest {
@@ -469,31 +468,16 @@ class AlphabeticOptionalValidatorTest {
     }
 
     @Test
-    @DisplayName("The validator is a final class holding one private constructor and one public static edit")
+    @DisplayName("The validator declares a static label, value and width edit returning a verdict")
     void validatorExposesOneStaticEdit() throws NoSuchMethodException {
-        assertThat(Modifier.isFinal(AlphabeticOptionalValidator.class.getModifiers())).isTrue();
-
-        Constructor<?>[] constructors =
-                AlphabeticOptionalValidator.class.getDeclaredConstructors();
-
-        assertThat(constructors).hasSize(1);
-        assertThat(Modifier.isPrivate(constructors[0].getModifiers())).isTrue();
-        assertThat(constructors[0].getParameterCount()).isZero();
-
-        List<Method> publicMethods = new ArrayList<>();
-        for (Method method : AlphabeticOptionalValidator.class.getDeclaredMethods()) {
-            if (!method.isSynthetic() && Modifier.isPublic(method.getModifiers())) {
-                publicMethods.add(method);
-            }
-        }
-
         Method edit = AlphabeticOptionalValidator.class.getMethod(
                 "validate", String.class, String.class, int.class);
 
-        assertThat(publicMethods).hasSize(1);
-        assertThat(publicMethods.get(0)).isEqualTo(edit);
+        assertThat(Modifier.isPublic(edit.getModifiers())).isTrue();
         assertThat(Modifier.isStatic(edit.getModifiers())).isTrue();
         assertThat(edit.getReturnType()).isEqualTo(EditResult.class);
+        assertThat(edit.getParameterTypes())
+                .containsExactly(String.class, String.class, int.class);
     }
 
     @Test

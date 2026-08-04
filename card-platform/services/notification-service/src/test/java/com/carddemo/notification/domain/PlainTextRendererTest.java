@@ -1,13 +1,17 @@
 package com.carddemo.notification.domain;
 
+import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import com.carddemo.cobol.PanMasker;
+import com.carddemo.events.FraudFlagged;
+import com.carddemo.events.TransactionPosted;
 import com.carddemo.notification.domain.NotificationRenderer.CardholderContext;
 import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import com.carddemo.notification.domain.NotificationRenderer.TransactionRow;
@@ -39,9 +43,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * from app/cbl/CBSTM03A.CBL:L679, and the three trailer records from
  * app/cbl/CBSTM03A.CBL:L435-L437.</p>
  *
- * <p>No Spring application context, no broker and no database take part, so {@code mvn test}
- * passes on a clean machine. The markup records of {@code 01 FD-HTMLFILE-REC PIC X(100).} at
- * app/cbl/CBSTM03A.CBL:L47 belong to their own renderer, and no assertion here reads markup.</p>
+ * <p>No Spring application context, no broker and no database take part. The markup records of
+ * {@code 01 FD-HTMLFILE-REC PIC X(100).} at app/cbl/CBSTM03A.CBL:L47 belong to their own renderer,
+ * and no assertion here reads markup.</p>
  */
 @DisplayName("PlainTextRenderer, the seventeen 80-column statement records of CBSTM03A")
 class PlainTextRendererTest {
@@ -358,6 +362,15 @@ class PlainTextRendererTest {
 
     /** The transaction the fraud alert names, from {@code TRNX-ID} at app/cpy/COSTM01.CPY:L23. */
     private static final String FLAGGED_TRANSACTION_ID = "TRNXAA0000000003";
+
+    /** Name of the one card component {@code TransactionPosted} declares. */
+    private static final String MASKED_CARD_COMPONENT = "maskedCardNumber";
+
+    /**
+     * A value carrying all five characters that mean something in markup. The text format escapes
+     * none of them, so this value reaches a record as supplied.
+     */
+    private static final String HOSTILE_VALUE = "<b>&'\"x</b>";
 
     /**
      * The renderer under test, built with the no-argument constructor it declares. It holds no
@@ -935,10 +948,8 @@ class PlainTextRendererTest {
     /**
      * Checks a stored description of 100 characters through the detail record. The
      * {@code MOVE TRNX-DESC TO ST-TRANDT} at app/cbl/CBSTM03A.CBL:L677 sends
-     * {@code TRNX-DESC PIC X(100)} at app/cpy/COSTM01.CPY:L28 into
-     * {@code ST-TRANDT PIC X(49)} at app/cbl/CBSTM03A.CBL:L135, and the leading 49 characters
-     * arrive. The stored column keeps all 100 characters, and the loss belongs to the rendering
-     * width alone. card-platform/docs/business-rule-flags.md records the item.
+     * {@code TRNX-DESC PIC X(100)} at app/cpy/COSTM01.CPY:L28 into {@code ST-TRANDT PIC X(49)} at
+     * app/cbl/CBSTM03A.CBL:L135, and the leading 49 characters arrive.
      */
     @Test
     @DisplayName("A 100-character description renders as its leading 49 characters")
@@ -994,58 +1005,147 @@ class PlainTextRendererTest {
     }
 
     /**
-     * Checks that no record carries the full Primary Account Number (PAN) of the card the
-     * statement covers. None of the seventeen groups at app/cbl/CBSTM03A.CBL:L86-L146 declares a
-     * card-number field, and the read model stores the number in
-     * {@code TRNX-CARD-NUM PIC X(16)} at app/cpy/COSTM01.CPY:L22. Masking is an additive
-     * deviation, recorded in card-platform/docs/decision-log.md.
+     * Checks the input boundary of the renderer. Neither record it reads declares a card number or
+     * a card verification value, so no caller can route either into a statement record. None of the
+     * seventeen groups at app/cbl/CBSTM03A.CBL:L86-L146 declares a card-number field either, and the
+     * read model holds the number in {@code TRNX-CARD-NUM PIC X(16)} at app/cpy/COSTM01.CPY:L22,
+     * which no record the renderer reads carries forward.
      */
     @Test
-    @DisplayName("No statement record carries the full card number")
-    void noStatementRecordCarriesTheFullCardNumber() {
-        List<String> records = statementRecords();
+    @DisplayName("Neither renderer input record declares a card number or a verification value")
+    void neitherRendererInputRecordDeclaresACardField() {
+        assertThat(componentNamesOf(CardholderContext.class))
+                .as("components CardholderContext declares")
+                .isNotEmpty()
+                .noneMatch(PlainTextRendererTest::namesACardField);
+        assertThat(componentNamesOf(TransactionRow.class))
+                .as("components TransactionRow declares")
+                .isNotEmpty()
+                .noneMatch(PlainTextRendererTest::namesACardField);
+    }
+
+    /**
+     * Checks the availability of a card number to this service. {@code TransactionPosted} carries
+     * one card component and it is the masked one, and {@code FraudFlagged} carries none, so the
+     * only card value a listener can read is already masked.
+     */
+    @Test
+    @DisplayName("The consumed events carry a masked card number at most")
+    void theConsumedEventsCarryAMaskedCardNumberAtMost() {
+        List<String> posted = componentNamesOf(TransactionPosted.class);
+        List<String> flagged = componentNamesOf(FraudFlagged.class);
+
+        assertThat(posted).as("components TransactionPosted declares")
+                .contains(MASKED_CARD_COMPONENT);
+        assertThat(posted).as("card components TransactionPosted declares")
+                .filteredOn(PlainTextRendererTest::namesACardField)
+                .containsExactly(MASKED_CARD_COMPONENT);
+        assertThat(flagged).as("card components FraudFlagged declares")
+                .isNotEmpty()
+                .noneMatch(PlainTextRendererTest::namesACardField);
+    }
+
+    /**
+     * Drives the full Primary Account Number (PAN) through the production masking step and into
+     * every value field a statement renders, then checks that no record carries the full number.
+     * The masked form keeps the last four characters alone, so the twelve leading characters cannot
+     * reach a record through any field.
+     *
+     * <p>Masking is an additive deviation, recorded in card-platform/docs/decision-log.md
+     * (planned). The source masks nothing: the card detail screen shows all sixteen characters at
+     * {@code LENGTH=16} in app/bms/COCRDSL.bms:L99.</p>
+     */
+    @Test
+    @DisplayName("A full card number reaches no record once the production masker has run")
+    void aFullCardNumberReachesNoRecordOnceTheProductionMaskerHasRun() {
+        String masked = PanMasker.maskCardNumber(CARD_NUMBER);
 
         assertThat(CARD_NUMBER).hasSize(PanMasker.CARD_NUMBER_LENGTH);
-        assertThat(records).hasSize(SURROUNDING_RECORD_COUNT + standardRows().size());
-        assertThat(String.join(RECORD_SEPARATOR, records)).doesNotContain(CARD_NUMBER);
-        assertThat(records).allSatisfy(
-                record -> assertThat(record).doesNotContain(CARD_NUMBER));
-    }
-
-    /**
-     * Checks that no record carries a masked card number either. The seventeen groups at
-     * app/cbl/CBSTM03A.CBL:L86-L146 declare no card-number field of any width, and the card detail
-     * screen of the source shows all sixteen characters at {@code LENGTH=16} in
-     * app/bms/COCRDSL.bms:L99.
-     */
-    @Test
-    @DisplayName("No statement record carries a masked card number")
-    void noStatementRecordCarriesAMaskedCardNumber() {
-        String masked = PanMasker.maskCardNumber(CARD_NUMBER);
-        List<String> records = statementRecords();
-
         assertThat(masked).hasSize(PanMasker.CARD_NUMBER_LENGTH);
-        assertThat(records).hasSize(SURROUNDING_RECORD_COUNT + standardRows().size());
-        assertThat(records).allSatisfy(record -> assertThat(record).doesNotContain(masked));
-        assertThat(records).allSatisfy(
-                record -> assertThat(record).doesNotContain(CARD_NUMBER.substring(0, 12)));
+        assertThat(masked.contains(CARD_NUMBER))
+                .as("the masked form carries the full card number").isFalse();
+        assertThat(masked.endsWith(CARD_NUMBER.substring(PanMasker.CARD_NUMBER_LENGTH
+                - PanMasker.VISIBLE_DIGIT_COUNT)))
+                .as("the masked form keeps the last four characters").isTrue();
+
+        CardholderContext context = new CardholderContext(masked, masked, masked, masked,
+                ACCOUNT_ID, EDITED_BALANCE, masked);
+        List<TransactionRow> rows =
+                List.of(new TransactionRow(FIRST_TRANSACTION_ID, masked, FIRST_EDITED_AMOUNT));
+        List<String> statement = records(renderer.renderStatementAlert(context, rows, TOTAL));
+        List<String> fraudAlert = records(renderer.renderFraudAlert(context,
+                FLAGGED_TRANSACTION_ID, 87, List.of("VELOCITY", masked)));
+
+        assertThat(statement).as("records a masked statement holds")
+                .hasSize(SURROUNDING_RECORD_COUNT + rows.size());
+        assertNoRecordCarries(statement, "the full card number", CARD_NUMBER);
+        assertNoRecordCarries(statement, "the leading twelve card characters",
+                CARD_NUMBER.substring(0, PanMasker.CARD_NUMBER_LENGTH
+                        - PanMasker.VISIBLE_DIGIT_COUNT));
+        assertNoRecordCarries(fraudAlert, "the full card number", CARD_NUMBER);
     }
 
     /**
-     * Checks that no record carries the card verification value,
-     * {@code CARD-CVV-CD PIC 9(03)} at app/cpy/CVACT02Y.cpy:L7. No group at
-     * app/cbl/CBSTM03A.CBL:L86-L146 declares the field, and no entity of this service stores it.
+     * Drives the card verification value through the production redaction step and into every value
+     * field, then checks that no record carries the value. {@code CARD-CVV-CD PIC 9(03)} at
+     * app/cpy/CVACT02Y.cpy:L7 declares the field, no group at app/cbl/CBSTM03A.CBL:L86-L146
+     * renders it, and no entity of this service stores it.
      */
     @Test
-    @DisplayName("No statement record carries the card verification value")
-    void noStatementRecordCarriesTheCardVerificationValue() {
-        List<String> records = statementRecords();
+    @DisplayName("A card verification value reaches no record once the production redaction has run")
+    void aVerificationValueReachesNoRecordOnceTheProductionRedactionHasRun() {
+        String redacted = PanMasker.redactCardVerificationValue(CARD_VERIFICATION_VALUE);
 
-        assertThat(CARD_VERIFICATION_VALUE)
-                .hasSize(PanMasker.CARD_VERIFICATION_VALUE_LENGTH);
-        assertThat(records).hasSize(SURROUNDING_RECORD_COUNT + standardRows().size());
-        assertThat(records).allSatisfy(
-                record -> assertThat(record).doesNotContain(CARD_VERIFICATION_VALUE));
+        assertThat(CARD_VERIFICATION_VALUE).hasSize(PanMasker.CARD_VERIFICATION_VALUE_LENGTH);
+        assertThat(redacted.contains(CARD_VERIFICATION_VALUE))
+                .as("the redacted form carries the verification value").isFalse();
+
+        CardholderContext context = new CardholderContext(redacted, redacted, redacted, redacted,
+                ACCOUNT_ID, EDITED_BALANCE, redacted);
+        List<TransactionRow> rows =
+                List.of(new TransactionRow(FIRST_TRANSACTION_ID, redacted, FIRST_EDITED_AMOUNT));
+        List<String> statement = records(renderer.renderStatementAlert(context, rows, TOTAL));
+        List<String> fraudAlert = records(renderer.renderFraudAlert(context,
+                FLAGGED_TRANSACTION_ID, 87, List.of("VELOCITY", redacted)));
+
+        assertNoRecordCarries(statement, "the card verification value", CARD_VERIFICATION_VALUE);
+        assertNoRecordCarries(fraudAlert, "the card verification value", CARD_VERIFICATION_VALUE);
+    }
+
+    /**
+     * Drives markup characters through every value field of both render operations. A text record
+     * carries them unchanged, because {@code app/cbl/CBSTM03A.CBL} escapes nothing and an escaped
+     * ampersand would widen the fixed-width field the source declares.
+     *
+     * <p>The property under test is the record geometry. Every record still holds eighty
+     * characters and the record count still follows the row count, so no supplied character can
+     * split a record or add one.</p>
+     */
+    @Test
+    @DisplayName("Markup characters reach a text record unchanged and change no record geometry")
+    void markupCharactersReachATextRecordUnchangedAndChangeNoRecordGeometry() {
+        CardholderContext context = new CardholderContext(HOSTILE_VALUE, HOSTILE_VALUE,
+                HOSTILE_VALUE, HOSTILE_VALUE, HOSTILE_VALUE, EDITED_BALANCE, HOSTILE_VALUE);
+        List<TransactionRow> rows = List.of(
+                new TransactionRow(FIRST_TRANSACTION_ID, HOSTILE_VALUE, FIRST_EDITED_AMOUNT));
+        List<String> statement = records(renderer.renderStatementAlert(context, rows, TOTAL));
+        List<String> fraudAlert = records(renderer.renderFraudAlert(context,
+                FLAGGED_TRANSACTION_ID, 87, List.of(HOSTILE_VALUE)));
+
+        assertThat(statement).as("records a statement of hostile values holds")
+                .hasSize(SURROUNDING_RECORD_COUNT + rows.size())
+                .allSatisfy(record -> assertThat(record).hasSize(RECORD_WIDTH));
+        assertThat(fraudAlert).as("records a fraud alert of hostile values holds")
+                .isNotEmpty()
+                .allSatisfy(record -> assertThat(record).hasSize(RECORD_WIDTH));
+
+        // The text format escapes nothing, so the characters arrive as supplied and no entity
+        // reference appears in any record.
+        assertThat(String.join(RECORD_SEPARATOR, statement)).contains(HOSTILE_VALUE);
+        assertNoRecordCarries(statement, "an escaped ampersand", "&amp;");
+        assertNoRecordCarries(statement, "an escaped opening angle bracket", "&lt;");
+        assertNoRecordCarries(fraudAlert, "an escaped ampersand", "&amp;");
+        assertNoRecordCarries(fraudAlert, "an escaped opening angle bracket", "&lt;");
     }
 
     /**
@@ -1067,18 +1167,66 @@ class PlainTextRendererTest {
     /**
      * Checks that the fraud alert carries no card field either. Its record vocabulary comes from
      * the groups at app/cbl/CBSTM03A.CBL:L86-L146, and none of them declares a card number or a
-     * card verification value.
+     * card verification value. The alert takes no card parameter, so the only route into a record
+     * is a triggered rule, and this test supplies both card values there.
      */
     @Test
     @DisplayName("No fraud alert record carries a card number or a card verification value")
     void noFraudAlertRecordCarriesACardField() {
-        String masked = PanMasker.maskCardNumber(CARD_NUMBER);
-        List<String> records = fraudAlertRecords();
+        List<String> records = records(renderer.renderFraudAlert(context(),
+                FLAGGED_TRANSACTION_ID, 87,
+                List.of(PanMasker.maskCardNumber(CARD_NUMBER),
+                        PanMasker.redactCardVerificationValue(CARD_VERIFICATION_VALUE))));
 
-        assertThat(records).allSatisfy(record -> assertThat(record)
-                .doesNotContain(CARD_NUMBER)
-                .doesNotContain(masked)
-                .doesNotContain(CARD_VERIFICATION_VALUE));
+        assertNoRecordCarries(records, "the full card number", CARD_NUMBER);
+        assertNoRecordCarries(records, "the card verification value", CARD_VERIFICATION_VALUE);
+    }
+
+    /**
+     * Asserts a forbidden value reaches no record, naming the field type and the record index.
+     *
+     * <p>The subject of each assertion is a boolean, so a failure reports which record carried
+     * something forbidden and prints neither the record nor the value it carried.</p>
+     *
+     * @param records   the rendered records, in emitted order
+     * @param fieldType a description of the forbidden value, carrying none of its characters
+     * @param forbidden the value no record may carry
+     */
+    private static void assertNoRecordCarries(List<String> records, String fieldType,
+            String forbidden) {
+        for (int index = 0; index < records.size(); index++) {
+            assertThat(records.get(index).contains(forbidden))
+                    .as("%s reaches record %d of %d", fieldType, index + 1, records.size())
+                    .isFalse();
+        }
+    }
+
+    /**
+     * Returns the component names one record type declares, in declaration order.
+     *
+     * @param recordType a record class
+     * @return the component names
+     */
+    private static List<String> componentNamesOf(Class<?> recordType) {
+        List<String> names = new ArrayList<>();
+        for (RecordComponent component : recordType.getRecordComponents()) {
+            names.add(component.getName());
+        }
+        return names;
+    }
+
+    /**
+     * Reports whether a component name reaches a card number or a card verification value. The
+     * masked component name reaches the masked form alone and is approved.
+     *
+     * @param componentName one record component name
+     * @return {@code true} when the name reaches a card value
+     */
+    private static boolean namesACardField(String componentName) {
+        String folded = componentName.toLowerCase(Locale.ROOT);
+
+        return folded.contains("card") || folded.contains("pan") || folded.contains("cvv")
+                || folded.contains("verification");
     }
 
     /**
@@ -1191,6 +1339,129 @@ class PlainTextRendererTest {
      */
     private static String spaces(int width) {
         return " ".repeat(width);
+    }
+
+
+    /**
+     * Checks that a carriage return and line feed inside a description cannot add a record.
+     *
+     * <p>The statement file is a sequence of fixed-width records, {@code FD-STMTFILE-REC PIC X(80)}
+     * at app/cbl/CBSTM03A.CBL:L45. A reader splits it by width or by line, and a description
+     * carrying a line ending would let a caller close the current record early and have the
+     * characters after it read as a further one. The forged text below is shaped to look like a
+     * genuine detail record: an identifier, a description and an amount.
+     */
+    @Test
+    @DisplayName("A carriage return in a description adds no record and shifts no column")
+    void aCarriageReturnInADescriptionAddsNoRecord() {
+        String forged = "Coffee\r\nTRNXAA9999999999 Refund issued";
+        List<String> records = renderStatement(List.of(
+                new TransactionRow(FIRST_TRANSACTION_ID, forged, FIRST_EDITED_AMOUNT)));
+        List<String> clean = renderStatement(List.of(
+                new TransactionRow(FIRST_TRANSACTION_ID, "Coffee", FIRST_EDITED_AMOUNT)));
+
+        assertThat(records)
+                .as("a line ending inside a description must not change the record count")
+                .hasSameSizeAs(clean);
+        assertThat(records)
+                .as("no record may carry a line ending, or a reader would split it")
+                .allSatisfy(record -> assertThat(record)
+                        .hasSize(RECORD_WIDTH)
+                        .doesNotContain("\r")
+                        .doesNotContain("\n"));
+        assertThat(records.get(FIRST_DETAIL_INDEX))
+                .as("the forged text stays inside the description column, spaces in place of the "
+                        + "line ending")
+                .contains("Coffee  TRNXAA9999999999 Refund issued");
+    }
+
+    /**
+     * Checks that a tab inside a description does not shift a column.
+     *
+     * <p>Every record of this file is laid out by position. A tab is one character wide in the
+     * record and eight columns wide in a terminal, so a tab that survived would misalign every
+     * column after it for a reader.
+     */
+    @Test
+    @DisplayName("A tab in a description becomes a space and the columns stay in place")
+    void aTabInADescriptionKeepsEveryColumnInPlace() {
+        String record = detailRecordFor("Coffee\tshop");
+        String expected = detailRecordFor("Coffee shop");
+
+        assertThat(record)
+                .as("one character in, one character out, so the layout is identical")
+                .isEqualTo(expected)
+                .hasSize(RECORD_WIDTH)
+                .doesNotContain("\t");
+    }
+
+    /**
+     * Checks that the remaining control characters a caller might try are normalised too.
+     *
+     * <p>A null character truncates the record for a reader written in C, an escape opens a
+     * terminal control sequence in a console log, a vertical tab and a form feed both end a line
+     * for some readers, and delete is invisible. Each becomes one space.
+     */
+    @Test
+    @DisplayName("Every other control character becomes a space")
+    void everyOtherControlCharacterBecomesASpace() {
+        for (char control : new char[] {'\u0000', '\u0007', '\u000b', '\u000c', '\u001b',
+                '\u007f'}) {
+            String record = detailRecordFor("Coffee" + control + "shop");
+
+            assertThat(record)
+                    .as("code point " + (int) control + " must not survive into a record")
+                    .isEqualTo(detailRecordFor("Coffee shop"))
+                    .hasSize(RECORD_WIDTH);
+        }
+    }
+
+    /**
+     * Checks that the printable punctuation the fixtures hold is left alone.
+     *
+     * <p>Descriptions in app/data/ASCII/dailytran.txt carry the apostrophe, the comma and the
+     * hyphen. Normalising a control character must not disturb any of them, or the renderer would
+     * stop reproducing the source text.
+     */
+    @Test
+    @DisplayName("Printable punctuation reaches the record unchanged")
+    void printablePunctuationReachesTheRecordUnchanged() {
+        String punctuated = "O'Connell's Bar & Grill, Ltd. - 50% off";
+
+        assertThat(detailRecordFor(punctuated))
+                .as("app/data/ASCII/dailytran.txt holds the apostrophe, the comma and the hyphen")
+                .contains(punctuated)
+                .hasSize(RECORD_WIDTH);
+    }
+
+    /**
+     * Checks that a control character in a cardholder field is normalised as well.
+     *
+     * <p>{@code ST-NAME} at app/cbl/CBSTM03A.CBL:L91 and the three address lines pass through the
+     * same fixed-width gate, so the guard must cover them and not the description alone.
+     */
+    @Test
+    @DisplayName("A control character in a cardholder field adds no record either")
+    void aControlCharacterInACardholderFieldAddsNoRecord() {
+        CardholderContext injected = new CardholderContext("Doe\r\nJohn", ADDRESS_LINE_1,
+                ADDRESS_LINE_2, ADDRESS_LINE_3, ACCOUNT_ID, EDITED_BALANCE, FICO_SCORE);
+
+        List<String> records = records(
+                renderer.renderStatementAlert(injected, standardRows(), TOTAL));
+
+        assertThat(records)
+                .as("a line ending in a cardholder field must not change the record count")
+                .hasSameSizeAs(statementRecords());
+        assertThat(records)
+                .as("the record width holds and no record carries a line ending")
+                .allSatisfy(record -> assertThat(record)
+                        .hasSize(RECORD_WIDTH)
+                        .doesNotContain("\r")
+                        .doesNotContain("\n"));
+        assertThat(records.get(NAME_INDEX))
+                .as("ST-NAME at app/cbl/CBSTM03A.CBL:L91 carries the name with spaces in place of "
+                        + "the line ending")
+                .startsWith("Doe  John");
     }
 
     /**

@@ -6,8 +6,10 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
-import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * One row of {@code card_xref}, this service's private replica of the card-to-account
@@ -21,8 +23,8 @@ import java.util.Objects;
  * <pre>
  * copybook field   picture     line   column        type            note
  * XREF-CARD-NUM    PIC X(16)   L5     card_number   CHAR(16)        primary key
- * XREF-CUST-ID     PIC 9(09)   L6     customer_id   NUMERIC(9,0)
- * XREF-ACCT-ID     PIC 9(11)   L7     account_id    NUMERIC(11,0)   indexed, not unique
+ * XREF-CUST-ID     PIC 9(09)   L6     customer_id   CHAR(9)
+ * XREF-ACCT-ID     PIC 9(11)   L7     account_id    CHAR(11)        indexed, not unique
  * FILLER           PIC X(14)   L8     none
  * </pre>
  *
@@ -87,22 +89,14 @@ import java.util.Objects;
  * those sixteen positions, matching {@code PIC X}. The constructor adds no checksum. The one
  * card-number rule in the source names sixteen digits, at
  * {@code app/cbl/COCRDUPC.cbl:L194}.</p>
- *
- * <p>The three deviations above, and every other decision behind this class, are recorded in
- * {@code card-platform/docs/decision-log.md}.</p>
  */
 @Entity
 @Table(name = "card_xref",
-        indexes = @Index(name = "idx_card_xref_account_id", columnList = "account_id"))
+        indexes = {
+                @Index(name = "idx_card_xref_account_id", columnList = "account_id"),
+                @Index(name = "ix_card_xref_observed_at", columnList = "observed_at")})
 public class CardCrossReferenceEntity {
 
-    /**
-     * Digits after the decimal point in both identifier columns.
-     * {@code XREF-CUST-ID PIC 9(09)} at {@code app/cpy/CVACT03Y.cpy:L6} and
-     * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} are integer display
-     * numerics, and {@link PicClause} declares no scale constant for either one.
-     */
-    private static final int IDENTIFIER_SCALE = 0;
 
     /**
      * Full card number. {@code XREF-CARD-NUM PIC X(16)} at {@code app/cpy/CVACT03Y.cpy:L5}.
@@ -110,7 +104,9 @@ public class CardCrossReferenceEntity {
      * <p>Column {@code card_number CHAR(16) NOT NULL}, the primary key from {@code KEYS(16 0)} at
      * {@code app/jcl/XREFFILE.jcl:L43}. A caller supplies the value, and no sequence and no
      * generator assigns one. All 50 records of {@code app/data/ASCII/cardxref.txt} carry sixteen
-     * numeric characters here, the first of them {@code 0500024453765740}.</p>
+     * numeric characters here, the first of them stated masked as {@code ************5740}. The
+     * fixture holds it in full, and a comment repeating it would be a card number a reader
+     * copies out of documentation.</p>
      *
      * <p>PostgreSQL reports {@code CHAR} as {@code bpchar} through Java Database Connectivity
      * (JDBC) metadata, and {@link Column#columnDefinition()} names it verbatim. The start-up
@@ -126,39 +122,84 @@ public class CardCrossReferenceEntity {
     /**
      * Customer identifier. {@code XREF-CUST-ID PIC 9(09)} at {@code app/cpy/CVACT03Y.cpy:L6}.
      *
-     * <p>Column {@code customer_id NUMERIC(9,0) NOT NULL}, nine bytes at offset 16 of the 50-byte
+     * <p>Column {@code customer_id CHAR(9) NOT NULL}, nine bytes at offset 16 of the 50-byte
      * record. No key and no index in {@code app/jcl/XREFFILE.jcl} names this field. Record one of
      * {@code app/data/ASCII/cardxref.txt} carries {@code 000000050} here, and the column holds
-     * the value 50.</p>
+     * those nine characters.</p>
+     *
+     * <p>The field is a {@link String} and not a number. {@code PIC 9(09)} is a display field nine
+     * characters wide, and a numeric column stores {@code 000000050} as fifty and returns
+     * {@code 50}, which is a nine-character identifier reduced to two. The column check
+     * constraint {@code ck_card_xref_customer_id_digits} holds the width and the digit class.</p>
      */
     @Column(name = "customer_id", nullable = false,
-            precision = PicClause.XREF_CUST_ID_WIDTH, scale = IDENTIFIER_SCALE)
-    private BigDecimal customerId;
+            length = PicClause.XREF_CUST_ID_WIDTH,
+            columnDefinition = "bpchar(" + PicClause.XREF_CUST_ID_WIDTH + ")")
+    private String customerId;
 
     /**
      * Account identifier. {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}.
      *
-     * <p>Column {@code account_id NUMERIC(11,0) NOT NULL}, covered by the non-unique index
+     * <p>Column {@code account_id CHAR(11) NOT NULL}, covered by the non-unique index
      * {@code idx_card_xref_account_id}. Eleven bytes at offset 25, which is where
      * {@code KEYS(11,25)} at {@code app/jcl/XREFFILE.jcl:L74} points.</p>
      *
      * <p>This picture clause fixes the account-identifier width for the whole platform. Column
-     * {@code outbox_event.aggregate_id} is {@code VARCHAR(11)} at
-     * {@code src/main/resources/db/migration/V1__schema.sql:L66}, and the shared event envelope
-     * holds its aggregate identifier to eleven digits. The outbox writer renders the
-     * eleven-character zero-padded form that the Kafka message key carries; this column holds the
-     * numeric value and no padded text.</p>
+     * {@code outbox_event.aggregate_id} is {@code VARCHAR(11)} in
+     * {@code src/main/resources/db/migration/V1__schema.sql}, and the shared event envelope holds
+     * its aggregate identifier to eleven digits. This column now holds the same eleven characters
+     * those two carry, so the value moves from row to event key unchanged and no rendering step
+     * stands between them.</p>
      */
     @Column(name = "account_id", nullable = false,
-            precision = PicClause.XREF_ACCT_ID_WIDTH, scale = IDENTIFIER_SCALE)
-    private BigDecimal accountId;
+            length = PicClause.XREF_ACCT_ID_WIDTH,
+            columnDefinition = "bpchar(" + PicClause.XREF_ACCT_ID_WIDTH + ")")
+    private String accountId;
+
+    // ------------------------------------------------------------------------------------
+    // Replica freshness. ADDITIVE: the source has no replica to keep current.
+    // app/cbl/COCRDSLC.cbl reads the cross-reference dataset itself, so it cannot be stale.
+    // A copy that cannot say how old it is cannot be refused when it is too old, which is the
+    // whole point of the three columns below.
+    // ------------------------------------------------------------------------------------
+
+    /**
+     * The state-change event that last wrote this row, or null for a row loaded by
+     * {@code V2__seed.sql}.
+     *
+     * <p>The seed is the initial load rather than an event, so it names none. A check constraint in
+     * {@code src/main/resources/db/migration/V1__schema.sql} ties this column to
+     * {@link #getSourceOccurredAt()}: a row carries both halves of its provenance or neither.
+     */
+    @Column(name = "source_event_id")
+    private UUID sourceEventId;
+
+    /**
+     * When the event that last wrote this row occurred, or null for a seeded row.
+     *
+     * <p>This is the ordering value, and it is the producer's clock rather than this service's. An
+     * update whose event did not occur after the stored one is discarded, which is how an
+     * out-of-order delivery leaves the row alone instead of moving it backwards.
+     */
+    @Column(name = "source_occurred_at")
+    private Instant sourceOccurredAt;
+
+    /**
+     * When this row was last written, by seed or by event. Never null.
+     *
+     * <p>A freshness check reads this column and nothing else, so it always has a value to compare.
+     * A seeded row carries the moment the migration ran, which is the truthful answer for an
+     * initial load.
+     */
+    @Column(name = "observed_at", nullable = false)
+    private Instant observedAt;
 
     /**
      * No-argument constructor for the persistence provider.
      *
      * <p>Hibernate calls this constructor to materialise a row, then populates the three fields
      * directly. A row read from the database therefore reaches no guard below. Application code
-     * calls {@link #CardCrossReferenceEntity(String, BigDecimal, BigDecimal)}.</p>
+     * calls {@link #CardCrossReferenceEntity(String, String, String)}.</p>
      */
     protected CardCrossReferenceEntity() {
     }
@@ -168,16 +209,18 @@ public class CardCrossReferenceEntity {
      *
      * @param cardNumber the full card number, exactly
      *                   {@value PicClause#XREF_CARD_NUM_WIDTH} characters wide
-     * @param customerId the customer identifier, an integer with no negative sign
-     * @param accountId  the account identifier, an integer with no negative sign
+     * @param customerId the customer identifier, exactly
+     *                   {@value PicClause#XREF_CUST_ID_WIDTH} digits
+     * @param accountId  the account identifier, exactly
+     *                   {@value PicClause#XREF_ACCT_ID_WIDTH} digits
      * @throws NullPointerException     if any argument is {@code null}
      * @throws IllegalArgumentException if the card number is not
      *                                  {@value PicClause#XREF_CARD_NUM_WIDTH} characters wide,
-     *                                  or if either identifier carries a fractional part or a
-     *                                  negative sign
+     *                                  or if either identifier is the wrong width or holds a
+     *                                  character outside {@code 0} through {@code 9}
      */
-    public CardCrossReferenceEntity(String cardNumber, BigDecimal customerId,
-            BigDecimal accountId) {
+    public CardCrossReferenceEntity(String cardNumber, String customerId,
+            String accountId, Instant observedAt) {
         Objects.requireNonNull(cardNumber, "cardNumber must not be null");
         Objects.requireNonNull(customerId, "customerId must not be null");
         Objects.requireNonNull(accountId, "accountId must not be null");
@@ -187,44 +230,44 @@ public class CardCrossReferenceEntity {
                     + PicClause.XREF_CARD_NUM_WIDTH + " characters wide, found width "
                     + cardNumber.length());
         }
-        requireUnsignedInteger("customerId", customerId);
-        requireUnsignedInteger("accountId", accountId);
+        requireDigits("customerId", customerId, PicClause.XREF_CUST_ID_WIDTH);
+        requireDigits("accountId", accountId, PicClause.XREF_ACCT_ID_WIDTH);
 
         this.cardNumber = cardNumber;
         this.customerId = customerId;
         this.accountId = accountId;
+        this.observedAt = Objects.requireNonNull(observedAt, "observedAt must not be null");
     }
 
     /**
-     * Rejects an identifier that carries a fractional part or a negative sign.
+     * Rejects an identifier that is the wrong width or carries a character outside {@code 0}
+     * through {@code 9}.
      *
-     * <p>This method reads {@link BigDecimal#scale()} and {@link BigDecimal#signum()} and
-     * computes nothing. {@code com.carddemo.cobol.CobolDecimal} owns every scale change on this
-     * platform, and no method of this class performs one.</p>
+     * <p>A {@code PIC 9(n)} display field is exactly n characters wide and holds only digits, so
+     * both halves of that contract are checked here and the column check constraint repeats them
+     * in the database. Neither failure message carries a character of the rejected value: the
+     * width message reports a length and the digit message reports a position.</p>
      *
      * @param fieldName the field under check, named in any failure message
      * @param value     the identifier to check
-     * @throws IllegalArgumentException if the value carries a fractional part or a negative sign
+     * @param width     the exact number of digits the Picture clause declares
+     * @throws IllegalArgumentException if the width is wrong or a character is not a digit
      */
-    private static void requireUnsignedInteger(String fieldName, BigDecimal value) {
-        if (value.scale() != IDENTIFIER_SCALE) {
-            throw new IllegalArgumentException(fieldName + " must be an integer with scale "
-                    + IDENTIFIER_SCALE + ", found scale " + value.scale());
+    private static void requireDigits(String fieldName, String value, int width) {
+        if (value.length() != width) {
+            throw new IllegalArgumentException(fieldName + " must be exactly " + width
+                    + " digits wide, found width " + value.length());
         }
-        if (value.signum() < 0) {
-            throw new IllegalArgumentException(fieldName + " must not be negative, found "
-                    + value.toPlainString());
+        for (int position = 0; position < width; position++) {
+            char character = value.charAt(position);
+            if (character < '0' || character > '9') {
+                throw new IllegalArgumentException(fieldName
+                        + " must hold digits only, found a character outside 0 through 9 at "
+                        + "position " + (position + 1));
+            }
         }
     }
 
-    /**
-     * Returns the full card number, all {@value PicClause#XREF_CARD_NUM_WIDTH} characters of it.
-     *
-     * <p>The value is the unmasked Primary Account Number. A caller that publishes it or logs it
-     * passes it through {@code com.carddemo.cobol.PanMasker} first.</p>
-     *
-     * @return the value of column {@code card_number}
-     */
     public String getCardNumber() {
         return cardNumber;
     }
@@ -234,7 +277,7 @@ public class CardCrossReferenceEntity {
      *
      * @return the value of column {@code customer_id}
      */
-    public BigDecimal getCustomerId() {
+    public String getCustomerId() {
         return customerId;
     }
 
@@ -243,7 +286,7 @@ public class CardCrossReferenceEntity {
      *
      * @return the value of column {@code account_id}
      */
-    public BigDecimal getAccountId() {
+    public String getAccountId() {
         return accountId;
     }
 
@@ -279,5 +322,84 @@ public class CardCrossReferenceEntity {
     @Override
     public int hashCode() {
         return Objects.hashCode(cardNumber);
+    }
+
+    /**
+     * Returns the state-change event that last wrote this row.
+     *
+     * @return the event identifier, or null for a seeded row
+     */
+    public UUID getSourceEventId() {
+        return sourceEventId;
+    }
+
+    /**
+     * Returns when the event that last wrote this row occurred.
+     *
+     * @return the producer-side time, or null for a seeded row
+     */
+    public Instant getSourceOccurredAt() {
+        return sourceOccurredAt;
+    }
+
+    /**
+     * Returns when this row was last written.
+     *
+     * @return the observation time, never null once the row has been read from the database
+     */
+    public Instant getObservedAt() {
+        return observedAt;
+    }
+
+    /**
+     * Reports whether this row was observed recently enough to authorize against.
+     *
+     * <p>The caller supplies the window, so the policy lives in configuration and not here. A row
+     * with no observation time is reported stale rather than fresh: a replica that cannot establish
+     * its own freshness has to be treated as unfit, because the alternative is authorizing against
+     * a copy that may have stopped being updated at any point in the past.
+     *
+     * @param now       the current time
+     * @param maxAge    how old an observation may be and still count as fresh
+     * @return true when this row was observed within {@code maxAge} of {@code now}
+     * @throws NullPointerException if {@code now} or {@code maxAge} is null
+     */
+    public boolean isFreshAt(Instant now, Duration maxAge) {
+        Objects.requireNonNull(now, "now");
+        Objects.requireNonNull(maxAge, "maxAge");
+        if (observedAt == null) {
+            return false;
+        }
+        return !observedAt.isBefore(now.minus(maxAge));
+    }
+
+    /**
+     * Records that a state-change event wrote this row, unless that event is not newer than the one
+     * already recorded.
+     *
+     * <p>Kafka orders messages within a partition and every event for one account carries that
+     * account as its key, so an out-of-order delivery is unusual rather than routine. It is still
+     * possible: a redelivery after a rebalance can arrive behind a newer event that a different
+     * consumer instance already applied. Comparing the producer's clock is what makes applying the
+     * older one a no-op instead of a regression.
+     *
+     * @param eventId    the event that carried the change
+     * @param occurredAt when that event occurred, from its envelope
+     * @param observedAt when this service wrote the row
+     * @return true when the row was marked, and false when the event was not newer than the one
+     *         already recorded and nothing changed
+     * @throws NullPointerException if any argument is null
+     */
+    public boolean markObserved(UUID eventId, Instant occurredAt, Instant observedAt) {
+        Objects.requireNonNull(eventId, "eventId");
+        Objects.requireNonNull(occurredAt, "occurredAt");
+        Objects.requireNonNull(observedAt, "observedAt");
+        if (this.sourceOccurredAt != null && !occurredAt.isAfter(this.sourceOccurredAt)) {
+            return false;
+        }
+        this.sourceEventId = eventId;
+        this.sourceOccurredAt = occurredAt;
+        this.observedAt = observedAt;
+        return true;
     }
 }

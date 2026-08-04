@@ -16,9 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * app/cbl/COACTUPC.cbl:L876 sets {@code WS-RETURN-MSG-OFF} to true once per validation pass, and
  * one slot with one guard holds one message for that pass.</p>
  *
- * <p>The methods below assert the record shape, the two-component surface, the verdict each factory
- * returns, and message survival character for character. Ordering messages across several fields is
- * orchestration and sits outside this class.</p>
+ * <p>Ordering messages across several fields is orchestration and sits outside this class.</p>
  */
 @DisplayName("EditResult, the verdict returned by every field edit")
 class EditResultTest {

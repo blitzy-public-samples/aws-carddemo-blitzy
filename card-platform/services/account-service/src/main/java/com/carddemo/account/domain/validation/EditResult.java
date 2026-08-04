@@ -44,9 +44,11 @@ public record EditResult(boolean valid, String message) {
 
     /**
      * Reports whether the message slot holds text. The test is
-     * {@code message != null && !message.isBlank()}, and {@link String#isBlank()} is true for an
-     * empty string and for a string of white space only, so this method returns false for a null
-     * message, an empty message and a white-space message alike.
+     * {@code message != null && !message.isBlank()}.
+     *
+     * <p>{@link String#isBlank()} is true for an empty string and for a string of white space only.
+     * This method therefore returns false for a null message, an empty message and a white-space
+     * message alike.</p>
      *
      * @return true when the message holds at least one character that is not white space
      */

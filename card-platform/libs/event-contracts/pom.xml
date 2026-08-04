@@ -1,16 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Shared module holding the JSON Schema documents the six services read. No service
-  declares an event shape of its own.
+  Shared module holding the JSON Schema documents the six services read.
 
-  src/main/resources/schemas holds one versioned document per event:
-    transaction-authorized-v1, transaction-declined-v1, transaction-posted-v1
-    and fraud-flagged-v1 for the authorization, ledger and fraud events;
-    account-state-changed-v1 and card-state-changed-v1 for the two mutation
-    events the supporting services publish.
-  Every document is JSON Schema Draft 2020-12, keeps additionalProperties true
-  so evolution stays additive, and names the account identifier as the single
-  source of the Kafka message key.
+  src/main/resources/schemas holds nine versioned documents:
+    transaction-authorized-v1, transaction-declined-v1, transaction-posted-v1,
+    fraud-flagged-v1 and fraud-cleared-v1 for the authorization, ledger and
+    fraud events; transaction-declined-v2 for the one decline whose account the
+    card cross-reference could not resolve, which carries no account identifier
+    and is keyed on its transaction identifier; account-state-changed-v1 and
+    card-updated-v1 for the two mutation events the supporting services publish;
+    and dead-letter-v1 for the one shape every dead-letter topic carries.
+  Every document is JSON Schema Draft 2020-12 and names the account identifier
+  as the single source of the Kafka message key. Every document also closes its
+  top-level property set and declares a maxProperties ceiling, so an undeclared
+  field is refused rather than carried inside a known event type, and offers one
+  bounded extensions object, so a later version adds a value without breaking a
+  consumer already validating against this one.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -30,7 +35,7 @@
   <packaging>jar</packaging>
 
   <name>event-contracts</name>
-  <description>Six versioned JSON Schema documents, one per event: four for the authorization, ledger and fraud events, and two for the account and card mutation events. Every document is Draft 2020-12 and keeps additionalProperties true so evolution stays additive.</description>
+  <description>Nine versioned JSON Schema documents: six for the authorization, ledger and fraud events, two for the account and card mutation events, and one for the dead-letter envelope. Every document is Draft 2020-12 and closes its top-level property set and carries one bounded extensions object, so an undeclared field is refused while evolution stays additive.</description>
 
   <!-- Compiles this module at Java 25. -->
   <properties>

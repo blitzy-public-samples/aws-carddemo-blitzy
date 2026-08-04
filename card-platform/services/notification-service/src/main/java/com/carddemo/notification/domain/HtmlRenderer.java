@@ -11,20 +11,12 @@ import org.springframework.stereotype.Component;
  * {@code app/cbl/CBSTM03A.CBL}.
  *
  * <p>The source writes 75 markup records, and a statement carrying one transaction row emits the
- * same 75. Four source regions supply them.</p>
+ * same 75. Four source regions supply them: the header at {@code app/cbl/CBSTM03A.CBL:L506-L552},
+ * the name and address block at L558 through L669, the transaction rows at L681 through L721 and
+ * the trailer at L439 through L454. {@code card-platform/docs/traceability-matrix.md} (planned)
+ * carries the record-by-record mapping.</p>
  *
- * <ul>
- *   <li>22 from {@code 5100-WRITE-HTML-HEADER} at {@code app/cbl/CBSTM03A.CBL:L506-L552}</li>
- *   <li>34 from {@code 5200-WRITE-HTML-NMADBS} at {@code app/cbl/CBSTM03A.CBL:L558-L669}</li>
- *   <li>11 for each row from {@code 6000-WRITE-TRANS} at
- *       {@code app/cbl/CBSTM03A.CBL:L681-L721}</li>
- *   <li>8 from the trailer at {@code app/cbl/CBSTM03A.CBL:L439-L454}</li>
- * </ul>
- *
- * <p>Four COBOL terms recur below. A Picture clause, written {@code PIC}, fixes a field's width.
- * A condition name, written at level 88, gives one literal value a name. {@code DELIMITED BY}
- * names the character sequence that ends a value a {@code STRING} statement contributes.
- * {@code DELIMITED BY SIZE} contributes a value in full.</p>
+ * <p>{@link NotificationRenderer} defines the COBOL terms these methods use.</p>
  *
  * <p>Every record holds {@value #HTML_RECORD_WIDTH} characters, matching
  * {@code FD-HTMLFILE-REC PIC X(100)} at {@code app/cbl/CBSTM03A.CBL:L47} and
@@ -435,14 +427,17 @@ public final class HtmlRenderer implements NotificationRenderer {
      *                field, so no record carries this value. The text trailer does carry one, on
      *                {@code ST-LINE14A} at {@code app/cbl/CBSTM03A.CBL:L436}.
      * @return the rendered alert
-     * @throws NullPointerException if {@code context} or {@code rows} is {@code null}, or if
-     *                              {@code rows} holds a {@code null} element
+     * @throws NullPointerException     if {@code context} or {@code rows} is {@code null}, or if
+     *                                  {@code rows} holds a {@code null} element
+     * @throws IllegalArgumentException if {@code rows} holds more than
+     *                                  {@link NotificationRenderer#MAXIMUM_STATEMENT_ROWS}
+     *                                  elements
      */
     @Override
     public String renderStatementAlert(CardholderContext context, List<TransactionRow> rows,
                                        BigDecimal total) {
         Objects.requireNonNull(context, "context must not be null");
-        Objects.requireNonNull(rows, "rows must not be null");
+        NotificationRenderer.requireRenderableRowCount(rows);
 
         List<String> records = new ArrayList<>();
 

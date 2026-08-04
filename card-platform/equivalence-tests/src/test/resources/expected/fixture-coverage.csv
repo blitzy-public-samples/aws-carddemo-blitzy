@@ -1,4 +1,4 @@
-# evaluation_model NOT_APPLICABLE: fixture shape does not depend on accumulator state. 9 ASCII fixtures measured in 188 data rows; LF means line feed. Read by CardDemoFixtureLoader and every EquivalenceTest.
+# evaluation_model NOT_APPLICABLE: fixture shape does not depend on accumulator state. 188 data rows measured over the 9 ASCII fixtures of app/data/ASCII and the 10 EBCDIC twins of app/data/EBCDIC; LF means line feed. FixtureCoverageEquivalenceTest rederives every row from those files on every run and fails on any row it cannot derive.
 evaluation_model,derived_from,record_seq,entity_key,expected_field,expected_value,pic_clause,source_locator
 NOT_APPLICABLE,app/data/ASCII/acctdata.txt,1,acctdata,record_count,50,NONE,app/data/ASCII/acctdata.txt
 NOT_APPLICABLE,app/data/ASCII/acctdata.txt,2,acctdata,record_width_as_delivered,300,NONE,app/data/ASCII/acctdata.txt

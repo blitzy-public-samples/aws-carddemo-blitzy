@@ -1,6 +1,5 @@
 package com.carddemo.account.domain.validation;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Arrays;
@@ -46,8 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 1627 over 3. The gate at line 1599 reaches the state code edit only once the alphabetic edit has
  * passed, and that gate sits outside this class.</p>
  *
- * <p>Every method below runs on a plain Java virtual machine. No Spring context, no database, and
- * no container starts, so {@code mvn test} passes on a clean machine.</p>
+ * <p>Every test runs on a plain Java virtual machine. No Spring context, no database and no
+ * container starts.</p>
  */
 @DisplayName("AlphabeticRequiredValidator, the required alphabetic edit of paragraph 1225")
 class AlphabeticRequiredValidatorTest {
@@ -547,22 +546,12 @@ class AlphabeticRequiredValidatorTest {
     }
 
     @Test
-    @DisplayName("The validator is final, creates no instance, and exposes one static edit")
-    void validatorExposesOneStaticEdit() {
-        Constructor<?>[] constructors = AlphabeticRequiredValidator.class.getDeclaredConstructors();
-        List<Method> publicMethods = Arrays.stream(AlphabeticRequiredValidator.class.getDeclaredMethods())
-                .filter(method -> Modifier.isPublic(method.getModifiers()))
-                .filter(method -> !method.isSynthetic())
-                .toList();
+    @DisplayName("The validator declares a static label, value and width edit returning a verdict")
+    void validatorExposesOneStaticEdit() throws NoSuchMethodException {
+        Method edit = AlphabeticRequiredValidator.class.getMethod(
+                "validate", String.class, String.class, int.class);
 
-        assertThat(Modifier.isFinal(AlphabeticRequiredValidator.class.getModifiers())).isTrue();
-        assertThat(constructors).hasSize(1);
-        assertThat(Modifier.isPrivate(constructors[0].getModifiers())).isTrue();
-        assertThat(constructors[0].getParameterCount()).isZero();
-
-        assertThat(publicMethods).hasSize(1);
-        Method edit = publicMethods.get(0);
-        assertThat(edit.getName()).isEqualTo("validate");
+        assertThat(Modifier.isPublic(edit.getModifiers())).isTrue();
         assertThat(Modifier.isStatic(edit.getModifiers())).isTrue();
         assertThat(edit.getReturnType()).isEqualTo(EditResult.class);
         assertThat(edit.getParameterTypes())

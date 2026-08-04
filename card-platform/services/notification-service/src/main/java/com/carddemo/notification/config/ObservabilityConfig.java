@@ -38,8 +38,6 @@ import org.springframework.context.annotation.Configuration;
  * caller invokes them statically. This module compiles at release 25 through the
  * {@code java.version} property in its own {@code pom.xml}, which the Spring Boot 4.1.0 parent
  * otherwise defaults to 17. Class-file major version 69 is the proof of that release.</p>
- *
- * <p>See {@code card-platform/docs/decision-log.md} for the decisions behind this module.</p>
  */
 @Configuration
 public class ObservabilityConfig {
@@ -69,13 +67,32 @@ public class ObservabilityConfig {
      * which every tagged meter registers. No lookup registers a meter and no lookup returns null.
      * A sixth meter needs one field here, one registration in the constructor and one lookup
      * method.</p>
+     *
+     * <p>The path that records against each meter:
+     * {@code messaging/TransactionPostedConsumer.java} and
+     * {@code messaging/FraudFlaggedConsumer.java} increment
+     * {@link NotificationMetrics#eventsConsumed(String)}, time
+     * {@link NotificationMetrics#processingLatency(String)}, increment
+     * {@link NotificationMetrics#duplicatesSkipped()} when the idempotency guard rejects a replay,
+     * and increment {@link NotificationMetrics#failures(String)} on a fault;
+     * {@code domain/NotificationService.java} increments
+     * {@link NotificationMetrics#notificationsRendered(String)} once per alert it renders through
+     * {@link com.carddemo.notification.domain.PlainTextRenderer} or
+     * {@link com.carddemo.notification.domain.HtmlRenderer}. The renderers stay pure and record
+     * nothing themselves, so a formatter test needs no meter registry. Every meter registers at
+     * start-up, so each one is scrapable before its caller records against it.</p>
      */
     public static final class NotificationMetrics {
 
         /**
-         * Tag values the {@code event.type} dimension carries. Two of them travel on
-         * {@code fraud.assessed}, and the envelope {@code eventType} field separates those two.
+         * Tag values the {@code event.type} dimension carries, one per consumed event. This service
+         * reads three topics. {@code transaction.authorized} carries the authorization event, which
+         * makes this service the third independent reader of that event beside ledger posting and
+         * fraud detection. {@code transaction.posted} carries the new balance. The remaining two
+         * travel together on {@code fraud.assessed}, and the envelope {@code eventType} field
+         * separates them.
          */
+        public static final String EVENT_TRANSACTION_AUTHORIZED = "TransactionAuthorized";
         public static final String EVENT_TRANSACTION_POSTED = "TransactionPosted";
         public static final String EVENT_FRAUD_FLAGGED = "FraudFlagged";
         public static final String EVENT_FRAUD_CLEARED = "FraudCleared";
@@ -108,8 +125,8 @@ public class ObservabilityConfig {
         private final Counter duplicatesSkipped;
 
         NotificationMetrics(MeterRegistry registry) {
-            List<String> eventTypes = List.of(EVENT_TRANSACTION_POSTED, EVENT_FRAUD_FLAGGED,
-                    EVENT_FRAUD_CLEARED, UNKNOWN);
+            List<String> eventTypes = List.of(EVENT_TRANSACTION_AUTHORIZED,
+                    EVENT_TRANSACTION_POSTED, EVENT_FRAUD_FLAGGED, EVENT_FRAUD_CLEARED, UNKNOWN);
 
             Map<String, Timer> timers = new LinkedHashMap<>();
             for (String eventType : eventTypes) {
@@ -159,7 +176,6 @@ public class ObservabilityConfig {
             return this.duplicatesSkipped;
         }
 
-        /** Registers one counter per tag value and returns them keyed by that value. */
         private static Map<String, Counter> counters(MeterRegistry registry, String name,
                 String what, String tagKey, List<String> tagValues) {
             Map<String, Counter> byTagValue = new LinkedHashMap<>();
@@ -172,7 +188,6 @@ public class ObservabilityConfig {
             return Map.copyOf(byTagValue);
         }
 
-        /** Returns the meter one tag value names, falling back to the {@link #UNKNOWN} series. */
         private static <M> M resolve(Map<String, M> byTagValue, String tagValue) {
             M meter = tagValue == null ? null : byTagValue.get(tagValue);
             return meter != null ? meter : byTagValue.get(UNKNOWN);

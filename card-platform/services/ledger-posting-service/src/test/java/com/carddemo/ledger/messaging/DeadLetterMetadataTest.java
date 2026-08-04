@@ -22,16 +22,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>The constructor throws nothing. A dead-letter record describes a failure that already
  * happened, so a second failure raised while building it would suppress the dead-letter message
  * and leave the broker redelivering for ever. An over-long component therefore keeps its leading
- * characters and {@code truncatedComponents} names it.</p>
+ * characters.</p>
  *
  * <p>ADDITIVE. Dead-letter routing has no CardDemo ancestor: the posting job sends rejected
  * records to a fresh generation of an output dataset at {@code app/jcl/POSTTRAN.jcl:L34-L38},
  * which no program reads back.</p>
  *
- * <p>This record is service-local. Five services each declare their own record of this name, and
- * each truncates an over-length component rather than refusing it. Two tests below hold that
- * policy and hold the record inside this service's own package, so a move into a shared library
- * fails here rather than in production.</p>
+ * <p>This record is service-local. Five services each declare their own record of this name. Each
+ * one shortens an over-length component rather than refusing it. The record stays inside this
+ * service's own package and carries no shared-library package prefix.</p>
  */
 class DeadLetterMetadataTest {
 
@@ -131,13 +130,12 @@ class DeadLetterMetadataTest {
     }
 
     /**
-     * Asserts that a component one character over its maximum keeps its leading characters and is
-     * named in {@code truncatedComponents}, and that the constructor throws nothing. Widths from
-     * {@code app/cpy/CSMSG02Y.cpy:L21-L29}.
+     * Asserts that a component one character over its maximum keeps its leading characters, and
+     * that the constructor throws nothing. Widths from {@code app/cpy/CSMSG02Y.cpy:L21-L29}.
      */
     @Test
-    @DisplayName("A component over its maximum is shortened and named, and nothing throws")
-    void constructorShortensAnOverLongComponentAndNamesIt() {
+    @DisplayName("A component over its maximum is shortened, and nothing throws")
+    void constructorShortensAnOverLongComponent() {
         String longCode = "A".repeat(ABEND_CODE_MAX_LENGTH + 1);
         String longCulprit = "B".repeat(CULPRIT_MAX_LENGTH + 1);
         String longReason = "C".repeat(REASON_MAX_LENGTH + 1);
@@ -150,27 +148,29 @@ class DeadLetterMetadataTest {
         assertEquals("B".repeat(CULPRIT_MAX_LENGTH), metadata.culprit());
         assertEquals("C".repeat(REASON_MAX_LENGTH), metadata.reason());
         assertEquals("D".repeat(MESSAGE_MAX_LENGTH), metadata.message());
-        assertIterableEquals(List.of("abendCode", "culprit", "reason", "message"),
-                metadata.truncatedComponents());
     }
 
     /**
-     * Asserts that one over-long component names only itself, and that a record built entirely
-     * from values within their maxima names none.
+     * Asserts that shortening one over-long component leaves the other three as they were supplied.
      */
     @Test
-    @DisplayName("Only the components actually shortened are named")
-    void truncatedComponentsNamesOnlyTheShortenedComponents() {
+    @DisplayName("Only the component actually over its maximum is shortened")
+    void onlyTheComponentOverItsMaximumIsShortened() {
         DeadLetterMetadata onlyReason = DeadLetterMetadata.of(
                 ABEND_CODE, CULPRIT, "C".repeat(REASON_MAX_LENGTH + 1), MESSAGE);
 
-        assertIterableEquals(List.of("reason"), onlyReason.truncatedComponents());
+        assertEquals("C".repeat(REASON_MAX_LENGTH), onlyReason.reason());
+        assertEquals(ABEND_CODE, onlyReason.abendCode());
+        assertEquals(CULPRIT, onlyReason.culprit());
+        assertEquals(MESSAGE, onlyReason.message());
 
         DeadLetterMetadata nothingShortened =
                 DeadLetterMetadata.of(ABEND_CODE, CULPRIT, REASON, MESSAGE);
 
-        assertTrue(nothingShortened.truncatedComponents().isEmpty(),
-                "a record within every maximum named a shortened component");
+        assertIterableEquals(List.of(ABEND_CODE, CULPRIT, REASON, MESSAGE),
+                List.of(nothingShortened.abendCode(), nothingShortened.culprit(),
+                        nothingShortened.reason(), nothingShortened.message()),
+                "a record within every maximum reached its components unchanged");
     }
 
     /**
@@ -180,7 +180,7 @@ class DeadLetterMetadataTest {
     @Test
     @DisplayName("A Java class name is shortened to the culprit width")
     void constructorShortensAJavaClassNameToTheCulpritWidth() {
-        String className = "CategoryBalanceUpdater";
+        String className = "TransactionCategoryBalanceEntity";
 
         assertTrue(className.length() > CULPRIT_MAX_LENGTH, className);
 
@@ -188,14 +188,8 @@ class DeadLetterMetadataTest {
                 ABEND_CODE, className, REASON, MESSAGE));
 
         assertEquals(className.substring(0, CULPRIT_MAX_LENGTH), metadata.culprit());
-        assertIterableEquals(List.of("culprit"), metadata.truncatedComponents());
     }
 
-    /**
-     * Asserts that a control character, a line break and a character outside the American Standard
-     * Code for Information Interchange (ASCII) range each become one substitute character, and that
-     * a supplementary code point is replaced whole rather than split.
-     */
     @Test
     @DisplayName("Every character outside printable ASCII becomes one substitute character")
     void constructorReplacesEveryCharacterOutsidePrintableAscii() {
@@ -206,8 +200,6 @@ class DeadLetterMetadataTest {
         assertEquals("C..D", metadata.culprit());
         assertEquals("E.F", metadata.reason());
         assertEquals("G.H", metadata.message());
-        assertTrue(metadata.truncatedComponents().isEmpty(),
-                "no component was over its maximum, so none should be named");
 
         String rendered = metadata.toString();
 
@@ -215,10 +207,6 @@ class DeadLetterMetadataTest {
         assertFalse(rendered.contains("\u0000"), "the rendered record carried a control character");
     }
 
-    /**
-     * Asserts that the factory reading a failure copies only the failure type, never the text the
-     * failure carries.
-     */
     @Test
     @DisplayName("The failure factory copies the failure type and no failure text")
     void failureFactoryCopiesOnlyTheFailureType() {
@@ -282,6 +270,10 @@ class DeadLetterMetadataTest {
     /**
      * Asserts that the rendered record carries no long digit run and no standalone three-digit run.
      * The record at {@code app/cpy/CSMSG02Y.cpy:L21-L29} carries no card data of any kind.
+     *
+     * <p>Each failure message below is fixed text. A digit run these checks caught would be the
+     * very text that must not reach a log, so the message names the check and prints nothing the
+     * rendering held.</p>
      */
     @Test
     @DisplayName("Rendered text carries no digit run that could be card data")
@@ -291,8 +283,10 @@ class DeadLetterMetadataTest {
         String rendered = metadata.toString();
 
         assertNotNull(rendered, "the rendered record was null");
-        assertFalse(LONG_DIGIT_RUN.matcher(rendered).find(), rendered);
-        assertFalse(STANDALONE_THREE_DIGIT_RUN.matcher(rendered).find(), rendered);
+        assertFalse(LONG_DIGIT_RUN.matcher(rendered).find(),
+                "the rendered record carries a digit run long enough to be a card number");
+        assertFalse(STANDALONE_THREE_DIGIT_RUN.matcher(rendered).find(),
+                "the rendered record carries a standalone three-digit run");
     }
 
     /**
@@ -317,13 +311,6 @@ class DeadLetterMetadataTest {
         assertEquals(MESSAGE, oneNull.message());
     }
 
-    /**
-     * Asserts that this record stays inside the ledger posting service. A shared, interoperable
-     * dead-letter payload would sit alongside the event contracts under
-     * {@code com.carddemo.events}, and its widths and its over-length policy would then bind every
-     * service. Neither holds: the record is service-local and carries no annotation that would
-     * publish it.
-     */
     @Test
     @DisplayName("Belongs to this service alone and to no shared library")
     void recordBelongsToThisServiceAloneAndToNoSharedLibrary() {
@@ -342,12 +329,6 @@ class DeadLetterMetadataTest {
                         + "shared contract");
     }
 
-    /**
-     * Asserts that an over-length component is truncated and never refused, and that the value cut
-     * to its maximum reaches the component unchanged. A record that describes a failure which
-     * already happened cannot raise a second failure of its own, because that would suppress the
-     * dead-letter message and leave the broker redelivering the same message for ever.
-     */
     @Test
     @DisplayName("Truncates an over-length component instead of refusing it")
     void recordTruncatesAnOverLengthComponentInsteadOfRefusingIt() {
@@ -363,15 +344,11 @@ class DeadLetterMetadataTest {
                 "the culprit keeps the leading characters of the value supplied");
         assertNotEquals(overLength, truncated.culprit(),
                 "the culprit differs from the value supplied, so the record truncated it");
-        assertEquals(List.of("culprit"), truncated.truncatedComponents(),
-                "the truncation list names the culprit and nothing else");
 
         DeadLetterMetadata atMaximum = DeadLetterMetadata.of(
                 ABEND_CODE, overLength.substring(0, CULPRIT_MAX_LENGTH), REASON, MESSAGE);
         assertEquals(truncated.culprit(), atMaximum.culprit(),
                 "the value already cut to width " + CULPRIT_MAX_LENGTH + " reaches the component "
                         + "unchanged, which shows the truncation is about length alone");
-        assertTrue(atMaximum.truncatedComponents().isEmpty(),
-                "a value of exactly the maximum length is not recorded as truncated");
     }
 }

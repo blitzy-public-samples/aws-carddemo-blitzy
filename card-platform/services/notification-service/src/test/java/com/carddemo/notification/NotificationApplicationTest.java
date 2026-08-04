@@ -1,5 +1,14 @@
 package com.carddemo.notification;
 
+import com.carddemo.notification.config.ObservabilityConfig;
+import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
+import com.carddemo.notification.domain.HtmlRenderer;
+import com.carddemo.notification.domain.NotificationRenderer;
+import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
+import com.carddemo.notification.domain.PlainTextRenderer;
+import com.carddemo.notification.repository.StatementTransactionRepository;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -10,8 +19,16 @@ import java.util.Objects;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
+import org.mockito.Mockito;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
+import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.FilterType;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -20,15 +37,18 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Reflection tests over the bootstrap class {@link NotificationApplication}. Every test below reads
- * class metadata and starts no application, so {@code mvn test} passes on a clean machine with no
- * database and no message broker running.
+ * Bootstrap and start-up tests for the notification service. The first group reads class metadata
+ * off {@link NotificationApplication} and starts nothing. The second group starts a Spring context
+ * over the production component scan, so a broken scan root, a bean that cannot be constructed or a
+ * duplicate renderer fails here rather than at deployment. Neither group loads auto-configuration,
+ * so {@code mvn test} passes on a clean machine with no database and no message broker running.
  *
  * <p>The module replaces the customer-facing tail of app/cbl/CBSTM03A.CBL, the 924-line statement
  * program that app/jcl/CREASTMT.JCL runs at L79 as {@code EXEC PGM=CBSTM03A}. The sort at
  * app/jcl/CREASTMT.JCL:L53 keys that program's output by card number and transaction identifier.</p>
  */
-@DisplayName("NotificationApplication, the bare bootstrap contract of the notification service")
+@DisplayName("NotificationApplication, the bootstrap and start-up contract of the notification "
+        + "service")
 class NotificationApplicationTest {
 
     /** Package that declares {@link NotificationApplication} and roots component scanning. */
@@ -49,27 +69,92 @@ class NotificationApplicationTest {
             "com.carddemo.notification.messaging",
             "com.carddemo.notification.repository");
 
+    /** Count of renderers the service declares, one per output format. */
+    private static final int RENDERER_COUNT = 2;
+
     /**
-     * Asserts the class carries exactly one class-level annotation, {@link SpringBootApplication}.
-     * The count catches a second annotation whether or not a test here names it.
+     * The credentials the shipped configuration deliberately leaves without a default, supplied here
+     * so a context can start.
+     *
+     * <p>{@code config/SecurityConfig} refuses to start when any of them is unset, which is the
+     * point of shipping them undefaulted: an unset password must stop start-up rather than sign on
+     * under a password this repository publishes. {@code SecurityConfigTest} asserts that refusal.
+     * The values below are generated-looking and distinct from every example the repository carries,
+     * so none of them trips the published-value guard.
+     */
+    private static final String[] CREDENTIALS = {
+        "POSTGRES_PASSWORD=a-generated-value-for-this-test",
+        "KAFKA_SASL_PASSWORD=a-generated-broker-value-for-this-test",
+        "ADMIN_PASSWORD_HASH={noop}a-generated-admin-value",
+        "USER_PASSWORD_HASH={noop}a-generated-user-value",
+        "MONITORING_PASSWORD_HASH={noop}a-generated-monitoring-value",
+    };
+
+    /**
+     * Starts a context over the production component scan with a meter registry in place of the
+     * auto-configured one.
+     */
+    private static final ApplicationContextRunner RUNNER = new ApplicationContextRunner()
+            .withInitializer(new ConfigDataApplicationContextInitializer())
+            .withPropertyValues(CREDENTIALS)
+            .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+            .withBean(StatementTransactionRepository.class,
+                    () -> Mockito.mock(StatementTransactionRepository.class))
+            .withUserConfiguration(ProductionComponentScan.class);
+
+    /**
+     * Asserts the class carries exactly the two class-level annotations this module needs,
+     * {@link SpringBootApplication} and {@link ConfigurationPropertiesScan}, in that order. The
+     * count catches a third annotation whether or not a test here names it.
+     *
+     * <p>{@link ConfigurationPropertiesScan} registers
+     * {@code com.carddemo.notification.config.NotificationProperties}, which binds and validates the
+     * {@code carddemo} block of {@code application.yml}. Without it the three consumer groups, the
+     * three consumed topic names, the dead-letter suffix and both retry settings would sit in that
+     * file with nothing reading them.
+     *
+     * <p>{@code @EnableScheduling} is absent, and stays absent. This module runs no outbox relay.</p>
      */
     @Test
-    void carriesOneAnnotationAndItIsSpringBootApplication() {
+    void carriesTwoAnnotationsAndTheyAreSpringBootApplicationAndConfigurationPropertiesScan() {
         Annotation[] declared = NotificationApplication.class.getDeclaredAnnotations();
 
-        assertEquals(1, declared.length,
-                "NotificationApplication must carry exactly one class-level annotation, found "
+        assertEquals(2, declared.length,
+                "NotificationApplication must carry exactly two class-level annotations, found "
                         + annotationTypeNames(declared));
         assertSame(SpringBootApplication.class, declared[0].annotationType(),
-                "the one class-level annotation must be @SpringBootApplication");
-        assertEquals(1, NotificationApplication.class.getAnnotations().length,
-                "NotificationApplication must present no annotation beyond the one it declares");
+                "the first class-level annotation must be @SpringBootApplication");
+        assertSame(ConfigurationPropertiesScan.class, declared[1].annotationType(),
+                "the second class-level annotation must be @ConfigurationPropertiesScan, which "
+                        + "registers NotificationProperties and so makes every carddemo key in "
+                        + "application.yml reachable");
+        assertEquals(2, NotificationApplication.class.getAnnotations().length,
+                "NotificationApplication must present no annotation beyond the two it declares");
     }
 
     /**
-     * Asserts the five named attributes of {@link SpringBootApplication} keep their declared values.
-     * A populated {@code scanBasePackages} moves the component-scan root off the declaring package.
+     * Asserts {@link ConfigurationPropertiesScan} scans the declaring package and nothing wider.
+     *
+     * <p>A populated {@code basePackages} would reach into another module's package and register a
+     * properties record this module does not own.</p>
      */
+    @Test
+    void configurationPropertiesScanKeepsItsDeclaringPackageAsTheScanRoot() {
+        ConfigurationPropertiesScan annotation =
+                NotificationApplication.class.getAnnotation(ConfigurationPropertiesScan.class);
+
+        assertNotNull(annotation,
+                "NotificationApplication must carry @ConfigurationPropertiesScan");
+        assertAll("@ConfigurationPropertiesScan attributes",
+                () -> assertEquals(0, annotation.value().length,
+                        "value must stay empty, which roots the scan at " + ROOT_PACKAGE),
+                () -> assertEquals(0, annotation.basePackages().length,
+                        "basePackages must stay empty, which roots the scan at " + ROOT_PACKAGE),
+                () -> assertEquals(0, annotation.basePackageClasses().length,
+                        "basePackageClasses must stay empty, which roots the scan at "
+                                + ROOT_PACKAGE));
+    }
+
     @Test
     void springBootApplicationHoldsItsFiveNamedAttributeDefaults() {
         SpringBootApplication annotation =
@@ -91,11 +176,6 @@ class NotificationApplicationTest {
                         "proxyBeanMethods must stay true"));
     }
 
-    /**
-     * Compares every attribute {@link SpringBootApplication} declares against the default value its
-     * annotation type declares for that attribute. The loop reaches attributes no assertion above
-     * names.
-     */
     @Test
     void everySpringBootApplicationAttributeEqualsItsDeclaredDefault() {
         SpringBootApplication annotation =
@@ -115,10 +195,6 @@ class NotificationApplicationTest {
         assertAll("@SpringBootApplication attributes against their declared defaults", checks);
     }
 
-    /**
-     * Asserts the class is public, not final, not abstract and not an interface. The framework
-     * proxies a configuration class by subclassing it, and that step needs a non-final class.
-     */
     @Test
     void isAPublicNonFinalConcreteClass() {
         int modifiers = NotificationApplication.class.getModifiers();
@@ -161,11 +237,6 @@ class NotificationApplicationTest {
                         ENTRY_POINT_NAME + " must take a String array"));
     }
 
-    /**
-     * Asserts the package that declares the class. That package roots component scanning, which is
-     * what makes the sibling packages api, config, domain, entity, messaging and repository
-     * discoverable.
-     */
     @Test
     @DisplayName("declaring package is com.carddemo.notification, the component-scan root")
     void packageNameIsTheComponentScanRoot() {
@@ -174,10 +245,6 @@ class NotificationApplicationTest {
                         + "declaring package, which must stay " + ROOT_PACKAGE);
     }
 
-    /**
-     * Asserts each expected sibling package name extends the root by one segment. The comparison
-     * reads string constants and loads no class.
-     */
     @Test
     @DisplayName("api, config, domain, entity, messaging and repository each extend the root by one"
             + " segment")
@@ -202,10 +269,6 @@ class NotificationApplicationTest {
         assertAll("expected sibling packages of " + ROOT_PACKAGE, checks);
     }
 
-    /**
-     * Asserts the class declares one method and no field. A bean factory method or a field added
-     * here fails the count.
-     */
     @Test
     void declaresOneMethodAndNoField() {
         assertAll("declared members of NotificationApplication",
@@ -213,6 +276,108 @@ class NotificationApplicationTest {
                         "NotificationApplication must declare one method, the entry point"),
                 () -> assertEquals(0, NotificationApplication.class.getDeclaredFields().length,
                         "NotificationApplication must declare no field"));
+    }
+
+        /**
+     * Asserts the context starts and resolves every bean the service needs. A component that cannot
+     * be constructed, or a missing collaborator, fails the context rather than passing a reflection
+     * check.
+     */
+    @Test
+    @DisplayName("the context starts and resolves both renderers and the meter holder")
+    void theContextStartsAndResolvesEveryRequiredBean() {
+        RUNNER.run(context -> {
+            assertThat(context).hasNotFailed();
+            assertThat(context).hasSingleBean(PlainTextRenderer.class);
+            assertThat(context).hasSingleBean(HtmlRenderer.class);
+            assertThat(context).hasSingleBean(NotificationMetrics.class);
+            assertThat(context).hasSingleBean(ObservabilityConfig.class);
+        });
+    }
+
+    /**
+     * Asserts the scan discovers both renderers and that each reports its own format. A second
+     * renderer for one format would make the choice of renderer ambiguous at run time.
+     */
+    @Test
+    @DisplayName("the scan discovers one renderer per output format")
+    void theScanDiscoversOneRendererPerOutputFormat() {
+        RUNNER.run(context -> {
+            assertThat(context).hasNotFailed();
+
+            List<NotificationRenderer> renderers =
+                    new ArrayList<>(context.getBeansOfType(NotificationRenderer.class).values());
+            List<RenderedFormat> formats = new ArrayList<>();
+            for (NotificationRenderer renderer : renderers) {
+                formats.add(renderer.format());
+            }
+
+            assertThat(renderers).as("renderer beans the scan discovered").hasSize(RENDERER_COUNT);
+            assertThat(formats).as("formats the discovered renderers report")
+                    .containsExactlyInAnyOrder(RenderedFormat.PLAIN_TEXT, RenderedFormat.HTML);
+        });
+    }
+
+    /**
+     * Asserts every discovered bean comes from the package the bootstrap class declares. That is
+     * what a bare {@code @SpringBootApplication} guarantees, and a moved bootstrap class or a
+     * populated {@code scanBasePackages} would break it.
+     */
+    @Test
+    @DisplayName("every discovered bean sits under the package the bootstrap class declares")
+    void everyDiscoveredBeanSitsUnderTheDeclaringPackage() {
+        assertThat(NotificationApplication.class.getPackageName())
+                .as("package that roots component scanning").isEqualTo(ROOT_PACKAGE);
+
+        RUNNER.run(context -> {
+            assertThat(context).hasNotFailed();
+
+            for (Object bean : context.getBeansOfType(NotificationRenderer.class).values()) {
+                assertThat(bean.getClass().getPackageName())
+                        .as("package of the renderer bean %s", bean.getClass().getSimpleName())
+                        .startsWith(ROOT_PACKAGE + ".");
+            }
+            assertThat(context.getBean(NotificationMetrics.class).getClass().getPackageName())
+                    .as("package of the meter holder").startsWith(ROOT_PACKAGE + ".");
+        });
+    }
+
+    /**
+     * Asserts the context registers the meters, so a scrape taken immediately after start-up lists
+     * every series. The meter holder registers eagerly in its constructor, and that only happens if
+     * the context actually built it.
+     */
+    @Test
+    void theStartedContextRegistersTheServiceMeters() {
+        RUNNER.run(context -> {
+            assertThat(context).hasNotFailed();
+
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+
+            assertThat(registry.getMeters()).as("meters present once the context has started")
+                    .isNotEmpty();
+            assertThat(registry.getMeters())
+                    .as("every meter the started context registered")
+                    .allSatisfy(meter -> assertThat(meter.getId().getName())
+                            .startsWith("carddemo.notification."));
+        });
+    }
+
+    /**
+     * Runs the production component scan without the bootstrap class, so no auto-configuration
+     * loads and the context needs no database and no message broker.
+     *
+     * <p>The scan excludes this class as well. Test classes share the classpath with production
+     * classes, so a scan of the root package would otherwise find this configuration and register
+     * it a second time.</p>
+     */
+    @Configuration(proxyBeanMethods = false)
+    @ComponentScan(
+            basePackageClasses = NotificationApplication.class,
+            excludeFilters = @ComponentScan.Filter(
+                    type = FilterType.ASSIGNABLE_TYPE,
+                    classes = {NotificationApplication.class, ProductionComponentScan.class}))
+    static class ProductionComponentScan {
     }
 
     /**

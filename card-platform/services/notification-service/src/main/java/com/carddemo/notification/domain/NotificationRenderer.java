@@ -4,17 +4,18 @@ import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Contract for rendering one cardholder alert in one output format, with the fixed-width
  * formatting helpers an implementation calls.
  *
  * <p>ADDITIVE. No COBOL program declares this abstraction. {@code app/cbl/CBSTM03A.CBL} writes
- * two formats from a single procedure division: the text records at
- * {@code app/cbl/CBSTM03A.CBL:L488-L502} and the markup records at
- * {@code app/cbl/CBSTM03A.CBL:L558-L669}. The helpers below carry the field assembly and the
- * numeric editing of {@code 5000-CREATE-STATEMENT} at
- * {@code app/cbl/CBSTM03A.CBL:L458-L504}.</p>
+ * two formats from a single procedure division, and the helpers below carry the field assembly and
+ * the numeric editing of {@code 5000-CREATE-STATEMENT} at
+ * {@code app/cbl/CBSTM03A.CBL:L458-L504}. The abstraction is recorded in
+ * {@code card-platform/docs/decision-log.md} (planned) and the record-by-record mapping in
+ * {@code card-platform/docs/traceability-matrix.md} (planned).</p>
  *
  * <p>Four COBOL terms recur below. A Picture clause, written {@code PIC}, fixes a field's width
  * and form. A {@code Z} digit position renders a leading zero as a space. A trailing sign
@@ -30,11 +31,10 @@ import java.util.List;
  *
  * <p>Two obligations bind every implementation. An implementation reporting
  * {@link RenderedFormat#HTML} routes every value-bearing field through
- * {@link #escapeHtmlText(String)} after {@link #pic(String, int)} has set the field width, so a
- * cardholder value cannot open an element, close one, or break out of an attribute. An
+ * {@link #escapeHtmlText(String)}, after {@link #pic(String, int)} has set the field width. An
  * implementation of either format reads the fields of {@link CardholderContext} and
- * {@link TransactionRow} through their accessors and never through {@code toString()}: both
- * records redact their rendering, because both carry personal data.</p>
+ * {@link TransactionRow} through their accessors and never through {@code toString()}. Both
+ * records redact their rendering, and both carry personal data.</p>
  */
 public interface NotificationRenderer {
 
@@ -128,6 +128,21 @@ public interface NotificationRenderer {
     int EDITED_AMOUNT_WIDTH = PicClause.TRAN_AMT_PRECISION + 2;
 
     /**
+     * The most detail rows one rendered alert may carry.
+     *
+     * <p>A renderer assembles every record in memory before it joins them, so the cost of one call
+     * grows with the row count it is handed. {@code 5000-CREATE-STATEMENT} at
+     * {@code app/cbl/CBSTM03A.CBL:L458-L504} had no such ceiling, because it wrote each record to a
+     * sequential file and held one at a time.
+     *
+     * <p>This number equals {@code carddemo.history.maximum-page-size} in
+     * {@code src/main/resources/application.yml}, which caps the {@code limit} parameter of
+     * {@code GET /notifications/{cardToken}}. A caller reads at most one page and a renderer accepts
+     * at most one page, so the two layers cannot disagree about how much is too much.
+     */
+    int MAXIMUM_STATEMENT_ROWS = 200;
+
+    /**
      * Reports which output format this renderer produces.
      *
      * @return the format this renderer produces, never {@code null}
@@ -152,9 +167,34 @@ public interface NotificationRenderer {
      * @param total   the transaction total, matching {@code WS-TOTAL-AMT PIC S9(9)V99} at
      *                {@code app/cbl/CBSTM03A.CBL:L65}; must not be {@code null}
      * @return the rendered alert
+     * @throws IllegalArgumentException if {@code rows} holds more than
+     *                                  {@link #MAXIMUM_STATEMENT_ROWS} elements
      */
     String renderStatementAlert(CardholderContext context, List<TransactionRow> rows,
                                 BigDecimal total);
+
+    /**
+     * Checks one row list against {@link #MAXIMUM_STATEMENT_ROWS}.
+     *
+     * <p>Every implementation calls this before it assembles anything. A caller reads its rows from
+     * a bounded query, so exceeding the ceiling means the caller stopped bounding its read.
+     * Refusing says so at the point of the defect. Truncating instead would render an alert whose
+     * detail rows and whose total disagree, because the total arrives as a separate argument.
+     *
+     * @param rows the detail rows the caller supplied
+     * @return {@code rows}
+     * @throws NullPointerException     if {@code rows} is {@code null}
+     * @throws IllegalArgumentException if {@code rows} holds more than
+     *                                  {@link #MAXIMUM_STATEMENT_ROWS} elements
+     */
+    static List<TransactionRow> requireRenderableRowCount(List<TransactionRow> rows) {
+        Objects.requireNonNull(rows, "rows must not be null");
+        if (rows.size() > MAXIMUM_STATEMENT_ROWS) {
+            throw new IllegalArgumentException("rows holds at most " + MAXIMUM_STATEMENT_ROWS
+                    + " elements; the list supplied holds " + rows.size());
+        }
+        return rows;
+    }
 
     /**
      * Renders a fraud alert covering one flagged transaction.
@@ -182,21 +222,15 @@ public interface NotificationRenderer {
      * Escapes the five characters that carry meaning in markup, so a value renders as text.
      *
      * <p>ADDITIVE. {@code app/cbl/CBSTM03A.CBL} escapes nothing. Its markup path moves cardholder
-     * values straight into {@code FD-HTMLFILE-REC} at
-     * {@code app/cbl/CBSTM03A.CBL:L558-L669}, because a 3270 screen and a fixed-width dataset
-     * carry no markup meaning. A rendering this service sends to a browser or an electronic mail
-     * client does, so an implementation reporting {@link RenderedFormat#HTML} must route every
-     * value-bearing field through this method. {@link RenderedFormat#PLAIN_TEXT} does not: an
-     * escaped ampersand would change the fixed-width text the source writes.</p>
+     * values straight into {@code FD-HTMLFILE-REC} at {@code app/cbl/CBSTM03A.CBL:L558-L669}. An
+     * implementation reporting {@link RenderedFormat#HTML} routes every value-bearing field
+     * through this method. {@link RenderedFormat#PLAIN_TEXT} does not.</p>
      *
-     * <p>The five replacements are the ones that end an element, open an element, close an
-     * attribute value and end an entity: {@code &} first so a later replacement is not escaped
-     * twice, then {@code <}, {@code >}, {@code "} and {@code '}. A field of spaces, a field of
-     * digits and a field of letters are returned unchanged, so escaping does not alter the width
-     * of a normal field.</p>
+     * <p>Five characters are replaced, in this order: {@code &} first, then {@code <},
+     * {@code >}, {@code "} and {@code '}. A field of spaces, a field of digits and a field of
+     * letters come back unchanged.</p>
      *
-     * <p>Escaping runs after {@link #pic(String, int)}, never before: escaping first would push
-     * characters past the field width and the fixed-width copy would then split an entity.</p>
+     * <p>Escaping runs after {@link #pic(String, int)}, never before.</p>
      *
      * @param value the value to render as text, or {@code null} for an empty result
      * @return the value with every markup character replaced by its entity, and the empty string
@@ -207,10 +241,14 @@ public interface NotificationRenderer {
             return "";
         }
 
-        StringBuilder escaped = new StringBuilder(value.length());
+        // A control character carries no meaning in a text node, and one that reached a log line or
+        // a mail renderer would. The markup escaping below already makes the value safe as markup;
+        // this makes it safe as text. The substitution is one character for one, as in pic.
+        String text = normalizeControlCharacters(value);
+        StringBuilder escaped = new StringBuilder(text.length());
 
-        for (int position = 0; position < value.length(); position++) {
-            char character = value.charAt(position);
+        for (int position = 0; position < text.length(); position++) {
+            char character = text.charAt(position);
             switch (character) {
                 case '&' -> escaped.append("&amp;");
                 case '<' -> escaped.append("&lt;");
@@ -233,9 +271,14 @@ public interface NotificationRenderer {
      *
      * <p>A {@code null} value renders as spaces rather than raising an exception.</p>
      *
+     * <p>Every control character becomes a space first, through
+     * {@link #normalizeControlCharacters(String)}. This method is the one gate every text value
+     * passes on its way into a fixed-width record, so normalizing here covers every record of both
+     * renderers rather than one field of one of them.</p>
+     *
      * @param value the value to render, or {@code null} for an all-spaces field
      * @param width the field width, taken from a Picture clause; must not be negative
-     * @return a string of exactly {@code width} characters
+     * @return a string of exactly {@code width} characters, none of them a control character
      * @throws IllegalArgumentException if {@code width} is negative
      */
     static String pic(String value, int width) {
@@ -245,10 +288,67 @@ public interface NotificationRenderer {
         if (value == null) {
             return " ".repeat(width);
         }
-        if (value.length() >= width) {
-            return value.substring(0, width);
+        String text = normalizeControlCharacters(value);
+        if (text.length() >= width) {
+            return text.substring(0, width);
         }
-        return value + " ".repeat(width - value.length());
+        return text + " ".repeat(width - text.length());
+    }
+
+    /**
+     * Replaces every control character with a space, one for one.
+     *
+     * <p>A record of this renderer is a fixed-width line, laid out by column at
+     * {@code app/cbl/CBSTM03A.CBL:L86-L159}. A carriage return or a line feed inside a description
+     * would end that line early and let the characters after it read as a further record, so a
+     * caller could add or forge a line of a cardholder's alert. A tab shifts every column after it,
+     * and an escape opens a terminal control sequence in whatever reads the output.
+     *
+     * <p>The source cannot carry any of them. Each field arrives from a fixed-width map area or a
+     * {@code PIC X(n)} display field, and every character of all three hundred records of
+     * {@code app/data/ASCII/dailytran.txt} falls between the space and the tilde. Substituting a
+     * space therefore changes nothing the source could have produced.
+     *
+     * <p>Substitution rather than refusal is deliberate here. The authorization request and the
+     * event record both refuse a control character outright, so this renderer runs on text that two
+     * earlier gates already accepted. Refusing a third time would turn a value that should never
+     * have arrived into a failed alert for a cardholder, while a space keeps the layout exact and
+     * removes the injection. One character in, one character out: the width cannot change and no
+     * line can be added.
+     *
+     * @param value the text to normalize; must not be {@code null}
+     * @return the text with every control character replaced by a space, and the same length
+     */
+    static String normalizeControlCharacters(String value) {
+        int position = 0;
+        while (position < value.length() && !isControlCharacter(value.charAt(position))) {
+            position++;
+        }
+        if (position == value.length()) {
+            return value;
+        }
+
+        StringBuilder normalized = new StringBuilder(value);
+        for (int index = position; index < normalized.length(); index++) {
+            if (isControlCharacter(normalized.charAt(index))) {
+                normalized.setCharAt(index, ' ');
+            }
+        }
+        return normalized.toString();
+    }
+
+    /**
+     * Reports whether one character is a control character rather than a printable one.
+     *
+     * <p>Everything below the space at {@code 0x20} is a C0 control character, and {@code 0x7F} is
+     * delete. Everything between them is printable and is left alone, punctuation included: the
+     * fixtures hold the apostrophe, the comma and the hyphen.
+     *
+     * @param character the character to test
+     * @return {@code true} when the character is a control character
+     */
+    private static boolean isControlCharacter(char character) {
+        return character < ' ' || character == '\u007f';
     }
 
     /**
@@ -505,7 +605,7 @@ public interface NotificationRenderer {
                              String editedCurrentBalance,
                              String ficoScore) {
 
-        /** Normalises every component to the width its source field declares. */
+        /** Normalises all five components to the widths their source fields declare. */
         public CardholderContext {
             assembledName = pic(assembledName, ST_NAME_WIDTH);
             addressLine1 = pic(addressLine1, ST_ADD1_WIDTH);
@@ -529,7 +629,7 @@ public interface NotificationRenderer {
          */
         @Override
         public String toString() {
-            return "CardholderContext[7 cardholder fields redacted]";
+            return "CardholderContext[7 cardholder fields " + REDACTED + "]";
         }
     }
 
@@ -558,7 +658,7 @@ public interface NotificationRenderer {
      */
     record TransactionRow(String transactionId, String description, String editedAmount) {
 
-        /** Normalises every component to the width its source field declares. */
+        /** Normalises all three components to the widths their source fields declare. */
         public TransactionRow {
             transactionId = pic(transactionId, ST_TRANID_WIDTH);
             description = pic(description, ST_TRANDT_WIDTH);
@@ -579,7 +679,7 @@ public interface NotificationRenderer {
         @Override
         public String toString() {
             return "TransactionRow[transactionId=" + transactionId
-                    + ", description and amount redacted]";
+                    + ", description and amount " + REDACTED + "]";
         }
     }
 }

@@ -31,21 +31,24 @@ import org.xml.sax.SAXException;
  * Holds the build configuration that decides how often each equivalence test runs.
  *
  * <p>The equivalence classes are excluded from the unit-test plugin and included by the
- * integration-test plugin, so each one runs exactly once, at the integration-test phase. Two
- * mistakes would break that, and both are silent: an integration-test execution added under a second
- * identifier, and an include placed at plugin level rather than inside one execution. A plugin-level
- * include merges into every execution of the plugin, so the two mistakes compound.</p>
+ * integration-test plugin, so each one runs exactly once, at the integration-test phase. Two build
+ * shapes raise that count silently. One is an integration-test execution declared under a second
+ * identifier. The other is an include placed at plugin level, which merges into every execution of
+ * the plugin.</p>
  *
- * <p>This class reads both build files as text and holds three properties: the module declares one
- * integration-test execution, that execution reuses the identifier the parent declares, and the
- * include that selects the equivalence classes sits inside that execution alone. It also enumerates
- * the equivalence classes on disk and holds that each is selected once.</p>
+ * <p>This class reads both build files as text and holds three properties:</p>
+ * <ul>
+ *   <li>the module declares one integration-test execution</li>
+ *   <li>that execution reuses the identifier the parent declares</li>
+ *   <li>the include selecting the equivalence classes sits inside that execution alone</li>
+ * </ul>
+ *
+ * <p>It also enumerates the equivalence classes on disk and holds that each is selected once.</p>
  *
  * <p>The class name ends in {@code ConfigurationTest} rather than {@code EquivalenceTest}, so the
  * unit-test plugin collects it and the integration-test plugin does not. Running at the unit-test
  * phase is deliberate: a build broken by a duplicate execution should fail before the equivalence
  * suite runs at all.</p>
- *
  */
 class EquivalenceSuiteExecutionConfigurationTest {
 
@@ -82,11 +85,6 @@ class EquivalenceSuiteExecutionConfigurationTest {
             "ValidationEquivalenceTest.java",
             "DecimalTruncationEquivalenceTest.java");
 
-    /**
-     * Asserts that this module declares exactly one execution of the integration-test plugin, and
-     * that it reuses the identifier the parent declares. Maven merges executions by identifier, so
-     * reusing the identifier replaces the inherited execution instead of adding a second.
-     */
     @Test
     void theModuleDeclaresOneIntegrationTestExecutionUnderTheInheritedIdentifier() {
         List<Element> executions =
@@ -101,11 +99,6 @@ class EquivalenceSuiteExecutionConfigurationTest {
                         + "two rather than adding a second execution");
     }
 
-    /**
-     * Asserts that the parent declares exactly one execution of the integration-test plugin, under
-     * the identifier this module reuses. A second identifier in the parent would reach every
-     * module.
-     */
     @Test
     void theParentDeclaresOneIntegrationTestExecutionUnderThatSameIdentifier() {
         List<Element> executions =
@@ -123,12 +116,6 @@ class EquivalenceSuiteExecutionConfigurationTest {
                         + "build at verify");
     }
 
-    /**
-     * Asserts that the include selecting the equivalence classes appears once in this module's build
-     * file, and that it sits inside the single execution rather than at plugin level. A
-     * plugin-level include merges into every execution, which is how one include selects the same
-     * class twice.
-     */
     @Test
     void theEquivalenceIncludeSitsInsideThatOneExecutionAndNotAtPluginLevel() {
         Element plugin = pluginOf(moduleBuildFile(), INTEGRATION_TEST_PLUGIN);
@@ -151,11 +138,6 @@ class EquivalenceSuiteExecutionConfigurationTest {
                         + "every execution and would select the same class again");
     }
 
-    /**
-     * Asserts that the unit-test plugin excludes the same pattern the integration-test plugin
-     * includes. Without the exclusion each equivalence class would run once at the test phase and
-     * again at the integration-test phase.
-     */
     @Test
     void theUnitTestPluginExcludesExactlyWhatTheIntegrationTestPluginIncludes() {
         Element unitPlugin = pluginOf(moduleBuildFile(), UNIT_TEST_PLUGIN);
@@ -168,11 +150,6 @@ class EquivalenceSuiteExecutionConfigurationTest {
                         + "plugin, so no class runs under both");
     }
 
-    /**
-     * Asserts that each equivalence class on disk is selected exactly once. The count of selecting
-     * executions is the number of integration-test executions whose include matches the class, and
-     * it must be one for every class.
-     */
     @Test
     void eachEquivalenceClassIsSelectedByExactlyOneExecution() {
         int selections = selectingExecutionCount();
@@ -211,11 +188,11 @@ class EquivalenceSuiteExecutionConfigurationTest {
      * Returns how many executions of the integration-test plugin select the equivalence pattern,
      * following the two Maven rules that decide it.
      *
-     * <p>The effective set of executions is the union of the identifiers the parent declares and
-     * the identifiers this module declares, because Maven merges an execution of the same identifier
-     * rather than adding a second. An execution selects the pattern when the include sits in its own
-     * configuration, or when it sits at plugin level, because a plugin-level configuration merges
-     * into every execution.</p>
+     * <p>Maven merges an execution of the same identifier rather than adding a second. The
+     * effective set of executions is therefore the union of the identifiers the parent declares and
+     * the identifiers this module declares. An execution selects the pattern when the include sits
+     * in its own configuration. It also selects the pattern when the include sits at plugin level,
+     * because a plugin-level configuration merges into every execution.</p>
      *
      * @return the number of executions that would run the equivalence classes
      */
@@ -247,10 +224,6 @@ class EquivalenceSuiteExecutionConfigurationTest {
         return selecting;
     }
 
-    /**
-     * Asserts that this class is collected by the unit-test plugin and not by the integration-test
-     * plugin, so a duplicate execution fails the build before the equivalence suite runs.
-     */
     @Test
     void thisClassRunsUnderTheUnitTestPluginAndNotTheIntegrationTestPlugin() {
         String thisClassFileName =
@@ -264,8 +237,6 @@ class EquivalenceSuiteExecutionConfigurationTest {
         assertFalse(equivalenceClassFileNames().contains(thisClassFileName),
                 "this class does not appear among the equivalence classes it counts");
     }
-
-    // Build file access.
 
     /** Returns the parsed build file of this module. */
     private static Document moduleBuildFile() {
@@ -379,12 +350,10 @@ class EquivalenceSuiteExecutionConfigurationTest {
         return directChildren(executions, "execution");
     }
 
-    /** Returns the configuration element of one execution, or null when it declares none. */
     private static Element configurationOf(Element execution) {
         return directChild(execution, "configuration");
     }
 
-    /** Returns the text of one direct child, or null when the element has no such child. */
     private static String textOfChild(Element parent, String name) {
         Element child = directChild(parent, name);
         return child == null ? null : child.getTextContent().trim();
@@ -414,7 +383,6 @@ class EquivalenceSuiteExecutionConfigurationTest {
         return values;
     }
 
-    /** Returns the first direct child of one name, or null when there is none. */
     private static Element directChild(Element parent, String name) {
         List<Element> children = directChildren(parent, name);
         return children.isEmpty() ? null : children.get(0);

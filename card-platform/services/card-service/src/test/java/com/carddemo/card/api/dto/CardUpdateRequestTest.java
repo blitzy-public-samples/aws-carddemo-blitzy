@@ -30,19 +30,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Shape and constraint tests for {@link CardUpdateRequest}, the card update payload.
  *
  * <p>The payload mirrors one source group. {@code CCUP-NEW-CARDDATA} opens at
- * {@code app/cbl/COCRDUPC.cbl:L307} and holds {@code CCUP-NEW-CRDNAME PIC X(50)} at L308, the
- * {@code CCUP-NEW-EXPIRAION-DATE} subgroup at L309 with {@code CCUP-NEW-EXPYEAR PIC X(4)} at
- * L310, {@code CCUP-NEW-EXPMON PIC X(2)} at L311 and {@code CCUP-NEW-EXPDAY PIC X(2)} at L312,
- * and {@code CCUP-NEW-CRDSTCD PIC X(1)} at L313. Five components follow from those five fields.
- * {@code CARD-UPDATE-RECORD} at L314 is the write record and supplies no component.
+ * {@code app/cbl/COCRDUPC.cbl:L307} and holds the embossed name at L308, the
+ * {@code CCUP-NEW-EXPIRAION-DATE} subgroup at L309 with its year, month and day parts at L310
+ * through L312, and the active status at L313. Five components follow from those five fields.
  *
  * <p>Three fields of the enclosing group stay out of the payload.
  * {@code CCUP-NEW-ACCTID PIC X(11)} sits at L304, {@code CCUP-NEW-CARDID PIC X(16)} at L305 and
  * {@code CCUP-NEW-CVV-CD PIC X(3)} at L306, all three outside the group opened at L307. The card
- * number arrives as the path variable of the update endpoint, and the card detail screen renders
- * all sixteen of its characters: {@code CARDSID DFHMDF ATTRB=(FSET,NORM,UNPROT)} carries
- * {@code LENGTH=16} at {@code app/bms/COCRDSL.bms:L96-L100}. Three tests below hold the three
- * absences.
+ * number arrives as a component of the body rather than as a path variable, because a path reaches
+ * an access log and a card number does not belong in one. The card detail screen renders all
+ * sixteen of its characters: {@code CARDSID DFHMDF ATTRB=(FSET,NORM,UNPROT)} carries
+ * {@code LENGTH=16} at {@code app/bms/COCRDSL.bms:L96-L100}.
  *
  * <p>The three expiry parts stay separate, and working storage slices the ten-character date at
  * {@code app/cbl/COCRDUPC.cbl:L117} through L121. The parts run four characters of year, one
@@ -59,31 +57,37 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * at L828 then accepts only spaces. Its width comes from
  * {@code CARD-EMBOSSED-NAME PIC X(50)} at {@code app/cpy/CVACT02Y.cpy:L8}.
  *
- * <p>Every message test below compares for exact equality against a literal typed in this file.
+ * <p>Every message test compares for exact equality against a literal typed in this file.
  *
  * <p>The expiry day carries no range. The edit chain runs from {@code 1230-EDIT-NAME} at L806 to
- * {@code 1260-EDIT-EXPIRY-YEAR-EXIT} at L945, and {@code 2000-DECIDE-ACTION} opens at L948. The
- * four edits in between read the name, the active status, the expiry month and the expiry year.
- * L621 moves the day in and L1471 joins it into the reassembled date. The card update screen
- * darkens and protects the field: {@code EXPDAY DFHMDF ATTRB=(DRK,FSET,PROT)} at
- * {@code app/bms/COCRDUP.bms:L142}, one of the two darkened fields of that screen.
- *
- * <p>No edit tests a card number for a checksum. L782 and L783 comment on a numeric test and a
- * sixteen-character test, and L784 reads {@code IF CC-CARD-NUM IS NOT NUMERIC} alone, over
- * {@code CC-CARD-NUM PIC X(16)} at {@code app/cpy/CVCRD01Y.cpy:L37}. A search for checksum,
- * Luhn, modulo and check-digit wording across the twenty-eight programs under {@code app/cbl}
- * and the twenty-eight copybooks under {@code app/cpy} returns no hit.
+ * {@code 1260-EDIT-EXPIRY-YEAR-EXIT} at L945, and {@code 2000-DECIDE-ACTION} opens at L948, so no
+ * paragraph between them reaches the day. No edit tests a card number for a checksum: L784 reads
+ * {@code IF CC-CARD-NUM IS NOT NUMERIC} alone.
  *
  * <p>These tests build one {@link Validator} and reflect over the record. The constraint
  * annotations of {@code jakarta.validation.constraints} name no record component in their target
- * list. The compiler propagates each one to the field and to the accessor, and the helpers below
+ * list, so the compiler propagates each one to the field and to the accessor, and the helpers below
  * read the field. The tests read no file, start no application context and issue no
- * Representational State Transfer request. Rationale for each deviation above:
+ * Representational State Transfer request.
  */
 final class CardUpdateRequestTest {
 
-    /** Count of fields the {@code CCUP-NEW-CARDDATA} group holds at L307 through L313. */
-    private static final int EXPECTED_COMPONENT_COUNT = 5;
+    /**
+     * Count of components the payload holds: the card number the source declares at
+     * {@code app/cbl/COCRDUPC.cbl:L305}, plus the five fields the {@code CCUP-NEW-CARDDATA} group
+     * holds at L307 through L313 once the expiry subgroup at L309 is flattened into its year,
+     * month and day slices.
+     */
+    private static final int EXPECTED_COMPONENT_COUNT = 6;
+
+    /**
+     * A sixteen-digit card number every construction below supplies. Record 1 of
+     * {@code app/data/ASCII/carddata.txt} carries it at columns 1 through 16.
+     */
+    private static final String SUPPLIED_CARD_NUMBER = "0500024453765740";
+
+    /** Name of the component that carries the card number. */
+    private static final String COMPONENT_CARD_NUMBER = "cardNumber";
 
     /** Component carrying {@code CCUP-NEW-CRDNAME PIC X(50)} at L308. */
     private static final String COMPONENT_EMBOSSED_NAME = "embossedName";
@@ -111,6 +115,7 @@ final class CardUpdateRequestTest {
 
     /** The five component names, in the order the source group declares its fields. */
     private static final List<String> EXPECTED_COMPONENT_NAMES = List.of(
+            COMPONENT_CARD_NUMBER,
             COMPONENT_EMBOSSED_NAME,
             COMPONENT_EXPIRY_YEAR,
             COMPONENT_EXPIRY_MONTH,
@@ -147,6 +152,16 @@ final class CardUpdateRequestTest {
     /** Text of {@code SEARCHED-CARD-NOT-NUMERIC} at {@code app/cbl/COCRDUPC.cbl:L194}. */
     private static final String CARD_NUMBER_DIGIT_COUNT_TEXT =
             "Card number if supplied must be a 16 digit number";
+
+    /** Text of {@code WS-PROMPT-FOR-CARD} at {@code app/cbl/COCRDUPC.cbl:L180}, set at L774. */
+    private static final String EXPECTED_CARD_NUMBER_NOT_PROVIDED = "Card number not provided";
+
+    /**
+     * Text of the card filter edit at {@code app/cbl/COCRDUPC.cbl:L789}, moved into the message
+     * field at L790 under the test at L784. The source writes it with no condition name.
+     */
+    private static final String EXPECTED_CARD_NUMBER_NOT_NUMERIC =
+            "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER";
 
     /**
      * The one additive text. It carries no source literal and reports the transport width of the
@@ -225,7 +240,7 @@ final class CardUpdateRequestTest {
         "luhn", "checksum", "checkdigit", "mod10", "mod11", "modulo", "creditcard", "verhoeff"
     };
 
-    /** Folded names a single combined expiry date component would carry. */
+    /** Folded names of a single combined expiry date component, none of which may appear. */
     private static final Set<String> COMBINED_EXPIRY_NAMES = Set.of(
             "expiry", "expirydate", "expiration", "expirationdate", "expiraiondate",
             "expiraiondatex", "cardexpirydate", "cardexpirationdate");
@@ -239,7 +254,7 @@ final class CardUpdateRequestTest {
     /** Built once for the whole class and closed after the last test. */
     private static ValidatorFactory validatorFactory;
 
-    /** The validator every test below uses. */
+    /** The validator every test uses. */
     private static Validator validator;
 
     /**
@@ -262,24 +277,30 @@ final class CardUpdateRequestTest {
     // Shape. The payload carries the five fields of one source group and nothing else.
 
     /**
-     * Asserts the payload carries exactly five components. The group at
-     * {@code app/cbl/COCRDUPC.cbl:L307} holds one name field, three expiry parts and one status
-     * field.
+     * Asserts the payload carries exactly six components: the card number, one name field, three
+     * expiry parts and one status field. The group at {@code app/cbl/COCRDUPC.cbl:L307} holds the
+     * last five, and {@code CCUP-NEW-CARDID PIC X(16)} at L305 supplies the first.
+     *
+     * <p>The card number is a component of the body and not a path variable. A path reaches an
+     * access log, a proxy log, a trace and a browser history, and a full Primary Account Number
+     * belongs in none of them.
      */
     @Test
-    void updateRequestCarriesExactlyFiveComponents() {
+    void updateRequestCarriesExactlySixComponents() {
         RecordComponent[] components = CardUpdateRequest.class.getRecordComponents();
 
         assertEquals(EXPECTED_COMPONENT_COUNT, components.length,
                 () -> "CardUpdateRequest declares " + components.length + " components: "
-                        + componentNames() + ". The payload group holds "
-                        + EXPECTED_COMPONENT_COUNT + ": " + EXPECTED_COMPONENT_NAMES + ". "
-                        + GROUP_LOCATOR);
+                        + componentNames() + ". The payload holds " + EXPECTED_COMPONENT_COUNT
+                        + ": " + EXPECTED_COMPONENT_NAMES + ". The card number comes from "
+                        + "CCUP-NEW-CARDID PIC X(16) at app/cbl/COCRDUPC.cbl:L305 and the other "
+                        + "five from the group that follows it. " + GROUP_LOCATOR);
     }
 
     /**
-     * Asserts the five component names, in declaration order. The source group declares the name
-     * at L308, the year at L310, the month at L311, the day at L312 and the status at L313.
+     * Asserts the six component names, in declaration order. The source declares the card number
+     * at L305, then the group declares the name at L308, the year at L310, the month at L311, the
+     * day at L312 and the status at L313.
      */
     @Test
     void componentNamesFollowThePayloadGroupInDeclarationOrder() {
@@ -290,9 +311,9 @@ final class CardUpdateRequestTest {
     }
 
     /**
-     * Asserts every component holds a {@code String}. All five source fields carry a character
-     * picture: {@code PIC X(50)} at L308, {@code PIC X(4)} at L310, {@code PIC X(2)} at L311 and
-     * L312, and {@code PIC X(1)} at L313.
+     * Asserts every component holds a {@code String}. All six source fields carry a character
+     * picture: {@code PIC X(16)} at L305, {@code PIC X(50)} at L308, {@code PIC X(4)} at L310,
+     * {@code PIC X(2)} at L311 and L312, and {@code PIC X(1)} at L313.
      */
     @Test
     void everyComponentHoldsAString() {
@@ -302,10 +323,6 @@ final class CardUpdateRequestTest {
         }
     }
 
-    /**
-     * Asserts the expiry arrives as three separate components, in year, month and day order. The
-     * ten-character date splits at L117 through L121 and the write path rejoins the parts.
-     */
     @Test
     void expiryArrivesAsThreeSeparateComponents() {
         List<String> expiryComponents = componentNames().stream()
@@ -318,10 +335,6 @@ final class CardUpdateRequestTest {
                         + EXPECTED_EXPIRY_COMPONENT_NAMES + ", in that order. " + EXPIRY_LOCATOR);
     }
 
-    /**
-     * Asserts no component carries the joined ten-character expiry date. The card update service
-     * joins the three parts, and the payload carries the parts.
-     */
     @Test
     void noComponentCarriesACombinedExpiryDate() {
         for (String componentName : componentNames()) {
@@ -334,14 +347,28 @@ final class CardUpdateRequestTest {
 
     /**
      * Asserts no component name mentions a card number. {@code CCUP-NEW-CARDID PIC X(16)} sits at
-     * {@code app/cbl/COCRDUPC.cbl:L305}, outside the payload group, and the card number arrives
-     * as the path variable of the update endpoint.
+     * {@code app/cbl/COCRDUPC.cbl:L305}, and the card number arrives in the request body rather
+     * than in a path, so the record declares a component for it and constrains it to the sixteen
+     * digits the source tests at L784.
      */
     @Test
-    void updateRequestCarriesNoCardNumberComponent() {
-        assertNoComponentNameMentions("a card number",
-                OUTSIDE_GROUP_LOCATOR + " Field CCUP-NEW-CARDID PIC X(16) at L305.",
-                CARD_NUMBER_TOKENS);
+    void updateRequestCarriesTheCardNumberInTheBody() {
+        assertEquals(String.class, typeOf(COMPONENT_CARD_NUMBER),
+                "CCUP-NEW-CARDID PIC X(16) at app/cbl/COCRDUPC.cbl:L305 is a character field");
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        "03", "01", "Y"),
+                "app/cbl/COCRDUPC.cbl:L784 tests a card number for sixteen digits");
+        assertSingleViolation(new CardUpdateRequest("050002445376574", "JOHN Q PUBLIC", "2027",
+                        "03", "01", "Y"),
+                COMPONENT_CARD_NUMBER, CardValidationMessages.CARD_FILTER_NOT_NUMERIC,
+                "app/cbl/COCRDUPC.cbl:L789, moved at L790 under the test at L784");
+        assertSingleViolation(new CardUpdateRequest("05000244537657x0", "JOHN Q PUBLIC", "2027",
+                        "03", "01", "Y"),
+                COMPONENT_CARD_NUMBER, CardValidationMessages.CARD_FILTER_NOT_NUMERIC,
+                "a card number holds digits only");
+        assertSingleViolation(new CardUpdateRequest(null, "JOHN Q PUBLIC", "2027", "03", "01", "Y"),
+                COMPONENT_CARD_NUMBER, CardValidationMessages.PROMPT_FOR_CARD,
+                "app/cbl/COCRDUPC.cbl:L180, set at L774 under the guard on L773");
     }
 
     /**
@@ -374,9 +401,11 @@ final class CardUpdateRequestTest {
     /** Asserts the two values the condition name at {@code app/cbl/COCRDUPC.cbl:L91} lists. */
     @Test
     void activeStatusAcceptsUpperCaseYAndUpperCaseN() {
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027", "03",
+                        "01", "Y"),
                 STATUS_LOCATOR);
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", "N"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027", "03",
+                        "01", "N"),
                 STATUS_LOCATOR);
     }
 
@@ -387,9 +416,11 @@ final class CardUpdateRequestTest {
      */
     @Test
     void lowerCaseActiveStatusIsRejectedWithTheSourceText() {
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", "y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        "03", "01", "y"),
                 COMPONENT_ACTIVE_STATUS, EXPECTED_STATUS_MUST_BE_YES_NO, STATUS_LOCATOR);
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", "n"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        "03", "01", "n"),
                 COMPONENT_ACTIVE_STATUS, EXPECTED_STATUS_MUST_BE_YES_NO, STATUS_LOCATOR);
     }
 
@@ -399,9 +430,11 @@ final class CardUpdateRequestTest {
      */
     @Test
     void anyOtherActiveStatusCharacterIsRejectedWithTheSourceText() {
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", "X"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        "03", "01", "X"),
                 COMPONENT_ACTIVE_STATUS, EXPECTED_STATUS_MUST_BE_YES_NO, STATUS_LOCATOR);
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", "1"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        "03", "01", "1"),
                 COMPONENT_ACTIVE_STATUS, EXPECTED_STATUS_MUST_BE_YES_NO, STATUS_LOCATOR);
     }
 
@@ -411,13 +444,16 @@ final class CardUpdateRequestTest {
      */
     @Test
     void missingActiveStatusTakesTheSameSourceText() {
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", null),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        "03", "01", null),
                 COMPONENT_ACTIVE_STATUS, EXPECTED_STATUS_MUST_BE_YES_NO, STATUS_LOCATOR);
         assertEveryViolationReports(
-                new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", " "),
+                new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC",
+                        "2027", "03", "01", " "),
                 COMPONENT_ACTIVE_STATUS, EXPECTED_STATUS_MUST_BE_YES_NO, STATUS_LOCATOR);
         assertEveryViolationReports(
-                new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", ""),
+                new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC",
+                        "2027", "03", "01", ""),
                 COMPONENT_ACTIVE_STATUS, EXPECTED_STATUS_MUST_BE_YES_NO, STATUS_LOCATOR);
     }
 
@@ -426,23 +462,27 @@ final class CardUpdateRequestTest {
     /** Asserts both ends of the range at {@code app/cbl/COCRDUPC.cbl:L95} pass. */
     @Test
     void expiryMonthAcceptsBothEndsOfTheSourceRange() {
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "01", "01", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027", "01",
+                        "01", "Y"),
                 MONTH_LOCATOR);
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "12", "01", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027", "12",
+                        "01", "Y"),
                 MONTH_LOCATOR);
     }
 
     /** Asserts the value below the range fails with the text at {@code app/cbl/COCRDUPC.cbl:L198}. */
     @Test
     void expiryMonthZeroIsRejectedWithTheSourceText() {
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "00", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        "00", "01", "Y"),
                 COMPONENT_EXPIRY_MONTH, EXPECTED_MONTH_NOT_VALID, MONTH_LOCATOR);
     }
 
     /** Asserts the value above the range fails with the text at {@code app/cbl/COCRDUPC.cbl:L198}. */
     @Test
     void expiryMonthThirteenIsRejectedWithTheSourceText() {
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "13", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        "13", "01", "Y"),
                 COMPONENT_EXPIRY_MONTH, EXPECTED_MONTH_NOT_VALID, MONTH_LOCATOR);
     }
 
@@ -452,7 +492,8 @@ final class CardUpdateRequestTest {
      */
     @Test
     void singleDigitExpiryMonthIsRejectedWithTheSourceText() {
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "1", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        "1", "01", "Y"),
                 COMPONENT_EXPIRY_MONTH, EXPECTED_MONTH_NOT_VALID, MONTH_LOCATOR);
     }
 
@@ -462,10 +503,12 @@ final class CardUpdateRequestTest {
      */
     @Test
     void missingExpiryMonthTakesTheSameSourceText() {
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", null, "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        null, "01", "Y"),
                 COMPONENT_EXPIRY_MONTH, EXPECTED_MONTH_NOT_VALID, MONTH_LOCATOR);
         assertEveryViolationReports(
-                new CardUpdateRequest("JOHN Q PUBLIC", "2027", "  ", "01", "Y"),
+                new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC",
+                        "2027", "  ", "01", "Y"),
                 COMPONENT_EXPIRY_MONTH, EXPECTED_MONTH_NOT_VALID, MONTH_LOCATOR);
     }
 
@@ -474,23 +517,27 @@ final class CardUpdateRequestTest {
     /** Asserts both ends of the range at {@code app/cbl/COCRDUPC.cbl:L99} pass. */
     @Test
     void expiryYearAcceptsBothEndsOfTheSourceRange() {
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "1950", "03", "01", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "1950", "03",
+                        "01", "Y"),
                 YEAR_LOCATOR);
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2099", "03", "01", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2099", "03",
+                        "01", "Y"),
                 YEAR_LOCATOR);
     }
 
     /** Asserts the year below the range fails with the text at {@code app/cbl/COCRDUPC.cbl:L200}. */
     @Test
     void expiryYearNineteenFortyNineIsRejectedWithTheSourceText() {
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", "1949", "03", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "1949",
+                        "03", "01", "Y"),
                 COMPONENT_EXPIRY_YEAR, EXPECTED_YEAR_NOT_VALID, YEAR_LOCATOR);
     }
 
     /** Asserts the year above the range fails with the text at {@code app/cbl/COCRDUPC.cbl:L200}. */
     @Test
     void expiryYearTwentyOneHundredIsRejectedWithTheSourceText() {
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2100", "03", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2100",
+                        "03", "01", "Y"),
                 COMPONENT_EXPIRY_YEAR, EXPECTED_YEAR_NOT_VALID, YEAR_LOCATOR);
     }
 
@@ -500,13 +547,16 @@ final class CardUpdateRequestTest {
      */
     @Test
     void missingExpiryYearTakesTheSameSourceText() {
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC", null, "03", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", null,
+                        "03", "01", "Y"),
                 COMPONENT_EXPIRY_YEAR, EXPECTED_YEAR_NOT_VALID, YEAR_LOCATOR);
         assertEveryViolationReports(
-                new CardUpdateRequest("JOHN Q PUBLIC", "    ", "03", "01", "Y"),
+                new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC",
+                        "    ", "03", "01", "Y"),
                 COMPONENT_EXPIRY_YEAR, EXPECTED_YEAR_NOT_VALID, YEAR_LOCATOR);
         assertEveryViolationReports(
-                new CardUpdateRequest("JOHN Q PUBLIC", "ABCD", "03", "01", "Y"),
+                new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC",
+                        "ABCD", "03", "01", "Y"),
                 COMPONENT_EXPIRY_YEAR, EXPECTED_YEAR_NOT_VALID, YEAR_LOCATOR);
     }
 
@@ -518,11 +568,14 @@ final class CardUpdateRequestTest {
      */
     @Test
     void embossedNameAcceptsLettersAndSpacesToFiftyCharacters() {
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027", "03",
+                        "01", "Y"),
                 NAME_LOCATOR);
-        assertNoViolation(new CardUpdateRequest("Mary Jane Smith", "2027", "03", "01", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "Mary Jane Smith", "2027",
+                        "03", "01", "Y"),
                 NAME_LOCATOR);
-        assertNoViolation(new CardUpdateRequest("A".repeat(50), "2027", "03", "01", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "A".repeat(50), "2027", "03",
+                        "01", "Y"),
                 NAME_LOCATOR);
     }
 
@@ -532,7 +585,8 @@ final class CardUpdateRequestTest {
      */
     @Test
     void embossedNameWithADigitIsRejectedWithTheSourceText() {
-        assertSingleViolation(new CardUpdateRequest("JOHN Q PUBLIC1", "2027", "03", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC1", "2027",
+                        "03", "01", "Y"),
                 COMPONENT_EMBOSSED_NAME, EXPECTED_NAME_MUST_BE_ALPHA, NAME_LOCATOR);
     }
 
@@ -543,9 +597,11 @@ final class CardUpdateRequestTest {
      */
     @Test
     void embossedNameWithAHyphenIsRejectedWithTheSourceText() {
-        assertSingleViolation(new CardUpdateRequest("MARY-JANE", "2027", "03", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "MARY-JANE", "2027", "03",
+                        "01", "Y"),
                 COMPONENT_EMBOSSED_NAME, EXPECTED_NAME_MUST_BE_ALPHA, NAME_LOCATOR);
-        assertSingleViolation(new CardUpdateRequest("O'BRIEN", "2027", "03", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "O'BRIEN", "2027", "03",
+                        "01", "Y"),
                 COMPONENT_EMBOSSED_NAME, EXPECTED_NAME_MUST_BE_ALPHA, NAME_LOCATOR);
     }
 
@@ -556,7 +612,8 @@ final class CardUpdateRequestTest {
      */
     @Test
     void embossedNameLongerThanFiftyCharactersIsRejected() {
-        assertSingleViolation(new CardUpdateRequest("A".repeat(51), "2027", "03", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "A".repeat(51), "2027",
+                        "03", "01", "Y"),
                 COMPONENT_EMBOSSED_NAME, EXPECTED_NAME_MUST_BE_ALPHA, NAME_LOCATOR);
     }
 
@@ -566,30 +623,26 @@ final class CardUpdateRequestTest {
      */
     @Test
     void missingEmbossedNameTakesTheNotProvidedText() {
-        assertSingleViolation(new CardUpdateRequest(null, "2027", "03", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, null, "2027", "03", "01",
+                        "Y"),
                 COMPONENT_EMBOSSED_NAME, EXPECTED_NAME_NOT_PROVIDED, NAME_LOCATOR);
-        assertSingleViolation(new CardUpdateRequest("", "2027", "03", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "", "2027", "03", "01",
+                        "Y"),
                 COMPONENT_EMBOSSED_NAME, EXPECTED_NAME_NOT_PROVIDED, NAME_LOCATOR);
-        assertSingleViolation(new CardUpdateRequest("   ", "2027", "03", "01", "Y"),
+        assertSingleViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "   ", "2027", "03", "01",
+                        "Y"),
                 COMPONENT_EMBOSSED_NAME, EXPECTED_NAME_NOT_PROVIDED, NAME_LOCATOR);
     }
 
-    /**
-     * Asserts a payload that passes all four edits reports nothing. A constraint bound to the
-     * wrong component fires here.
-     */
     @Test
     void aFullyValidPayloadProducesNoViolation() {
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027", "03",
+                        "01", "Y"),
                 GROUP_LOCATOR);
     }
 
     // Message binding. The texts the constraints carry come from the production constant class.
 
-    /**
-     * Asserts each expected text typed in this file equals its constant in
-     * {@link CardValidationMessages}. A change on either side fails here.
-     */
     @Test
     void eachExpectedTextEqualsItsProductionConstant() {
         assertEquals(EXPECTED_NAME_NOT_PROVIDED, CardValidationMessages.PROMPT_FOR_NAME,
@@ -604,23 +657,26 @@ final class CardUpdateRequestTest {
                 "app/cbl/COCRDUPC.cbl:L198 reads: " + EXPECTED_MONTH_NOT_VALID);
         assertEquals(EXPECTED_YEAR_NOT_VALID, CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID,
                 "app/cbl/COCRDUPC.cbl:L200 reads: " + EXPECTED_YEAR_NOT_VALID);
-        assertEquals(EXPECTED_EXPIRY_DAY_WIDTH,
-                CardValidationMessages.ADDITIVE_CARD_EXPIRY_DAY_WIDTH,
-                "the additive expiry-day width text reads: " + EXPECTED_EXPIRY_DAY_WIDTH);
     }
 
     /**
-     * Asserts every constraint on the record binds one of the five source texts or the one declared
-     * additive text. The set is read from the {@code message} member of each annotation, so a
-     * constraint bound to a seventh text fails here.
+     * Asserts every constraint on the record binds one of the seven source texts or the one
+     * declared additive text. The set is read from the {@code message} member of each annotation,
+     * so a constraint bound to a ninth text fails here.
+     *
+     * <p>Two of the seven belong to the card number, which arrives in the request body rather than
+     * in a path. The source writes them at {@code app/cbl/COCRDUPC.cbl:L180} and L789, and the
+     * remaining five come from the four edits at L806 through L945.
      *
      * <p>{@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_DAY_WIDTH} carries no source literal.
      * It reports the transport width of the expiry day, which the source does not edit and a
      * Representational State Transfer (REST) payload must still bound.
      */
     @Test
-    void everyConstraintBindsOneOfTheFiveSourceTextsOrTheDeclaredWidthText() {
+    void everyConstraintBindsOneOfTheSevenSourceTextsOrTheDeclaredWidthText() {
         Set<String> expected = new TreeSet<>(List.of(
+                EXPECTED_CARD_NUMBER_NOT_PROVIDED,
+                EXPECTED_CARD_NUMBER_NOT_NUMERIC,
                 EXPECTED_NAME_NOT_PROVIDED,
                 EXPECTED_NAME_MUST_BE_ALPHA,
                 EXPECTED_STATUS_MUST_BE_YES_NO,
@@ -629,13 +685,46 @@ final class CardUpdateRequestTest {
                 EXPECTED_EXPIRY_DAY_WIDTH));
 
         assertEquals(expected, boundMessages(),
-                () -> "CardUpdateRequest binds " + boundMessages() + ". The four edits of "
-                        + "app/cbl/COCRDUPC.cbl at L806-L945 write the five texts at L182, L184, "
-                        + "L196, L198 and L200. The sixth text is additive and reports the "
-                        + "transport width of the expiry day alone.");
+                () -> "CardUpdateRequest binds " + boundMessages() + ". The card-number edit of "
+                        + "app/cbl/COCRDUPC.cbl writes the text at L180, set at L774, and the "
+                        + "text at L789, moved at L790 under the test at L784. The four edits at "
+                        + "L806-L945 write the five texts at L182, L184, L196, L198 and L200. The "
+                        + "eighth text is additive and reports the transport width of the expiry "
+                        + "day alone.");
     }
 
-    // First absence: the expiry day carries no calendar edit, only a width bound.
+    /**
+     * Asserts each expected text above equals the production constant it stands for. The set
+     * comparison in the test above proves the record binds these eight texts; this test proves the
+     * eight literals typed into this class are the eight the production class declares, so a
+     * silent edit to either side fails here rather than passing both.
+     */
+    @Test
+    void everyExpectedTextEqualsTheProductionConstant() {
+        assertEquals(EXPECTED_CARD_NUMBER_NOT_PROVIDED, CardValidationMessages.PROMPT_FOR_CARD,
+                "app/cbl/COCRDUPC.cbl:L180, set at L774 under the guard on L773");
+        assertEquals(EXPECTED_CARD_NUMBER_NOT_NUMERIC,
+                CardValidationMessages.CARD_FILTER_NOT_NUMERIC,
+                "app/cbl/COCRDUPC.cbl:L789, moved at L790 under the test at L784");
+        assertEquals(EXPECTED_NAME_NOT_PROVIDED, CardValidationMessages.PROMPT_FOR_NAME,
+                "app/cbl/COCRDUPC.cbl:L182");
+        assertEquals(EXPECTED_NAME_MUST_BE_ALPHA, CardValidationMessages.NAME_MUST_BE_ALPHA,
+                "app/cbl/COCRDUPC.cbl:L184");
+        assertEquals(EXPECTED_STATUS_MUST_BE_YES_NO,
+                CardValidationMessages.CARD_STATUS_MUST_BE_YES_NO,
+                "app/cbl/COCRDUPC.cbl:L196");
+        assertEquals(EXPECTED_MONTH_NOT_VALID,
+                CardValidationMessages.CARD_EXPIRY_MONTH_NOT_VALID,
+                "app/cbl/COCRDUPC.cbl:L198");
+        assertEquals(EXPECTED_YEAR_NOT_VALID, CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID,
+                "app/cbl/COCRDUPC.cbl:L200");
+        assertEquals(EXPECTED_EXPIRY_DAY_WIDTH,
+                CardValidationMessages.ADDITIVE_CARD_EXPIRY_DAY_WIDTH,
+                "additive: no source paragraph edits the expiry day");
+    }
+
+    // First absence: the expiry day carries no calendar edit. It carries a transport width, and
+    // nothing else.
 
     /**
      * Asserts the expiry day component carries the transport-width bound and no calendar rule.
@@ -644,49 +733,42 @@ final class CardUpdateRequestTest {
      * for the year at L99, and it declares none for the day. The two annotations here reproduce that
      * absence of a calendar rule while holding the component to the two characters of
      * {@code CCUP-NEW-EXPDAY PIC X(2)} at {@code app/cbl/COCRDUPC.cbl:L312}. The source reads that
-     * field from a fixed-width map field; a REST payload has no such width, so the bound is
-     * additive. {@code Min} and {@code Max} stay off the component: a range would introduce the
-     * calendar rule the source does not have.
+     * field from a fixed-width map field. A REST payload has no such width, so the bound is
+     * additive. {@code Min} and {@code Max} stay off the component, because the source declares no
+     * calendar rule for the day.
      */
     @Test
     void expiryDayCarriesTheTransportWidthBoundAndNoCalendarRule() {
-        Set<String> expected = new TreeSet<>(List.of("NotBlank", "Pattern"));
         List<Annotation> annotations = annotationsOf(COMPONENT_EXPIRY_DAY);
         Set<String> declared = new TreeSet<>(simpleNames(annotations));
 
-        assertEquals(expected, declared,
+        assertEquals(new TreeSet<>(List.of("NotBlank", "Pattern")), declared,
                 () -> "Component " + COMPONENT_EXPIRY_DAY + " carries " + declared
-                        + ". The width bound holds the two characters of the source field and adds "
-                        + "no calendar rule. " + EXPIRY_DAY_LOCATOR);
-
-        for (Annotation annotation : annotations) {
-            if (annotation instanceof Pattern pattern) {
-                assertEquals(EXPECTED_EXPIRY_DAY_PATTERN, pattern.regexp(),
-                        () -> "Component " + COMPONENT_EXPIRY_DAY + " bounds the transport width "
-                                + "with " + EXPECTED_EXPIRY_DAY_PATTERN + ". " + EXPIRY_DAY_LOCATOR);
-            }
-        }
+                        + ". The component bounds the transport width and adds no calendar rule. "
+                        + EXPIRY_DAY_LOCATOR);
+        assertEquals(EXPECTED_EXPIRY_DAY_PATTERN, patternOf(COMPONENT_EXPIRY_DAY),
+                "the bound is the two digits the source field holds and nothing else");
     }
 
     /**
      * Asserts an out-of-range expiry day passes. Day 99 falls outside any calendar month, and the
-     * source performs no day edit, so the payload reports nothing on the day component.
+     * source performs no day edit, so the payload reports nothing on the day component: the bound is
+     * the transport width alone and admits any two digits.
      */
     @Test
     void outOfRangeExpiryDayProducesNoViolation() {
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "99", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027", "03",
+                        "99", "Y"),
                 EXPIRY_DAY_LOCATOR);
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "00", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027", "03",
+                        "00", "Y"),
                 EXPIRY_DAY_LOCATOR);
     }
 
-    /**
-     * Asserts a day of 31 February passes. The source validates no calendar combination, so the
-     * month and the day travel with no cross-field test.
-     */
     @Test
     void impossibleCalendarDayProducesNoViolation() {
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "02", "31", "Y"),
+        assertNoViolation(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027", "02",
+                        "31", "Y"),
                 EXPIRY_DAY_LOCATOR);
     }
 
@@ -694,11 +776,13 @@ final class CardUpdateRequestTest {
      * Asserts a non-numeric, absent, empty, overlong or control-bearing expiry day fails the
      * transport-width bound, and that every such failure names the expiry day alone.
      *
-     * <p>The bound is additive. The source reads the day from a two-character map field, so no value
-     * of another width or another character class can reach it. A REST payload carries no width, and
-     * an unbounded component accepts control characters, markup and arbitrarily long text. Each case
-     * below reports {@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_DAY_WIDTH} and nothing else,
-     * so no other component of the payload is affected.
+     * <p>The bound is additive. The source edits the name, the status, the month and the year at
+     * {@code app/cbl/COCRDUPC.cbl:L806-L945} and edits no day, and it reads the day from a
+     * two-character map field, so no value of another width or another character class could reach
+     * it. A Representational State Transfer payload carries no width, and an unbounded component
+     * accepts control characters, markup and arbitrarily long text. Each case below reports
+     * {@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_DAY_WIDTH} and nothing else, so no other
+     * component of the payload is affected.
      */
     @Test
     void nonNumericAbsentAndOverlongExpiryDayFailTheTransportWidthBound() {
@@ -714,18 +798,16 @@ final class CardUpdateRequestTest {
 
         for (String day : rejected) {
             assertEveryViolationReports(
-                    new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", day, "Y"),
+                    new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027", "03", day,
+                                    "Y"),
                     COMPONENT_EXPIRY_DAY, EXPECTED_EXPIRY_DAY_WIDTH, EXPIRY_DAY_LOCATOR);
         }
     }
 
-    // Second absence: no component and no message names a checksum over a card number.
+    // Second absence: no annotation and no message applies a checksum to the card number. The
+    // record does carry the card number, in the body, so the absence asserted below is the
+    // checksum and not the field.
 
-    /**
-     * Asserts the record uses four constraint annotations and no more. The closed set holds
-     * {@code Max}, {@code Min}, {@code NotBlank} and {@code Pattern}, none of which computes a
-     * checksum.
-     */
     @Test
     void theRecordUsesFourConstraintAnnotationsAndNoMore() {
         Set<String> expected = new TreeSet<>(List.of("Max", "Min", "NotBlank", "Pattern"));
@@ -737,10 +819,6 @@ final class CardUpdateRequestTest {
                         + "test and two range ends. " + CARD_NUMBER_TEST_LOCATOR);
     }
 
-    /**
-     * Asserts no constraint annotation on the record names a checksum. The token list covers
-     * Luhn, modulo, check-digit and credit-card wording.
-     */
     @Test
     void noConstraintAnnotationNamesAChecksum() {
         for (Annotation annotation : allAnnotations()) {
@@ -755,11 +833,16 @@ final class CardUpdateRequestTest {
     }
 
     /**
-     * Asserts no text the constraints carry names a checksum, and none of the three card-number
-     * texts is bound. Those three sit at {@code app/cbl/COCRDUPC.cbl:L180}, L194 and L789.
+     * Asserts no text the constraints carry names a checksum, and that the two card-number texts
+     * the record does bind are exactly the two the source's own card-number edit writes.
+     *
+     * <p>The source writes three card-number texts. Two belong to the card-number edit this record
+     * reproduces: {@code app/cbl/COCRDUPC.cbl:L180}, set at L774, and L789, moved at L790 under the
+     * test at L784. The third, at L194, belongs to the card search screen and is not bound here.
+     * None of the three computes a checksum, so binding two of them adds no rule the source lacks.
      */
     @Test
-    void noBoundTextNamesAChecksumOrACardNumber() {
+    void noBoundTextNamesAChecksum() {
         for (String message : boundMessages()) {
             String folded = normalize(message);
             for (String token : CHECKSUM_TOKENS) {
@@ -769,24 +852,30 @@ final class CardUpdateRequestTest {
             }
         }
         Set<String> bound = boundMessages();
-        assertFalse(bound.contains(CardValidationMessages.PROMPT_FOR_CARD),
-                "app/cbl/COCRDUPC.cbl:L180 belongs to the card filter edit at L773. "
-                        + OUTSIDE_GROUP_LOCATOR);
+        assertTrue(bound.contains(CardValidationMessages.PROMPT_FOR_CARD),
+                "the card number arrives in the request body, so the presence test binds the text "
+                        + "at app/cbl/COCRDUPC.cbl:L180, set at L774 under the guard on L773");
+        assertTrue(bound.contains(CardValidationMessages.CARD_FILTER_NOT_NUMERIC),
+                "the sixteen-digit test binds the text at app/cbl/COCRDUPC.cbl:L789, moved at L790 "
+                        + "under the test at L784. " + CARD_NUMBER_TEST_LOCATOR);
         assertFalse(bound.contains(CARD_NUMBER_DIGIT_COUNT_TEXT),
-                "app/cbl/COCRDUPC.cbl:L194 counts digits and computes no checksum. "
-                        + CARD_NUMBER_TEST_LOCATOR);
-        assertFalse(bound.contains(CardValidationMessages.CARD_FILTER_NOT_NUMERIC),
-                "app/cbl/COCRDUPC.cbl:L789 belongs to the card filter edit at L784. "
+                "app/cbl/COCRDUPC.cbl:L194 belongs to the card search screen, not to the update "
+                        + "edit, and it counts digits rather than computing a checksum. "
                         + CARD_NUMBER_TEST_LOCATOR);
     }
 
     /**
-     * Asserts a sixteen-digit card number that fails a Luhn check meets no constraint here. The
-     * first two assertions establish the Luhn outcome of both literals, and the payload then
-     * validates clean while carrying no card-number component.
+     * Asserts a sixteen-digit card number that fails a Luhn check passes every constraint on this
+     * payload. The first three assertions establish the width and the Luhn outcome of both
+     * literals, and the record then admits both.
+     *
+     * <p>{@code app/cbl/COCRDUPC.cbl:L784} reads {@code IF CC-CARD-NUM IS NOT NUMERIC} and nothing
+     * more. The source therefore posts a Luhn-failing card, and this record must too. A constraint
+     * that refused it would refuse a card the source accepts, so the absence of a checksum rule is
+     * a deliberate non-addition rather than an oversight.
      */
     @Test
-    void luhnFailingSixteenDigitCardNumberMeetsNoConstraintOnThisPayload() {
+    void luhnFailingSixteenDigitCardNumberPassesEveryConstraintOnThisPayload() {
         assertEquals(16, LUHN_FAILING_CARD_NUMBER.length(),
                 "the sample card number holds sixteen digits, the width of "
                         + "CCUP-NEW-CARDID PIC X(16) at app/cbl/COCRDUPC.cbl:L305");
@@ -797,13 +886,20 @@ final class CardUpdateRequestTest {
                 "the Luhn-failing sample of width " + LUHN_FAILING_CARD_NUMBER.length()
                         + " fails a Luhn check");
 
-        assertNoComponentNameMentions("a card number",
-                "the payload takes no card number, so the Luhn-failing sample reaches no "
-                        + "constraint on it. " + CARD_NUMBER_TEST_LOCATOR,
-                CARD_NUMBER_TOKENS);
-        assertNoViolation(new CardUpdateRequest("JOHN Q PUBLIC", "2027", "03", "01", "Y"),
-                "the payload that accompanies the Luhn-failing sample passes every edit. "
+        assertNoViolation(new CardUpdateRequest(LUHN_FAILING_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        "03", "01", "Y"),
+                "the Luhn-failing card number passes every edit this record applies. "
                         + CARD_NUMBER_TEST_LOCATOR);
+        assertNoViolation(new CardUpdateRequest(LUHN_PASSING_CARD_NUMBER, "JOHN Q PUBLIC", "2027",
+                        "03", "01", "Y"),
+                "the Luhn-passing card number passes the same edits, so the two outcomes are "
+                        + "indistinguishable to this record. " + CARD_NUMBER_TEST_LOCATOR);
+        assertEquals(1, componentsNaming(CARD_NUMBER_TOKENS).size(),
+                () -> "exactly one component names a card number, and it is the body component "
+                        + "the sixteen-digit test at app/cbl/COCRDUPC.cbl:L784 reads. Components "
+                        + "naming a card number: " + componentsNaming(CARD_NUMBER_TOKENS));
+        assertEquals(List.of(COMPONENT_CARD_NUMBER), componentsNaming(CARD_NUMBER_TOKENS),
+                "the card number travels in the body under the name cardNumber, never in a path");
     }
 
     // Multi-invalid payloads. The source edits four components in one fixed order, and the first
@@ -822,30 +918,30 @@ final class CardUpdateRequestTest {
     @Test
     void eachAdjacentPairOfFailingEditsReportsTheEarlierMessageFirst() {
         assertEquals(EXPECTED_NAME_MUST_BE_ALPHA,
-                firstMessageInSourceOrder(new CardUpdateRequest("JOHN1", "2027", "03", "01", "X")),
+                firstMessageInSourceOrder(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN1",
+                                "2027", "03", "01", "X")),
                 "the name edit at app/cbl/COCRDUPC.cbl:L698 runs ahead of the status edit at "
                         + "app/cbl/COCRDUPC.cbl:L701");
 
         assertEquals(EXPECTED_STATUS_MUST_BE_YES_NO,
                 firstMessageInSourceOrder(
-                        new CardUpdateRequest("JOHN Q PUBLIC", "2027", "13", "01", "X")),
+                        new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "2027", "13",
+                                        "01", "X")),
                 "the status edit at app/cbl/COCRDUPC.cbl:L701 runs ahead of the month edit at "
                         + "app/cbl/COCRDUPC.cbl:L704");
 
         assertEquals(EXPECTED_MONTH_NOT_VALID,
                 firstMessageInSourceOrder(
-                        new CardUpdateRequest("JOHN Q PUBLIC", "1949", "13", "01", "Y")),
+                        new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN Q PUBLIC", "1949", "13",
+                                        "01", "Y")),
                 "the month edit at app/cbl/COCRDUPC.cbl:L704 runs ahead of the year edit at "
                         + "app/cbl/COCRDUPC.cbl:L707");
     }
 
-    /**
-     * Asserts that a payload failing every edit reports the name message first, and that all four
-     * components appear among the violations.
-     */
     @Test
     void aPayloadFailingEveryEditReportsTheNameMessageFirst() {
-        CardUpdateRequest allInvalid = new CardUpdateRequest("JOHN1", "1949", "13", "01", "X");
+        CardUpdateRequest allInvalid = new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN1", "1949",
+                        "13", "01", "X");
 
         assertEquals(EXPECTED_NAME_MUST_BE_ALPHA, firstMessageInSourceOrder(allInvalid),
                 "the earliest failing edit is the name edit at app/cbl/COCRDUPC.cbl:L698");
@@ -859,31 +955,25 @@ final class CardUpdateRequestTest {
                 "every one of the four edits fails on this payload");
     }
 
-    /**
-     * Asserts that an absent name reports the presence message ahead of any later edit, and that
-     * the order holds whichever later edit also fails.
-     */
     @Test
     void anAbsentNameReportsThePresenceMessageAheadOfEveryLaterEdit() {
         for (CardUpdateRequest payload : List.of(
-                new CardUpdateRequest("", "2027", "03", "01", "X"),
-                new CardUpdateRequest("", "2027", "13", "01", "Y"),
-                new CardUpdateRequest("", "1949", "03", "01", "Y"),
-                new CardUpdateRequest("", "1949", "13", "01", "X"))) {
+                new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "", "2027", "03", "01", "X"),
+                new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "", "2027", "13", "01", "Y"),
+                new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "", "1949", "03", "01", "Y"),
+                new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "", "1949", "13", "01", "X"))) {
 
             assertEquals(EXPECTED_NAME_NOT_PROVIDED, firstMessageInSourceOrder(payload),
                     "an absent name reports the presence text at app/cbl/COCRDUPC.cbl:L182 first");
         }
     }
 
-    /**
-     * Asserts that a payload failing two edits reports two components, so no edit swallows another.
-     */
     @Test
     void aPayloadFailingTwoEditsReportsTwoComponents() {
         Set<String> components = new LinkedHashSet<>();
         for (ConstraintViolation<CardUpdateRequest> violation
-                : validator.validate(new CardUpdateRequest("JOHN1", "2027", "03", "01", "X"))) {
+                : validator.validate(new CardUpdateRequest(SUPPLIED_CARD_NUMBER, "JOHN1", "2027",
+                                "03", "01", "X"))) {
             components.add(violation.getPropertyPath().toString());
         }
 
@@ -989,6 +1079,23 @@ final class CardUpdateRequestTest {
      * @param locator the source locator to print on failure
      * @param tokens folded tokens that would appear in a component name for that subject
      */
+    /**
+     * Returns the component names whose folded form contains any of the tokens supplied, in
+     * declaration order. The inverse of {@link #assertNoComponentNameMentions}: a test that expects
+     * exactly one match names it here rather than asserting an absence.
+     *
+     * @param tokens folded tokens to look for
+     * @return matching component names in declaration order
+     */
+    private static List<String> componentsNaming(String... tokens) {
+        return componentNames().stream()
+                .filter(componentName -> {
+                    String folded = normalize(componentName);
+                    return Arrays.stream(tokens).anyMatch(folded::contains);
+                })
+                .toList();
+    }
+
     private static void assertNoComponentNameMentions(String subject, String locator,
             String... tokens) {
         for (String componentName : componentNames()) {
@@ -1104,6 +1211,21 @@ final class CardUpdateRequestTest {
                     "every constraint annotation declares a message member, and "
                             + annotation.annotationType().getName() + " declares none", cause);
         }
+    }
+
+    /**
+     * Returns the regular expression one component's {@code Pattern} constraint declares.
+     *
+     * @param componentName the record component to read
+     * @return the {@code regexp} member of its one {@code Pattern} constraint
+     */
+    private static String patternOf(String componentName) {
+        for (Annotation annotation : annotationsOf(componentName)) {
+            if (annotation instanceof Pattern pattern) {
+                return pattern.regexp();
+            }
+        }
+        throw new AssertionError("component " + componentName + " declares no Pattern constraint");
     }
 
     /**

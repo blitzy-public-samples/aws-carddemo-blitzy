@@ -58,11 +58,6 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * balance, the current cycle credit and the current cycle debit.
  * {@link #fiveSourceCallSitesPerformParagraph1250()} counts them in the source, so the count is an
  * asserted fact.
- *
- * <p>The rationale behind every target choice sits in card-platform/docs/decision-log.md. The
- * {@code STRING} at app/cbl/COACTUPC.cbl:L2207 closes on {@code END-IF} at
- * app/cbl/COACTUPC.cbl:L2212 with no {@code END-STRING}, and
- * card-platform/docs/business-rule-flags.md records that terminator.
  */
 class SignedDecimalValidatorTest {
 

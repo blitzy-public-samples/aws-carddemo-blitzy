@@ -1,6 +1,7 @@
 package com.carddemo.account.domain.validation;
 
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -21,11 +22,11 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * at app/cbl/COACTUPC.cbl:L2225 together with the three paragraphs it falls through to. Those three
  * are {@code EDIT-AREA-CODE} at app/cbl/COACTUPC.cbl:L2246, {@code EDIT-US-PHONE-PREFIX} at
  * app/cbl/COACTUPC.cbl:L2316, and {@code EDIT-US-PHONE-LINENUM} at app/cbl/COACTUPC.cbl:L2370. Two
- * call sites reach the paragraph, at app/cbl/COACTUPC.cbl:L1635 under the label
+ * call sites reach the paragraph. They sit at app/cbl/COACTUPC.cbl:L1635 under the label
  * {@code 'Phone Number 1'} and at app/cbl/COACTUPC.cbl:L1643 under the label
  * {@code 'Phone Number 2'}.
  *
- * <p>app/cpy/CSLKPCDY.cpy declares three condition names over the host item
+ * <p>app/cpy/CSLKPCDY.cpy declares three condition names over one host item,
  * {@code 01 WS-US-PHONE-AREA-CODE-TO-EDIT PIC XXX} at app/cpy/CSLKPCDY.cpy:L24.
  * {@code VALID-PHONE-AREA-CODE} at app/cpy/CSLKPCDY.cpy:L30 holds 490 codes,
  * {@code VALID-GENERAL-PURP-CODE} at app/cpy/CSLKPCDY.cpy:L521 holds 410, and
@@ -37,13 +38,13 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * {@code VALID-GENERAL-PURP-CODE}. A census over the 28 members of app/cbl finds one reference to
  * that condition name, at app/cbl/COACTUPC.cbl:L2298, and no reference to the other two. The 410
  * code band is therefore the accepted set, and the 80 codes app/cpy/CSLKPCDY.cpy:L521 omits are
- * refused with the message at app/cbl/COACTUPC.cbl:L2306. Several tests below pin that boundary,
- * and they fail if the wider 490 code band is bound.</p>
+ * refused with the message at app/cbl/COACTUPC.cbl:L2306. Binding the wider 490 code band fails
+ * this class.</p>
  *
  * <p>The source always edits the area code, prefix, and line number. A failure jumps to the next
  * part, but the 75-character message slot keeps the first message. {@link EditResult} therefore
  * exposes one overall verdict and one message, not per-part flags. The jumps sit at
- * app/cbl/COACTUPC.cbl:L2259, L2277, L2291, L2311, L2330, L2348 and L2362, and the message slot is
+ * app/cbl/COACTUPC.cbl:L2259, L2277, L2291, L2311, L2330, L2348 and L2362. The message slot is
  * {@code WS-RETURN-MSG PIC X(75)} at app/cbl/COACTUPC.cbl:L479 under the guard
  * {@code WS-RETURN-MSG-OFF} at app/cbl/COACTUPC.cbl:L480.</p>
  *
@@ -60,8 +61,8 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * bytes at app/cbl/COACTUPC.cbl:L85, L90 and L95 carry no digit, and the class under test takes the
  * three parts at app/cbl/COACTUPC.cbl:L87, L92 and L97 as separate arguments.</p>
  *
- * <p>Every input below is a literal written in this class. The tests need no Spring context, no
- * container and no database, so {@code mvn test} runs them on a clean machine.</p>
+ * <p>Every input is a literal written in this class. The tests need no Spring context, no
+ * container and no database.</p>
  */
 @DisplayName("UsPhoneNumberValidator, the three part North American telephone number edit")
 class UsPhoneNumberValidatorTest {
@@ -185,6 +186,125 @@ class UsPhoneNumberValidatorTest {
     /** Two adjacent spaces, which no message carries once the label is trimmed. */
     private static final String TWO_SPACES = "  ";
 
+    /**
+     * The 490 literals app/cpy/CSLKPCDY.cpy:L30 through L520 declare under
+     * {@code VALID-PHONE-AREA-CODE}, in copybook declaration order.
+     */
+    private static final List<String> DECLARED_PHONE_AREA_CODES = List.of(
+            "201", "202", "203", "204", "205", "206", "207", "208", "209", "210",
+            "212", "213", "214", "215", "216", "217", "218", "219", "220", "223",
+            "224", "225", "226", "228", "229", "231", "234", "236", "239", "240",
+            "242", "246", "248", "249", "250", "251", "252", "253", "254", "256",
+            "260", "262", "264", "267", "268", "269", "270", "272", "276", "279",
+            "281", "284", "289", "301", "302", "303", "304", "305", "306", "307",
+            "308", "309", "310", "312", "313", "314", "315", "316", "317", "318",
+            "319", "320", "321", "323", "325", "326", "330", "331", "332", "334",
+            "336", "337", "339", "340", "341", "343", "345", "346", "347", "351",
+            "352", "360", "361", "364", "365", "367", "368", "380", "385", "386",
+            "401", "402", "403", "404", "405", "406", "407", "408", "409", "410",
+            "412", "413", "414", "415", "416", "417", "418", "419", "423", "424",
+            "425", "430", "431", "432", "434", "435", "437", "438", "440", "441",
+            "442", "443", "445", "447", "448", "450", "458", "463", "464", "469",
+            "470", "473", "474", "475", "478", "479", "480", "484", "501", "502",
+            "503", "504", "505", "506", "507", "508", "509", "510", "512", "513",
+            "514", "515", "516", "517", "518", "519", "520", "530", "531", "534",
+            "539", "540", "541", "548", "551", "559", "561", "562", "563", "564",
+            "567", "570", "571", "572", "573", "574", "575", "579", "580", "581",
+            "582", "585", "586", "587", "601", "602", "603", "604", "605", "606",
+            "607", "608", "609", "610", "612", "613", "614", "615", "616", "617",
+            "618", "619", "620", "623", "626", "628", "629", "630", "631", "636",
+            "639", "640", "641", "646", "647", "649", "650", "651", "656", "657",
+            "658", "659", "660", "661", "662", "664", "667", "669", "670", "671",
+            "672", "678", "680", "681", "682", "683", "684", "689", "701", "702",
+            "703", "704", "705", "706", "707", "708", "709", "712", "713", "714",
+            "715", "716", "717", "718", "719", "720", "721", "724", "725", "726",
+            "727", "731", "732", "734", "737", "740", "742", "743", "747", "753",
+            "754", "757", "758", "760", "762", "763", "765", "767", "769", "770",
+            "771", "772", "773", "774", "775", "778", "779", "780", "781", "782",
+            "784", "785", "786", "787", "801", "802", "803", "804", "805", "806",
+            "807", "808", "809", "810", "812", "813", "814", "815", "816", "817",
+            "818", "819", "820", "825", "826", "828", "829", "830", "831", "832",
+            "838", "839", "840", "843", "845", "847", "848", "849", "850", "854",
+            "856", "857", "858", "859", "860", "862", "863", "864", "865", "867",
+            "868", "869", "870", "872", "873", "876", "878", "901", "902", "903",
+            "904", "905", "906", "907", "908", "909", "910", "912", "913", "914",
+            "915", "916", "917", "918", "919", "920", "925", "928", "929", "930",
+            "931", "934", "936", "937", "938", "939", "940", "941", "943", "945",
+            "947", "948", "949", "951", "952", "954", "956", "959", "970", "971",
+            "972", "973", "978", "979", "980", "983", "984", "985", "986", "989",
+            "200", "211", "222", "233", "244", "255", "266", "277", "288", "299",
+            "300", "311", "322", "333", "344", "355", "366", "377", "388", "399",
+            "400", "411", "422", "433", "444", "455", "466", "477", "488", "499",
+            "500", "511", "522", "533", "544", "555", "566", "577", "588", "599",
+            "600", "611", "622", "633", "644", "655", "666", "677", "688", "699",
+            "700", "711", "722", "733", "744", "755", "766", "777", "788", "799",
+            "800", "811", "822", "833", "844", "855", "866", "877", "888", "899",
+            "900", "911", "922", "933", "944", "955", "966", "977", "988", "999");
+
+    /**
+     * The 410 literals app/cpy/CSLKPCDY.cpy:L521 through L930 declare under
+     * {@code VALID-GENERAL-PURP-CODE}, in copybook declaration order. app/cbl/COACTUPC.cbl:L2298
+     * tests this band and no other, so it is the accepted set.
+     */
+    private static final List<String> DECLARED_GENERAL_PURPOSE_CODES = List.of(
+            "201", "202", "203", "204", "205", "206", "207", "208", "209", "210",
+            "212", "213", "214", "215", "216", "217", "218", "219", "220", "223",
+            "224", "225", "226", "228", "229", "231", "234", "236", "239", "240",
+            "242", "246", "248", "249", "250", "251", "252", "253", "254", "256",
+            "260", "262", "264", "267", "268", "269", "270", "272", "276", "279",
+            "281", "284", "289", "301", "302", "303", "304", "305", "306", "307",
+            "308", "309", "310", "312", "313", "314", "315", "316", "317", "318",
+            "319", "320", "321", "323", "325", "326", "330", "331", "332", "334",
+            "336", "337", "339", "340", "341", "343", "345", "346", "347", "351",
+            "352", "360", "361", "364", "365", "367", "368", "380", "385", "386",
+            "401", "402", "403", "404", "405", "406", "407", "408", "409", "410",
+            "412", "413", "414", "415", "416", "417", "418", "419", "423", "424",
+            "425", "430", "431", "432", "434", "435", "437", "438", "440", "441",
+            "442", "443", "445", "447", "448", "450", "458", "463", "464", "469",
+            "470", "473", "474", "475", "478", "479", "480", "484", "501", "502",
+            "503", "504", "505", "506", "507", "508", "509", "510", "512", "513",
+            "514", "515", "516", "517", "518", "519", "520", "530", "531", "534",
+            "539", "540", "541", "548", "551", "559", "561", "562", "563", "564",
+            "567", "570", "571", "572", "573", "574", "575", "579", "580", "581",
+            "582", "585", "586", "587", "601", "602", "603", "604", "605", "606",
+            "607", "608", "609", "610", "612", "613", "614", "615", "616", "617",
+            "618", "619", "620", "623", "626", "628", "629", "630", "631", "636",
+            "639", "640", "641", "646", "647", "649", "650", "651", "656", "657",
+            "658", "659", "660", "661", "662", "664", "667", "669", "670", "671",
+            "672", "678", "680", "681", "682", "683", "684", "689", "701", "702",
+            "703", "704", "705", "706", "707", "708", "709", "712", "713", "714",
+            "715", "716", "717", "718", "719", "720", "721", "724", "725", "726",
+            "727", "731", "732", "734", "737", "740", "742", "743", "747", "753",
+            "754", "757", "758", "760", "762", "763", "765", "767", "769", "770",
+            "771", "772", "773", "774", "775", "778", "779", "780", "781", "782",
+            "784", "785", "786", "787", "801", "802", "803", "804", "805", "806",
+            "807", "808", "809", "810", "812", "813", "814", "815", "816", "817",
+            "818", "819", "820", "825", "826", "828", "829", "830", "831", "832",
+            "838", "839", "840", "843", "845", "847", "848", "849", "850", "854",
+            "856", "857", "858", "859", "860", "862", "863", "864", "865", "867",
+            "868", "869", "870", "872", "873", "876", "878", "901", "902", "903",
+            "904", "905", "906", "907", "908", "909", "910", "912", "913", "914",
+            "915", "916", "917", "918", "919", "920", "925", "928", "929", "930",
+            "931", "934", "936", "937", "938", "939", "940", "941", "943", "945",
+            "947", "948", "949", "951", "952", "954", "956", "959", "970", "971",
+            "972", "973", "978", "979", "980", "983", "984", "985", "986", "989");
+
+    /**
+     * The 80 literals app/cpy/CSLKPCDY.cpy:L931 through L1010 declare under
+     * {@code VALID-EASY-RECOG-AREA-CODE}, in copybook declaration order. No member of app/cbl
+     * references that condition name, and the band is the set the wider band holds and
+     * {@code VALID-GENERAL-PURP-CODE} omits.
+     */
+    private static final List<String> DECLARED_EASILY_RECOGNISABLE_CODES = List.of(
+            "200", "211", "222", "233", "244", "255", "266", "277", "288", "299",
+            "300", "311", "322", "333", "344", "355", "366", "377", "388", "399",
+            "400", "411", "422", "433", "444", "455", "466", "477", "488", "499",
+            "500", "511", "522", "533", "544", "555", "566", "577", "588", "599",
+            "600", "611", "622", "633", "644", "655", "666", "677", "688", "699",
+            "700", "711", "722", "733", "744", "755", "766", "777", "788", "799",
+            "800", "811", "822", "833", "844", "855", "866", "877", "888", "899",
+            "900", "911", "922", "933", "944", "955", "966", "977", "988", "999");
+
     @Test
     @DisplayName("Every code the 490 code band holds and the 410 code band omits is refused, so binding the wider band fails here")
     void refusesEveryCodeTheGeneralPurposeBandOmits() {
@@ -248,36 +368,35 @@ class UsPhoneNumberValidatorTest {
     void everyProductionBandEqualsTheBandTheCopybookLists() {
         assertThat(UsPhoneAreaCodes.phoneAreaCodes())
                 .as("VALID-PHONE-AREA-CODE at app/cpy/CSLKPCDY.cpy:L30")
-                .containsExactlyElementsOf(CslkpcdyCopybookOracle.phoneAreaCodes());
+                .containsExactlyElementsOf(DECLARED_PHONE_AREA_CODES);
 
         assertThat(UsPhoneAreaCodes.generalPurposeCodes())
                 .as("VALID-GENERAL-PURP-CODE at app/cpy/CSLKPCDY.cpy:L521")
-                .containsExactlyElementsOf(CslkpcdyCopybookOracle.generalPurposeCodes());
+                .containsExactlyElementsOf(DECLARED_GENERAL_PURPOSE_CODES);
 
         assertThat(UsPhoneAreaCodes.easilyRecognisableAreaCodes())
                 .as("VALID-EASY-RECOG-AREA-CODE at app/cpy/CSLKPCDY.cpy:L931")
-                .containsExactlyElementsOf(CslkpcdyCopybookOracle.easilyRecognisableAreaCodes());
+                .containsExactlyElementsOf(DECLARED_EASILY_RECOGNISABLE_CODES);
     }
 
     @Test
-    @DisplayName("The copybook itself holds 490, 410 and 80 codes, all three characters wide, and "
-            + "the two narrower bands partition the wider one")
-    void theCopybookItselfHoldsTheCountedBands() {
-        assertThat(CslkpcdyCopybookOracle.phoneAreaCodes()).hasSize(PHONE_AREA_BAND_SIZE);
-        assertThat(CslkpcdyCopybookOracle.generalPurposeCodes()).hasSize(GENERAL_PURPOSE_BAND_SIZE);
-        assertThat(CslkpcdyCopybookOracle.easilyRecognisableAreaCodes())
-                .hasSize(EASILY_RECOGNISABLE_BAND_SIZE);
+    @DisplayName("The three declared bands hold 490, 410 and 80 codes, all three characters wide, "
+            + "and the two narrower bands partition the wider one")
+    void theDeclaredBandsHoldTheCountedCodes() {
+        assertThat(DECLARED_PHONE_AREA_CODES).hasSize(PHONE_AREA_BAND_SIZE);
+        assertThat(DECLARED_GENERAL_PURPOSE_CODES).hasSize(GENERAL_PURPOSE_BAND_SIZE);
+        assertThat(DECLARED_EASILY_RECOGNISABLE_CODES).hasSize(EASILY_RECOGNISABLE_BAND_SIZE);
 
-        for (String areaCode : CslkpcdyCopybookOracle.phoneAreaCodes()) {
+        for (String areaCode : DECLARED_PHONE_AREA_CODES) {
             assertThat(areaCode).as("copybook literal %s", areaCode).hasSize(AREA_CODE_WIDTH);
         }
 
-        Set<String> partition = new LinkedHashSet<>(CslkpcdyCopybookOracle.generalPurposeCodes());
-        partition.addAll(CslkpcdyCopybookOracle.easilyRecognisableAreaCodes());
+        Set<String> partition = new LinkedHashSet<>(DECLARED_GENERAL_PURPOSE_CODES);
+        partition.addAll(DECLARED_EASILY_RECOGNISABLE_CODES);
 
         assertThat(partition)
                 .as("VALID-GENERAL-PURP-CODE and VALID-EASY-RECOG-AREA-CODE together")
-                .containsExactlyInAnyOrderElementsOf(CslkpcdyCopybookOracle.phoneAreaCodes());
+                .containsExactlyInAnyOrderElementsOf(DECLARED_PHONE_AREA_CODES);
         assertThat(GENERAL_PURPOSE_BAND_SIZE + EASILY_RECOGNISABLE_BAND_SIZE)
                 .as("the two narrower bands are disjoint")
                 .isEqualTo(PHONE_AREA_BAND_SIZE);
@@ -285,16 +404,16 @@ class UsPhoneNumberValidatorTest {
 
     @Test
     @DisplayName("Every code app/cpy/CSLKPCDY.cpy:L521 lists passes the edit and every code it "
-            + "omits from that band fails, with the copybook supplying both sets")
+            + "omits from that band fails")
     void theCopybookDecidesWhichCodesPassTheEdit() {
-        for (String areaCode : CslkpcdyCopybookOracle.generalPurposeCodes()) {
+        for (String areaCode : DECLARED_GENERAL_PURPOSE_CODES) {
             assertThat(validateAreaCode(areaCode).valid())
                     .as("VALID-GENERAL-PURP-CODE lists %s", areaCode)
                     .isTrue();
         }
 
-        Set<String> omitted = new LinkedHashSet<>(CslkpcdyCopybookOracle.phoneAreaCodes());
-        omitted.removeAll(CslkpcdyCopybookOracle.generalPurposeCodes());
+        Set<String> omitted = new LinkedHashSet<>(DECLARED_PHONE_AREA_CODES);
+        omitted.removeAll(DECLARED_GENERAL_PURPOSE_CODES);
 
         assertThat(omitted).hasSize(EASILY_RECOGNISABLE_BAND_SIZE);
         for (String areaCode : omitted) {
@@ -414,7 +533,7 @@ class UsPhoneNumberValidatorTest {
     }
 
     @Test
-    @DisplayName("A four character area code fails the digit-count check rather than reaching the band check")
+    @DisplayName("A four character area code fails the digit-count check and never reaches the band check")
     void fourCharacterAreaCodeFailsTheDigitCountCheck() {
         // app/cbl/COACTUPC.cbl:L87 declares the field PIC X(3), so a MOVE keeps three characters.
         // The value it moves comes from a screen field of that exact width, so the MOVE drops
@@ -659,7 +778,7 @@ class UsPhoneNumberValidatorTest {
 
         // app/cbl/COACTUPC.cbl:L2238 names spaces on the area code, and a low values area code
         // leaves that clause unsatisfied. app/cbl/COACTUPC.cbl:L2239 names low values on the line
-        // number, and a populated line number leaves it unsatisfied as well. The pass reaches
+        // number. A populated line number leaves that clause unsatisfied as well. The pass reaches
         // app/cbl/COACTUPC.cbl:L2247 and the message at app/cbl/COACTUPC.cbl:L2254.
         assertThat(result.valid()).isFalse();
         assertThat(result.message()).isEqualTo(LABEL + AREA_CODE_BLANK);
@@ -689,7 +808,7 @@ class UsPhoneNumberValidatorTest {
 
     @Test
     @DisplayName("A part filled with LOW-VALUES narrower than its declared width still reads as "
-            + "LOW-VALUES, because a COBOL comparison tests every position it holds")
+            + "LOW-VALUES. A COBOL comparison tests every position it holds")
     void aPartOfLowValuesNarrowerThanItsWidthStillReadsAsLowValues() {
         for (int supplied : new int[] {1, 2}) {
             EditResult result = UsPhoneNumberValidator.validate(LABEL,

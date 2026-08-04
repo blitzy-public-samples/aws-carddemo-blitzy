@@ -1,6 +1,8 @@
 package com.carddemo.cobol;
 
+import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.Set;
@@ -42,10 +44,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Expected message texts are quoted from {@code app/cpy/CSUTLDPY.cpy} character for character,
  * keeping the leading spaces, the missing spaces, the trailing space, and the lower-case
  * {@code day} the source carries.
- *
- * <p>Rationale for every choice these assertions pin sits in
- * {@code card-platform/docs/decision-log.md}. The flagged COBOL rules sit in
- * {@code card-platform/docs/business-rule-flags.md}.
  */
 class CobolDateValidatorTest {
 
@@ -158,7 +156,7 @@ class CobolDateValidatorTest {
     /** A date carrying letters at the month offsets. */
     private static final String EDIT_DATE_WITH_LETTERS_IN_THE_MONTH = "2022AB10";
 
-    /** A date whose month is 13. */
+    /** A date whose month is 13, in the eight-character edit form. */
     private static final String EDIT_DATE_WITH_MONTH_THIRTEEN = "20221310";
 
     /** A date whose day is zero. */
@@ -170,7 +168,7 @@ class CobolDateValidatorTest {
     /** A date naming 31 April, a month holding 30 days. */
     private static final String EDIT_DATE_WITH_DAY_31_IN_A_SHORT_MONTH = "20220431";
 
-    /** A date naming 30 February. */
+    /** A date naming 30 February, in the eight-character edit form. */
     private static final String EDIT_DATE_WITH_DAY_30_IN_FEBRUARY = "20220230";
 
     /** A date naming 29 February in a year not divisible by four. */
@@ -224,6 +222,14 @@ class CobolDateValidatorTest {
 
     /** One day after {@link #REFERENCE_TODAY}, in the eight-character edit form. */
     private static final String EDIT_DATE_ONE_DAY_AFTER_REFERENCE_TODAY = "20220611";
+
+    /**
+     * The fixed reference date this checkpoint names: Sunday, 2 August 2026.
+     *
+     * <p>Every boundary case below is driven from this value rather than from the clock, so no
+     * assertion can flip at midnight.
+     */
+    private static final LocalDate CHECKPOINT_REFERENCE_DATE = LocalDate.of(2026, 8, 2);
 
     // Message texts, quoted from app/cpy/CSUTLDPY.cpy.
 
@@ -1253,34 +1259,82 @@ class CobolDateValidatorTest {
     }
 
     /**
-     * Asserts that the two-argument overload agrees with the three-argument form when the three
-     * argument form is handed the same reference date the overload uses. The reference date is read
-     * once and passed in, so the two calls compare like for like.
-     * {@code app/cpy/CSUTLDPY.cpy:L343} reads the same date through
-     * {@code FUNCTION CURRENT-DATE}.
+     * Asserts that the two-argument overload agrees with the three-argument form for two inputs
+     * whose verdict does not depend on the reference date.
+     *
+     * <p>{@code app/cpy/CSUTLDPY.cpy:L343} reads the date the overload reads, through
+     * {@code FUNCTION CURRENT-DATE}. Comparing one reading of the clock against another can flip at
+     * midnight, so the three-argument form is handed {@link #CHECKPOINT_REFERENCE_DATE} and each
+     * input is chosen so that no calendar date changes its verdict. A date of birth in 1961 is in
+     * the past under any reference date after 1961, and a month of thirteen fails the field edits
+     * before the reference date is read at all.</p>
      */
     @Test
-    void theTwoArgumentDateOfBirthOverloadAgreesWithTheThreeArgumentFormOnToday() {
-        LocalDate today = LocalDate.now();
-
+    void theTwoArgumentDateOfBirthOverloadAgreesWithTheThreeArgumentFormOnAClockIndependentInput() {
         CobolDateValidator.FieldEditResult overload =
                 CobolDateValidator.editDateOfBirth(DATE_OF_BIRTH, EDIT_VARIABLE_NAME);
-        CobolDateValidator.FieldEditResult explicit =
-                CobolDateValidator.editDateOfBirth(DATE_OF_BIRTH, EDIT_VARIABLE_NAME, today);
+        CobolDateValidator.FieldEditResult explicit = CobolDateValidator
+                .editDateOfBirth(DATE_OF_BIRTH, EDIT_VARIABLE_NAME, CHECKPOINT_REFERENCE_DATE);
 
-        assertEquals(explicit.inputError(), overload.inputError());
-        assertEquals(explicit.firstReturnMessage(), overload.firstReturnMessage());
-        assertEquals(explicit.accepted(), overload.accepted());
+        assertEquals(explicit.inputError(), overload.inputError(),
+                "the two overloads disagreed on the input-error flag for a date of birth in 1961");
+        assertEquals(explicit.firstReturnMessage(), overload.firstReturnMessage(),
+                "the two overloads disagreed on the message for a date of birth in 1961");
+        assertEquals(explicit.accepted(), overload.accepted(),
+                "the two overloads disagreed on the verdict for a date of birth in 1961");
         assertTrue(overload.accepted(),
                 "a date of birth in 1961 stopped passing the reasonableness check");
 
         CobolDateValidator.FieldEditResult rejectedOverload =
                 CobolDateValidator.editDateOfBirth(EDIT_DATE_WITH_MONTH_THIRTEEN,
                         EDIT_VARIABLE_NAME);
+        CobolDateValidator.FieldEditResult rejectedExplicit = CobolDateValidator.editDateOfBirth(
+                EDIT_DATE_WITH_MONTH_THIRTEEN, EDIT_VARIABLE_NAME, CHECKPOINT_REFERENCE_DATE);
 
-        assertEquals(MONTH_OUT_OF_RANGE, rejectedOverload.firstReturnMessage());
+        assertEquals(MONTH_OUT_OF_RANGE, rejectedOverload.firstReturnMessage(),
+                "the two-argument overload stopped reporting a month of thirteen");
         assertFalse(rejectedOverload.accepted(),
                 "the two-argument overload accepted a month of thirteen");
+        assertEquals(rejectedExplicit.firstReturnMessage(),
+                rejectedOverload.firstReturnMessage(),
+                "the two overloads disagreed on the message for a month of thirteen");
+        assertEquals(rejectedExplicit.accepted(), rejectedOverload.accepted(),
+                "the two overloads disagreed on the verdict for a month of thirteen");
+    }
+
+    /**
+     * Asserts the reasonableness check at {@code app/cpy/CSUTLDPY.cpy:L350} against the fixed
+     * reference date {@link #CHECKPOINT_REFERENCE_DATE}, which is a Sunday.
+     *
+     * <p>The comparison at {@code app/cpy/CSUTLDPY.cpy:L350} is strictly greater, so the reference
+     * date itself fails and the day before it passes. A weekend reference date changes nothing: the
+     * paragraph reads a day count and never a day of the week.</p>
+     */
+    @Test
+    void theReasonablenessCheckHoldsItsOneDayBoundaryOnTheCheckpointReferenceDate() {
+        assertEquals(DayOfWeek.SUNDAY, CHECKPOINT_REFERENCE_DATE.getDayOfWeek(),
+                "the checkpoint reference date stopped being a Sunday");
+
+        CobolDateValidator.FieldEditResult yesterday = CobolDateValidator.editDateOfBirth(
+                basicIsoDate(CHECKPOINT_REFERENCE_DATE.minusDays(1)), EDIT_VARIABLE_NAME,
+                CHECKPOINT_REFERENCE_DATE);
+        CobolDateValidator.FieldEditResult sameDay = CobolDateValidator.editDateOfBirth(
+                basicIsoDate(CHECKPOINT_REFERENCE_DATE), EDIT_VARIABLE_NAME,
+                CHECKPOINT_REFERENCE_DATE);
+        CobolDateValidator.FieldEditResult tomorrow = CobolDateValidator.editDateOfBirth(
+                basicIsoDate(CHECKPOINT_REFERENCE_DATE.plusDays(1)), EDIT_VARIABLE_NAME,
+                CHECKPOINT_REFERENCE_DATE);
+
+        assertTrue(yesterday.accepted(),
+                "the day before the reference date stopped passing, and "
+                        + "app/cpy/CSUTLDPY.cpy:L350 compares strictly greater");
+        assertFalse(sameDay.accepted(),
+                "the reference date itself passed, and app/cpy/CSUTLDPY.cpy:L350 admits only an "
+                        + "earlier day count");
+        assertFalse(tomorrow.accepted(),
+                "the day after the reference date passed");
+        assertEquals(sameDay.firstReturnMessage(), tomorrow.firstReturnMessage(),
+                "the reference date and the day after it stopped carrying one message");
     }
 
     /**
@@ -1292,5 +1346,15 @@ class CobolDateValidatorTest {
     void theThreeArgumentDateOfBirthOverloadRejectsANullReferenceDate() {
         assertEquals("today", assertThrows(NullPointerException.class, () -> CobolDateValidator
                 .editDateOfBirth(DATE_OF_BIRTH, EDIT_VARIABLE_NAME, null)).getMessage());
+    }
+    /**
+     * One date in the eight characters {@code WS-EDIT-DATE-CCYYMMDD} holds at
+     * {@code app/cpy/CSUTLDWY.cpy:L4}.
+     *
+     * @param date the date to render
+     * @return exactly eight characters of century, year, month and day
+     */
+    private static String basicIsoDate(LocalDate date) {
+        return date.format(DateTimeFormatter.BASIC_ISO_DATE);
     }
 }

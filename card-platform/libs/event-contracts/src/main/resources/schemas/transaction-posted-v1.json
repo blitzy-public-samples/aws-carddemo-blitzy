@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://carddemo.example.com/schemas/transaction-posted-v1.json",
   "title": "TransactionPosted",
-  "description": "The ledger publishes one TransactionPosted event after it applies one posting. Five payload fields carry the new account balance, the posting timestamp, and the transaction that moved the balance, with widths from app/cpy/CVACT01Y.cpy and app/cpy/CVTRA05Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. Evolution is additive only: additionalProperties stays true, so a consumer validating against this version accepts an event that carries a field added by a later version. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
-  "$comment": "aggregateId is the only account identifier this document declares, and the Kafka message key is that value, so the key and the payload cannot disagree.",
+  "description": "The ledger publishes one TransactionPosted event after it applies one posting. Six payload fields carry the new account balance, the posting timestamp, and the transaction that moved the balance, with widths from app/cpy/CVACT01Y.cpy and app/cpy/CVTRA05Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. Evolution and version policy: card-platform/docs/event-flow.md (planned).",
+  "$comment": "aggregateId and accountId carry one account identifier, and the Kafka message key is that value, so the key and the payload cannot disagree.",
   "type": "object",
   "properties": {
     "eventId": {
@@ -12,7 +12,7 @@
       "minLength": 36,
       "maxLength": 36,
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. Each consumer records this identifier before it applies side effects. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
+      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. A consumer checks this identifier against its own processed_event table before it acts. It then writes its side effects and the marker row in one local transaction, and acknowledges the message only after that transaction commits. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
       "examples": ["3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"]
     },
     "eventType": {
@@ -39,7 +39,7 @@
     "aggregateId": {
       "type": "string",
       "pattern": "^[0-9]{11}$",
-      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. This is the only account identifier the document carries, so the message key and the payload cannot disagree. A consumer maps this field onto its own account column.",
+      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The Kafka message key, this field and the payload field accountId all carry one value, so account identity has a single source. A publisher compares the key against both fields and rejects the message on any difference.",
       "examples": ["00000000007"]
     },
     "transactionId": {
@@ -48,6 +48,12 @@
       "maxLength": 16,
       "description": "The transaction identifier, sixteen characters. From TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5.",
       "examples": ["0000000000683580"]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits, and the same value aggregateId carries. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. A text field keeps a leading zero, and a consumer maps this field onto its own account column.",
+      "examples": ["00000000007"]
     },
     "newBalance": {
       "type": "string",
@@ -61,7 +67,7 @@
       "minLength": 26,
       "maxLength": 26,
       "pattern": "^\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000$",
-      "description": "The posting timestamp, twenty-six characters shaped YYYY-MM-DD-HH.MM.SS.NN0000 with a dash between the date and the hour. From TRAN-PROC-TS PIC X(26) at app/cpy/CVTRA05Y.cpy:L17. All 300 records in app/data/ASCII/dailytran.txt carry the field blank. The last four characters are always zeros.",
+      "description": "The posting timestamp, twenty-six characters shaped YYYY-MM-DD-HH.MM.SS.NN0000 with a dash between the date and the hour. From TRAN-PROC-TS PIC X(26) at app/cpy/CVTRA05Y.cpy:L17. The feed fixture leaves this field blank: all 300 records of app/data/ASCII/dailytran.txt carry 26 spaces at DALYTRAN-PROC-TS. app/cbl/CBTRN02C.cbl populates the field on the posted record and hard-codes the final four digits to zero.",
       "$comment": "Precision is hundredths of a second, from DB2-MIL PIC 9(002) at app/cbl/CBTRN02C.cbl:L173 and the '0000' move at app/cbl/CBTRN02C.cbl:L701, so a consumer truncates to hundredths before any byte-for-byte comparison.",
       "examples": ["2022-07-19-23.16.01.470000"]
     },
@@ -78,6 +84,19 @@
       "pattern": "^\\*{12}[0-9]{4}$",
       "description": "The card number with twelve asterisks in place of the leading digits and the last four digits left visible. Position and width from TRAN-CARD-NUM PIC X(16) at app/cpy/CVTRA05Y.cpy:L15. The masking is additive: no source program masks a Primary Account Number (PAN), and app/bms/COCRDSL.bms:L96-L99 defines the card detail field at the full sixteen characters. Masking happens where the event is serialized.",
       "examples": ["************7065"]
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction: at most 16 members, each name a short identifier, each value a string of at most 256 characters, and no nested object or array. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "examples": [{"replayOf": "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"}]
     }
   },
   "required": [
@@ -87,10 +106,12 @@
     "occurredAt",
     "aggregateId",
     "transactionId",
+    "accountId",
     "newBalance",
     "postedAt",
     "amount",
     "maskedCardNumber"
   ],
-  "additionalProperties": true
+  "maxProperties": 12,
+  "additionalProperties": false
 }

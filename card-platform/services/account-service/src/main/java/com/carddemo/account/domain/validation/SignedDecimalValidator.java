@@ -48,7 +48,6 @@ public final class SignedDecimalValidator {
     /** The character the {@code EQUAL LOW-VALUES} arm on line 2184 tests for. */
     private static final char NULL_CHARACTER = '\0';
 
-    /** This class holds static members only. */
     private SignedDecimalValidator() {
     }
 
@@ -115,9 +114,6 @@ public final class SignedDecimalValidator {
         return true;
     }
 
-    /**
-     * Answers the {@code EQUAL SPACES} arm on line 2185.
-     */
     private static boolean isAllSpaces(String text) {
         for (int index = 0; index < text.length(); index++) {
             if (text.charAt(index) != SPACE) {

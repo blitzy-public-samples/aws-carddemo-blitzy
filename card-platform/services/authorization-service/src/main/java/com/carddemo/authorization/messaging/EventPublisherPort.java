@@ -29,12 +29,28 @@ public interface EventPublisherPort {
      * rejects any other value. An implementation reports a failed publish with an unchecked
      * exception.
      *
+     * <p>Every implementation binds the payload to {@code topic} before it sends. It reads
+     * {@code eventType} from the payload envelope, looks that type up in
+     * {@code com.carddemo.events.serde.EventContracts}, and rejects the call when the type does not
+     * belong on {@code topic}. The event type therefore has one source, the payload, and neither an
+     * approval nor a decline can reach the topic the other travels on.
+     *
+     * <p>Every implementation also validates the payload against the versioned schema document that
+     * event type names, and rejects a payload that fails it.
+     *
+     * <p>A rejection message holds a JSON pointer, a broken keyword, an event type, a topic name or
+     * a length, and never a value read from the payload. A caller that logs a rejection therefore
+     * records no Primary Account Number (PAN) and no account identifier.
+     *
      * @param topic       the destination topic name, which the caller reads from configuration
      * @param aggregateId the account identifier the event belongs to, and the value the payload
      *                    carries in its own {@code aggregateId} field. Eleven digits, and a
      *                    {@code String} keeps the leading zeros
      * @param payload     one event, serialized as JavaScript Object Notation (JSON) before the
      *                    call
+     * @throws IllegalArgumentException when an argument is absent, when {@code aggregateId} misses
+     *         {@link #AGGREGATE_ID_PATTERN}, when the payload declares an event type that does not
+     *         belong on {@code topic}, or when the payload fails the document that type names
      */
     void publish(String topic, String aggregateId, String payload);
 }

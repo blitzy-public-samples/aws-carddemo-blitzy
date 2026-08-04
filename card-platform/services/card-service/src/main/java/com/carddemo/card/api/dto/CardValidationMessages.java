@@ -254,20 +254,18 @@ public final class CardValidationMessages {
      *
      * <p>No source literal exists. The card update program moves
      * {@code CCUP-NEW-EXPDAY PIC X(2)} at {@code app/cbl/COCRDUPC.cbl:L312} into the reassembled
-     * date at {@code app/cbl/COCRDUPC.cbl:L1471} and edits it nowhere: paragraph
+     * date at {@code app/cbl/COCRDUPC.cbl:L1471} and edits it nowhere. Paragraph
      * {@code 1260-EDIT-EXPIRY-YEAR-EXIT.} closes the edit chain at L945 and
      * {@code 2000-DECIDE-ACTION.} opens at L948, so no paragraph between them reaches the day. A
      * 3270 field two characters wide cannot deliver a third character, and a Representational State
-     * Transfer request can, so this text answers a value the source screen could not have
-     * produced.</p>
+     * Transfer request can, so this text answers a value the source screen could not have produced.
      *
      * <p>This constant adds no calendar rule. It states the two-character width of the source field
-     * carries the entry for the addition.</p>
+     * and nothing more, which is why the name carries the additive prefix.
      */
     public static final String ADDITIVE_CARD_EXPIRY_DAY_WIDTH =
             "Card expiry day must be two digits";
 
-    /** Holds constants only, so no instance is created. */
     private CardValidationMessages() {
     }
 }

@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
  * comes first, on line 1503. Line 1511 marks the record changed, and lines 1512 to 1517 refresh all
  * six values, the verification value on line 1512.</p>
  *
- * <p> {@code RefreshedCard} carries five of those six values. The tests below hold the count at
+ * <p> {@code RefreshedCard} carries five of those six values. The count stands at
  * five, hold the five names, and hold the absence of the verification value under any name.</p>
  *
  * <p>Lines 1499 to 1501 fold the freshly read embossed name to upper case before that comparison,
@@ -95,10 +95,6 @@ class CardUpdateResponseTest {
     // Shape of the response. Three components carry the outcome, one message and the
     // snapshot.
 
-    /**
-     * Asserts that {@link CardUpdateResponse} is a record of three components, named and
-     * ordered as the production record declares them.
-     */
     @Test
     void responseDeclaresThreeComponentsNamedOutcomeMessageAndRefreshedCard() {
         assertTrue(CardUpdateResponse.class.isRecord(),
@@ -113,10 +109,6 @@ class CardUpdateResponseTest {
                         + "order");
     }
 
-    /**
-     * Asserts that the outcome component holds the nested enumeration
-     * {@link CardUpdateResponse.UpdateOutcome}, declared inside the response record.
-     */
     @Test
     void outcomeComponentHoldsTheNestedUpdateOutcomeEnum() {
         RecordComponent outcome = component(CardUpdateResponse.class, "outcome");
@@ -129,11 +121,6 @@ class CardUpdateResponseTest {
                 "CardUpdateResponse declares UpdateOutcome as a nested type");
     }
 
-    /**
-     * Asserts the seven outcome values and their order, and asserts that the set is
-     * closed. A name outside the seven reaches no value, so no caller can represent an
-     * unknown outcome.
-     */
     @Test
     void updateOutcomeDeclaresSevenValuesAndAdmitsNoOther() {
         assertEquals(List.of("UPDATED", "NO_CHANGE_DETECTED", "VALIDATION_REJECTED",
@@ -182,11 +169,6 @@ class CardUpdateResponseTest {
                         + "app/cbl/COCRDUPC.cbl:L173");
     }
 
-    /**
-     * Asserts that the snapshot component holds the nested record
-     * {@link CardUpdateResponse.RefreshedCard}, and holds no map, no collection and no
-     * text.
-     */
     @Test
     void refreshedCardComponentHoldsTheNestedSnapshotRecord() {
         RecordComponent refreshedCard = component(CardUpdateResponse.class, "refreshedCard");
@@ -243,7 +225,7 @@ class CardUpdateResponseTest {
         }
     }
 
-    // Absences. Three properties the source would have supplied and the target omits.
+    // Absences. Three properties the source supplies and the target omits.
 
     /**
      * Asserts that no property of the response or of the snapshot names the card
@@ -267,10 +249,11 @@ class CardUpdateResponseTest {
     }
 
     /**
-     * Asserts that a snapshot of one stored card carries no card verification value. The five
-     * values are synthetic and sit at the {@code app/cpy/CVACT02Y.cpy} offsets that place the
-     * embossed name at 31 through 80, the expiry date at 81 through 90 and the active status
-     * at 91.
+     * Asserts that a snapshot of one stored card carries no card verification value.
+     *
+     * <p>The five values are synthetic. They sit at the {@code app/cpy/CVACT02Y.cpy} offsets that
+     * place the embossed name at 31 through 80, the expiry date at 81 through 90 and the active
+     * status at 91.</p>
      *
      * <p>The scan covers that one snapshot, and no test here reads a fixture record.</p>
      */
@@ -312,12 +295,6 @@ class CardUpdateResponseTest {
         }
     }
 
-    /**
-     * Asserts that no annotation named {@code Version} sits on either record, on their
-     * components, on their fields or on their accessors. A second assertion holds that the
-     * record components carry no annotation at all. Both records are payload types and
-     * reach no persistence provider.
-     */
     @Test
     void noComponentCarriesAVersionAnnotation() {
         for (Annotation annotation : annotations()) {
@@ -656,15 +633,6 @@ class CardUpdateResponseTest {
         }
     }
 
-    /**
-     * Asserts, across all seven outcomes, the exact text each carries and whether it
-     * carries a snapshot. Each expected text is typed here and each is compared for exact
-     * equality, so this test holds the whole outcome matrix in one place.
-     *
-     * <p>The two helpers this test calls switch over
-     * {@link CardUpdateResponse.UpdateOutcome} without a default arm, so an eighth
-     * outcome fails compilation rather than escaping coverage.</p>
-     */
     @Test
     void everyOutcomeHoldsItsOwnTextAndSnapshotState() {
         CardUpdateResponse.UpdateOutcome[] outcomes =
@@ -698,8 +666,8 @@ class CardUpdateResponseTest {
 
     /**
      * Asserts that a text of only white space is refused where the outcome carries the text of the
-     * failing edit, and that the empty state {@code WS-RETURN-MSG-OFF VALUE SPACES} at
-     * {@code app/cbl/COCRDUPC.cbl:L174} names belongs to the one outcome that carries no message.
+     * failing edit. The empty state {@code WS-RETURN-MSG-OFF VALUE SPACES} at
+     * {@code app/cbl/COCRDUPC.cbl:L174} belongs to the one outcome that carries no message.
      *
      * <p>A screen field can hold spaces and say nothing. A response cannot: a caller that reads
      * {@code VALIDATION_REJECTED} with a blank message learns that the update failed and never
@@ -751,7 +719,6 @@ class CardUpdateResponseTest {
     // Outcome matrix helpers. Both switch over UpdateOutcome with no default arm, so an
     // eighth outcome fails compilation.
 
-    /** Returns the response the factory for one outcome builds. */
     private static CardUpdateResponse responseFor(
             CardUpdateResponse.UpdateOutcome outcome) {
         return switch (outcome) {
@@ -784,7 +751,6 @@ class CardUpdateResponseTest {
         };
     }
 
-    /** Returns a snapshot holding one value in each of the five components. */
     private static CardUpdateResponse.RefreshedCard sampleSnapshot() {
         return new CardUpdateResponse.RefreshedCard(
                 SNAPSHOT_EMBOSSED_NAME, SNAPSHOT_EXPIRY_YEAR, SNAPSHOT_EXPIRY_MONTH,
@@ -794,12 +760,10 @@ class CardUpdateResponseTest {
 
     // Reflection helpers.
 
-    /** Returns the two payload records this class covers. */
     private static List<Class<?>> payloadRecords() {
         return List.of(CardUpdateResponse.class, CardUpdateResponse.RefreshedCard.class);
     }
 
-    /** Returns the component names of a record type in declared order. */
     private static List<String> componentNames(Class<?> record) {
         List<String> names = new ArrayList<>();
         for (RecordComponent component : record.getRecordComponents()) {
@@ -823,7 +787,6 @@ class CardUpdateResponseTest {
                 record.getSimpleName() + " declares no component named " + name);
     }
 
-    /** Returns the names of the outcome values in declared order. */
     private static List<String> outcomeNames() {
         List<String> names = new ArrayList<>();
         for (CardUpdateResponse.UpdateOutcome outcome
@@ -833,10 +796,6 @@ class CardUpdateResponseTest {
         return names;
     }
 
-    /**
-     * Returns the folded names of every component, field and method the two payload
-     * records declare.
-     */
     private static List<String> propertyNames() {
         List<String> names = new ArrayList<>();
         for (Class<?> record : payloadRecords()) {
@@ -853,10 +812,6 @@ class CardUpdateResponseTest {
         return names;
     }
 
-    /**
-     * Returns every annotation the two payload records carry on themselves, on their
-     * components, on their fields and on their methods.
-     */
     private static List<Annotation> annotations() {
         List<Annotation> found = new ArrayList<>();
         for (Class<?> record : payloadRecords()) {
@@ -874,10 +829,6 @@ class CardUpdateResponseTest {
         return found;
     }
 
-    /**
-     * Lowers a name and drops every character outside the letters and digits, so
-     * {@code securityCode} and {@code security_code} fold alike.
-     */
     private static String fold(String name) {
         StringBuilder folded = new StringBuilder(name.length());
         for (int index = 0; index < name.length(); index++) {
@@ -889,10 +840,6 @@ class CardUpdateResponseTest {
         return folded.toString();
     }
 
-    /**
-     * Reads one component through its accessor. Every accessor is public on a public
-     * record in this package, and the read never fails.
-     */
     private static Object read(RecordComponent component, Object target) {
         try {
             return component.getAccessor().invoke(target);

@@ -3,10 +3,10 @@ package com.carddemo.card.api.dto;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.cobol.PanMasker;
+import java.lang.annotation.Annotation;
 import java.lang.reflect.RecordComponent;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -28,9 +28,9 @@ import org.junit.jupiter.api.Test;
  * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7} and
  * {@code FILLER PIC X(59)} at {@code app/cpy/CVACT02Y.cpy:L11}.
  *
- * between the card record and the detail response. The entries name the rename of
- * {@code CARD-EXPIRAION-DATE} at {@code app/cpy/CVACT02Y.cpy:L9} to {@code expirationDate}, the
- * omitted card verification value at L7, and the omitted 59-byte filler at L11.
+ * <p>Three differences separate the card record from the detail response. The response renames
+ * {@code CARD-EXPIRAION-DATE} at {@code app/cpy/CVACT02Y.cpy:L9} to {@code expirationDate}, omits
+ * the card verification value at L7, and omits the 59-byte filler at L11.
  *
  * <p>The card detail screen shows all sixteen card-number characters on an unprotected field:
  * {@code CARDSID DFHMDF} carries {@code ATTRB=(FSET,NORM,UNPROT)} and {@code LENGTH=16} at
@@ -71,11 +71,11 @@ final class CardDetailResponseTest {
     /**
      * The component types, aligned position for position with {@link #EXPECTED_COMPONENT_NAMES}.
      *
-     * <p>The card number component carries {@link MaskedCardNumber} rather than a free string. That
-     * type accepts the masked form alone, so a response cannot hold a full Primary Account Number.
+     * <p>The card number component is a plain string carrying the masked form. The controller masks
+     * with {@link PanMasker#maskCardNumber(String)} at the serialization boundary.
      */
     private static final List<Class<?>> EXPECTED_COMPONENT_TYPES = List.of(
-            MaskedCardNumber.class,
+            String.class,
             String.class,
             String.class,
             LocalDate.class,
@@ -98,10 +98,11 @@ final class CardDetailResponseTest {
     private static final String SOURCE_EXPIRY_MISSPELLING = "expiraion";
 
     /**
-     * Lower-case name fragments that would expose the card verification value.
+     * Lower-case name fragments no component name may carry, each one a spelling of the card
+     * verification value.
      *
-     * <p>The fragments cover the field name in the source, the two common alternates, and the plain
-     * English descriptions a later contributor might reach for.
+     * <p>The fragments cover the field name in the source, the two common alternates, and two plain
+     * English descriptions.
      */
     private static final List<String> CARD_VERIFICATION_VALUE_FRAGMENTS = List.of(
             "cvv",
@@ -156,7 +157,6 @@ final class CardDetailResponseTest {
     /** Active status of record one, offset 91, width 1. */
     private static final String SYNTHETIC_ACTIVE_STATUS = "Y";
 
-    /** JUnit builds one instance of this class per test method through this constructor. */
     CardDetailResponseTest() {
     }
 
@@ -334,18 +334,10 @@ final class CardDetailResponseTest {
                                 + hidden.length() + " characters of its argument."));
     }
 
-    /**
-     * Asserts that a detail response hides the card verification value it was handed and the first
-     * twelve characters of its card number.
-     *
-     * <p>The scan covers one synthetic record. A three-character value is short enough to appear
-     * inside an unrelated card number by coincidence, so a scan across many records would report a
-     * match that carries no meaning.
-     */
     @Test
     void aResponseHidesTheCardVerificationValueAndTheLeadingCardNumberCharacters() {
         CardDetailResponse response = new CardDetailResponse(
-                MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+                PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER),
                 SYNTHETIC_ACCOUNT_ID,
                 SYNTHETIC_EMBOSSED_NAME,
                 SYNTHETIC_EXPIRATION_DATE,
@@ -354,7 +346,7 @@ final class CardDetailResponseTest {
 
         assertAll("record one of app/data/ASCII/carddata.txt",
                 () -> assertEquals(SYNTHETIC_MASKED_CARD_NUMBER,
-                        response.maskedCardNumber().value(),
+                        response.maskedCardNumber(),
                         "The response for record one must carry the published masked card number."),
                 () -> assertFalse(rendered.contains(SYNTHETIC_VERIFICATION_VALUE),
                         "The rendered response holds the card verification value of record one,"
@@ -382,33 +374,37 @@ final class CardDetailResponseTest {
     }
 
     /**
-     * Asserts that a full card number cannot enter the detail response.
+     * Asserts that the masker supplies the form this response publishes, and that the response
+     * itself declares no Bean Validation constraint.
      *
-     * <p>{@link MaskedCardNumber} accepts twelve mask characters followed by four digits and
-     * nothing else. A mapping that forgot to call
-     * {@link PanMasker#maskCardNumber(String)} therefore fails at construction rather than
-     * serializing a Primary Account Number to a client. The rejection text names the pattern and
-     * the length received, never the value.
+     * <p>The response is an outbound projection, so {@link PanMasker#maskCardNumber(String)} is the
+     * one place a full Primary Account Number turns into the published form. A constraint
+     * annotation on any component would move that work into request binding, where an outbound
+     * record is never bound.
      */
     @Test
-    void aFullCardNumberCannotEnterTheDetailResponse() {
-        IllegalArgumentException rejectedCardNumber = assertThrows(IllegalArgumentException.class,
-                () -> MaskedCardNumber.of(SYNTHETIC_CARD_NUMBER),
-                "the detail response accepted a card number that had not been masked");
-        IllegalArgumentException rejectedNull = assertThrows(IllegalArgumentException.class,
-                () -> MaskedCardNumber.of(null),
-                "the detail response accepted a null card number");
+    void theMaskerSuppliesThePublishedFormAndTheResponseDeclaresNoConstraint() {
+        String masked = PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER);
 
-        assertAll("rejection of an unmasked card number",
-                () -> assertFalse(rejectedCardNumber.getMessage().contains(SYNTHETIC_CARD_NUMBER),
-                        "The rejection text holds the card number it refused. The text names the"
-                                + " pattern and the length received alone."),
-                () -> assertTrue(
-                        rejectedCardNumber.getMessage().contains(MaskedCardNumber.MASKED_PATTERN),
-                        "The rejection text must name the pattern "
-                                + MaskedCardNumber.MASKED_PATTERN + "."),
-                () -> assertTrue(rejectedNull.getMessage().contains("null"),
-                        "The rejection text for a null card number must say so."));
+        List<String> constraintAnnotations = new ArrayList<>();
+        for (RecordComponent component : components()) {
+            for (Annotation annotation : component.getAnnotations()) {
+                if (annotation.annotationType().getName().startsWith("jakarta.validation")) {
+                    constraintAnnotations.add(component.getName() + " carries "
+                            + annotation.annotationType().getSimpleName());
+                }
+            }
+        }
+
+        assertAll("the masker is the single masking point",
+                () -> assertTrue(MASKED_CARD_NUMBER_PATTERN.matcher(masked).matches(),
+                        "The masker must return twelve mask characters then four digits."),
+                () -> assertEquals(SYNTHETIC_MASKED_CARD_NUMBER, masked,
+                        "The masker must keep the last " + VISIBLE_CARD_NUMBER_WIDTH
+                                + " characters of the card number and hide the rest."),
+                () -> assertEquals(List.of(), constraintAnnotations,
+                        "The detail response is an outbound projection and declares no Bean"
+                                + " Validation constraint."));
     }
 
     /**

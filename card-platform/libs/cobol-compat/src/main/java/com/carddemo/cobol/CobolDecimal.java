@@ -355,12 +355,10 @@ public final class CobolDecimal {
         return rendered.toString();
     }
 
-    /** Counts the digits a value carries in front of the decimal point. */
     private static int integerDigitCount(BigDecimal value) {
         return value.precision() - value.scale();
     }
 
-    /** Appends one timestamp component, padded on the left with zeros to a fixed width. */
     private static void appendZeroPadded(StringBuilder target, int value, int width) {
         String digits = Integer.toString(value);
         for (int written = digits.length(); written < width; written++) {
@@ -369,7 +367,6 @@ public final class CobolDecimal {
         target.append(digits);
     }
 
-    /** Rejects a negative scale. */
     private static void requireNonNegativeScale(int scale) {
         if (scale < 0) {
             throw new IllegalArgumentException("scale must not be negative: scale=" + scale);

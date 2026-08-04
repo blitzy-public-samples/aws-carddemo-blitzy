@@ -11,24 +11,31 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Supplies the one bean the account service records its measurements through.
  *
- * <p>{@link AccountMeters} holds six meters in three groups: processing latency, throughput, and
- * failure count. The account service publishes on a state change and consumes no event, so it
- * registers no consumed-event meter.
+ * <p>{@link AccountMeters} holds seven meters in four groups: events consumed, processing latency,
+ * throughput, and failure count. Every name opens with {@code carddemo.account.}, which is the
+ * namespace the fraud detection and notification services use.
+ *
+ * <p>The events-consumed counter stays at zero. The account service publishes on a state change and
+ * consumes no event, and the counter is registered so every service exposes the same four metric
+ * families. {@link AccountMeters} offers no method that increments it.
  *
  * <p>Every meter surfaces under {@code /actuator}, where the service exposes
- * {@code health,info,metrics,prometheus} and answers its container probe at
+ * {@code health,metrics,prometheus} and answers its container probe at
  * {@code http://localhost:8080/actuator/health}. No meter carries a tag. No meter name holds a
  * Social Security Number or a government-issued identifier, the two customer fields declared at
  * {@code app/cpy/CVCUS01Y.cpy:L17-L18}.
  *
- * <p>Each log line leaves as JavaScript Object Notation through
- * {@code net.logstash.logback:logstash-logback-encoder}.
+ * <p>Each log line leaves as JavaScript Object Notation. The
+ * {@code logging.structured.format.console} property of {@code application.yml} carries the whole of
+ * that setup, and this module ships no Logback configuration file.
+ *
+ * <p>Decisions behind the meter set: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Configuration
 public class ObservabilityConfig {
 
     /**
-     * Registers the six account meters and publishes them as one injectable bean.
+     * Registers the seven account meters and publishes them as one injectable bean.
      *
      * @param registry the meter registry Spring Boot supplies
      * @return the facade every measured path in this service records through
@@ -43,11 +50,28 @@ public class ObservabilityConfig {
      * caller injects {@code AccountMeters} and calls the method that matches the work it just did.
      *
      * <p>ADDITIVE. No COBOL program declares a meter. The two counters below track the two totals
-     * the batch posting program printed, and the four remaining meters have no source ancestor.
+     * the batch posting program printed, and the five remaining meters have no source ancestor.
      *
      * <p>Adding a measurement means adding one meter field and one record method here.
+     *
+     * <p>The path that calls each method: {@code domain/AccountUpdateService.java} calls
+     * {@link AccountMeters#recordUpdateLatency(Duration)},
+     * {@link AccountMeters#recordUpdateApplied()} and
+     * {@link AccountMeters#recordValidationFailure()}; {@code domain/BillingCycleService.java} calls
+     * {@link AccountMeters#recordCycleClosed()}; and {@code outbox/OutboxRelay.java} calls
+     * {@link AccountMeters#recordOutboxPublished(long)} and
+     * {@link AccountMeters#recordPublishFailure()}. The events-consumed counter has no caller and
+     * takes none. Every meter registers at start-up, so each one is scrapable before its caller
+     * records against it.</p>
      */
     public static final class AccountMeters {
+
+        /**
+         * Events this service consumed. The count stays at zero: the account service publishes on a
+         * state change and reads no topic. The meter is registered so the events-consumed family
+         * appears on every service, and this class declares no method that increments it.
+         */
+        private final Counter eventsConsumed;
 
         /**
          * Wall time of one account update, from request entry to commit. ADDITIVE: the batch
@@ -86,31 +110,44 @@ public class ObservabilityConfig {
         private final Counter publishFailed;
 
         /**
-         * Registers all six meters against {@code registry}. Each meter appears under
+         * Registers all seven meters against {@code registry}. Each meter appears under
          * {@code /actuator/metrics} from startup, before any path records against it.
          *
          * @param registry the meter registry every meter registers against
          */
         AccountMeters(MeterRegistry registry) {
             Objects.requireNonNull(registry, "registry");
-            this.updateLatency = Timer.builder("account.update.latency")
+            this.eventsConsumed = Counter.builder("carddemo.account.events.consumed")
+                    .description("Events this service consumed, which stays at zero")
+                    .register(registry);
+            this.updateLatency = Timer.builder("carddemo.account.update.latency")
                     .description("Wall time of one account update, from request entry to commit")
                     .register(registry);
-            this.updateApplied = Counter.builder("account.update.applied")
+            this.updateApplied = Counter.builder("carddemo.account.update.applied")
                     .description("Account updates that committed")
                     .register(registry);
-            this.validationFailed = Counter.builder("account.validation.failed")
+            this.validationFailed = Counter.builder("carddemo.account.validation.failed")
                     .description("Submitted account or customer fields rejected by validation")
                     .register(registry);
-            this.cycleClosed = Counter.builder("account.cycle.closed")
+            this.cycleClosed = Counter.builder("carddemo.account.cycle.closed")
                     .description("Billing cycle closes that committed")
                     .register(registry);
-            this.outboxPublished = Counter.builder("account.outbox.published")
+            this.outboxPublished = Counter.builder("carddemo.account.outbox.published")
                     .description("Outbox rows published to the broker")
                     .register(registry);
-            this.publishFailed = Counter.builder("account.publish.failed")
+            this.publishFailed = Counter.builder("carddemo.account.publish.failed")
                     .description("Outbox publish attempts that failed")
                     .register(registry);
+        }
+
+        /**
+         * Reads the events-consumed count, which stays at zero for this service. No method here
+         * increments it.
+         *
+         * @return the number of events this service consumed, always zero
+         */
+        public double eventsConsumedTotal() {
+            return eventsConsumed.count();
         }
 
         /**

@@ -20,17 +20,12 @@ import org.springframework.stereotype.Component;
  * {@code app/jcl/CREASTMT.JCL:L89}. One helper checks the width of every record before adding
  * it, so a builder that lost or gained a character fails at the record it built.</p>
  *
- * <p>Four COBOL terms name the pieces below. A Picture clause, written {@code PIC}, fixes a
- * field's width and form. A {@code FILLER} item is an unnamed field, normally spaces or one
- * character repeated. A {@code Z} digit position renders a leading zero as a space. A trailing
- * sign position holds {@code '-'} for a negative value and a space otherwise.</p>
+ * <p>{@link NotificationRenderer} defines the four COBOL terms these methods use.</p>
  *
- * <p>{@code 01 STATEMENT-LINES} at {@code app/cbl/CBSTM03A.CBL:L85-L146} declares 17 record
- * groups, and one method below builds each group. Four write blocks emit them in source order.
- * The banner comes from {@code app/cbl/CBSTM03A.CBL:L460}, the 15 header records from
- * {@code app/cbl/CBSTM03A.CBL:L488-L502}, one detail record per transaction from
- * {@code app/cbl/CBSTM03A.CBL:L679}, and the three trailer records from
- * {@code app/cbl/CBSTM03A.CBL:L435-L437}.</p>
+ * <p>{@code 01 STATEMENT-LINES} at {@code app/cbl/CBSTM03A.CBL:L85-L146} declares 17 record groups,
+ * and one method below builds each group. Four write blocks emit them in source order, and
+ * {@code card-platform/docs/traceability-matrix.md} (planned) carries the record-by-record
+ * mapping.</p>
  *
  * <p>Every field arrives at its final width. {@link CardholderContext} and
  * {@link TransactionRow} normalise each component in their canonical constructors, and the two
@@ -337,7 +332,6 @@ public final class PlainTextRenderer implements NotificationRenderer {
      */
     private static final String TRIGGERED_RULE_SEPARATOR = ", ";
 
-    /** Creates the renderer. The class holds no state, so the instance needs no argument. */
     public PlainTextRenderer() {
     }
 
@@ -372,13 +366,17 @@ public final class PlainTextRenderer implements NotificationRenderer {
      *                {@code app/cbl/CBSTM03A.CBL:L65}; must not be {@code null}
      * @return the records joined by {@link #LINE_SEPARATOR}, each
      *         {@value #RECORD_WIDTH} characters wide
-     * @throws NullPointerException if any argument is {@code null}, or if a row is {@code null}
+     * @throws NullPointerException     if any argument is {@code null}, or if a row is
+     *                                  {@code null}
+     * @throws IllegalArgumentException if {@code rows} holds more than
+     *                                  {@link NotificationRenderer#MAXIMUM_STATEMENT_ROWS}
+     *                                  elements
      */
     @Override
     public String renderStatementAlert(CardholderContext context, List<TransactionRow> rows,
                                        BigDecimal total) {
         Objects.requireNonNull(context, "context must not be null");
-        Objects.requireNonNull(rows, "rows must not be null");
+        NotificationRenderer.requireRenderableRowCount(rows);
         Objects.requireNonNull(total, "total must not be null");
 
         List<String> records = new ArrayList<>();

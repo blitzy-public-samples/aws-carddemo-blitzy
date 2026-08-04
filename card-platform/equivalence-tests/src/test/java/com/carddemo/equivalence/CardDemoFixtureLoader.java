@@ -29,9 +29,9 @@ import java.util.Objects;
  * <p>ADDITIVE: {@code app/data/ASCII/cardxref.txt} delivers
  * {@link PicClause#CARDXREF_FIXTURE_RECORD_WIDTH} bytes where {@code app/jcl/XREFFILE.jcl:L44}
  * declares {@code RECORDSIZE(50 50)}. {@code XREF-ACCT-ID} at {@code app/cpy/CVACT03Y.cpy:L7}
- * closes on the last delivered byte and the {@code app/cpy/CVACT03Y.cpy:L8} filler is absent.
- * That fixture is the only width mismatch among the nine, so width tolerance covers one named
- * case and no unknown one.</p>
+ * closes on the last delivered byte and the {@code app/cpy/CVACT03Y.cpy:L8} filler is absent. That
+ * fixture is the only width mismatch among the nine, and the tolerance is recorded in
+ * {@code card-platform/docs/decision-log.md} (planned).</p>
  *
  * <p>Every failure this class reports names the fixture file, the field, the one-based record
  * ordinal, the position inside a field, and the widths and counts involved. None carries the text
@@ -131,8 +131,6 @@ public final class CardDemoFixtureLoader {
      */
     public static final String TRANTYPE_FIXTURE_FILE_NAME = "trantype.txt";
 
-    // Reading and projection constants.
-
     /** Character that closes every record in all nine fixtures. */
     private static final char RECORD_SEPARATOR = '\n';
 
@@ -180,7 +178,6 @@ public final class CardDemoFixtureLoader {
     /** Amount added to a zero-based position to report it as a one-based ordinal. */
     private static final int FIRST_ORDINAL = 1;
 
-    /** Holds no instance state. The class exposes static operations only. */
     private CardDemoFixtureLoader() {
         throw new AssertionError(CardDemoFixtureLoader.class.getName() + " holds static operations only");
     }
@@ -331,6 +328,7 @@ public final class CardDemoFixtureLoader {
 
     // Declared layout. The cross-reference fixture is the one file narrower than its dataset
     // definition, and this operation restores the declared width.
+    // ADDITIVE, recorded in card-platform/docs/decision-log.md (planned).
 
     /**
      * Reads {@code app/data/ASCII/cardxref.txt} and pads each record to the declared layout.
@@ -427,16 +425,13 @@ public final class CardDemoFixtureLoader {
         return Collections.unmodifiableMap(byIdentifier);
     }
 
-    // Key forms.
-
     /**
      * Reads a card number as the key {@code card_xref.card_number} compares.
      *
      * <p>{@code card_xref.card_number} is a {@code VARCHAR(16)} column compared as text, so only a
      * card number of exactly {@link PicClause#XREF_CARD_NUM_WIDTH} digits can match a row. A
-     * shorter value is refused rather than brought up to width. Filling its leading positions with
-     * zeros would build the key of a different card, so a lookup that ought to miss would hit, and
-     * a harness comparing a decision against the COBOL behaviour would compare the wrong row.</p>
+     * shorter value is refused rather than brought up to width. Zeros in the leading positions
+     * form the key of a different card.</p>
      *
      * <p>Surrounding space padding is removed, because the fixture delivers a fixed-width field and
      * {@code app/cpy/CVACT03Y.cpy:L5} declares {@code XREF-CARD-NUM PIC X(16)}.</p>
@@ -497,9 +492,13 @@ public final class CardDemoFixtureLoader {
      * and the read at another.</p>
      *
      * @return the real, absolute, normalised fixture directory
-     * @throws IllegalStateException when the configured directory is missing, when it does not
-     *         resolve to a real path, when it does not hold all nine fixtures, or when no ancestor
-     *         of the working directory holds the fixture path
+     * @throws IllegalStateException when any of these checks fails:
+     *         <ul>
+     *           <li>the configured directory exists</li>
+     *           <li>it resolves to a real path</li>
+     *           <li>it holds all nine fixtures</li>
+     *           <li>an ancestor of the working directory holds the fixture path</li>
+     *         </ul>
      */
     public static Path fixtureDirectory() {
         String configured = System.getProperty(FIXTURE_DIRECTORY_PROPERTY);
@@ -564,9 +563,6 @@ public final class CardDemoFixtureLoader {
         return directory;
     }
 
-    /**
-     * Appends the three fixture path segments to a candidate repository root.
-     */
     private static Path fixturePathUnder(Path root) {
         return root.resolve(APP_DIRECTORY_NAME)
                 .resolve(DATA_DIRECTORY_NAME)
@@ -579,7 +575,11 @@ public final class CardDemoFixtureLoader {
     /**
      * Reads one fixture and parses every record.
      *
+     * @param <T>         record type the parser produces
+     * @param fileName    fixture file name, reported when a check fails
      * @param recordWidth expected character width of each record
+     * @param recordCount expected number of records
+     * @param parser      applied to each record, in file order
      * @throws IllegalStateException when the fixture is absent, or holds an unexpected record
      *         width or record count
      */
@@ -600,7 +600,9 @@ public final class CardDemoFixtureLoader {
      * and every field offset holds. Sign overpunch characters are single bytes and survive
      * unchanged.</p>
      *
+     * @param fileName    fixture file name, reported when a check fails
      * @param recordWidth expected character width of each record
+     * @param recordCount expected number of records
      * @return the records, immutable and in file order, with the separator removed
      * @throws IllegalStateException when the fixture is absent, or holds an unexpected record
      *         width or record count
@@ -687,6 +689,7 @@ public final class CardDemoFixtureLoader {
      * Checks that every record carries the width its layout reads.
      *
      * @param fileName    fixture file name, reported when a record is the wrong width
+     * @param records     records read from the fixture
      * @param recordWidth expected character width of each record
      * @throws IllegalStateException when a record is not exactly {@code recordWidth} characters
      */
@@ -704,6 +707,9 @@ public final class CardDemoFixtureLoader {
     /**
      * Checks that the fixture holds the number of records the inventory names.
      *
+     * @param fileName    fixture file name, reported when the count differs
+     * @param records     records read from the fixture
+     * @param recordCount number of records the inventory names
      * @throws IllegalStateException when the fixture holds a different number of records
      */
     private static void requireRecordCount(String fileName, List<String> records, int recordCount) {
@@ -737,6 +743,7 @@ public final class CardDemoFixtureLoader {
     /**
      * Checks that a key field holds at least one character and only digits.
      *
+     * @param value characters to check
      * @param field COBOL field name, reported when the check fails
      * @throws IllegalArgumentException when {@code value} is empty or holds a character other than
      *         a digit. The message names the field, the offending position, and the field width,

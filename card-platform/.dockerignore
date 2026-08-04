@@ -1,9 +1,9 @@
-# Paths every service image build excludes from the card-platform build context.
-# docker-compose.yml and each services/*/Dockerfile share this one context, so
-# this file governs all six image builds.
+# Paths a build excludes from the card-platform root context. Each
+# services/*/Dockerfile builds from its own module directory, and a module
+# context carries no ignore file, so this file governs a root-context build.
 
-# Build output. Stage 1 of every Dockerfile packages the module inside the image,
-# so no archive built on the host belongs in the context.
+# Build output. A root-context build reads no archive. Each service image copies
+# its own archive from its module context, where this file does not apply.
 **/target/
 
 # Local environment values. .env.example travels with the repository; the .env a
@@ -18,8 +18,8 @@ docs/
 presentation/
 deploy/
 
-# The image builds resolve dependencies through the cache mount declared in each
-# Dockerfile, not through a repository checked into the context.
+# A Maven repository checked into a context belongs in no image. No image build
+# resolves a dependency.
 .m2/
 
 # Editor and operating-system artifacts.

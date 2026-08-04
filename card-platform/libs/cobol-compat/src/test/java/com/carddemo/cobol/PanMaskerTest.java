@@ -96,11 +96,6 @@ class PanMaskerTest {
     /** The count of three-digit values a {@code PIC 9(03)} field can hold. */
     private static final int STORED_VERIFICATION_VALUE_COMBINATIONS = 1000;
 
-    /**
-     * Asserts that a masked card number carries twelve mask characters and the last four
-     * characters of its argument. A card number padded to a fixed-width field yields the same
-     * result.
-     */
     @Test
     void maskCardNumberHidesAllButTheLastFourCharacters() {
         String masked = PanMasker.maskCardNumber(FULL_CARD_NUMBER);
@@ -182,8 +177,8 @@ class PanMaskerTest {
      * characters.
      *
      * <p>The loop covers all {@value #STORED_VERIFICATION_VALUE_COMBINATIONS} stored values, so
-     * the assertion is exhaustive rather than a sample. No expected value names a digit, which is
-     * what makes the oracle valid: a masked card number may legitimately end in any digit,
+     * the assertion is exhaustive rather than a sample. No expected value names a digit. A masked
+     * card number may end in any digit,
      * including a digit a card verification value also holds.</p>
      */
     @Test
@@ -205,14 +200,6 @@ class PanMaskerTest {
                 "the published redaction constant changed");
     }
 
-    /**
-     * Asserts that a masked card number equals twelve mask characters followed by the last four
-     * characters of its own argument, and holds no other digit.
-     *
-     * <p>The expected value comes from the argument at run time, so the assertion checks the
-     * masking rule rather than a stored string. An argument of four characters or fewer expects
-     * sixteen mask characters and no digit at all.</p>
-     */
     @Test
     void everyMaskedCardNumberIsTwelveMasksAndTheLastFourOfItsArgument() {
         for (String argument : maskingArguments()) {
@@ -241,16 +228,6 @@ class PanMaskerTest {
         }
     }
 
-    /**
-     * Asserts that every single-argument method on the class returns a value holding no digit when
-     * fed a value of card-verification-value width.
-     *
-     * <p>The loop walks the declared methods by reflection rather than naming two of them, so a
-     * method added later that echoes an argument of that width fails here. A card verification
-     * value is {@value #STORED_VERIFICATION_VALUE_WIDTH} characters wide, which is inside the
-     * {@value #VISIBLE_CHARACTER_COUNT}-character floor of the masking rule, so no digit of it may
-     * ever surface.</p>
-     */
     @Test
     void noMethodEmitsADigitOfAValueAtCardVerificationValueWidth() throws Exception {
         List<Method> stringMethods = declaredStringMethods();
@@ -271,13 +248,6 @@ class PanMaskerTest {
         }
     }
 
-    /**
-     * Asserts that the class holds no mutable state and retains no argument.
-     *
-     * <p>Every declared field must be static and final, so no instance can carry a card number.
-     * Every declared field of type {@link String} must hold mask characters only, both before and
-     * after a masking call, so no field can accumulate an argument.</p>
-     */
     @Test
     void panMaskerRetainsNoArgumentValueInAnyField() throws Exception {
         List<Field> fields = new ArrayList<>();
@@ -316,13 +286,6 @@ class PanMaskerTest {
         }
     }
 
-    /**
-     * Asserts that masking is not injective, so no inverse of it exists.
-     *
-     * <p>Four card numbers that differ across their leading twelve characters and share a suffix
-     * collapse onto one masked value. A function that maps many arguments onto one result cannot
-     * be reversed, which is a property of the behaviour rather than of a method name.</p>
-     */
     @Test
     void maskingIsNotInjectiveSoNoInverseExists() {
         String[] sharingOneSuffix = {
@@ -353,10 +316,6 @@ class PanMaskerTest {
                 "the count of masked values stopped tracking the count of distinct suffixes");
     }
 
-    /**
-     * Asserts that the redaction returns three mask characters for every argument, including
-     * {@code null}, and keeps no character of that argument.
-     */
     @Test
     void redactCardVerificationValueRevealsNoDigitOfItsArgument() {
         String[] arguments = {CARD_VERIFICATION_VALUE, "000", "999", "7", "", null};
@@ -381,10 +340,6 @@ class PanMaskerTest {
                 "the redaction stopped returning the published constant");
     }
 
-    /**
-     * Asserts that the argument keeps its digits and the masked value is a separate string. A
-     * caller holds the full PAN for the authorization cross-reference lookup.
-     */
     @Test
     void maskCardNumberLeavesItsArgumentUnmasked() {
         String cardNumber = FULL_CARD_NUMBER;
@@ -400,10 +355,6 @@ class PanMaskerTest {
         assertNotEquals(cardNumber, masked);
     }
 
-    /**
-     * Asserts that a {@code null} card number yields sixteen mask characters, throws nothing, and
-     * returns the same value on a repeat call.
-     */
     @Test
     void nullCardNumberYieldsAFullyMaskedValue() {
         String masked = PanMasker.maskCardNumber(null);
@@ -418,10 +369,6 @@ class PanMaskerTest {
         assertEquals(masked, PanMasker.maskCardNumber(null));
     }
 
-    /**
-     * Asserts that a card number shorter than the stored width comes back masked, never as the
-     * argument.
-     */
     @Test
     void shortCardNumberIsNeverReturnedAsIs() {
         assertEquals(MASKED_FIFTEEN_CHARACTER_CARD_NUMBER,
@@ -445,10 +392,6 @@ class PanMaskerTest {
         }
     }
 
-    /**
-     * Asserts that four characters stay visible, that one character does the masking, and that no
-     * method parameter varies either count.
-     */
     @Test
     void visibleDigitCountIsFixedAtFour() {
         assertEquals(VISIBLE_CHARACTER_COUNT, PanMasker.VISIBLE_DIGIT_COUNT);
@@ -467,8 +410,6 @@ class PanMaskerTest {
                     "method " + method.getName() + " accepts a second argument");
         }
     }
-
-    // Private helpers.
 
     /**
      * Supplies the argument set the width and rule assertions share, from {@code null} through

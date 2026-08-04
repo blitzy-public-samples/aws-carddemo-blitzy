@@ -18,7 +18,11 @@
   <name>CardDemo Equivalence Tests</name>
   <description>
     Provides fixed-width fixture loading and copybook parsing support for the equivalence
-    suite. Failsafe runs the suite during mvn verify.
+    suite. The suite holds one comparison today, ValidationEquivalenceTest, which checks
+    field validation against the documented COBOL rules. Failsafe runs every
+    *EquivalenceTest class at integration-test and fails the build at verify. The posting,
+    authorization, bill-payment, interest and decimal comparisons are pending, and no
+    result document is published yet.
   </description>
 
   <!-- The framework parent defaults the compiler release to 17. These two properties pin release 25. -->
@@ -165,13 +169,11 @@
       <!-- Failsafe runs the *EquivalenceTest classes at integration-test and fails the build at
            verify.
 
-           The execution below reuses the identifier the parent declares in pluginManagement, so
-           Maven merges the two into one execution instead of adding a second. The include sits
-           inside that execution rather than at plugin level: a plugin-level include merges into
-           every execution of the plugin, so a second execution added later would select the same
-           classes again and run each one twice.
-
-           EquivalenceSuiteExecutionConfigurationTest holds both properties. -->
+           The execution identifier below is the one the parent declares in pluginManagement, so
+           Maven merges the two into one execution. The include sits inside that execution and not
+           at plugin level, so a second execution added later does not select the same classes
+           again. EquivalenceSuiteExecutionConfigurationTest holds both properties, and
+           card-platform/docs/decision-log.md (planned) carries the reasoning. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>

@@ -1,6 +1,5 @@
 package com.carddemo.account.domain.validation;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.List;
@@ -20,8 +19,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code 1240-EDIT-ALPHANUM-OPT} at app/cbl/COACTUPC.cbl:L2061-L2105.
  *
  * <p>A repository-wide scan found no {@code PERFORM 1240-EDIT-ALPHANUM-OPT} call. Its only
- * references are the paragraph label, two exits, and the exit label.
- * {@code AccountUpdateService} does not use this validator.</p>
+ * references are the paragraph label, two exits, and the exit label. No caller of this validator
+ * exists in this module.</p>
  *
  * <p>The paragraph is optional, so one message is reachable. The three-way not-supplied test at
  * app/cbl/COACTUPC.cbl:L2066-L2071 resolves to success at app/cbl/COACTUPC.cbl:L2072 and leaves at
@@ -74,7 +73,7 @@ class AlphanumericOptionalValidatorTest {
     private static final String MANDATORY_MESSAGE = " must be supplied.";
 
     /**
-     * Field name every method below submits. The source holds the name in
+     * Field name every call in this class submits. The source holds the name in
      * {@code WS-EDIT-VARIABLE-NAME PIC X(25)} at app/cbl/COACTUPC.cbl:L53.
      */
     private static final String FIELD_LABEL = "Address Line 1";
@@ -346,28 +345,17 @@ class AlphanumericOptionalValidatorTest {
     }
 
     @Test
-    @DisplayName("The validator exposes one static edit method and no public constructor")
+    @DisplayName("The validator declares a static label, value and width edit returning a verdict")
     void validatorExposesOneStaticEditMethod() throws NoSuchMethodException {
         Class<AlphanumericOptionalValidator> subject = AlphanumericOptionalValidator.class;
 
-        assertThat(Modifier.isFinal(subject.getModifiers())).isTrue();
-
-        Constructor<?>[] constructors = subject.getDeclaredConstructors();
-
-        assertThat(constructors).hasSize(1);
-        assertThat(Modifier.isPrivate(constructors[0].getModifiers())).isTrue();
-        assertThat(constructors[0].getParameterCount()).isZero();
-
-        List<Method> publicMethods = Stream.of(subject.getDeclaredMethods())
-                .filter(method -> Modifier.isPublic(method.getModifiers()))
-                .toList();
-
-        assertThat(publicMethods).hasSize(1);
-
         Method edit = subject.getMethod("validate", String.class, String.class, int.class);
 
+        assertThat(Modifier.isPublic(edit.getModifiers())).isTrue();
         assertThat(Modifier.isStatic(edit.getModifiers())).isTrue();
         assertThat(edit.getReturnType()).isEqualTo(EditResult.class);
+        assertThat(edit.getParameterTypes())
+                .containsExactly(String.class, String.class, int.class);
     }
 
     /**

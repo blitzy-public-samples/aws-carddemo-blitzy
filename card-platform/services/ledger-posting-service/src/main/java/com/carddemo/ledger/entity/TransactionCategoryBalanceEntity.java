@@ -33,9 +33,8 @@ import java.util.regex.Pattern;
  * <p>The balance carries eleven digits, two of them after the decimal point, and a negative
  * balance is ordinary traffic. This class stores that value and computes nothing:
  * {@code app/cbl/CBTRN02C.cbl:L508} and {@code app/cbl/CBTRN02C.cbl:L527} add a transaction amount
- * to it, and {@code CategoryBalanceUpdater} in the {@code domain} package owns that arithmetic.</p>
- *
- * <p>Rationale for this mapping: {@code card-platform/docs/decision-log.md}.</p>
+ * to it. The planned category-balance updater in the {@code domain} package is to own that
+ * arithmetic, and it is not authored yet.</p>
  */
 @Entity
 @Table(name = "transaction_category_balance")
@@ -53,7 +52,6 @@ public class TransactionCategoryBalanceEntity {
             precision = PicClause.TRAN_CAT_BAL_PRECISION, scale = PicClause.TRAN_CAT_BAL_SCALE)
     private BigDecimal categoryBalance;
 
-    /** Required by the persistence provider, which sets both fields directly. */
     protected TransactionCategoryBalanceEntity() {
     }
 
@@ -85,20 +83,10 @@ public class TransactionCategoryBalanceEntity {
         this.categoryBalance = categoryBalance;
     }
 
-    /**
-     * Returns the three-part key.
-     *
-     * @return the key
-     */
     public TransactionCategoryBalanceId getId() {
         return id;
     }
 
-    /**
-     * Returns the running balance.
-     *
-     * @return the balance, at two digits after the decimal point
-     */
     public BigDecimal getCategoryBalance() {
         return categoryBalance;
     }
@@ -174,7 +162,6 @@ public class TransactionCategoryBalanceEntity {
         @Column(name = "category_code", nullable = false, length = PicClause.TRANCAT_CD_WIDTH)
         private String categoryCode;
 
-        /** Required by the persistence provider, which sets all three fields directly. */
         protected TransactionCategoryBalanceId() {
         }
 
@@ -221,29 +208,14 @@ public class TransactionCategoryBalanceEntity {
             }
         }
 
-        /**
-         * Returns the account identifier.
-         *
-         * @return eleven digits, leading zeros kept
-         */
         public String getAccountId() {
             return accountId;
         }
 
-        /**
-         * Returns the transaction type code.
-         *
-         * @return two characters
-         */
         public String getTypeCode() {
             return typeCode;
         }
 
-        /**
-         * Returns the transaction category code.
-         *
-         * @return four digits, leading zeros kept
-         */
         public String getCategoryCode() {
             return categoryCode;
         }

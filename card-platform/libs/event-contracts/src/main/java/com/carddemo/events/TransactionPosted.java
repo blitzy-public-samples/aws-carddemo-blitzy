@@ -14,7 +14,7 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * The event the ledger-posting service publishes after it applies one posting to an account
  * balance.
  *
- * <p>The notification service consumes it from the {@code transaction.posted} topic and renders a
+ * <p>The notification service is to read it from the {@code transaction.posted} topic and render a
  * cardholder alert. {@code schemas/transaction-posted-v1.json} is the contract every instance
  * satisfies.
  *
@@ -64,10 +64,6 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * topic. {@link #envelope()} returns the carrier a producer builds and passes, and
  * {@link #of(EventEnvelope, String, BigDecimal, String, BigDecimal, String)} takes it back.
  *
- * <p>For the path this event travels from publish to consume, read
- * {@code card-platform/docs/event-flow.md}; for the reasoning behind the choices above, read
- * {@code card-platform/docs/decision-log.md}.
- *
  * @param eventId          the idempotency key, a Universally Unique Identifier (UUID) that
  *                         serializes as thirty-six lower-case characters. ADDITIVE
  * @param eventType        the routing discriminator, always {@link #EVENT_TYPE}. ADDITIVE
@@ -81,7 +77,10 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  *                         {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5}
  * @param accountId        the same eleven-digit account identifier {@code aggregateId} carries,
  *                         from {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}.
- *                         An absent value takes {@code aggregateId}
+ *                         {@code schemas/transaction-posted-v1.json} declares and requires this
+ *                         property beside {@code aggregateId}, and the canonical constructor
+ *                         refuses two differing values, so the message key and the payload cannot
+ *                         disagree
  * @param newBalance       the account balance after the posting, at scale two and ten integer
  *                         digits, from {@code ACCT-CURR-BAL PIC S9(10)V99} at
  *                         {@code app/cpy/CVACT01Y.cpy:L7} after the add at
@@ -233,16 +232,16 @@ public record TransactionPosted(
      *
      * @throws NullPointerException     when {@code eventId}, {@code eventType} or
      *                                  {@code occurredAt} is {@code null}
-     * @throws IllegalArgumentException when {@code eventType} is not {@link #EVENT_TYPE}, when
-     *                                  {@code schemaVersion} is not
-     *                                  {@link EventEnvelope#SCHEMA_VERSION}, when
-     *                                  {@code aggregateId} is absent, when either account
-     *                                  identifier is not eleven decimal digits, when the two
-     *                                  account identifiers differ, when {@code transactionId} is
-     *                                  not {@link #TRANSACTION_ID_LENGTH} characters, when either
-     *                                  money component is absent or exceeds its integer width, or
-     *                                  when {@code postedAt} or {@code maskedCardNumber} fails its
-     *                                  pattern
+     * @throws IllegalArgumentException when a component fails its check. The envelope checks
+     *                                  cover {@code eventType} against {@link #EVENT_TYPE},
+     *                                  {@code schemaVersion} against
+     *                                  {@link EventEnvelope#SCHEMA_VERSION}, and a present
+     *                                  {@code aggregateId}. Both account identifiers must hold
+     *                                  eleven decimal digits and one value. {@code transactionId}
+     *                                  must hold {@link #TRANSACTION_ID_LENGTH} characters, each
+     *                                  money component must be present and within its integer
+     *                                  width, and {@code postedAt} and {@code maskedCardNumber}
+     *                                  must match their patterns
      */
     public TransactionPosted {
         Objects.requireNonNull(eventId, "eventId must be present");
@@ -281,8 +280,8 @@ public record TransactionPosted(
         if (postedAt == null || postedAt.length() != POSTED_AT_LENGTH
                 || !POSTED_AT_MATCHER.matcher(postedAt).matches()) {
             throw new IllegalArgumentException("postedAt must hold " + POSTED_AT_LENGTH
-                    + " characters matching " + POSTED_AT_PATTERN + " and the supplied value is "
-                    + (postedAt == null ? "null" : "\"" + postedAt + "\""));
+                    + " characters matching " + POSTED_AT_PATTERN + " and the supplied value "
+                    + describeLength(postedAt));
         }
 
         if (maskedCardNumber == null || maskedCardNumber.length() != MASKED_CARD_NUMBER_LENGTH
@@ -402,7 +401,8 @@ public record TransactionPosted(
 
         if (!matcher.matcher(scaled.toPlainString()).matches()) {
             throw new IllegalArgumentException(component + " must match " + pattern
-                    + " and the supplied value holds " + scaled.toPlainString());
+                    + " and the supplied value holds precision " + scaled.precision()
+                    + " and scale " + scaled.scale());
         }
         return scaled;
     }
@@ -416,5 +416,25 @@ public record TransactionPosted(
     private static String describeLength(String value) {
         return value == null ? "is null" : "holds " + value.length() + " characters";
     }
+    /**
+     * Renders the technical identifiers and withholds every value the payload carries.
+     *
+     * <p>This override replaces the representation the compiler generates for a record. That
+     * generated form prints the new balance, the amount, the masked card number, the account
+     * identifier and the aggregate identifier.
+     *
+     * <p>The new balance is the value this event exists to carry, and it is the value a log line
+     * must not publish.
+     *
+     * @return the identifiers of this event with every payload value withheld, never {@code null}
+     */
+    @Override
+    public String toString() {
+        return "TransactionPosted[eventId=" + eventId + ", eventType=" + eventType
+                + ", schemaVersion=" + schemaVersion + ", occurredAt=" + occurredAt
+                + ", aggregateId=" + EventEnvelope.WITHHELD + ", transactionId=" + transactionId
+                + ", accountId=" + EventEnvelope.WITHHELD + ", newBalance="
+                + EventEnvelope.WITHHELD + ", postedAt=" + EventEnvelope.WITHHELD + ", amount="
+                + EventEnvelope.WITHHELD + ", maskedCardNumber=" + EventEnvelope.WITHHELD + "]";
+    }
 }
-

@@ -42,9 +42,11 @@ public final class UsSocialSecurityNumberValidator {
     private static final String PART3_LABEL = "SSN Last 4 chars";
 
     /**
-     * Literal at app/cbl/COACTUPC.cbl:L2457, forty-eight characters wide, carrying its leading
-     * colon and space and no trailing period. app/cbl/COACTUPC.cbl:L2456 places the trimmed part
-     * one label ahead of it, so the emitted text holds two colons.
+     * Literal at app/cbl/COACTUPC.cbl:L2457, forty-eight characters wide.
+     *
+     * <p>It carries its leading colon and space and no trailing period.
+     * app/cbl/COACTUPC.cbl:L2456 places the trimmed part one label ahead of it, so the emitted text
+     * holds two colons.</p>
      */
     private static final String EXCLUDED_PART1_MESSAGE =
             ": should not be 000, 666, or between 900 and 999";
@@ -79,7 +81,6 @@ public final class UsSocialSecurityNumberValidator {
     /** The character a COBOL {@code MOVE} pads a short alphanumeric item with. */
     private static final char SPACE = ' ';
 
-    /** This class holds no state and is never instantiated. */
     private UsSocialSecurityNumberValidator() {
     }
 

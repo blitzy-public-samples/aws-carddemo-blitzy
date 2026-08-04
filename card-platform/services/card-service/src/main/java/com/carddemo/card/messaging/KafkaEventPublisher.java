@@ -1,19 +1,15 @@
 package com.carddemo.card.messaging;
 
-import com.networknt.schema.Error;
-import com.networknt.schema.InputFormat;
-import com.networknt.schema.Schema;
-import com.networknt.schema.SchemaRegistry;
-import com.networknt.schema.SpecificationVersion;
-import java.io.InputStream;
+import com.carddemo.events.serde.EventContracts;
+import com.carddemo.events.serde.EventJsonValidator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -27,16 +23,29 @@ import tools.jackson.databind.ObjectMapper;
  * {@code WIRTE-JOBSUB-TDQ} paragraph at {@code app/cbl/CORPT00C.cbl:L515-L523}, which hands one
  * record to a Customer Information Control System (CICS) transient data queue.
  *
- * <p>The card row and the outbox row commit in one local transaction, and the outbox relay calls
- * this class afterwards in a separate transaction, never from inside request handling.
+ * <p>The card row and the outbox row are to commit in one local transaction. A planned outbox relay
+ * is to call this class afterwards in a separate transaction, never from inside request handling.
+ * No writer and no relay is authored yet.
  *
- * <p>Three checks run before any event leaves this service. Construction rejects a producer that
+ * <p>Four checks run before any event leaves this service. Construction rejects a producer that
  * does not pin acknowledgement from every in-sync replica, idempotent production, a safe in-flight
- * limit and bounded timeouts. Each publish rejects a message whose key differs from the payload's
+ * limit and bounded timeouts. Each publish rejects a message whose event type does not belong on
+ * the supplied topic. Each publish rejects a message whose key differs from the payload's
  * {@code aggregateId}, or from its {@code accountId} where the document declares one. Each publish
- * also validates the payload against the versioned JSON Schema document that its {@code eventType}
- * and {@code schemaVersion} name, loaded from {@code com.carddemo:event-contracts} on the
- * classpath.
+ * validates the payload through {@link EventJsonValidator}, the one gate every event of this
+ * platform passes.
+ *
+ * <p>That gate is shared deliberately. It reads the same table {@code JsonSchemaValidatingSerializer}
+ * and {@code JsonSchemaValidatingDeserializer} read, so a card event is held to the same governed
+ * type list, the same contract version, the same size ceiling, the same parser limits and the same
+ * closed property set as every other event on the platform. This class previously loaded schema
+ * documents itself and derived a document name from the event type, which was a second gate that
+ * could disagree with the first and applied neither the governed type list nor the size ceiling.
+ *
+ * <p>Every rejection message holds a JSON pointer, a broken keyword, an event type, a topic name or
+ * a length. No rejection message holds a value read from the payload, so a full Primary Account
+ * Number (PAN), a card verification value or an account identifier cannot reach a log through a
+ * failed publish.
  *
  * <p>Another event bus needs one more implementation of {@link EventPublisherPort}, and a new
  * consumer of a card event needs no change in this package.
@@ -55,11 +64,8 @@ public class KafkaEventPublisher implements EventPublisherPort {
     /** Envelope field that names the event, and with it the schema document. */
     private static final String EVENT_TYPE = "eventType";
 
-    /** Envelope field that names the schema version, and with it the document suffix. */
+    /** Envelope field that names the contract version. */
     private static final String SCHEMA_VERSION = "schemaVersion";
-
-    /** Classpath directory {@code com.carddemo:event-contracts} ships its schema documents in. */
-    private static final String SCHEMA_DIRECTORY = "schemas/";
 
     /** Acknowledgement setting the platform requires: every in-sync replica. */
     private static final String REQUIRED_ACKS = "all";
@@ -81,24 +87,39 @@ public class KafkaEventPublisher implements EventPublisherPort {
     /** Reads the envelope of an already-serialized payload. */
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    /** Draft 2020-12 registry, the dialect every schema document in this platform declares. */
-    private final SchemaRegistry schemaRegistry =
-            SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12);
+    /**
+     * The topic name this deployment configures for {@link EventContracts#CARD_UPDATED}, read from
+     * {@code carddemo.kafka.topics.card-updated}. A deployment that renames the topic still binds,
+     * and a blank value leaves the registry default as the only accepted name.
+     */
+    private final String configuredCardUpdatedTopic;
 
-    /** One parsed schema per document name. A document is read from the classpath once. */
-    private final Map<String, Schema> schemasByDocumentName = new ConcurrentHashMap<>();
+    /**
+     * The one gate every event of this platform passes on the way out.
+     *
+     * <p>{@code com.carddemo:event-contracts} owns it, so the governed event type list, the contract
+     * version, the size ceiling, the parser limits and every closed property set are the same here as
+     * in the shared serializer and the shared deserializer. Nothing about a schema document is
+     * decided in this package.
+     */
+    private final EventJsonValidator eventValidator = EventJsonValidator.shared();
 
     /**
      * Takes the producer template Spring Boot builds from the {@code spring.kafka.producer}
      * properties and checks the reliability settings that template carries.
      *
-     * @param kafkaTemplate the template that sends every card event to the broker
+     * @param kafkaTemplate              the template that sends every card event to the broker
+     * @param configuredCardUpdatedTopic the topic name configured for the card update event, which
+     *                                   {@code application.yml} reads from
+     *                                   {@code carddemo.kafka.topics.card-updated}
      * @throws IllegalStateException when the producer does not pin acknowledgement from every
      *         in-sync replica, idempotent production, an in-flight limit of at most
      *         {@value #MAX_IN_FLIGHT_LIMIT}, or a bounded delivery, request and block timeout
      */
-    public KafkaEventPublisher(KafkaTemplate<String, String> kafkaTemplate) {
+    public KafkaEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
+            @Value("${carddemo.kafka.topics.card-updated:}") String configuredCardUpdatedTopic) {
         this.kafkaTemplate = kafkaTemplate;
+        this.configuredCardUpdatedTopic = configuredCardUpdatedTopic;
         requireReliableProducer(kafkaTemplate.getProducerFactory().getConfigurationProperties());
     }
 
@@ -114,9 +135,10 @@ public class KafkaEventPublisher implements EventPublisherPort {
      *
      * @throws IllegalArgumentException when {@code topic} or {@code payload} is null, when
      *         {@code aggregateId} is not eleven decimal digits, when the payload is not one JSON
-     *         object, when {@code aggregateId} differs from the payload's {@code aggregateId} or
-     *         from its {@code accountId} where the document declares one, or when the payload
-     *         fails the schema its envelope names
+     *         object, when the payload declares an event type that does not belong on
+     *         {@code topic}, when {@code aggregateId} differs from the payload's
+     *         {@code aggregateId} or from its {@code accountId} where the document declares one,
+     *         or when the shared gate refuses the payload
      */
     @Override
     public void publish(String topic, String aggregateId, String payload) {
@@ -130,11 +152,48 @@ public class KafkaEventPublisher implements EventPublisherPort {
                                     + " characters"));
         }
         JsonNode event = readEnvelope(payload);
+        String eventType = requireBoundToTopic(event, topic);
         requireSingleAccountIdentity(aggregateId, event);
-        requireValidAgainstSchema(event, payload);
+        requireValidAgainstSchema(payload);
         log.debug("Publishing card event {} to topic {}, payload length {}",
-                event.path(EVENT_TYPE).asString(""), topic, payload.length());
+                eventType, topic, payload.length());
         kafkaTemplate.send(topic, aggregateId, payload).join();
+    }
+
+    /**
+     * Reads the event type from the envelope and checks that the type belongs on the supplied topic.
+     *
+     * <p>{@link EventContracts} holds the one registry that pairs an event type with its topic and
+     * with its schema document. Without this check a card update could reach the transaction topic,
+     * where every consumer would read it as a transaction and reject or mishandle it.
+     *
+     * <p>The event type comes from the payload and never from a separate argument, so a caller
+     * cannot name one type while publishing another.
+     *
+     * @param event the parsed event
+     * @param topic the destination topic the caller read from configuration
+     * @return the event type the envelope declares
+     * @throws IllegalArgumentException when the envelope declares no registered event type, or
+     *         when that type does not belong on {@code topic}
+     */
+    private String requireBoundToTopic(JsonNode event, String topic) {
+        String eventType = event.path(EVENT_TYPE).asString("");
+        JsonNode version = event.path(SCHEMA_VERSION);
+        if (!version.isNumber()) {
+            throw new IllegalArgumentException("The envelope carries " + SCHEMA_VERSION
+                    + " as a number, and the supplied event carries none.");
+        }
+        if (!EventContracts.isRegistered(eventType)) {
+            throw new IllegalArgumentException("The envelope declares the event type '" + eventType
+                    + "', which no contract registers. " + EventContracts.eventTypes()
+                    + " are the registered types.");
+        }
+        if (!EventContracts.isBoundToTopic(eventType, topic, configuredCardUpdatedTopic)) {
+            throw new IllegalArgumentException(eventType + " belongs on the topic "
+                    + EventContracts.defaultTopicFor(eventType) + " and the supplied topic reads "
+                    + topic + ".");
+        }
+        return eventType;
     }
 
     /**
@@ -198,9 +257,9 @@ public class KafkaEventPublisher implements EventPublisherPort {
         try {
             event = objectMapper.readTree(payload);
         } catch (RuntimeException parseFailure) {
-            throw new IllegalArgumentException(
-                    "payload is not JavaScript Object Notation: " + parseFailure.getMessage(),
-                    parseFailure);
+            throw new IllegalArgumentException("payload holds one JavaScript Object Notation (JSON) "
+                    + "object and the supplied text of " + payload.length()
+                    + " characters does not parse");
         }
         if (!event.isObject()) {
             throw new IllegalArgumentException("payload holds one JSON object per event");
@@ -211,17 +270,14 @@ public class KafkaEventPublisher implements EventPublisherPort {
     /**
      * Checks that the message key and every account identifier the payload carries hold one value.
      *
-     * <p>Without this check an event can reach the partition of one account while it names another,
-     * which reorders that account's events and misdirects every consumer that maps the identifier
-     * onto its own account column.
+     * <p>The Kafka message key must equal {@code aggregateId}.
      *
      * <p>{@code aggregateId} is the single source of account identity and every document declares
-     * it. A document that also declares the payload field {@code accountId} must agree with it; a
+     * it. A document that also declares the payload field {@code accountId} must agree with it. A
      * document that single-sources the identifier carries no such field, and its absence is not a
      * disagreement.
      *
-     * <p>No message below names a value. The account identifier is the value under check, and a
-     * caller that logs the failure would otherwise record it.
+     * <p>No message here names a value.
      *
      * @param key   the Kafka message key the caller supplied
      * @param event the parsed event
@@ -244,73 +300,19 @@ public class KafkaEventPublisher implements EventPublisherPort {
     }
 
     /**
-     * Validates the payload against the versioned schema document its envelope names.
+     * Validates the payload through the shared gate {@code com.carddemo:event-contracts} owns.
      *
-     * @param event   the parsed event, read for {@code eventType} and {@code schemaVersion}
+     * <p>The shared validator selects the schema from the event type, refuses a type the platform
+     * does not govern, refuses another contract version, applies the platform size ceiling and the
+     * platform parser limits, and reports a failure by JSON pointer and broken keyword with no value
+     * from the event in the message. This class adds nothing to that and reimplements none of it.
+     *
      * @param payload the serialized event, validated as received
-     * @throws IllegalArgumentException when the envelope names no document, when the classpath
-     *         carries no such document, or when the payload fails it
+     * @throws IllegalArgumentException when the event names no governed type, carries another
+     *         contract version, exceeds the platform ceiling, or breaks its schema
      */
-    private void requireValidAgainstSchema(JsonNode event, String payload) {
-        String documentName = schemaDocumentName(event);
-        Schema schema = schemasByDocumentName.computeIfAbsent(documentName, this::loadSchema);
-        List<Error> errors = schema.validate(payload, InputFormat.JSON);
-        if (!errors.isEmpty()) {
-            List<String> pointers = errors.stream()
-                    .map(error -> error.getInstanceLocation() + " " + error.getMessage())
-                    .toList();
-            throw new IllegalArgumentException(
-                    "The event fails " + documentName + ": " + pointers);
-        }
-    }
-
-    /**
-     * Names the schema document for one event. {@code CardStateChanged} at version 1 names
-     * {@code card-state-changed-v1.json}.
-     *
-     * @param event the parsed event
-     * @return the document name, without the classpath directory
-     * @throws IllegalArgumentException when the envelope carries no event type or no version
-     */
-    private static String schemaDocumentName(JsonNode event) {
-        String eventType = event.path(EVENT_TYPE).asString("");
-        JsonNode version = event.path(SCHEMA_VERSION);
-        if (eventType.isEmpty() || !version.isNumber()) {
-            throw new IllegalArgumentException("The envelope carries " + EVENT_TYPE + " and "
-                    + SCHEMA_VERSION + ", which name the schema document. " + EVENT_TYPE
-                    + " reads '" + eventType + "' and " + SCHEMA_VERSION + " reads "
-                    + version.asString("") + ".");
-        }
-        StringBuilder kebab = new StringBuilder(eventType.length() + 8);
-        for (int index = 0; index < eventType.length(); index++) {
-            char character = eventType.charAt(index);
-            if (Character.isUpperCase(character) && index > 0) {
-                kebab.append('-');
-            }
-            kebab.append(Character.toLowerCase(character));
-        }
-        return kebab.append("-v").append(version.intValue()).append(".json").toString();
-    }
-
-    /**
-     * Reads one schema document from the classpath.
-     *
-     * @param documentName the document name, without the classpath directory
-     * @return the parsed schema
-     * @throws IllegalArgumentException when the classpath carries no such document
-     */
-    private Schema loadSchema(String documentName) {
-        String resource = SCHEMA_DIRECTORY + documentName;
-        try (InputStream document =
-                KafkaEventPublisher.class.getClassLoader().getResourceAsStream(resource)) {
-            if (document == null) {
-                throw new IllegalArgumentException("The classpath carries no " + resource
-                        + ". com.carddemo:event-contracts ships every schema document.");
-            }
-            return schemaRegistry.getSchema(document, InputFormat.JSON);
-        } catch (java.io.IOException readFailure) {
-            throw new IllegalArgumentException("Reading " + resource + " failed", readFailure);
-        }
+    private void requireValidAgainstSchema(String payload) {
+        eventValidator.validate(payload);
     }
 
     /**

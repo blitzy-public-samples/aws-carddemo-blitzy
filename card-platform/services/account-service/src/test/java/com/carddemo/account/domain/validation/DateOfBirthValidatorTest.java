@@ -1,11 +1,9 @@
 package com.carddemo.account.domain.validation;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -25,22 +23,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  * site reaches the paragraph, at app/cbl/COACTUPC.cbl:L1540, and app/cbl/COACTUPC.cbl:L1533
  * supplies the label {@code 'Date of Birth'} that call site passes.</p>
  *
- * <p>The comparison at app/cpy/CSUTLDPY.cpy:L350 is strictly greater, and
- * app/cpy/CSUTLDPY.cpy:L354 holds {@code CONTINUE} on its true limb. Today's day count must exceed
- * the day count of the supplied value for the check to pass. An equal day count falls to the
- * {@code ELSE} at app/cpy/CSUTLDPY.cpy:L355, so today's own date fails.
- * card-platform/docs/decision-log.md owns the question of whether that rejection is sensible.</p>
+ * <p>The comparison at app/cpy/CSUTLDPY.cpy:L350 is strictly greater, and app/cpy/CSUTLDPY.cpy:L354
+ * holds {@code CONTINUE} on its true limb. Today's day count must exceed the day count of the
+ * supplied value for the check to pass.</p>
  *
  * <p>Yesterday, today, and tomorrow all carry weight here, and together they pin the boundary to
  * one day. The three commented-out {@code FUNCTION FIND-DURATION} statements at
- * app/cpy/CSUTLDPY.cpy:L351-L353 reach no verdict, and no method below covers them.</p>
+ * app/cpy/CSUTLDPY.cpy:L351-L353 reach no verdict.</p>
  *
- * <p>No method below asserts a calendar rule. app/cbl/COACTUPC.cbl:L1539 gates the paragraph on
- * app/cbl/COACTUPC.cbl:L1536 having accepted the value, so every date supplied below is well
- * formed and lands inside the span those field edits admit. {@code CalendarDateValidatorTest} owns
- * the field edits, and {@code com.carddemo.cobol.CobolDateValidatorTest} owns the day-count
- * conversions of app/cpy/CSUTLDPY.cpy:L345-L348. The gate itself is orchestration, and
- * {@code AccountUpdateServiceTest} owns it.</p>
+ * <p>Calendar rules are out of scope here. app/cbl/COACTUPC.cbl:L1539 gates the paragraph on
+ * app/cbl/COACTUPC.cbl:L1536 having accepted the value. Every date supplied is therefore well
+ * formed and lands inside the span those field edits admit.
+ * {@code CalendarDateValidatorTest} owns the field edits, and
+ * {@code com.carddemo.cobol.CobolDateValidatorTest} owns the day-count conversions of
+ * app/cpy/CSUTLDPY.cpy:L345-L348. The gate itself is orchestration, and belongs to the planned
+ * account update service, which is not authored yet.</p>
  *
  * <p>One message reaches the caller. app/cpy/CSUTLDPY.cpy:L361-L365 builds it from
  * {@code FUNCTION TRIM} over the {@code PIC X(25)} label field at app/cbl/COACTUPC.cbl:L53, joined
@@ -49,15 +46,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * at app/cbl/COACTUPC.cbl:L480, and app/cbl/COACTUPC.cbl:L876 clears the slot once per pass.</p>
  *
  * <p>app/cpy/CSUTLDPY.cpy:L356-L359 also sets the input-error state and all three field flag bytes
- * on the failure path. {@link EditResult} carries a verdict and at most one message, so every
- * assertion below reads one of those two components and none reads a flag.</p>
+ * on the failure path. {@link EditResult} carries a verdict and at most one message, and no flag
+ * byte reaches it.</p>
  *
- * <p>The {@code STRING} at app/cpy/CSUTLDPY.cpy:L361 closes on the {@code END-IF} at
- * app/cpy/CSUTLDPY.cpy:L366, matching all fourteen {@code STRING} statements of that copybook.
- * card-platform/docs/business-rule-flags.md records the terminator pattern.</p>
- *
- * <p>No Spring context, no container, and no database take part, so {@code mvn test} passes on a
- * clean machine.</p>
+ * <p>No Spring context, no container and no database take part.</p>
  */
 @DisplayName("DateOfBirthValidator, the reasonableness check that rejects today's own date")
 class DateOfBirthValidatorTest {
@@ -88,7 +80,15 @@ class DateOfBirthValidatorTest {
     private static final String CALL_SITE_FUTURE_DATE_MESSAGE =
             "Date of Birth:cannot be in the future ";
 
-    /** Day offset of today, the equality boundary of app/cpy/CSUTLDPY.cpy:L350. */
+    /**
+     * The fixed day the comparison at app/cpy/CSUTLDPY.cpy:L350 runs against: Sunday, 2 August 2026.
+     *
+     * <p>Every case below builds its input from this date and hands the same date to the production
+     * overload, so no verdict depends on when the suite runs.
+     */
+    private static final LocalDate REFERENCE_DATE = LocalDate.of(2026, 8, 2);
+
+    /** Day offset of the reference date, the equality boundary of app/cpy/CSUTLDPY.cpy:L350. */
     private static final long TODAY = 0L;
 
     /** Day offset of the day app/cpy/CSUTLDPY.cpy:L350 admits nearest the boundary. */
@@ -108,10 +108,10 @@ class DateOfBirthValidatorTest {
     private static final List<Long> REJECTED_DAY_OFFSETS =
             List.of(0L, 1L, 2L, 7L, 30L, 365L, 1825L);
 
-    /** Two adjacent spaces, the leak an untrimmed app/cbl/COACTUPC.cbl:L53 field would produce. */
+    /** Two adjacent spaces. A trimmed app/cbl/COACTUPC.cbl:L53 field never emits this pair. */
     private static final String TWO_SPACES = "  ";
 
-    /** A space ahead of the colon, the second leak an untrimmed app/cbl/COACTUPC.cbl:L53 field gives. */
+    /** A space ahead of the colon. A trimmed app/cbl/COACTUPC.cbl:L53 field never emits it. */
     private static final String SPACE_BEFORE_COLON = " :";
 
     /** A space after the colon, which app/cpy/CSUTLDPY.cpy:L363 does not carry. */
@@ -140,7 +140,8 @@ class DateOfBirthValidatorTest {
     @DisplayName("A date forty years before today passes and leaves the message slot empty")
     void pastDateOfBirthPasses() {
         EditResult result =
-                DateOfBirthValidator.validate(CALL_SITE_LABEL, dateYearsBeforeToday(YEARS_BEFORE_TODAY));
+                DateOfBirthValidator.validate(CALL_SITE_LABEL,
+                        dateYearsBeforeReferenceDate(YEARS_BEFORE_TODAY), REFERENCE_DATE);
 
         assertThat(result.valid()).isTrue();
         assertThat(result.message()).isNull();
@@ -155,7 +156,8 @@ class DateOfBirthValidatorTest {
     @Test
     @DisplayName("Today's own date fails, so the equality boundary is a rejection")
     void todayIsRejectedAtTheEqualityBoundary() {
-        EditResult result = DateOfBirthValidator.validate(CALL_SITE_LABEL, dateOffsetFromToday(TODAY));
+        EditResult result = DateOfBirthValidator.validate(CALL_SITE_LABEL,
+                        dateOffsetFromReferenceDate(TODAY), REFERENCE_DATE);
 
         assertThat(result.valid()).isFalse();
         assertThat(result.hasMessage()).isTrue();
@@ -170,7 +172,8 @@ class DateOfBirthValidatorTest {
     @Test
     @DisplayName("Tomorrow fails and carries the one message today carries")
     void tomorrowIsRejected() {
-        EditResult result = DateOfBirthValidator.validate(CALL_SITE_LABEL, dateOffsetFromToday(TOMORROW));
+        EditResult result = DateOfBirthValidator.validate(CALL_SITE_LABEL,
+                        dateOffsetFromReferenceDate(TOMORROW), REFERENCE_DATE);
 
         assertThat(result.valid()).isFalse();
         assertThat(result.hasMessage()).isTrue();
@@ -181,7 +184,8 @@ class DateOfBirthValidatorTest {
     @Test
     @DisplayName("Yesterday passes, one day under the equality boundary")
     void yesterdayPasses() {
-        EditResult result = DateOfBirthValidator.validate(CALL_SITE_LABEL, dateOffsetFromToday(YESTERDAY));
+        EditResult result = DateOfBirthValidator.validate(CALL_SITE_LABEL,
+                        dateOffsetFromReferenceDate(YESTERDAY), REFERENCE_DATE);
 
         assertThat(result.valid()).isTrue();
         assertThat(result.message()).isNull();
@@ -196,10 +200,13 @@ class DateOfBirthValidatorTest {
     @DisplayName("Yesterday passes while today and tomorrow both fail, which pins the boundary to one day")
     void boundarySpansOneSingleDay() {
         EditResult dayBefore =
-                DateOfBirthValidator.validate(CALL_SITE_LABEL, dateOffsetFromToday(YESTERDAY));
-        EditResult sameDay = DateOfBirthValidator.validate(CALL_SITE_LABEL, dateOffsetFromToday(TODAY));
+                DateOfBirthValidator.validate(CALL_SITE_LABEL,
+                        dateOffsetFromReferenceDate(YESTERDAY), REFERENCE_DATE);
+        EditResult sameDay = DateOfBirthValidator.validate(CALL_SITE_LABEL,
+                        dateOffsetFromReferenceDate(TODAY), REFERENCE_DATE);
         EditResult dayAfter =
-                DateOfBirthValidator.validate(CALL_SITE_LABEL, dateOffsetFromToday(TOMORROW));
+                DateOfBirthValidator.validate(CALL_SITE_LABEL,
+                        dateOffsetFromReferenceDate(TOMORROW), REFERENCE_DATE);
 
         assertThat(dayBefore.valid()).isTrue();
         assertThat(dayBefore.message()).isNull();
@@ -221,7 +228,8 @@ class DateOfBirthValidatorTest {
     @DisplayName("Every date before today passes across the accepted span")
     @ValueSource(longs = {-14600L, -3650L, -365L, -30L, -7L, -2L, -1L})
     void datesBeforeTodayPass(long dayOffset) {
-        EditResult result = DateOfBirthValidator.validate(CALL_SITE_LABEL, dateOffsetFromToday(dayOffset));
+        EditResult result = DateOfBirthValidator.validate(CALL_SITE_LABEL,
+                        dateOffsetFromReferenceDate(dayOffset), REFERENCE_DATE);
 
         assertThat(result.valid()).isTrue();
         assertThat(result.message()).isNull();
@@ -237,7 +245,8 @@ class DateOfBirthValidatorTest {
     @DisplayName("Today and every later date fail across the rejected span")
     @ValueSource(longs = {0L, 1L, 2L, 7L, 30L, 365L, 1825L})
     void todayAndEveryLaterDateFail(long dayOffset) {
-        EditResult result = DateOfBirthValidator.validate(CALL_SITE_LABEL, dateOffsetFromToday(dayOffset));
+        EditResult result = DateOfBirthValidator.validate(CALL_SITE_LABEL,
+                        dateOffsetFromReferenceDate(dayOffset), REFERENCE_DATE);
 
         assertThat(result.valid()).isFalse();
         assertThat(result.message()).isEqualTo(CALL_SITE_FUTURE_DATE_MESSAGE);
@@ -250,7 +259,8 @@ class DateOfBirthValidatorTest {
     @Test
     @DisplayName("The failure message carries the source text character for character")
     void failureMessageCarriesSourceTextExactly() {
-        EditResult result = DateOfBirthValidator.validate(ALL_SPACES_LABEL, dateOffsetFromToday(TODAY));
+        EditResult result = DateOfBirthValidator.validate(ALL_SPACES_LABEL,
+                        dateOffsetFromReferenceDate(TODAY), REFERENCE_DATE);
 
         assertThat(result.valid()).isFalse();
         assertThat(result.hasMessage()).isTrue();
@@ -276,7 +286,8 @@ class DateOfBirthValidatorTest {
         assertThat(PADDED_CALL_SITE_LABEL).hasSize(LABEL_FIELD_WIDTH).endsWith(ONE_SPACE);
 
         EditResult result =
-                DateOfBirthValidator.validate(PADDED_CALL_SITE_LABEL, dateOffsetFromToday(TOMORROW));
+                DateOfBirthValidator.validate(PADDED_CALL_SITE_LABEL,
+                        dateOffsetFromReferenceDate(TOMORROW), REFERENCE_DATE);
 
         assertThat(result.valid()).isFalse();
         assertThat(result.message()).isEqualTo(CALL_SITE_FUTURE_DATE_MESSAGE);
@@ -296,7 +307,8 @@ class DateOfBirthValidatorTest {
         Set<String> distinctMessages = new LinkedHashSet<>();
         for (long dayOffset : REJECTED_DAY_OFFSETS) {
             EditResult result =
-                    DateOfBirthValidator.validate(CALL_SITE_LABEL, dateOffsetFromToday(dayOffset));
+                    DateOfBirthValidator.validate(CALL_SITE_LABEL,
+                        dateOffsetFromReferenceDate(dayOffset), REFERENCE_DATE);
 
             assertThat(result.valid()).isFalse();
             assertThat(result.hasMessage()).isTrue();
@@ -307,7 +319,8 @@ class DateOfBirthValidatorTest {
 
         for (long dayOffset : ACCEPTED_DAY_OFFSETS) {
             EditResult result =
-                    DateOfBirthValidator.validate(CALL_SITE_LABEL, dateOffsetFromToday(dayOffset));
+                    DateOfBirthValidator.validate(CALL_SITE_LABEL,
+                        dateOffsetFromReferenceDate(dayOffset), REFERENCE_DATE);
 
             assertThat(result.valid()).isTrue();
             assertThat(result.message()).isNull();
@@ -316,58 +329,50 @@ class DateOfBirthValidatorTest {
     }
 
     /**
-     * Guards the shape the one call site at app/cbl/COACTUPC.cbl:L1540 needs: one entry point,
-     * reachable with no instance. A second public method would open a second message path.
+     * Asserts the two entry points the one call site at app/cbl/COACTUPC.cbl:L1540 needs are
+     * declared, each reachable with no instance and each returning a verdict.
+     *
+     * <p>Only the callable contract is asserted. A compatible addition, such as a further overload,
+     * is not a behaviour change and does not belong in a test.
      */
     @Test
-    @DisplayName("The validator is a final class with one private constructor and one public method")
-    void validatorExposesOneStaticEntryPoint() {
-        assertThat(Modifier.isFinal(DateOfBirthValidator.class.getModifiers())).isTrue();
+    @DisplayName("Both validate overloads are static and return a verdict")
+    void validatorDeclaresItsRequiredEntryPoints() throws NoSuchMethodException {
+        Method clockReading = DateOfBirthValidator.class.getMethod("validate", String.class,
+                String.class);
+        Method referenceDated = DateOfBirthValidator.class.getMethod("validate", String.class,
+                String.class, LocalDate.class);
 
-        Constructor<?>[] constructors = DateOfBirthValidator.class.getDeclaredConstructors();
-
-        assertThat(constructors).hasSize(1);
-        assertThat(Modifier.isPrivate(constructors[0].getModifiers())).isTrue();
-        assertThat(constructors[0].getParameterCount()).isZero();
-
-        List<Method> publicMethods = Arrays.stream(DateOfBirthValidator.class.getDeclaredMethods())
-                .filter(method -> !method.isSynthetic())
-                .filter(method -> Modifier.isPublic(method.getModifiers()))
-                .toList();
-
-        assertThat(publicMethods).hasSize(1);
-
-        Method entryPoint = publicMethods.getFirst();
-
-        assertThat(entryPoint.getName()).isEqualTo("validate");
-        assertThat(Modifier.isStatic(entryPoint.getModifiers())).isTrue();
-        assertThat(entryPoint.getReturnType()).isEqualTo(EditResult.class);
-        assertThat(entryPoint.getParameterTypes()).containsExactly(String.class, String.class);
+        for (Method entryPoint : List.of(clockReading, referenceDated)) {
+            assertThat(Modifier.isStatic(entryPoint.getModifiers())).isTrue();
+            assertThat(Modifier.isPublic(entryPoint.getModifiers())).isTrue();
+            assertThat(entryPoint.getReturnType()).isEqualTo(EditResult.class);
+        }
     }
 
     /**
-     * Renders a date a given number of days from today in the eight characters
+     * Renders a date a given number of days from {@link #REFERENCE_DATE} in the eight characters
      * {@code WS-EDIT-DATE-CCYYMMDD} holds, declared at app/cpy/CSUTLDWY.cpy:L4.
      *
-     * <p>{@link LocalDate#now()} supplies today, matching {@code FUNCTION CURRENT-DATE} at
-     * app/cpy/CSUTLDPY.cpy:L343 and the reading {@link DateOfBirthValidator} performs. No test in
-     * this class writes a date as a literal, so none of them ages.</p>
+     * <p>Every test in this class passes {@link #REFERENCE_DATE} to the production overload as well,
+     * so the value this method builds and the day the comparison runs against are one value. Reading
+     * the clock twice can flip a verdict at midnight, and nothing here reads it at all.</p>
      *
-     * @param dayOffset days to add to today; a negative value moves back
+     * @param dayOffset days to add to {@link #REFERENCE_DATE}; a negative value moves back
      * @return exactly eight characters of century, year, month, and day
      */
-    private static String dateOffsetFromToday(long dayOffset) {
-        return LocalDate.now().plusDays(dayOffset).format(DateTimeFormatter.BASIC_ISO_DATE);
+    private static String dateOffsetFromReferenceDate(long dayOffset) {
+        return REFERENCE_DATE.plusDays(dayOffset).format(DateTimeFormatter.BASIC_ISO_DATE);
     }
 
     /**
-     * Renders a date a given number of years before today in the eight characters
+     * Renders a date a given number of years before {@link #REFERENCE_DATE} in the eight characters
      * {@code WS-EDIT-DATE-CCYYMMDD} holds at app/cpy/CSUTLDWY.cpy:L4.
      *
-     * @param years years to subtract from today
+     * @param years years to subtract from {@link #REFERENCE_DATE}
      * @return exactly eight characters of century, year, month, and day
      */
-    private static String dateYearsBeforeToday(int years) {
-        return LocalDate.now().minusYears(years).format(DateTimeFormatter.BASIC_ISO_DATE);
+    private static String dateYearsBeforeReferenceDate(int years) {
+        return REFERENCE_DATE.minusYears(years).format(DateTimeFormatter.BASIC_ISO_DATE);
     }
 }

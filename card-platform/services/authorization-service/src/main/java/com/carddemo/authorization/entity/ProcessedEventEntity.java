@@ -3,13 +3,14 @@ package com.carddemo.authorization.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * One row per event identifier the authorization service has already handled, in table
+ * One row per event identifier the authorization service has handled, in table
  * {@code processed_event}.
  *
  * <p>ADDITIVE: no CardDemo copybook and no CardDemo program is the ancestor of this table. The
@@ -18,13 +19,19 @@ import java.util.UUID;
  * fails that test and reaches {@code PERFORM 9999-ABEND-PROGRAM} at L577. That abend routine at
  * {@code app/cbl/CBTRN02C.cbl:L707-L711} holds four statements and performs no cleanup.
  *
- * <p>A writer inserts the marker in the same local transaction as the effect it guards. A duplicate
+ * <p>A consumer checks the identifier, then inserts the marker in the same local transaction as the
+ * side effects it guards, and acknowledges only after that transaction commits. A duplicate
  * delivery finds the row present and does nothing. Apache Kafka 4.2.1 delivers at least once. A
  * restart, a consumer group rebalance, or a crash between the side effects and the offset commit
  * redelivers a message.
  *
- * <p>This service registers no listener and publishes two topics. The marker covers a replayed
- * authorization request and the outbox relay's restart path.
+ * <p>The concrete incoming event this marker guards is {@code AccountStateChanged}, which the
+ * account service publishes on an account update and on a cycle close. The authorization service
+ * reads {@code account_credit_snapshot} on every decision, and that projection is only current while
+ * something applies those events to it. Applying one twice would double-count a cycle accumulator,
+ * so the consumer records the event identifier here in the same local transaction as the projection
+ * row it changes. {@code repository/ProcessedEventRepository} owns the existence check, the insert
+ * and the retention purge.
  *
  * <p>Two columns, both {@code NOT NULL}, created on PostgreSQL 18.4 by
  * {@code src/main/resources/db/migration/V1__schema.sql:L80-L84}:
@@ -43,11 +50,11 @@ import java.util.UUID;
  * {@code src/main/resources/application.yml}. That file sets
  * {@code spring.jpa.hibernate.ddl-auto} to {@code validate}. Hibernate checks this mapping against
  * the migration above at start-up.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
-@Table(name = "processed_event")
+@Table(name = "processed_event",
+        indexes = @Index(name = "ix_processed_event_processed_at",
+                columnList = "processed_at"))
 public class ProcessedEventEntity {
 
     /** Event identifier and primary key, from column {@code event_id UUID NOT NULL}. */
@@ -61,6 +68,24 @@ public class ProcessedEventEntity {
      */
     @Column(name = "processed_at", nullable = false)
     private Instant processedAt;
+
+    /**
+     * Widest value {@code consumed_topic} holds, from {@code consumed_topic VARCHAR(128)} in
+     * {@code src/main/resources/db/migration/V1__schema.sql}.
+     */
+    public static final int CONSUMED_TOPIC_MAX_LENGTH = 128;
+
+    /**
+     * Which topic the delivery that first handled this event arrived on, or null when the
+     * marker was written without one.
+     *
+     * <p>A marker on its own says an event was handled and nothing about where it came from, which
+     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
+     * came from or arrive on a dead-letter topic during a recovery, and those are different
+     * situations. Recording the topic separates them.
+     */
+    @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
+    private String consumedTopic;
 
     /**
      * No-argument constructor the persistence provider calls. Hibernate assigns both fields through
@@ -82,20 +107,10 @@ public class ProcessedEventEntity {
         this.processedAt = Objects.requireNonNull(processedAt, "processedAt");
     }
 
-    /**
-     * Returns the event identifier this marker records.
-     *
-     * @return value of column {@code event_id}
-     */
     public UUID getEventId() {
         return eventId;
     }
 
-    /**
-     * Returns the instant this marker was written.
-     *
-     * @return value of column {@code processed_at}
-     */
     public Instant getProcessedAt() {
         return processedAt;
     }
@@ -137,5 +152,38 @@ public class ProcessedEventEntity {
     @Override
     public String toString() {
         return "ProcessedEventEntity[eventId=" + eventId + ", processedAt=" + processedAt + "]";
+    }
+
+    /**
+     * Returns which topic the delivery that first handled this event arrived on.
+     *
+     * @return the topic name, or null when the marker carries none
+     */
+    public String getConsumedTopic() {
+        return consumedTopic;
+    }
+
+    /**
+     * Records which topic the delivery that first handled this event arrived on.
+     *
+     * <p>A value longer than {@value #CONSUMED_TOPIC_MAX_LENGTH} characters is refused rather than
+     * truncated, because a truncated topic name names a topic that does not exist and is worse than
+     * none.
+     *
+     * @param consumedTopic the topic name, or null to record none
+     * @throws IllegalArgumentException if {@code consumedTopic} is blank or too long
+     */
+    public void setConsumedTopic(String consumedTopic) {
+        if (consumedTopic != null) {
+            if (consumedTopic.isBlank()) {
+                throw new IllegalArgumentException("consumedTopic is blank");
+            }
+            if (consumedTopic.length() > CONSUMED_TOPIC_MAX_LENGTH) {
+                throw new IllegalArgumentException("consumedTopic is " + consumedTopic.length()
+                        + " characters, over the " + CONSUMED_TOPIC_MAX_LENGTH
+                        + " its column holds");
+            }
+        }
+        this.consumedTopic = consumedTopic;
     }
 }

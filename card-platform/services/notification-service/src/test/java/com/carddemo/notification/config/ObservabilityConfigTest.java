@@ -1,15 +1,21 @@
 package com.carddemo.notification.config;
 
+import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
+
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
+import java.time.Duration;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -17,6 +23,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -49,8 +56,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Metrics and structured logging are additive. The source answers an infrastructure fault with
  * the abend routine at {@code app/cbl/CBTRN02C.cbl:L707-L711} and formats a two-byte file status by
- * hand at {@code app/cbl/CBTRN02C.cbl:L714-L727}. See {@code card-platform/docs/decision-log.md}
- * for the decisions behind this module.</p>
+ * hand at {@code app/cbl/CBTRN02C.cbl:L714-L727}.</p>
  */
 @DisplayName("ObservabilityConfig, five meters under one prefix and the observability properties of"
         + " the notification service")
@@ -83,12 +89,27 @@ class ObservabilityConfigTest {
     /** Tag value every tagged meter registers for input outside its own set. */
     private static final String FALLBACK_TAG_VALUE = "unknown";
 
-    /** Tag values the {@code event.type} dimension carries, three event types and the fallback. */
-    private static final Set<String> EVENT_TYPE_VALUES = Set.of("TransactionPosted", "FraudFlagged",
-            "FraudCleared", FALLBACK_TAG_VALUE);
+    /** Tag values the {@code event.type} dimension carries, four event types and the fallback. */
+    private static final Set<String> EVENT_TYPE_VALUES = Set.of("TransactionAuthorized",
+            "TransactionPosted", "FraudFlagged", "FraudCleared", FALLBACK_TAG_VALUE);
 
     /** Tag values the {@code format} dimension carries, one per renderer and the fallback. */
     private static final Set<String> FORMAT_VALUES = Set.of("text", "html", FALLBACK_TAG_VALUE);
+
+    /** One declared {@code event.type} value, used where one label is enough. */
+    private static final String EVENT_TRANSACTION_POSTED = "TransactionPosted";
+
+    /** A second declared {@code event.type} value, used where one label is enough. */
+    private static final String EVENT_FRAUD_FLAGGED = "FraudFlagged";
+
+    /** One declared {@code format} value, used where one label is enough. */
+    private static final String FORMAT_HTML = "html";
+
+    /** A label no dimension declares, which every lookup resolves to the fallback series. */
+    private static final String UNDECLARED_LABEL = "NoSuchLabel";
+
+    /** Elapsed time one timed recording carries, in milliseconds. */
+    private static final long LATENCY_SAMPLE_MILLIS = 17L;
 
     /** Name prefix the failure-kind constants share. */
     private static final String FAILURE_CONSTANT_PREFIX = "FAILURE_";
@@ -99,6 +120,7 @@ class ObservabilityConfigTest {
      * constant fails.
      */
     private static final Map<String, String> DECLARED_TAG_VALUE_CONSTANTS = Map.ofEntries(
+            Map.entry("EVENT_TRANSACTION_AUTHORIZED", "TransactionAuthorized"),
             Map.entry("EVENT_TRANSACTION_POSTED", "TransactionPosted"),
             Map.entry("EVENT_FRAUD_FLAGGED", "FraudFlagged"),
             Map.entry("EVENT_FRAUD_CLEARED", "FraudCleared"),
@@ -126,7 +148,8 @@ class ObservabilityConfigTest {
     private static final String LOG_FILE_PREFIX = "logging.file.";
 
     /** Endpoint names the exposure list holds. */
-    private static final Set<String> EXPOSED_ENDPOINTS = Set.of("health", "metrics", "prometheus");
+    private static final Set<String> EXPOSED_ENDPOINTS =
+            Set.of("health", "metrics", "prometheus");
 
     /** Endpoint names the exposure list withholds. Each one reports runtime internals. */
     private static final Set<String> WITHHELD_ENDPOINTS = Set.of("env", "configprops", "beans",
@@ -155,6 +178,77 @@ class ObservabilityConfigTest {
             .withUserConfiguration(ObservabilityConfig.class);
 
     /**
+     * Asserts each lookup returns the meter its arguments name, and that recording against one
+     * series leaves every other series untouched.
+     *
+     * <p>A meter registered against the wrong name or the wrong tag reads zero forever while a
+     * dashboard shows a flat line. This test moves each series by one and reads the rest back, so a
+     * lookup wired to the wrong series fails here rather than at a scrape.</p>
+     *
+     * <p>The listeners that call these lookups arrive with
+     * {@code messaging/TransactionPostedConsumer.java} and
+     * {@code messaging/FraudFlaggedConsumer.java}, and the renderer counters with
+     * {@code domain/NotificationService.java}. Every lookup below already returns a live meter.</p>
+     */
+    @Test
+    @DisplayName("each lookup returns its own series and recording moves that series alone")
+    void eachLookupReturnsItsOwnSeriesAndRecordingMovesThatSeriesAlone() {
+        RUNNER.run(context -> {
+            NotificationMetrics metrics = context.getBean(NotificationMetrics.class);
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+
+            metrics.eventsConsumed(NotificationMetrics.EVENT_TRANSACTION_AUTHORIZED).increment();
+            metrics.processingLatency(NotificationMetrics.EVENT_TRANSACTION_POSTED)
+                    .record(Duration.ofMillis(7));
+            metrics.failures(NotificationMetrics.FAILURE_RENDERING).increment();
+            metrics.notificationsRendered(NotificationMetrics.FORMAT_HTML).increment();
+            metrics.duplicatesSkipped().increment();
+
+            assertThat(counterCount(registry, EVENTS_CONSUMED, EVENT_TYPE_TAG,
+                    NotificationMetrics.EVENT_TRANSACTION_AUTHORIZED)).isEqualTo(1.0D);
+            assertThat(counterCount(registry, EVENTS_CONSUMED, EVENT_TYPE_TAG,
+                    NotificationMetrics.EVENT_TRANSACTION_POSTED)).isZero();
+            assertThat(timerCount(registry, PROCESSING_LATENCY, EVENT_TYPE_TAG,
+                    NotificationMetrics.EVENT_TRANSACTION_POSTED)).isEqualTo(1L);
+            assertThat(timerCount(registry, PROCESSING_LATENCY, EVENT_TYPE_TAG,
+                    NotificationMetrics.EVENT_FRAUD_FLAGGED)).isZero();
+            assertThat(counterCount(registry, FAILURES, FAILURE_KIND_TAG,
+                    NotificationMetrics.FAILURE_RENDERING)).isEqualTo(1.0D);
+            assertThat(counterCount(registry, FAILURES, FAILURE_KIND_TAG,
+                    NotificationMetrics.FAILURE_PERSISTENCE)).isZero();
+            assertThat(counterCount(registry, NOTIFICATIONS_RENDERED, FORMAT_TAG,
+                    NotificationMetrics.FORMAT_HTML)).isEqualTo(1.0D);
+            assertThat(counterCount(registry, NOTIFICATIONS_RENDERED, FORMAT_TAG,
+                    NotificationMetrics.FORMAT_TEXT)).isZero();
+            assertThat(metrics.duplicatesSkipped().count()).isEqualTo(1.0D);
+        });
+    }
+
+    /**
+     * Asserts a tag value outside its own set, and a null value, both resolve to the fallback series
+     * rather than registering a new meter or returning null.
+     *
+     * <p>An event type this service does not consume must not create a series at scrape time, and a
+     * null must not reach a caller as a null.</p>
+     */
+    @Test
+    @DisplayName("an unknown or null tag value records against the fallback series")
+    void anUnknownOrNullTagValueRecordsAgainstTheFallbackSeries() {
+        RUNNER.run(context -> {
+            NotificationMetrics metrics = context.getBean(NotificationMetrics.class);
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+
+            metrics.eventsConsumed("TransactionSettled").increment();
+            metrics.eventsConsumed(null).increment();
+
+            assertThat(counterCount(registry, EVENTS_CONSUMED, EVENT_TYPE_TAG, FALLBACK_TAG_VALUE))
+                    .isEqualTo(2.0D);
+            assertThat(tagValuesOf(registry, EVENTS_CONSUMED, EVENT_TYPE_TAG))
+                    .containsExactlyInAnyOrderElementsOf(EVENT_TYPE_VALUES);
+        });
+    }
+
+    /**
      * Asserts every public string constant of {@code NotificationMetrics} holds the literal the
      * assertions below repeat. A rename on one side alone fails here.
      *
@@ -167,10 +261,6 @@ class ObservabilityConfigTest {
                 .containsExactlyInAnyOrderEntriesOf(DECLARED_TAG_VALUE_CONSTANTS);
     }
 
-    /**
-     * Asserts the registry holds the five declared meter names and no sixth, and that every name
-     * starts with {@code carddemo.notification}.
-     */
     @Test
     @DisplayName("the registry holds five meter names, all under one prefix")
     void theFiveDeclaredMeterNamesAreTheOnlyOnesInTheRegistry() {
@@ -186,10 +276,6 @@ class ObservabilityConfigTest {
         });
     }
 
-    /**
-     * Asserts the kind of each meter. Four register as a {@link Counter} and the latency meter
-     * registers as a {@link Timer}.
-     */
     @Test
     void fourMetersAreCountersAndProcessingLatencyIsATimer() {
         RUNNER.run(context -> {
@@ -208,10 +294,6 @@ class ObservabilityConfigTest {
         });
     }
 
-    /**
-     * Asserts each tagged meter carries one tag key and no other. A registry-wide tag adds a second
-     * key to every meter, which fails this test.
-     */
     @Test
     void eachTaggedMeterCarriesExactlyOneTagKey() {
         RUNNER.run(context -> {
@@ -229,13 +311,16 @@ class ObservabilityConfigTest {
     }
 
     /**
-     * Asserts the {@code event.type} dimension carries the three consumed event types and the
-     * fallback series. {@code FraudFlagged} and {@code FraudCleared} share one topic, and the
-     * envelope event type separates them.
+     * Asserts the {@code event.type} dimension carries the four consumed event types and the
+     * fallback series. This service reads {@code transaction.authorized},
+     * {@code transaction.posted} and {@code fraud.assessed}. {@code FraudFlagged} and
+     * {@code FraudCleared} share the last of those, and the envelope event type separates them.
+     * An authorization event tagged {@code unknown} would mean this series lost a type it consumes.
      */
     @Test
-    @DisplayName("event.type carries TransactionPosted, FraudFlagged, FraudCleared and the fallback")
-    void theEventTypeTagCarriesThreeConsumedTypesAndTheFallbackSeries() {
+    @DisplayName("event.type carries TransactionAuthorized, TransactionPosted, FraudFlagged, "
+            + "FraudCleared and the fallback")
+    void theEventTypeTagCarriesFourConsumedTypesAndTheFallbackSeries() {
         RUNNER.run(context -> {
             MeterRegistry registry = context.getBean(MeterRegistry.class);
 
@@ -265,11 +350,6 @@ class ObservabilityConfigTest {
         });
     }
 
-    /**
-     * Asserts the {@code failure.kind} dimension carries the failure kinds
-     * {@code NotificationMetrics} declares as constants, and the fallback series. The set is read
-     * from those constants, so this test names no failure kind of its own.
-     */
     @Test
     @DisplayName("failure.kind carries the declared failure-kind constants and the fallback series")
     void theFailureKindTagValuesMatchTheDeclaredConstants() {
@@ -289,10 +369,6 @@ class ObservabilityConfigTest {
         });
     }
 
-    /**
-     * Asserts the skipped-duplicate counter carries no tag. It is the one meter of this module with
-     * a single series.
-     */
     @Test
     void theDuplicatesSkippedCounterCarriesNoTag() {
         RUNNER.run(context -> {
@@ -308,10 +384,6 @@ class ObservabilityConfigTest {
         });
     }
 
-    /**
-     * Asserts every meter reads zero once the context starts. A count read registers nothing, so a
-     * meter missing here is a meter created on first use.
-     */
     @Test
     void everyMeterRegistersEagerlyAndReadsZero() {
         RUNNER.run(context -> {
@@ -334,6 +406,29 @@ class ObservabilityConfigTest {
         });
     }
 
+    /**
+     * Asserts the three metric families the requirement names are each represented. The requirement
+     * reads "event consumed, processing latency, failure count", so a family that loses its last
+     * meter fails here rather than leaving a dashboard panel blank.
+     */
+    @Test
+    @DisplayName("the three metric families the requirement names are each represented")
+    void theThreeMetricFamiliesTheRequirementNamesAreEachRepresented() {
+        RUNNER.run(context -> {
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+
+            assertThat(metersNamed(registry, EVENTS_CONSUMED))
+                    .as("the events-consumed family of the notification service")
+                    .isNotEmpty();
+            assertThat(metersNamed(registry, PROCESSING_LATENCY))
+                    .as("the processing-latency family of the notification service")
+                    .isNotEmpty();
+            assertThat(metersNamed(registry, FAILURES))
+                    .as("the failure-count family of the notification service")
+                    .isNotEmpty();
+        });
+    }
+
     /** Asserts the context holds one {@code NotificationMetrics} bean and no second. */
     @Test
     void notificationMetricsIsTheOnlyBeanOfItsType() {
@@ -345,10 +440,6 @@ class ObservabilityConfigTest {
         });
     }
 
-    /**
-     * Asserts the exposure list names the endpoints it opens, holds no wildcard, and withholds every
-     * endpoint that reports runtime internals.
-     */
     @Test
     @DisplayName("actuator exposes health, metrics and prometheus, and no wildcard")
     void actuatorExposesThreeNamedEndpointsAndNoWildcard() {
@@ -367,7 +458,6 @@ class ObservabilityConfigTest {
         });
     }
 
-    /** Asserts the Prometheus registry exports metrics, which is what a scrape reads. */
     @Test
     void prometheusMetricsExportIsEnabled() {
         RUNNER.run(context -> assertThat(context.getBean(ConfigurableEnvironment.class)
@@ -376,10 +466,6 @@ class ObservabilityConfigTest {
                 .isEqualTo("true"));
     }
 
-    /**
-     * Asserts one property key carries the whole structured-logging setup, and that no log pattern
-     * key and no log file key resolves. The module ships no logging configuration file.
-     */
     @Test
     void structuredConsoleLoggingUsesOneKeyAndNoPatternOrFileKey() {
         RUNNER.run(context -> {
@@ -397,10 +483,6 @@ class ObservabilityConfigTest {
         });
     }
 
-    /**
-     * Asserts neither the statement logger nor the bind-parameter logger sits at {@code DEBUG} or
-     * {@code TRACE}. Either level prints a card number into a log line.
-     */
     @Test
     @DisplayName("neither the statement logger nor the bind-parameter logger prints card numbers")
     void neitherStatementNorParameterLoggerSitsAtDebugOrTrace() {
@@ -419,12 +501,12 @@ class ObservabilityConfigTest {
     }
 
     /**
-     * Asserts the root logger and the platform logger both resolve to {@code INFO} with no
-     * environment variable set. Both keys read a variable and fall back to that level.
+     * Asserts the root logger resolves to {@code INFO} and the platform logger to {@code DEBUG}
+     * with no environment variable set. Both keys read a variable and fall back to that level.
      */
     @Test
     @DisplayName("the root and platform log levels resolve with no environment variable set")
-    void rootAndPlatformLogLevelsResolveToInfo() {
+    void rootAndPlatformLogLevelsResolveToTheirShippedDefaults() {
         RUNNER.run(context -> {
             Environment environment = context.getBean(ConfigurableEnvironment.class);
 
@@ -433,14 +515,10 @@ class ObservabilityConfigTest {
                     .isEqualTo("INFO");
             assertThat(environment.getProperty(PLATFORM_LEVEL_KEY))
                     .as("%s with no environment variable set", PLATFORM_LEVEL_KEY)
-                    .isEqualTo("INFO");
+                    .isEqualTo(DEBUG_LEVEL);
         });
     }
 
-    /**
-     * Asserts the class loader finds no logging configuration file and no profile companion of
-     * {@code application.yml}. One file holds the whole configuration of this module.
-     */
     @Test
     void noLoggingConfigurationFileOrProfileCompanionSitsOnTheClasspath() {
         ClassLoader loader = getClass().getClassLoader();
@@ -455,10 +533,6 @@ class ObservabilityConfigTest {
                         .isNull());
     }
 
-    /**
-     * Asserts {@link ObservabilityConfig} is public and not final. The framework proxies a
-     * configuration class by subclassing it, and a final class fails that step at start-up.
-     */
     @Test
     void observabilityConfigIsPublicAndNotFinal() {
         int modifiers = ObservabilityConfig.class.getModifiers();
@@ -471,11 +545,6 @@ class ObservabilityConfigTest {
                 .isFalse();
     }
 
-    /**
-     * Asserts {@code NotificationMetrics} is public, static and a declared member class of
-     * {@link ObservabilityConfig}. A non-static nested class needs an enclosing instance, which the
-     * bean factory has none of.
-     */
     @Test
     void notificationMetricsIsAPublicStaticMemberClassOfObservabilityConfig() {
         Class<?> nested = ObservabilityConfig.NotificationMetrics.class;
@@ -494,26 +563,329 @@ class ObservabilityConfigTest {
                 .contains(nested);
     }
 
+    /**
+     * Asserts every lookup returns the meter its own name identifies. A lookup reading the wrong
+     * map returns a meter of the wrong name, and the tag value it carries would still match.
+     */
+    @Test
+    @DisplayName("each lookup returns a meter registered under its own name and tag value")
+    void everyLookupReturnsTheMeterItsOwnNameIdentifies() {
+        RUNNER.run(context -> {
+            NotificationMetrics metrics = context.getBean(NotificationMetrics.class);
+
+            for (String eventType : EVENT_TYPE_VALUES) {
+                assertMeterIdentity(metrics.eventsConsumed(eventType), EVENTS_CONSUMED,
+                        EVENT_TYPE_TAG, eventType);
+                assertMeterIdentity(metrics.processingLatency(eventType), PROCESSING_LATENCY,
+                        EVENT_TYPE_TAG, eventType);
+            }
+            for (String failureKind : declaredFailureKinds()) {
+                assertMeterIdentity(metrics.failures(failureKind), FAILURES, FAILURE_KIND_TAG,
+                        failureKind);
+            }
+            assertMeterIdentity(metrics.failures(FALLBACK_TAG_VALUE), FAILURES, FAILURE_KIND_TAG,
+                    FALLBACK_TAG_VALUE);
+            for (String format : FORMAT_VALUES) {
+                assertMeterIdentity(metrics.notificationsRendered(format), NOTIFICATIONS_RENDERED,
+                        FORMAT_TAG, format);
+            }
+
+            assertThat(metrics.duplicatesSkipped().getId().getName())
+                    .as("name of the meter duplicatesSkipped returns")
+                    .isEqualTo(DUPLICATES_SKIPPED);
+            assertThat(metrics.duplicatesSkipped().getId().getTags())
+                    .as("tags of the meter duplicatesSkipped returns")
+                    .isEmpty();
+        });
+    }
+
+    /**
+     * Records through every lookup, one label at a time, and asserts the recording reaches exactly
+     * one series. A lookup returning a shared meter would move two series, and a lookup resolving
+     * the wrong tag value would move the wrong one.
+     */
+    @Test
+    @DisplayName("recording through one lookup moves that series alone")
+    void recordingThroughOneLookupMovesThatSeriesAlone() {
+        RUNNER.run(context -> {
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+            NotificationMetrics metrics = context.getBean(NotificationMetrics.class);
+
+            for (String eventType : EVENT_TYPE_VALUES) {
+                assertOnlySeriesMoved(registry,
+                        () -> metrics.eventsConsumed(eventType).increment(),
+                        EVENTS_CONSUMED, EVENT_TYPE_TAG, eventType, 1.0d);
+                assertOnlySeriesMoved(registry,
+                        () -> metrics.processingLatency(eventType)
+                                .record(Duration.ofMillis(LATENCY_SAMPLE_MILLIS)),
+                        PROCESSING_LATENCY, EVENT_TYPE_TAG, eventType, 1.0d);
+            }
+            for (String failureKind : declaredFailureKinds()) {
+                assertOnlySeriesMoved(registry, () -> metrics.failures(failureKind).increment(),
+                        FAILURES, FAILURE_KIND_TAG, failureKind, 1.0d);
+            }
+            for (String format : FORMAT_VALUES) {
+                assertOnlySeriesMoved(registry,
+                        () -> metrics.notificationsRendered(format).increment(),
+                        NOTIFICATIONS_RENDERED, FORMAT_TAG, format, 1.0d);
+            }
+            assertOnlySeriesMoved(registry, () -> metrics.duplicatesSkipped().increment(),
+                    DUPLICATES_SKIPPED, null, null, 1.0d);
+        });
+    }
+
+    /**
+     * Asserts a label outside its own set, and a null label, both resolve to the fallback series.
+     * The fallback keeps an unexpected label from registering a meter of its own, which is how a
+     * tagged registry grows without bound.
+     */
+    @Test
+    @DisplayName("an unknown label and a null label both record on the fallback series")
+    void anUnknownLabelAndANullLabelBothRecordOnTheFallbackSeries() {
+        RUNNER.run(context -> {
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+            NotificationMetrics metrics = context.getBean(NotificationMetrics.class);
+
+            for (String label : List.of(UNDECLARED_LABEL, "")) {
+                assertOnlySeriesMoved(registry, () -> metrics.eventsConsumed(label).increment(),
+                        EVENTS_CONSUMED, EVENT_TYPE_TAG, FALLBACK_TAG_VALUE, 1.0d);
+                assertOnlySeriesMoved(registry,
+                        () -> metrics.processingLatency(label)
+                                .record(Duration.ofMillis(LATENCY_SAMPLE_MILLIS)),
+                        PROCESSING_LATENCY, EVENT_TYPE_TAG, FALLBACK_TAG_VALUE, 1.0d);
+                assertOnlySeriesMoved(registry, () -> metrics.failures(label).increment(),
+                        FAILURES, FAILURE_KIND_TAG, FALLBACK_TAG_VALUE, 1.0d);
+                assertOnlySeriesMoved(registry,
+                        () -> metrics.notificationsRendered(label).increment(),
+                        NOTIFICATIONS_RENDERED, FORMAT_TAG, FALLBACK_TAG_VALUE, 1.0d);
+            }
+
+            assertOnlySeriesMoved(registry, () -> metrics.eventsConsumed(null).increment(),
+                    EVENTS_CONSUMED, EVENT_TYPE_TAG, FALLBACK_TAG_VALUE, 1.0d);
+            assertOnlySeriesMoved(registry,
+                    () -> metrics.processingLatency(null)
+                            .record(Duration.ofMillis(LATENCY_SAMPLE_MILLIS)),
+                    PROCESSING_LATENCY, EVENT_TYPE_TAG, FALLBACK_TAG_VALUE, 1.0d);
+            assertOnlySeriesMoved(registry, () -> metrics.failures(null).increment(),
+                    FAILURES, FAILURE_KIND_TAG, FALLBACK_TAG_VALUE, 1.0d);
+            assertOnlySeriesMoved(registry, () -> metrics.notificationsRendered(null).increment(),
+                    NOTIFICATIONS_RENDERED, FORMAT_TAG, FALLBACK_TAG_VALUE, 1.0d);
+        });
+    }
+
+    /**
+     * Asserts no lookup returns null and no lookup registers a meter. A lookup that registered on
+     * demand would grow the registry once an unexpected label arrived.
+     */
+    @Test
+    @DisplayName("no lookup returns null and no lookup registers a meter")
+    void noLookupReturnsNullAndNoLookupRegistersAMeter() {
+        RUNNER.run(context -> {
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+            NotificationMetrics metrics = context.getBean(NotificationMetrics.class);
+            int registeredBefore = registry.getMeters().size();
+
+            List<String> labels = new ArrayList<>();
+            labels.addAll(EVENT_TYPE_VALUES);
+            labels.addAll(FORMAT_VALUES);
+            labels.addAll(declaredFailureKinds());
+            labels.add(UNDECLARED_LABEL);
+            labels.add("");
+
+            for (String label : labels) {
+                assertThat(metrics.eventsConsumed(label))
+                        .as("eventsConsumed answers every label").isNotNull();
+                assertThat(metrics.processingLatency(label))
+                        .as("processingLatency answers every label").isNotNull();
+                assertThat(metrics.failures(label))
+                        .as("failures answers every label").isNotNull();
+                assertThat(metrics.notificationsRendered(label))
+                        .as("notificationsRendered answers every label").isNotNull();
+            }
+            assertThat(metrics.eventsConsumed(null)).as("eventsConsumed answers null").isNotNull();
+            assertThat(metrics.processingLatency(null))
+                    .as("processingLatency answers null").isNotNull();
+            assertThat(metrics.failures(null)).as("failures answers null").isNotNull();
+            assertThat(metrics.notificationsRendered(null))
+                    .as("notificationsRendered answers null").isNotNull();
+            assertThat(metrics.duplicatesSkipped())
+                    .as("duplicatesSkipped answers with its one counter").isNotNull();
+
+            assertThat(registry.getMeters()).as("meters registered after every lookup")
+                    .hasSize(registeredBefore);
+        });
+    }
+
+    /**
+     * Asserts a timer records elapsed time, not just an occurrence count. A timer whose recording
+     * reached the count alone would report every event as instantaneous.
+     */
+    @Test
+    void theLatencyTimerRecordsElapsedTimeAndNotOnlyACount() {
+        RUNNER.run(context -> {
+            Timer timer = context.getBean(NotificationMetrics.class)
+                    .processingLatency(EVENT_TRANSACTION_POSTED);
+
+            timer.record(Duration.ofMillis(LATENCY_SAMPLE_MILLIS));
+
+            assertThat(timer.count()).as("recordings the latency timer holds").isEqualTo(1L);
+            assertThat(timer.totalTime(TimeUnit.MILLISECONDS))
+                    .as("total time the latency timer holds, in milliseconds")
+                    .isEqualTo((double) LATENCY_SAMPLE_MILLIS);
+        });
+    }
+
+    /**
+     * Asserts one lookup returns the same meter on every call, so a caller holding the result and a
+     * caller looking it up again record on one series.
+     */
+    @Test
+    void everyLookupAnswersWithTheSameMeterEachTime() {
+        RUNNER.run(context -> {
+            NotificationMetrics metrics = context.getBean(NotificationMetrics.class);
+
+            assertThat(metrics.eventsConsumed(EVENT_TRANSACTION_POSTED))
+                    .as("counter eventsConsumed answers with, on two calls")
+                    .isSameAs(metrics.eventsConsumed(EVENT_TRANSACTION_POSTED));
+            assertThat(metrics.processingLatency(EVENT_FRAUD_FLAGGED))
+                    .as("timer processingLatency answers with, on two calls")
+                    .isSameAs(metrics.processingLatency(EVENT_FRAUD_FLAGGED));
+            assertThat(metrics.failures(FALLBACK_TAG_VALUE))
+                    .as("counter failures answers with, on two calls")
+                    .isSameAs(metrics.failures(UNDECLARED_LABEL));
+            assertThat(metrics.notificationsRendered(FORMAT_HTML))
+                    .as("counter notificationsRendered answers with, on two calls")
+                    .isSameAs(metrics.notificationsRendered(FORMAT_HTML));
+            assertThat(metrics.duplicatesSkipped())
+                    .as("counter duplicatesSkipped answers with, on two calls")
+                    .isSameAs(metrics.duplicatesSkipped());
+        });
+    }
+
+    /**
+     * Asserts one meter identity: the name it registered under, and the value it carries for one
+     * tag key.
+     *
+     * @param meter    the meter a lookup returned
+     * @param name     the meter name the lookup belongs to
+     * @param tagKey   the one tag key that meter carries
+     * @param tagValue the value expected for that key
+     */
+    private static void assertMeterIdentity(Meter meter, String name, String tagKey,
+            String tagValue) {
+        assertThat(meter.getId().getName())
+                .as("name of the meter a lookup answered for tag value %s", tagValue)
+                .isEqualTo(name);
+        assertThat(meter.getId().getTag(tagKey))
+                .as("%s of the meter a lookup answered under %s", tagKey, name)
+                .isEqualTo(tagValue);
+    }
+
+    /**
+     * Runs one recording and asserts exactly one series moved, by the expected amount.
+     *
+     * <p>The reading of a counter is its count and the reading of a timer is its recording count,
+     * so one increment and one timed recording both move their series by one.</p>
+     *
+     * @param registry the registry holding every series
+     * @param recording the recording to run
+     * @param name      the meter name expected to move
+     * @param tagKey    the tag key of the moving series, or {@code null} for the untagged meter
+     * @param tagValue  the tag value of the moving series, or {@code null} for the untagged meter
+     * @param expected  the amount the reading is expected to gain
+     */
+    private static void assertOnlySeriesMoved(MeterRegistry registry, Runnable recording,
+            String name, String tagKey, String tagValue, double expected) {
+        Map<Meter.Id, Double> before = readingsOf(registry);
+
+        recording.run();
+
+        Map<Meter.Id, Double> after = readingsOf(registry);
+        Map<Meter.Id, Double> moved = new LinkedHashMap<>();
+        after.forEach((id, reading) -> {
+            double gain = reading - before.getOrDefault(id, 0.0d);
+            if (gain != 0.0d) {
+                moved.put(id, gain);
+            }
+        });
+
+        assertThat(moved.keySet())
+                .as("series that moved on one recording through %s", name)
+                .hasSize(1);
+        Meter.Id movedId = moved.keySet().iterator().next();
+        assertThat(movedId.getName()).as("name of the series that moved").isEqualTo(name);
+        if (tagKey != null) {
+            assertThat(movedId.getTag(tagKey))
+                    .as("%s of the series that moved under %s", tagKey, name)
+                    .isEqualTo(tagValue);
+        } else {
+            assertThat(movedId.getTags()).as("tags of the untagged series that moved").isEmpty();
+        }
+        assertThat(moved.get(movedId)).as("gain of the series that moved").isEqualTo(expected);
+        assertThat(after.keySet())
+                .as("series present after one recording through %s", name)
+                .containsExactlyInAnyOrderElementsOf(before.keySet());
+    }
+
+    /** Returns the reading of every meter in one registry, keyed by identity. */
+    private static Map<Meter.Id, Double> readingsOf(MeterRegistry registry) {
+        Map<Meter.Id, Double> readings = new LinkedHashMap<>();
+        for (Meter meter : registry.getMeters()) {
+            double reading = meter instanceof Counter counter
+                    ? counter.count()
+                    : ((Timer) meter).count();
+            readings.put(meter.getId(), reading);
+        }
+        return readings;
+    }
+
     /** Returns the distinct meter names one registry holds. */
+    /**
+     * Reads the count of the counter carrying one tag value.
+     *
+     * @param registry the registry holding the meter
+     * @param name     the meter name
+     * @param tagKey   the tag dimension
+     * @param tagValue the tag value naming the series
+     * @return the count of that series
+     */
+    private static double counterCount(MeterRegistry registry, String name, String tagKey,
+            String tagValue) {
+        return Objects.requireNonNull(registry.find(name).tag(tagKey, tagValue).counter(),
+                "no counter named " + name + " carries " + tagKey + "=" + tagValue).count();
+    }
+
+    /**
+     * Reads the recording count of the timer carrying one tag value.
+     *
+     * @param registry the registry holding the meter
+     * @param name     the meter name
+     * @param tagKey   the tag dimension
+     * @param tagValue the tag value naming the series
+     * @return the number of recordings that series took
+     */
+    private static long timerCount(MeterRegistry registry, String name, String tagKey,
+            String tagValue) {
+        return Objects.requireNonNull(registry.find(name).tag(tagKey, tagValue).timer(),
+                "no timer named " + name + " carries " + tagKey + "=" + tagValue).count();
+    }
+
     private static Set<String> meterNamesOf(MeterRegistry registry) {
         return registry.getMeters().stream().map(meter -> meter.getId().getName())
                 .collect(Collectors.toCollection(TreeSet::new));
     }
 
-    /** Returns the meters one name identifies, one per registered tag value. */
     private static List<Meter> metersNamed(MeterRegistry registry, String name) {
         return registry.getMeters().stream()
                 .filter(meter -> meter.getId().getName().equals(name)).toList();
     }
 
-    /** Returns the tag keys the meters under one name carry. */
     private static Set<String> tagKeysOf(MeterRegistry registry, String name) {
         return metersNamed(registry, name).stream()
                 .flatMap(meter -> meter.getId().getTags().stream()).map(Tag::getKey)
                 .collect(Collectors.toCollection(TreeSet::new));
     }
 
-    /** Returns the values the meters under one name carry for one tag key. */
     private static Set<String> tagValuesOf(MeterRegistry registry, String name, String tagKey) {
         return metersNamed(registry, name).stream().map(meter -> meter.getId().getTag(tagKey))
                 .filter(Objects::nonNull).collect(Collectors.toCollection(TreeSet::new));
@@ -556,7 +928,6 @@ class ObservabilityConfigTest {
         return kinds;
     }
 
-    /** Returns the property names one prefix opens, read from every enumerable property source. */
     private static List<String> propertyNamesStartingWith(ConfigurableEnvironment environment,
             String prefix) {
         List<String> names = new ArrayList<>();
@@ -572,13 +943,11 @@ class ObservabilityConfigTest {
         return names;
     }
 
-    /** Returns the endpoint names one comma-separated exposure list holds. */
     private static Set<String> endpointNamesIn(String exposureList) {
         return Arrays.stream(exposureList.split(",")).map(String::trim)
                 .filter(name -> !name.isEmpty()).collect(Collectors.toCollection(TreeSet::new));
     }
 
-    /** Returns the declared level of one logger key, or {@code ABSENT} when it resolves to null. */
     private static String declaredLevelOf(Environment environment, String loggerKey) {
         String level = environment.getProperty(loggerKey);
         return level == null ? ABSENT : level.toUpperCase(Locale.ROOT);

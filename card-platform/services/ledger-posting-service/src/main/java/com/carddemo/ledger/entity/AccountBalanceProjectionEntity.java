@@ -1,6 +1,7 @@
 package com.carddemo.ledger.entity;
 
 import com.carddemo.cobol.PicClause;
+import com.carddemo.events.EventEnvelope;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -31,9 +32,6 @@ import java.util.regex.Pattern;
  * accepts a negative value. The all-arguments constructor rejects an argument at any other scale.
  * The class stores values and performs no arithmetic. The domain package computes each posted
  * amount and supplies the result.
- *
- * <p>Rationale for every choice here: {@code card-platform/docs/decision-log.md}. Field-by-field
- * source mapping and every omitted field: {@code card-platform/docs/traceability-matrix.md}.
  */
 @Entity
 @Table(name = "account_balance_projection")
@@ -85,7 +83,6 @@ public class AccountBalanceProjectionEntity {
             scale = PicClause.ACCT_CURR_CYC_DEBIT_SCALE)
     private BigDecimal cycleDebit;
 
-    /** No-argument constructor the Jakarta Persistence API provider requires. */
     protected AccountBalanceProjectionEntity() {
         // The provider assigns every field after it constructs the instance.
     }
@@ -160,38 +157,18 @@ public class AccountBalanceProjectionEntity {
         return value;
     }
 
-    /**
-     * Returns the account identifier, eleven digits wide.
-     *
-     * @return the value of column {@code account_id}
-     */
     public String getAccountId() {
         return accountId;
     }
 
-    /**
-     * Returns the account balance.
-     *
-     * @return the value of column {@code current_balance}, at scale two
-     */
     public BigDecimal getCurrentBalance() {
         return currentBalance;
     }
 
-    /**
-     * Returns the cycle credit accumulator.
-     *
-     * @return the value of column {@code cycle_credit}, at scale two
-     */
     public BigDecimal getCycleCredit() {
         return cycleCredit;
     }
 
-    /**
-     * Returns the cycle debit accumulator.
-     *
-     * @return the value of column {@code cycle_debit}, at scale two
-     */
     public BigDecimal getCycleDebit() {
         return cycleDebit;
     }
@@ -224,15 +201,19 @@ public class AccountBalanceProjectionEntity {
     }
 
     /**
-     * Renders the identifier and the three amounts.
+     * Names the identifier and the three amounts, and withholds every value.
      *
-     * @return one line naming the class, the account identifier and each amount
+     * <p>This row holds an account identifier and the balance and cycle accumulators that the
+     * credit-limit rule reads. Each appears as {@link EventEnvelope#WITHHELD}, the platform-wide
+     * redaction marker.
+     *
+     * @return one line naming the class, the account identifier and each amount, disclosing none
      */
     @Override
     public String toString() {
-        return "AccountBalanceProjectionEntity[accountId=" + accountId
-                + ", currentBalance=" + currentBalance
-                + ", cycleCredit=" + cycleCredit
-                + ", cycleDebit=" + cycleDebit + "]";
+        return "AccountBalanceProjectionEntity[accountId=" + EventEnvelope.WITHHELD
+                + ", currentBalance=" + EventEnvelope.WITHHELD
+                + ", cycleCredit=" + EventEnvelope.WITHHELD
+                + ", cycleDebit=" + EventEnvelope.WITHHELD + "]";
     }
 }

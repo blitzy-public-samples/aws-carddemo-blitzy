@@ -116,6 +116,7 @@ public final class YesNoFlagValidator {
      * and the result carries no width limit.
      *
      * @param fieldLabel    the field name, which may be {@code null}
+     * @param messageSuffix the text appended to the trimmed label
      */
     private static String message(String fieldLabel, String messageSuffix) {
         String trimmedLabel = fieldLabel == null ? "" : fieldLabel.trim();
@@ -128,6 +129,7 @@ public final class YesNoFlagValidator {
      * {@code EQUAL SPACES} and {@code EQUAL ZEROS} hold only when no character differs.
      *
      * @param value             the value to read, which may be {@code null}
+     * @param expectedCharacter the character every position must hold
      */
     private static boolean isEveryCharacter(String value, char expectedCharacter) {
         if (value == null || value.isEmpty()) {

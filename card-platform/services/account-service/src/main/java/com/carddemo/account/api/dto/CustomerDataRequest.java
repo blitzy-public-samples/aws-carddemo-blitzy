@@ -1,17 +1,25 @@
 package com.carddemo.account.api.dto;
 
+import com.carddemo.account.domain.validation.DomainEdit;
+import com.carddemo.account.domain.validation.EditResult;
+import com.carddemo.account.domain.validation.UsPhoneNumberValidator;
+import com.carddemo.account.domain.validation.UsSocialSecurityNumberValidator;
+import com.carddemo.account.domain.validation.UsStateCodeValidator;
+import com.carddemo.account.domain.validation.UsStateZipPrefixValidator;
+
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 /**
  * Customer detail a caller supplies when updating a customer.
  *
  * <p>Transformed component by component from the group {@code 10 ACUP-NEW-CUST-DATA.} at
- * {@code app/cbl/COACTUPC.cbl:L797}, whose twenty members end at
- * {@code app/cbl/COACTUPC.cbl:L845}. Component order follows member order. Each component holds
- * text. card-platform/docs/traceability-matrix.md maps every component to its member.</p>
+ * {@code app/cbl/COACTUPC.cbl:L797}, whose twenty members end at {@code app/cbl/COACTUPC.cbl:L845}.
+ * Component order follows member order.</p>
  *
  * <p>Three kinds of constraint appear here. Nineteen components declare the width of their source
  * member. Component {@code addressLine1} declares a presence test. Component
@@ -28,21 +36,26 @@ import jakarta.validation.constraints.Size;
  * {@code app/cbl/COACTUPC.cbl:L2439}, {@code app/cbl/COACTUPC.cbl:L2469} and
  * {@code app/cbl/COACTUPC.cbl:L2481}.</p>
  *
- * <p>Three source observations reach card-platform/docs/business-rule-flags.md. The label
- * {@code 'SSN'} at {@code app/cbl/COACTUPC.cbl:L1529} reaches no message. The comments at
- * {@code app/cbl/COACTUPC.cbl:L2433-L2435} name digit ranges for parts two and three that no
+ * <p>The label {@code 'SSN'} at {@code app/cbl/COACTUPC.cbl:L1529} reaches no message. The comments
+ * at {@code app/cbl/COACTUPC.cbl:L2433-L2435} name digit ranges for parts two and three that no
  * statement applies. {@code app/cbl/COACTUPC.cbl:L1607} edits five zip characters while
  * {@code app/cbl/COACTUPC.cbl:L809} declares ten.</p>
  *
  * <p>The three Social Security Number parts and {@code governmentIssuedId} arrive here and travel
- * no further. None of those four values reaches a response body, a log line, a published event, a
- * validation-failure message or an error payload. Every failure message names a field label and
- * carries no character of the value, matching the messages at
+ * no further. No response body, no published event, no validation-failure message and no error
+ * payload carries any of those four values. Every failure message names a field label and carries
+ * no character of the value, matching the messages at
  * {@code app/cbl/COACTUPC.cbl:L2431-L2487}.</p>
  *
- * <p>card-platform/docs/decision-log.md records four deviations this record takes part in: the two
- * date shapes, the three-part Social Security Number model, the unreachable label, and the zip
- * width.</p>
+ * <p>A log line is the one path a record cannot close by construction, because a caller may pass the
+ * whole object to a logger. {@link #toString()} therefore overrides the compiler-generated
+ * rendering and names no component value, so a logged instance carries nothing sensitive.
+ * {@code CustomerDataRequestTest} asserts that. Reading one accessor and logging the result stays a
+ * caller's own responsibility, and no code in this module does it.</p>
+ *
+ * <p>card-platform/docs/decision-log.md (planned) records four deviations this record takes part
+ * in: the two date shapes, the three-part Social Security Number model, the unreachable label, and
+ * the zip width.</p>
  *
  * @param customerId                 customer identifier, from
  *                                   {@code ACUP-NEW-CUST-ID-X PIC X(09)} at
@@ -197,65 +210,97 @@ import jakarta.validation.constraints.Size;
 public record CustomerDataRequest(
 
         @Size(max = CUSTOMER_ID_MAX_LENGTH)
+        @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String customerId,
 
         @Size(max = FIRST_NAME_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.ALPHABETIC_REQUIRED, label = FIRST_NAME_LABEL,
+                width = FIRST_NAME_MAX_LENGTH)
         String firstName,
 
         @Size(max = MIDDLE_NAME_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.ALPHABETIC_OPTIONAL, label = MIDDLE_NAME_LABEL,
+                width = MIDDLE_NAME_MAX_LENGTH)
         String middleName,
 
         @Size(max = LAST_NAME_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.ALPHABETIC_REQUIRED, label = LAST_NAME_LABEL,
+                width = LAST_NAME_MAX_LENGTH)
         String lastName,
 
         @NotBlank(message = ADDRESS_LINE_1_REQUIRED_MESSAGE)
         @Size(max = ADDRESS_LINE_1_MAX_LENGTH)
+        @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
+        @DomainEdit(value = DomainEdit.Edit.MANDATORY, label = ADDRESS_LINE_1_LABEL,
+                width = ADDRESS_LINE_1_MAX_LENGTH)
         String addressLine1,
 
+        @Size(max = ADDRESS_LINE_2_MAX_LENGTH)
+        @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String addressLine2,
 
         @Size(max = ADDRESS_CITY_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.ALPHABETIC_REQUIRED, label = ADDRESS_CITY_LABEL,
+                width = ADDRESS_CITY_MAX_LENGTH)
         String addressCity,
 
         @Size(max = ADDRESS_STATE_CODE_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.ALPHABETIC_REQUIRED, label = ADDRESS_STATE_CODE_LABEL,
+                width = ADDRESS_STATE_CODE_MAX_LENGTH)
         String addressStateCode,
 
         @Size(max = ADDRESS_COUNTRY_CODE_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.ALPHABETIC_REQUIRED,
+                label = ADDRESS_COUNTRY_CODE_LABEL, width = ADDRESS_COUNTRY_CODE_MAX_LENGTH)
         String addressCountryCode,
 
         @Size(max = ADDRESS_ZIP_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.NUMERIC_REQUIRED, label = ADDRESS_ZIP_LABEL,
+                width = ADDRESS_ZIP_MAX_LENGTH)
         String addressZip,
 
         @Size(max = PHONE_NUMBER_MAX_LENGTH)
+        @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String phoneNumber1,
 
         @Size(max = PHONE_NUMBER_MAX_LENGTH)
+        @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String phoneNumber2,
 
         @Size(max = SOCIAL_SECURITY_PART_1_MAX_LENGTH)
+        @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String socialSecurityPart1,
 
         @Size(max = SOCIAL_SECURITY_PART_2_MAX_LENGTH)
+        @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String socialSecurityPart2,
 
         @Size(max = SOCIAL_SECURITY_PART_3_MAX_LENGTH)
+        @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String socialSecurityPart3,
 
         @Size(max = GOVERNMENT_ISSUED_ID_MAX_LENGTH)
+        @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String governmentIssuedId,
 
         @Size(max = DATE_OF_BIRTH_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.DATE_OF_BIRTH, label = DATE_OF_BIRTH_LABEL)
         String dateOfBirth,
 
         @Size(max = EFT_ACCOUNT_ID_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.NUMERIC_REQUIRED, label = EFT_ACCOUNT_ID_LABEL,
+                width = EFT_ACCOUNT_ID_MAX_LENGTH)
         String eftAccountId,
 
         @Size(max = PRIMARY_CARD_HOLDER_INDICATOR_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.YES_NO_FLAG,
+                label = PRIMARY_CARD_HOLDER_INDICATOR_LABEL)
         String primaryCardHolderIndicator,
 
         @Size(max = FICO_CREDIT_SCORE_MAX_LENGTH)
         @DecimalMin(value = LOWEST_PASSING_CREDIT_SCORE, message = FICO_RANGE_MESSAGE)
         @DecimalMax(value = HIGHEST_PASSING_CREDIT_SCORE, message = FICO_RANGE_MESSAGE)
+        @DomainEdit(value = DomainEdit.Edit.CREDIT_SCORE_RANGE, label = FICO_CREDIT_SCORE_LABEL)
         String ficoCreditScore) {
 
     /**
@@ -293,9 +338,15 @@ public record CustomerDataRequest(
     public static final int ADDRESS_LINE_1_MAX_LENGTH = 50;
 
     /**
-     * Width that {@code ACUP-NEW-CUST-ADDR-LINE-2 PIC X(50)} declares at
-     * {@code app/cbl/COACTUPC.cbl:L805}. No constraint on {@code addressLine2} reads this value,
-     * and a mapper writing the stored column does.
+     * Widest {@code addressLine2} this record holds, from
+     * {@code ACUP-NEW-CUST-ADDR-LINE-2 PIC X(50)} at {@code app/cbl/COACTUPC.cbl:L805}. The stored
+     * column {@code address_line_2 VARCHAR(50)} holds the same 50 at
+     * {@code src/main/resources/db/migration/V1__schema.sql:L39}, so a longer value would reach the
+     * database and fail there instead of being reported to the caller.
+     *
+     * <p>The field carries a bound and no emptiness test. Only address lines 1 and 3 are validated
+     * at {@code app/cbl/COACTUPC.cbl:L1585} and {@code app/cbl/COACTUPC.cbl:L1616}; line 2 is
+     * validated nowhere, so the source accepts it empty and this record does too.
      */
     public static final int ADDRESS_LINE_2_MAX_LENGTH = 50;
 
@@ -427,4 +478,299 @@ public record CustomerDataRequest(
      * the label {@code 'FICO Score'} arrives at {@code app/cbl/COACTUPC.cbl:L1545}.
      */
     public static final String FICO_RANGE_MESSAGE = "FICO Score: should be between 300 and 850";
+
+    // The eleven field labels app/cbl/COACTUPC.cbl moves into WS-EDIT-VARIABLE-NAME before it runs
+    // an edit. Each message a caller reads is that label joined to a reason, so the label is part
+    // of the contract text and is reproduced character for character.
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1560}. */
+    public static final String FIRST_NAME_LABEL = "First Name";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1568}. */
+    public static final String MIDDLE_NAME_LABEL = "Middle Name";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1576}. */
+    public static final String LAST_NAME_LABEL = "Last Name";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1584}. */
+    public static final String ADDRESS_LINE_1_LABEL = "Address Line 1";
+
+    /**
+     * Label at {@code app/cbl/COACTUPC.cbl:L1615}.
+     *
+     * <p>The label reads {@code City} while the field it edits is
+     * {@code ACUP-NEW-CUST-ADDR-LINE-3}, which is the third address line. The source names the
+     * third line the city, and this component follows that naming.
+     */
+    public static final String ADDRESS_CITY_LABEL = "City";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1592}. */
+    public static final String ADDRESS_STATE_CODE_LABEL = "State";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1623}. */
+    public static final String ADDRESS_COUNTRY_CODE_LABEL = "Country";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1605}. */
+    public static final String ADDRESS_ZIP_LABEL = "Zip";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1632}. */
+    public static final String PHONE_NUMBER_1_LABEL = "Phone Number 1";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1640}. */
+    public static final String PHONE_NUMBER_2_LABEL = "Phone Number 2";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1648}. */
+    public static final String EFT_ACCOUNT_ID_LABEL = "EFT Account Id";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1657}. */
+    public static final String PRIMARY_CARD_HOLDER_INDICATOR_LABEL = "Primary Card Holder";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1533}. */
+    public static final String DATE_OF_BIRTH_LABEL = "Date of Birth";
+
+    /** Label at {@code app/cbl/COACTUPC.cbl:L1545}. */
+    public static final String FICO_CREDIT_SCORE_LABEL = "FICO Score";
+
+    /**
+     * The characters a free-text component may hold: printable ones and nothing else.
+     *
+     * <p>The range runs from the space at {@code 0x20} to the tilde at {@code 0x7E}, so every C0
+     * control character is outside it, carriage return and line feed included. Every character of
+     * all fifty records of {@code app/data/ASCII/custdata.txt} falls inside it.
+     *
+     * <p>The guard is declared only on the components whose edit does not already exclude a control
+     * character. An alphabetic edit accepts letters and spaces, and a numeric edit accepts digits,
+     * so a control character fails those edits already. The address lines, the telephone numbers,
+     * the three parts of the social security number and the government identifier take no such edit
+     * in the source, and this guard is what bounds their character set.
+     *
+     * <p>ADDITIVE. The source reads each field from a fixed-width map area, which no control
+     * character can reach, so it needs no equivalent.
+     */
+    public static final String PRINTABLE_TEXT_PATTERN = "^[ -~]*$";
+
+    /**
+     * Message a caller reads when a component carries a character outside
+     * {@value #PRINTABLE_TEXT_PATTERN}. ADDITIVE, for the reason that pattern records.
+     */
+    public static final String CONTROL_CHARACTER_MESSAGE =
+            "Text fields must hold printable characters only.";
+
+    /**
+     * Position of the first digit of the area code inside a stored telephone number.
+     *
+     * <p>{@code WS-EDIT-US-PHONE-NUM-X} redefines the fifteen-character field at
+     * {@code app/cbl/COACTUPC.cbl:L83-L96}: one filler character holding {@code (}, three
+     * characters of area code, one filler holding {@code )}, three characters of prefix, one filler
+     * holding {@code -}, then the line number. All fifty records of
+     * {@code app/data/ASCII/custdata.txt} carry that shape.
+     */
+    private static final int PHONE_AREA_CODE_START = 1;
+
+    /** Position after the last digit of the area code, from the same redefinition. */
+    private static final int PHONE_AREA_CODE_END = 4;
+
+    /** Position of the first digit of the prefix, from the same redefinition. */
+    private static final int PHONE_PREFIX_START = 5;
+
+    /** Position after the last digit of the prefix, from the same redefinition. */
+    private static final int PHONE_PREFIX_END = 8;
+
+    /** Position of the first digit of the line number, from the same redefinition. */
+    private static final int PHONE_LINE_NUMBER_START = 9;
+
+    /** Position after the last digit of the line number, from the same redefinition. */
+    private static final int PHONE_LINE_NUMBER_END = 13;
+
+    /** Stands in for a component that arrived, in the form {@link #toString()} returns. */
+    public static final String WITHHELD = "<withheld>";
+
+    /** Stands in for a component that did not arrive, in the form {@link #toString()} returns. */
+    public static final String ABSENT = "<absent>";
+
+    /**
+     * Reports whether the state code names one of the fifty-six codes the source lists.
+     *
+     * <p>{@code app/cbl/COACTUPC.cbl:L1599-L1602} runs this table lookup only when the alphabetic
+     * edit of the same field passed, so this method answers {@code true} while that edit is failing
+     * and lets the alphabetic message reach the caller on its own. The gate is the source's, not a
+     * convenience: two messages for one field is not what the source reports.
+     *
+     * @return {@code true} when the code is listed, or when the alphabetic edit has not passed
+     */
+    @AssertTrue
+    public boolean isAddressStateCodeListed() {
+        if (!alphabeticEditPassed(addressStateCode, ADDRESS_STATE_CODE_LABEL,
+                ADDRESS_STATE_CODE_MAX_LENGTH)) {
+            return true;
+        }
+        return UsStateCodeValidator.validate(ADDRESS_STATE_CODE_LABEL, addressStateCode).valid();
+    }
+
+    /**
+     * Reports whether the state code and the postal code form one of the listed combinations.
+     *
+     * <p>{@code app/cbl/COACTUPC.cbl:L1665-L1669} runs this cross-field edit only when the state
+     * edit and the postal-code edit have both passed, and this method reproduces that gate. The
+     * combination list holds two hundred and forty entries, from
+     * {@code app/cpy/CSLKPCDY.cpy:L1071-L1073} onward.
+     *
+     * @return {@code true} when the pair is listed, or when either field is still failing its own
+     *         edit
+     */
+    @AssertTrue
+    public boolean isAddressStateZipCombinationListed() {
+        boolean stateReady = alphabeticEditPassed(addressStateCode, ADDRESS_STATE_CODE_LABEL,
+                        ADDRESS_STATE_CODE_MAX_LENGTH)
+                && UsStateCodeValidator
+                        .validate(ADDRESS_STATE_CODE_LABEL, addressStateCode).valid();
+        boolean zipReady = numericEditPassed(addressZip, ADDRESS_ZIP_LABEL, ADDRESS_ZIP_MAX_LENGTH);
+        if (!stateReady || !zipReady) {
+            return true;
+        }
+        return UsStateZipPrefixValidator.validate(addressStateCode, addressZip).valid();
+    }
+
+    /**
+     * Reports whether the three parts of the social security number pass their edit together.
+     *
+     * <p>Paragraph {@code 1265-EDIT-US-SSN} at {@code app/cbl/COACTUPC.cbl:L2431} edits all three
+     * parts on one pass and labels each part on its own at {@code app/cbl/COACTUPC.cbl:L2439},
+     * {@code app/cbl/COACTUPC.cbl:L2469} and {@code app/cbl/COACTUPC.cbl:L2481}, so the edit cannot
+     * be declared on any one component.
+     *
+     * @return {@code true} when the three parts pass, and when none of them was supplied
+     */
+    @AssertTrue
+    public boolean isSocialSecurityNumberValid() {
+        return UsSocialSecurityNumberValidator.validate(socialSecurityPart1, socialSecurityPart2,
+                socialSecurityPart3).valid();
+    }
+
+    /**
+     * Reports whether the first telephone number passes the source's edit.
+     *
+     * <p>{@code app/cbl/COACTUPC.cbl:L1632-L1637} moves the whole fifteen-character field and lets
+     * the redefinition at {@code app/cbl/COACTUPC.cbl:L83-L96} split it, so the three parts are
+     * sliced here at the same offsets rather than carried as three components.
+     *
+     * @return {@code true} when the number passes, and when it was not supplied
+     */
+    @AssertTrue
+    public boolean isPhoneNumber1Valid() {
+        return phoneNumberValid(phoneNumber1, PHONE_NUMBER_1_LABEL);
+    }
+
+    /**
+     * Reports whether the second telephone number passes the source's edit.
+     *
+     * <p>{@code app/cbl/COACTUPC.cbl:L1640-L1645} runs the same paragraph over the second field.
+     *
+     * @return {@code true} when the number passes, and when it was not supplied
+     */
+    @AssertTrue
+    public boolean isPhoneNumber2Valid() {
+        return phoneNumberValid(phoneNumber2, PHONE_NUMBER_2_LABEL);
+    }
+
+    /**
+     * Slices a stored telephone number and runs the source's edit over its three parts.
+     *
+     * @param phoneNumber the fifteen-character stored form, which may be {@code null}
+     * @param label       the field label the message carries
+     * @return {@code true} when the edit passes, and when the field was not supplied
+     */
+    private static boolean phoneNumberValid(String phoneNumber, String label) {
+        if (phoneNumber == null || phoneNumber.isBlank()) {
+            return true;
+        }
+        if (phoneNumber.length() < PHONE_LINE_NUMBER_END) {
+            // Too short to hold the redefinition's parts. The edit refuses it, and it refuses it
+            // for the same reason the source would: the parts it reads are not there.
+            return false;
+        }
+        EditResult outcome = UsPhoneNumberValidator.validate(label,
+                phoneNumber.substring(PHONE_AREA_CODE_START, PHONE_AREA_CODE_END),
+                phoneNumber.substring(PHONE_PREFIX_START, PHONE_PREFIX_END),
+                phoneNumber.substring(PHONE_LINE_NUMBER_START, PHONE_LINE_NUMBER_END));
+        return outcome.valid();
+    }
+
+    /**
+     * Reports whether one component passes the alphabetic edit, without reporting a message.
+     *
+     * @param value the component value
+     * @param label the field label
+     * @param width the width the edit inspects
+     * @return {@code true} when the edit passes
+     */
+    private static boolean alphabeticEditPassed(String value, String label, int width) {
+        return com.carddemo.account.domain.validation.AlphabeticRequiredValidator
+                .validate(label, value, width).valid();
+    }
+
+    /**
+     * Reports whether one component passes the numeric edit, without reporting a message.
+     *
+     * @param value the component value
+     * @param label the field label
+     * @param width the width the edit inspects
+     * @return {@code true} when the edit passes
+     */
+    private static boolean numericEditPassed(String value, String label, int width) {
+        return com.carddemo.account.domain.validation.NumericRequiredValidator
+                .validate(label, value, width).valid();
+    }
+
+    /**
+     * Renders this request with every customer value withheld.
+     *
+     * <p>This override replaces the representation the compiler generates for a record. That
+     * generated form prints every component, and these components carry the three parts of a social
+     * security number, a government issued identifier, a date of birth, three address lines, two
+     * telephone numbers, an electronic funds transfer account identifier and a credit score. A
+     * framework, an exception, a debugger or a structured log line that renders a request would
+     * publish all of it.
+     *
+     * <p>No component value appears. Each is named and reported as {@value #WITHHELD} or
+     * {@value #ABSENT}, so a reader can tell which values arrived without reading one of them. The
+     * customer identifier is withheld on the same terms as the rest, because it identifies the
+     * person the remaining components describe.
+     *
+     * @return the withheld form of this request, never {@code null}
+     */
+    @Override
+    public String toString() {
+        return "CustomerDataRequest[customerId=" + present(customerId)
+                + ", firstName=" + present(firstName)
+                + ", middleName=" + present(middleName)
+                + ", lastName=" + present(lastName)
+                + ", addressLine1=" + present(addressLine1)
+                + ", addressLine2=" + present(addressLine2)
+                + ", addressCity=" + present(addressCity)
+                + ", addressStateCode=" + present(addressStateCode)
+                + ", addressCountryCode=" + present(addressCountryCode)
+                + ", addressZip=" + present(addressZip)
+                + ", phoneNumber1=" + present(phoneNumber1)
+                + ", phoneNumber2=" + present(phoneNumber2)
+                + ", socialSecurityPart1=" + present(socialSecurityPart1)
+                + ", socialSecurityPart2=" + present(socialSecurityPart2)
+                + ", socialSecurityPart3=" + present(socialSecurityPart3)
+                + ", governmentIssuedId=" + present(governmentIssuedId)
+                + ", dateOfBirth=" + present(dateOfBirth)
+                + ", eftAccountId=" + present(eftAccountId)
+                + ", primaryCardHolderIndicator=" + present(primaryCardHolderIndicator)
+                + ", ficoCreditScore=" + present(ficoCreditScore) + "]";
+    }
+
+    /**
+     * Reports whether a component arrived, without disclosing what it holds.
+     *
+     * @param value the component to describe; may be {@code null}
+     * @return {@value #WITHHELD} when the component holds at least one character that is not
+     *         whitespace, {@value #ABSENT} when it does not
+     */
+    private static String present(String value) {
+        return value != null && !value.isBlank() ? WITHHELD : ABSENT;
+    }
 }

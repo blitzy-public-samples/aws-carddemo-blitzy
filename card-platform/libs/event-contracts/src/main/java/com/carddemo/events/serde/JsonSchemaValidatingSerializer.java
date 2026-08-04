@@ -1,26 +1,27 @@
 package com.carddemo.events.serde;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.stream.Collectors;
 
-import com.networknt.schema.Error;
-import com.networknt.schema.InputFormat;
-import com.networknt.schema.Schema;
-import com.networknt.schema.SchemaRegistry;
-import com.networknt.schema.SpecificationVersion;
+import com.carddemo.events.DeadLetterEnvelope;
+import com.carddemo.events.EventEnvelope;
+import com.carddemo.events.FraudCleared;
+import com.carddemo.events.FraudFlagged;
+import com.carddemo.events.TransactionAuthorized;
+import com.carddemo.events.TransactionDeclined;
+import com.carddemo.events.TransactionPosted;
 
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.serialization.Serializer;
 
 import tools.jackson.core.JacksonException;
 import tools.jackson.core.JsonGenerator;
+import tools.jackson.core.json.JsonFactory;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.ValueSerializer;
@@ -29,107 +30,166 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.module.SimpleModule;
 
 /**
- * Writes one event as JavaScript Object Notation (JSON) bytes and checks those bytes against the
- * event's schema before returning them. A malformed event never reaches a Kafka topic.
+ * Writes one event as JavaScript Object Notation (JSON) bytes and checks those bytes, the event type
+ * and the destination topic before returning them. A malformed or misrouted event never reaches a
+ * Kafka topic.
  *
- * <p>ADDITIVE IN FULL. No COBOL program and no copybook in this repository defines this class. The
- * reasoning behind the choices this class implements sits in
- * {@code card-platform/docs/decision-log.md}.
+ * <p>ADDITIVE IN FULL. No COBOL program and no copybook in this repository defines this class.
  *
- * <p>Schema selection reads the {@code eventType} property of the JSON the mapper just wrote. The
- * five event types are {@code TransactionAuthorized}, {@code TransactionDeclined},
- * {@code TransactionPosted}, {@code FraudFlagged} and {@code FraudCleared}. A topic name selects
- * nothing: the {@code fraud.assessed} topic carries FraudFlagged and FraudCleared together.
+ * <p>Three checks run on every call, in this order.
+ *
+ * <ol>
+ * <li>The event must be one of the five records of {@code com.carddemo.events}. The class of the
+ * argument selects the event type: the five records of this module through
+ * {@link #EVENT_TYPES_BY_CLASS}, and a mutation record of a service through its own simple name,
+ * which {@link EventContracts#isRegistered(String)} must recognise. An arbitrary object or map whose
+ * JSON happens to carry a supported {@code eventType} is therefore rejected before anything is
+ * written.</li>
+ * <li>{@link EventContracts} must bind that event type to the topic the caller named. A producer
+ * that sends an approval to the declined topic therefore fails here rather than at a consumer.
+ * {@code FraudFlagged} and {@code FraudCleared} both bind to {@code fraud.assessed}, which is the
+ * one topic two event types share. A deployment that renames a topic passes that name through
+ * {@link #TOPIC_OVERRIDE_PREFIX} in the producer properties.</li>
+ * <li>The written JSON must carry no property {@link SensitiveEventProperties} forbids, so a card
+ * number, a verification value or a government identifier cannot travel even where a schema would
+ * tolerate an undeclared property.</li>
+ * <li>The written JSON must satisfy the schema document of that event type at the contract
+ * version the event itself declares, which {@link EventContracts#violationsOf(String, String)}
+ * selects and checks. {@code TransactionDeclined} publishes two contracts, and validating one
+ * against the other's document would report a violation naming the wrong contract.</li>
+ * <li>The finished document must fit {@link EventWireBounds#MAX_EVENT_BYTES}, which is also the
+ * width of the {@code payload} column of every {@code outbox_event} table, so an event that
+ * serializes fits the row that carries it.</li>
+ * </ol>
  *
  * <p>The wire form is flat. The five envelope properties sit beside the payload properties in one
- * JSON object. An event nested under an {@code envelope} key therefore fails all five schema
- * documents on the {@code required} array. {@code aggregateId} holds the eleven-digit account
- * identifier from {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} and travels as
- * text, so a leading zero survives.
+ * JSON object. An event nested under an {@code envelope} key therefore fails its document on the
+ * {@code required} array. {@code aggregateId} holds the eleven-digit account identifier from
+ * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} and travels as text, so a
+ * leading zero survives. Each record holds its own {@code accountId} equal to that value, checked in
+ * its canonical constructor, because JSON Schema Draft 2020-12 declares no keyword comparing one
+ * property to another.
  *
- * <p>A failure names the schema, counts the violations and lists each failing property as a JSON
- * pointer. No message carries the value that failed, so a full Primary Account Number (PAN) cannot
+ * <p>A failure names the public event type, the schema document, the count of violations and each
+ * failing property as a JSON pointer with the keyword it broke. No message carries a value from the
+ * event and no message names an implementation class, so a full Primary Account Number (PAN) cannot
  * reach a log through a failure. This class writes no log line and records no metric.
  *
- * <p>Versions: Java 25, {@code jackson-databind 3.1.4}, {@code json-schema-validator 3.0.6} for
+ * <p>Two bounds apply beside the schema. The parser that reads the {@code eventType} back runs
+ * under {@link EventWireBounds#streamReadConstraints()}, and the finished document is refused when
+ * it exceeds {@link EventWireBounds#MAX_EVENT_BYTES}, which is also the width of the
+ * {@code payload} column of every {@code outbox_event} table. An event that serializes therefore
+ * fits the row that carries it, and every shipped schema closes its property set, so an
+ * undeclared field cannot ride along inside a known event type.
+ *
+ * <p>Versions: Java 25, {@code jackson-databind 3.1.5}, {@code json-schema-validator 3.0.6} for
  * JSON Schema Draft 2020-12, and {@code kafka-clients 4.2.1} for the {@link Serializer} interface.
  * A module descriptor that omits {@code <java.version>25</java.version>} compiles at release 17
  * with no warning.
  *
- * <p>An instance holds no mutable state, so producer threads may share one. For the path each event
- * travels from publish to consume, read {@code card-platform/docs/event-flow.md}.
+ * <p>An instance holds no mutable state after {@link #configure(Map, boolean)} returns, so producer
+ * threads may share one. This class is the publish side, and
+ * {@link JsonSchemaValidatingDeserializer} is the consume side, so one payload is measured against
+ * one document at both ends.
  *
- * @param <T> the event this serializer writes, one of the five records in
- *            {@code com.carddemo.events}
+ * @param <T> the event this serializer writes: one of the five records in
+ *            {@code com.carddemo.events}, or a mutation event record of the service that owns
+ *            the aggregate, whose {@code eventType} names a schema in {@link EventSchemas}
  */
 public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
 
-    /** The property that selects the schema, and the routing discriminator each event carries. */
+    /**
+     * Prefix of the producer property that renames the topic of one event type.
+     *
+     * <p>A property named {@code carddemo.event.topic.TransactionAuthorized} states which topic this
+     * deployment publishes that event to. The default topic of the event type stays accepted, so a
+     * deployment that keeps the defaults configures nothing.
+     */
+    public static final String TOPIC_OVERRIDE_PREFIX = "carddemo.event.topic.";
+
+    /** The property that names the event type inside the written JSON. */
     private static final String EVENT_TYPE_PROPERTY = "eventType";
 
     /**
-     * The classpath resource holding each event type's schema document. Both sides of each pair are
-     * literals, so renaming either side breaks the build instead of the wire form.
+     * The concrete event classes this serializer accepts, each mapped to its event type.
+     *
+     * <p>The map is the type guard. A class absent from it is refused, so no map, no
+     * loosely-typed holder and no unrelated record can present itself as a platform event.
      */
-    private static final Map<String, String> SCHEMA_RESOURCES = Map.of(
-            "TransactionAuthorized", "schemas/transaction-authorized-v1.json",
-            "TransactionDeclined", "schemas/transaction-declined-v1.json",
-            "TransactionPosted", "schemas/transaction-posted-v1.json",
-            "FraudFlagged", "schemas/fraud-flagged-v1.json",
-            "FraudCleared", "schemas/fraud-cleared-v1.json");
+    private static final Map<Class<?>, String> EVENT_TYPES_BY_CLASS = Map.of(
+            TransactionAuthorized.class, EventContracts.TRANSACTION_AUTHORIZED,
+            TransactionDeclined.class, EventContracts.TRANSACTION_DECLINED,
+            TransactionPosted.class, EventContracts.TRANSACTION_POSTED,
+            FraudFlagged.class, EventContracts.FRAUD_FLAGGED,
+            FraudCleared.class, EventContracts.FRAUD_CLEARED,
+            DeadLetterEnvelope.class, EventContracts.DEAD_LETTER);
 
     /** Writes the JSON and reads back its {@code eventType}. Configured once, in a constructor. */
     private final ObjectMapper mapper;
 
-    /** One compiled schema per event type, compiled once and shared across calls. */
-    private final Map<String, Schema> schemasByEventType;
+    /** Each event type mapped to the topic this deployment publishes it to, or empty. */
+    private Map<String, String> configuredTopics = Map.of();
 
     /**
-     * Builds a serializer with a mapper and a schema registry of its own. Kafka calls this
-     * constructor by reflection when a producer names this class in its {@code value.serializer}
-     * property.
-     *
-     * @throws IllegalStateException when a schema document is missing from the classpath
+     * Builds a serializer with a mapper of its own. Kafka calls this constructor by reflection when
+     * a producer names this class in its {@code value.serializer} property.
      */
     public JsonSchemaValidatingSerializer() {
-        this(defaultMapper(),
-                SchemaRegistry.withDefaultDialect(SpecificationVersion.DRAFT_2020_12));
+        this(defaultMapper());
     }
 
     /**
-     * Builds a serializer from a supplied mapper and registry, and compiles all five schemas. A
-     * test calls this constructor to substitute a mapper. Reading the schema documents here stops a
-     * producer with a packaging fault at startup and not at its first publish.
+     * Builds a serializer from a supplied mapper. A test calls this constructor to substitute one.
      *
-     * @param mapper         the Jackson 3 mapper that writes each event
-     * @param schemaRegistry the registry that reads JSON Schema Draft 2020-12
-     * @throws NullPointerException  when either argument is {@code null}
-     * @throws IllegalStateException when a schema document is missing from the classpath
+     * @param mapper the Jackson 3 mapper that writes each event
+     * @throws NullPointerException when {@code mapper} is {@code null}
      */
-    public JsonSchemaValidatingSerializer(ObjectMapper mapper, SchemaRegistry schemaRegistry) {
+    public JsonSchemaValidatingSerializer(ObjectMapper mapper) {
         this.mapper = Objects.requireNonNull(mapper, "mapper must be present");
-        Objects.requireNonNull(schemaRegistry, "schemaRegistry must be present");
 
-        Map<String, Schema> compiled = new LinkedHashMap<>();
-        for (Map.Entry<String, String> resource : SCHEMA_RESOURCES.entrySet()) {
-            compiled.put(resource.getKey(), compile(schemaRegistry, resource.getValue()));
-        }
-        this.schemasByEventType = Map.copyOf(compiled);
     }
 
     /**
-     * Writes one event as JSON bytes and checks them against the event's schema.
+     * Reads the topic each event type is configured for, so a renamed topic still validates.
+     *
+     * <p>Kafka calls this method once, before the first publish. A property named
+     * {@link #TOPIC_OVERRIDE_PREFIX} followed by an event type supplies that topic. Every other
+     * property is ignored.
+     *
+     * @param configs the producer properties
+     * @param isKey   {@code true} when this instance serializes keys. This serializer writes values,
+     *                and the flag changes nothing
+     */
+    @Override
+    public void configure(Map<String, ?> configs, boolean isKey) {
+        if (configs == null) {
+            return;
+        }
+
+        Map<String, String> named = new LinkedHashMap<>();
+        for (String eventType : EventContracts.eventTypes()) {
+            Object configured = configs.get(TOPIC_OVERRIDE_PREFIX + eventType);
+            if (configured != null && !String.valueOf(configured).isBlank()) {
+                named.put(eventType, String.valueOf(configured).trim());
+            }
+        }
+        this.configuredTopics = Map.copyOf(named);
+    }
+
+    /**
+     * Writes one event as JSON bytes and checks the event type, the topic and the bytes.
      *
      * <p>A {@code null} event returns {@code null}, which is Kafka's tombstone contract. The
      * returned bytes are the bytes of the text that was checked, in
      * {@link StandardCharsets#UTF_8} and never in the charset of the host.
      *
-     * @param topic the topic the record is bound for. Schema selection ignores it
+     * @param topic the topic the record is bound for, checked against the event type
      * @param data  the event to write, or {@code null}
      * @return the checked JSON as UTF-8 bytes, or {@code null} when {@code data} is {@code null}
-     * @throws SerializationException when the mapper cannot write the event, when
-     *                                {@code eventType} selects no schema, or when the JSON breaks
-     *                                its schema
+     * @throws SerializationException when the argument is not one of the five event records, when
+     *                                the event type does not belong on {@code topic}, when the
+     *                                mapper cannot write the event, when the written JSON names
+     *                                another event type, or when the JSON breaks its schema
      */
     @Override
     public byte[] serialize(String topic, T data) {
@@ -137,37 +197,84 @@ public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
             return null;
         }
 
+        String eventType = EVENT_TYPES_BY_CLASS.get(data.getClass());
+        if (eventType == null && EventContracts.isRegistered(data.getClass().getSimpleName())) {
+            // A mutation event is a record of the service that publishes it, so this module holds
+            // its document but names no class for it. The class name is the event type.
+            eventType = data.getClass().getSimpleName();
+        }
+        if (eventType == null) {
+            throw new SerializationException("This serializer writes only a record whose simple "
+                    + "name names a registered event type. The registered types are "
+                    + EventContracts.eventTypes() + ", and the supplied value names none of them.");
+        }
+        if (!EventContracts.isBoundToTopic(eventType, topic, configuredTopics.get(eventType))) {
+            throw new SerializationException(eventType + " belongs on topic "
+                    + EventContracts.defaultTopicFor(eventType) + " and the supplied topic is \""
+                    + topic + "\". Rename a topic through the producer property "
+                    + TOPIC_OVERRIDE_PREFIX + eventType + ".");
+        }
+
         String json;
-        String eventType;
+        String written;
+        int schemaVersion;
         try {
             json = mapper.writeValueAsString(data);
-            eventType = mapper.readTree(json).path(EVENT_TYPE_PROPERTY).stringValue("");
+            JsonNode document = mapper.readTree(json);
+            written = document.path(EVENT_TYPE_PROPERTY).stringValue("");
+            schemaVersion = document.path(EventSchemas.SCHEMA_VERSION_PROPERTY)
+                    .asInt(EventEnvelope.SCHEMA_VERSION);
         } catch (JacksonException cause) {
-            throw new SerializationException(
-                    "Writing " + data.getClass().getName() + " as JSON failed.", cause);
+            throw new SerializationException("Writing " + eventType + " as JSON failed.", cause);
+        }
+        if (!eventType.equals(written)) {
+            throw new SerializationException("The JSON written for " + eventType + " names the "
+                    + "event type \"" + written + "\", so the record and its envelope disagree.");
         }
 
-        if (eventType.isBlank()) {
-            throw new SerializationException("The JSON written for " + data.getClass().getName()
-                    + " carries no eventType property, so no schema selects it.");
-        }
-        Schema schema = schemasByEventType.get(eventType);
-        if (schema == null) {
-            throw new SerializationException(
-                    "Event type \"" + eventType + "\" has no schema in this module.");
+        String forbidden = SensitiveEventProperties.firstForbiddenProperty(mapper.readTree(json));
+        if (forbidden != null) {
+            throw new SerializationException("The JSON written for " + eventType
+                    + " carries the property \"" + forbidden
+                    + "\", which no event may carry. See SensitiveEventProperties.");
         }
 
-        List<Error> violations;
+        List<String> violations;
         try {
-            violations = schema.validate(json, InputFormat.JSON);
-        } catch (JacksonException cause) {
-            throw new SerializationException("Checking " + eventType + " against "
-                    + SCHEMA_RESOURCES.get(eventType) + " could not read the JSON.", cause);
+            violations = EventContracts.violationsOf(eventType, json);
+        } catch (IllegalStateException ungoverned) {
+            // The pair of event type and contract version selects the document, and this event
+            // names a pair no document describes. Refusing it is the point: checking version 2 of
+            // a decline against the version 1 document would report the wrong contract.
+            throw new SerializationException(eventType + " carries "
+                    + EventSchemas.SCHEMA_VERSION_PROPERTY + " " + schemaVersion
+                    + ", which this module governs no document for. The governed version"
+                    + (EventSchemas.governedVersions(eventType).size() == 1 ? " is " : "s are ")
+                    + EventSchemas.governedVersions(eventType) + ".", ungoverned);
         }
         if (!violations.isEmpty()) {
-            throw new SerializationException(describe(eventType, violations));
+            throw new SerializationException(
+                    EventContracts.describeViolations(eventType, violations));
         }
-        return json.getBytes(StandardCharsets.UTF_8);
+
+        byte[] bytes = json.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > EventWireBounds.MAX_EVENT_BYTES) {
+            throw new SerializationException(eventType + " serializes to " + bytes.length
+                    + " bytes, which exceeds the " + EventWireBounds.MAX_EVENT_BYTES
+                    + " byte ceiling one event of this platform may occupy. The event was not"
+                    + " published. No value from it appears in this message.");
+        }
+        return bytes;
+    }
+
+    /**
+     * The event types this serializer accepts, sorted so a failure message reads the same each time.
+     *
+     * @return the five event types, comma separated
+     */
+    private static String supportedEventTypes() {
+        return EVENT_TYPES_BY_CLASS.values().stream().sorted().reduce((left, right)
+                -> left + ", " + right).orElse("");
     }
 
     /**
@@ -175,69 +282,26 @@ public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
      * {@code occurredAt} and {@code assessedAt} carry an ISO-8601 string and never a numeric epoch.
      * No setting quotes an ordinary number, so {@code schemaVersion} and {@code riskScore} stay
      * integers.
+     *
+     * @return the configured mapper
      */
     private static JsonMapper defaultMapper() {
         SimpleModule plainDecimals = new SimpleModule("carddemo-plain-decimal-strings");
         plainDecimals.addSerializer(BigDecimal.class, new PlainDecimalStringSerializer());
 
-        return JsonMapper.builder()
+        return JsonMapper.builder(JsonFactory.builder()
+                        .streamReadConstraints(EventWireBounds.streamReadConstraints())
+                        .build())
                 .disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS)
                 .addModule(plainDecimals)
                 .build();
     }
 
     /**
-     * Compiles one schema document read from the classpath of this class. Nothing is read from a
-     * network location or from an absolute path on disk, and no {@code $id} is dereferenced.
-     *
-     * @throws IllegalStateException when the classpath holds no such resource, or reading it fails
-     */
-    private static Schema compile(SchemaRegistry schemaRegistry, String resource) {
-        try (InputStream document = JsonSchemaValidatingSerializer.class.getClassLoader()
-                .getResourceAsStream(resource)) {
-            if (document == null) {
-                throw new IllegalStateException(
-                        "Classpath resource " + resource + " is missing from this module.");
-            }
-            return schemaRegistry.getSchema(document, InputFormat.JSON);
-        } catch (IOException cause) {
-            throw new IllegalStateException(
-                    "Classpath resource " + resource + " could not be read.", cause);
-        }
-    }
 
-    /**
-     * The failure text: the event type, the schema document, the count of violations, and the JSON
-     * pointer and broken keyword of each failing property. No value from the event appears in it.
-     */
-    private static String describe(String eventType, List<Error> violations) {
-        String properties = violations.stream()
-                .map(violation -> pointer(violation) + " (" + violation.getKeyword() + ")")
-                .collect(Collectors.joining(", "));
-        return eventType + " breaks " + SCHEMA_RESOURCES.get(eventType) + " on "
-                + violations.size() + (violations.size() == 1 ? " property: " : " properties: ")
-                + properties;
-    }
-
-    /**
-     * The JSON pointer of the property one violation reports. A missing property is reported
-     * against the object that should hold it, with the property name beside it, so the two are
-     * joined here. Any other violation already points at the property. A result reads
-     * {@code /maskedCardNumber} at the top level and {@code /triggeredRules/1} inside an array.
-     */
-    private static String pointer(Error violation) {
-        String location = violation.getInstanceLocation().toString();
-        String property = violation.getProperty();
-        if (property == null || property.isBlank()) {
-            return location.isEmpty() ? "/" : location;
-        }
-        return location + "/" + property;
-    }
-
-    /**
      * Writes a fixed-point amount as a JSON string through {@link BigDecimal#toPlainString()}, so
-     * no exponent reaches the wire. Each monetary property of the five schema documents is a
-     * string: {@code amount} allows nine digits before the point, from
+     * no exponent reaches the wire. Each monetary property of the schema documents is a string:
+     * {@code amount} allows nine digits before the point, from
      * {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L10}, and {@code newBalance}
      * allows ten.
      */

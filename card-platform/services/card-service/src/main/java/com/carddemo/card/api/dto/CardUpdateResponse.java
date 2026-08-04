@@ -1,9 +1,10 @@
 package com.carddemo.card.api.dto;
 
+import com.carddemo.events.EventEnvelope;
 import java.util.Objects;
 
 /**
- * Body returned by {@code PUT /cards/{cardNumber}}.
+ * Body returned by {@code PUT /cards}.
  *
  * <p>Three components carry the result: the outcome, at most one message, and a
  * refreshed snapshot of the stored card. The canonical constructor checks the
@@ -188,12 +189,33 @@ public record CardUpdateResponse(
     }
 
     /**
+     * Returns a rendering that names the outcome and the message, and reports only whether a
+     * snapshot is present.
+     *
+     * <p>The outcome and the message are safe to print. Every message this record carries is one
+     * of the fixed texts {@link UpdateOutcome#requiredMessage()} names or the text of a failing
+     * edit, and none of those quotes the value that failed. The snapshot is a different matter, so
+     * it is reported as present or absent rather than expanded; a reader who needs its contents
+     * has {@link RefreshedCard#toString()}, which withholds the four cardholder values in turn.
+     *
+     * @return one line naming the class, the outcome, the message and whether a snapshot is present
+     */
+    @Override
+    public String toString() {
+        return "CardUpdateResponse[outcome=" + outcome
+                + ", message=" + message
+                + ", refreshedCard=" + (refreshedCard == null ? "absent" : "present") + "]";
+    }
+
+    /**
      * Reports whether the message slot holds text. The test is
-     * {@code message != null && !message.isBlank()}, and {@link String#isBlank()} is
-     * true for an empty string and for a string of white space only, so a null
-     * message, an empty message and a white-space message all report false. The
-     * source condition name {@code WS-RETURN-MSG-OFF VALUE SPACES} at
-     * {@code app/cbl/COCRDUPC.cbl:L174} tests one fixed-width field for spaces.
+     * {@code message != null && !message.isBlank()}.
+     *
+     * <p>{@link String#isBlank()} is true for an empty string and for a string of white
+     * space only. A null message, an empty message and a white-space message therefore
+     * all report false. The source condition name
+     * {@code WS-RETURN-MSG-OFF VALUE SPACES} at {@code app/cbl/COCRDUPC.cbl:L174} tests
+     * one fixed-width field for spaces.</p>
      *
      * @return true when the message holds at least one character that is not white
      *         space
@@ -364,6 +386,27 @@ public record CardUpdateResponse(
             Objects.requireNonNull(expiryMonth, "expiryMonth is required");
             Objects.requireNonNull(expiryDay, "expiryDay is required");
             Objects.requireNonNull(activeStatus, "activeStatus is required");
+        }
+
+        /**
+         * Returns a rendering that keeps the status flag and withholds the cardholder values.
+         *
+         * <p>This snapshot exists to tell a caller that somebody else changed the row first, and
+         * it carries the row as it now stands: the cardholder's embossed name and the expiry date
+         * in three parts. A caller that needs to show the reader what changed reads the
+         * components; a log line does not, and the rendering a record carries by default would put
+         * all four in one.
+         *
+         * @return one line naming the class and the status, with the four cardholder values
+         *         withheld
+         */
+        @Override
+        public String toString() {
+            return "RefreshedCard[embossedName=" + EventEnvelope.WITHHELD
+                    + ", expiryYear=" + EventEnvelope.WITHHELD
+                    + ", expiryMonth=" + EventEnvelope.WITHHELD
+                    + ", expiryDay=" + EventEnvelope.WITHHELD
+                    + ", activeStatus=" + activeStatus + "]";
         }
     }
 }

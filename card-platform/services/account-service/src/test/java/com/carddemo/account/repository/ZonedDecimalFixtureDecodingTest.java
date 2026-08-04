@@ -79,9 +79,8 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 /**
  * Tests for {@link AsciiFixtureReader} over the three fixtures the account service binds to.
  *
- * <p>Every assertion below calls {@code AsciiFixtureReader}. The class opens no database
- * connection, starts no container and loads no Spring context. It runs from a fresh checkout with
- * nothing prepared.</p>
+ * <p>Every assertion calls {@code AsciiFixtureReader}. The class opens no database connection,
+ * starts no container and loads no Spring context.</p>
  *
  * <p>A money field in these fixtures is a zoned decimal: one byte per digit, with the sign folded
  * into the trailing byte. That fold is a sign overpunch, and it turns the trailing byte into a
@@ -258,10 +257,11 @@ class ZonedDecimalFixtureDecodingTest {
 
     // Customer record 1, from app/data/ASCII/custdata.txt and app/cpy/CVCUS01Y.cpy.
     //
-    // The customer record carries personal data: three name fields at CVCUS01Y lines 6 to 8, three
-    // address lines at lines 9 to 11, a zip at line 14, two telephone numbers at lines 15 and 16, a
-    // Social Security Number at line 17, a government-issued identifier at line 18, a date of birth
-    // at line 19, an electronic funds transfer account at line 20 and a credit score at line 22.
+    // The customer record carries personal data. Three name fields sit at CVCUS01Y lines 6 to 8
+    // and three address lines at lines 9 to 11. A zip sits at line 14 and two telephone numbers at
+    // lines 15 and 16. A Social Security Number sits at line 17, a government-issued identifier at
+    // line 18 and a date of birth at line 19. An electronic funds transfer account sits at line 20
+    // and a credit score at line 22.
     //
     // Each of those fields is pinned by the SHA-256 digest of its exact field text, padding
     // included, rather than by the text itself. The assertion stays exact: one changed character
@@ -328,8 +328,8 @@ class ZonedDecimalFixtureDecodingTest {
      * {@code app/cpy/CVCUS01Y.cpy:L17 PIC 9(09)}, positions 280 through 288 of record 1.
      *
      * <p>No test in this class holds a complete identifier. The digest covers the field name, a
-     * colon and the decoded value, so it pins the exact value the decode must produce without
-     * storing that value and without printing it when an assertion fails.</p>
+     * colon and the decoded value. It therefore pins the exact value the decode must produce,
+     * without storing that value and without printing it on a failure.</p>
      */
     private static final String RECORD_1_SOCIAL_SECURITY_NUMBER_DIGEST =
             "65265e07a465ed10de7ae0351e72ca1504772100476c1d4a8e07f176f600438c";
@@ -430,19 +430,6 @@ class ZonedDecimalFixtureDecodingTest {
     /** Character the FILLER at CVTRA02Y line 10 repeats in all 51 records. */
     private static final String DISCLOSURE_FILLER_CHARACTER = "0";
 
-    // Helpers shared by the methods below.
-
-    /**
-     * Returns {@code value} followed by spaces up to {@code width}.
-     *
-     * <p>A {@code PIC X(n)} field pads unused positions with spaces, so an expected value needs
-     * the same padding to span the same width.</p>
-     *
-     * @param value text the field holds ahead of its padding
-     * @param width characters the field spans
-     * @return {@code value} padded to exactly {@code width} characters
-     * @throws IllegalArgumentException if {@code value} already spans more than {@code width}
-     */
     /**
      * Asserts one field of a record against the SHA-256 digest of its field text, and asserts the
      * field width at the same time.
@@ -485,6 +472,17 @@ class ZonedDecimalFixtureDecodingTest {
         }
     }
 
+    /**
+     * Returns {@code value} followed by spaces up to {@code width}.
+     *
+     * <p>A {@code PIC X(n)} field pads unused positions with spaces, so an expected value needs
+     * the same padding to span the same width.</p>
+     *
+     * @param value text the field holds ahead of its padding
+     * @param width characters the field spans
+     * @return {@code value} padded to exactly {@code width} characters
+     * @throws IllegalArgumentException if {@code value} already spans more than {@code width}
+     */
     private static String padded(String value, int width) {
         if (value.length() > width) {
             throw new IllegalArgumentException(
@@ -859,14 +857,6 @@ class ZonedDecimalFixtureDecodingTest {
         assertThat(CUSTOMER_FILLER.endInclusive()).isEqualTo(MEASURED_CUSTOMER_WIDTH);
     }
 
-    /**
-     * Asserts the three stored identifiers of record 1 decode at their declared widths, hold digits
-     * throughout, mask to their published suffixes, and match the digest that pins each value.
-     *
-     * <p>Nothing in this test holds or prints a complete identifier. Each assertion reads a derived
-     * value: a length, a boolean, a masked form, or a digest. A wrong decode fails on the digest,
-     * and the failure report carries the digest rather than the identifier.</p>
-     */
     @Test
     @DisplayName("record 1 of custdata.txt carries the three stored identifiers at their declared "
             + "widths, and each matches the digest that pins it")
@@ -903,13 +893,6 @@ class ZonedDecimalFixtureDecodingTest {
                 .isEqualTo(RECORD_1_EFT_ACCOUNT_ID_DIGEST);
     }
 
-    /**
-     * Asserts that no expected value in this class carries a complete stored identifier.
-     *
-     * <p>The three published masked forms keep four characters each, and the three digests carry no
-     * character of the value they pin. This test walks the declared fields by reflection, so a
-     * plaintext identifier added later fails here.</p>
-     */
     @Test
     @DisplayName("No expected value in this class carries a complete stored identifier")
     void noExpectedValueCarriesACompleteStoredIdentifier() {

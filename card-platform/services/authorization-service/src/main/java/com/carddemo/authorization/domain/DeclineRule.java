@@ -4,6 +4,9 @@ import com.carddemo.authorization.entity.AccountCreditSnapshotEntity;
 import com.carddemo.authorization.entity.CardCrossReferenceEntity;
 import com.carddemo.events.DeclineReason;
 import java.math.BigDecimal;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -12,8 +15,9 @@ import java.util.Optional;
  * <p>The chain comes from paragraph {@code 1500-VALIDATE-TRAN} at
  * {@code app/cbl/CBTRN02C.cbl:L370-L378}. The comment {@code * ADD MORE VALIDATIONS HERE} at
  * {@code app/cbl/CBTRN02C.cbl:L377} marks its extension point, and this interface is that point.
- * One more decline rule is one more class in {@code domain/rules} implementing this interface, and
- * {@code AuthorizationService} collects every implementation it finds.
+ * One more decline rule is one more class in {@code domain/rules} implementing this interface. The
+ * planned orchestrator is to collect every implementation it finds. Neither that orchestrator nor
+ * any rule class is authored yet, so this interface has no implementation in the tree.
  *
  * <p>An implementation answers with the one reject reason it assigns, or with nothing. It also
  * declares its {@link Segment}, which fixes what the chain does with that answer.
@@ -21,8 +25,6 @@ import java.util.Optional;
  * <p>A decline is expected traffic. {@code app/cbl/CBTRN02C.cbl:L229-L230} ends the batch job with
  * return code 4 when any record was rejected, so {@link #evaluate(Context)} returns a value and
  * throws nothing when a rule declines.
- *
- * <p>Design decisions behind this seam: {@code card-platform/docs/decision-log.md}.
  */
 public interface DeclineRule {
 
@@ -60,7 +62,7 @@ public interface DeclineRule {
     /**
      * Values one authorization call carries through the chain.
      *
-     * <p>Three values arrive from {@code AuthorizationService} and hold steady. Two more start
+     * <p>Three values arrive from the caller that drives the chain and hold steady. Two more start
      * absent, and a rule fills each one in through
      * {@link #setCardCrossReference(CardCrossReferenceEntity)} or
      * {@link #setAccountCreditSnapshot(AccountCreditSnapshotEntity)}.
@@ -147,38 +149,18 @@ public interface DeclineRule {
             this.originTimestamp = originTimestamp;
         }
 
-        /**
-         * Returns the full card number the cross-reference lookup keys on.
-         *
-         * @return sixteen characters, never {@code null}
-         */
         public String getCardNumber() {
             return cardNumber;
         }
 
-        /**
-         * Returns the transaction amount. A refund carries a negative amount.
-         *
-         * @return the amount at two digits after the decimal point, never {@code null}
-         */
         public BigDecimal getAmount() {
             return amount;
         }
 
-        /**
-         * Returns the capture timestamp as text.
-         *
-         * @return twenty-six characters, never {@code null}
-         */
         public String getOriginTimestamp() {
             return originTimestamp;
         }
 
-        /**
-         * Returns the cross-reference row a rule resolved for this card number.
-         *
-         * @return the resolved row, or {@code null} until a rule sets it
-         */
         public CardCrossReferenceEntity getCardCrossReference() {
             return cardCrossReference;
         }
@@ -196,13 +178,35 @@ public interface DeclineRule {
             this.cardCrossReference = cardCrossReference;
         }
 
-        /**
-         * Returns the credit and expiry values a rule resolved for this account.
-         *
-         * @return the resolved values, or {@code null} until a rule sets them
-         */
         public AccountCreditSnapshotEntity getAccountCreditSnapshot() {
             return accountCreditSnapshot;
+        }
+
+        /**
+         * Returns the one account identifier this platform treats as authoritative, or {@code null}
+         * when none has been established yet.
+         *
+         * <p>The value comes from the cross-reference row and from nowhere else.
+         * {@code app/cbl/CBTRN02C.cbl:L383} reads that row into {@code CARD-XREF-RECORD} and
+         * {@code app/cbl/CBTRN02C.cbl:L396} keys the account read on the {@code XREF-ACCT-ID} it
+         * holds. No context of this class ever receives an account identifier from a caller: the
+         * constructor takes the card number, the amount and the capture timestamp, so an identifier
+         * a caller sent cannot reach a rule even by mistake. That is the whole reason the
+         * constructor's parameter list is shaped the way it is.
+         *
+         * <p>A {@code null} result is meaningful rather than an error. Reject reason
+         * {@link DeclineReason#INVALID_CARD_NUMBER} is assigned at
+         * {@code app/cbl/CBTRN02C.cbl:L385-L387} when that keyed read misses, so at that point no
+         * account identifier exists. A producer publishing that decline calls
+         * {@code TransactionDeclined.ofUnresolvedAccount}, which keys the event on the transaction
+         * identifier and carries no account identifier at all. Every other reason runs after the
+         * cross-reference resolved, so this accessor answers with a value for each of them.
+         *
+         * @return the eleven-digit account identifier the cross-reference row held, or {@code null}
+         *         when the cross-reference has not resolved
+         */
+        public String getResolvedAccountId() {
+            return cardCrossReference == null ? null : cardCrossReference.getAccountId();
         }
 
         /**
@@ -216,6 +220,45 @@ public interface DeclineRule {
                 throw new NullPointerException("accountCreditSnapshot must not be null");
             }
             this.accountCreditSnapshot = accountCreditSnapshot;
+        }
+
+        /**
+         * Reports whether both replica rows this context resolved were observed recently enough to
+         * authorize against.
+         *
+         * <p>ADDITIVE, and it exists because the target reads copies where the source read the
+         * datasets themselves. {@code app/cbl/CBTRN02C.cbl:L382} and
+         * {@code app/cbl/CBTRN02C.cbl:L395} issue keyed reads against the cross-reference and
+         * account files, so the source has nothing that can go stale and therefore nothing to
+         * check. {@code card_xref} and {@code account_credit_snapshot} are replicas kept current by
+         * state-change events, and a replica whose events stopped arriving keeps answering with
+         * whatever it last knew.
+         *
+         * <p>Which makes the failure silent rather than loud, and that is why this method is here.
+         * A stale credit limit or a stale pair of cycle accumulators does not raise an error: the
+         * credit-limit rule at {@code app/cbl/CBTRN02C.cbl:L403-L407} computes an answer from
+         * obsolete numbers and approves a transaction that the current numbers would have declined.
+         * An expiry date that was updated and never replicated does the same.
+         *
+         * <p>A row with no observation time is reported stale rather than fresh, and a row that is
+         * absent is reported stale as well. The caller decides what to do with a false answer; this
+         * method only refuses to claim freshness it cannot establish.
+         *
+         * @param now    the current time
+         * @param maxAge how old an observation may be and still count as fresh, from configuration
+         *               rather than from here, so the policy is set once for the service
+         * @return true only when both resolved rows are present and were observed within
+         *         {@code maxAge} of {@code now}
+         * @throws NullPointerException if {@code now} or {@code maxAge} is {@code null}
+         */
+        public boolean isReplicaDataFresh(Instant now, Duration maxAge) {
+            Objects.requireNonNull(now, "now");
+            Objects.requireNonNull(maxAge, "maxAge");
+            if (cardCrossReference == null || accountCreditSnapshot == null) {
+                return false;
+            }
+            return cardCrossReference.isFreshAt(now, maxAge)
+                    && accountCreditSnapshot.isFreshAt(now, maxAge);
         }
     }
 

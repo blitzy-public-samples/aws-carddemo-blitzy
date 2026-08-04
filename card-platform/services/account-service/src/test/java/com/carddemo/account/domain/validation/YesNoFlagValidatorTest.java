@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * at app/cbl/COACTUPC.cbl:L1869. The character-class test at app/cbl/COACTUPC.cbl:L1878 reaches the
  * message at app/cbl/COACTUPC.cbl:L1886.</p>
  *
- * <p>Two source facts shape the assertions below. The entry {@code SET} at
+ * <p>Two source facts shape this class. The entry {@code SET} at
  * app/cbl/COACTUPC.cbl:L1858 is commented out. The callers copy the edited byte back out at
  * app/cbl/COACTUPC.cbl:L1476 and app/cbl/COACTUPC.cbl:L1662, and the target drops that
  * write-back.</p>
@@ -351,14 +351,15 @@ class YesNoFlagValidatorTest {
     }
 
     /**
-     * Reads the class surface. The entry {@code SET} at app/cbl/COACTUPC.cbl:L1858 is commented
-     * out, and the flag writes at app/cbl/COACTUPC.cbl:L1865 and app/cbl/COACTUPC.cbl:L1882 have
-     * no target equivalent. One static method, returning a verdict, is the whole surface.
+     * Reads the entry point. The entry {@code SET} at app/cbl/COACTUPC.cbl:L1858 is commented out,
+     * and the flag writes at app/cbl/COACTUPC.cbl:L1865 and app/cbl/COACTUPC.cbl:L1882 have no
+     * target equivalent. The call answers with a verdict and writes nothing back.
      */
     @Test
-    @DisplayName("The validator exposes one static entry point and no mutating overload")
-    void theValidatorExposesOneStaticEntryPoint() {
-        assertThat(Modifier.isFinal(YesNoFlagValidator.class.getModifiers())).isTrue();
+    @DisplayName("The validator declares a static label-and-value entry point returning a verdict")
+    void theValidatorExposesOneStaticEntryPoint() throws NoSuchMethodException {
+        Method entryPoint =
+                YesNoFlagValidator.class.getMethod("validate", String.class, String.class);
 
         Constructor<?>[] constructors = YesNoFlagValidator.class.getDeclaredConstructors();
 
@@ -373,12 +374,11 @@ class YesNoFlagValidatorTest {
             }
         }
 
-        // One method, returning a verdict. A void overload writing a flag back would fail here.
+        // One method, returning a verdict. No void overload writes a flag back.
         assertThat(publicMethods).hasSize(1);
-
-        Method entryPoint = publicMethods.get(0);
-
+        assertThat(publicMethods.get(0)).isEqualTo(entryPoint);
         assertThat(entryPoint.getName()).isEqualTo("validate");
+        assertThat(Modifier.isPublic(entryPoint.getModifiers())).isTrue();
         assertThat(Modifier.isStatic(entryPoint.getModifiers())).isTrue();
         assertThat(entryPoint.getReturnType()).isEqualTo(EditResult.class);
         assertThat(entryPoint.getParameterTypes()).containsExactly(String.class, String.class);
@@ -408,8 +408,8 @@ class YesNoFlagValidatorTest {
      * at app/cbl/COACTUPC.cbl:L1473 and app/cbl/COACTUPC.cbl:L1659.
      *
      * <p>A COBOL {@code MOVE} of an alphanumeric item into a narrower alphanumeric item aligns to
-     * the left and truncates on the right, so a wider value arrives at the edit paragraph as its
-     * leftmost character alone. A shorter value pads on the right with a space.</p>
+     * the left and truncates on the right. A wider value therefore arrives at the edit paragraph as
+     * its leftmost character alone. A shorter value pads on the right with a space.</p>
      *
      * @param value the value a caller holds; may be {@code null}
      * @return the one character the host field holds after the move

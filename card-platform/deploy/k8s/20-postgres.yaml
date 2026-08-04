@@ -1,16 +1,28 @@
-# One PostgreSQL instance for the six card-platform services, plus the Service
-# they reach it through and the claim that holds its data. The workload is a
-# Deployment of one replica.
+# One PostgreSQL instance for the six card-platform services, plus the Service they reach
+# it through, the claim that holds its data, the program that provisions it and the policy
+# that decides who may open a connection. The workload is a Deployment of one replica.
 #
-# Each service owns one schema inside the database named below, and its own
-# Flyway migration creates and migrates that schema. Nothing here declares a
-# schema object or a table.
+# Each service owns one schema inside the database named below, and its own Flyway
+# migration creates every table in that schema. This file declares no table.
 #
-# A service runs its Flyway migration while it starts, so it needs a database
-# that already answers. The readiness probe holds the Service endpoint back
-# until then.
+# What changed and why it matters. One login used to serve all six services, which meant
+# the private schema each service claims to own was a convention rather than a control: a
+# compromise of any service could read and alter every other service's card, customer,
+# balance, fraud and event data. There are now six logins, one per service, each owning its
+# own schema, and PUBLIC holds nothing on the database or on the public schema. The
+# provisioning program in the fourth document is what installs that, and the NetworkPolicy
+# in the fifth admits a connection only from the six named service Pods.
 #
-# Rationale for every choice in this folder: card-platform/docs/decision-log.md
+# Connections are encrypted. The server runs with ssl=on presenting the certificate in
+# carddemo-postgres-secret, and 30-configmap.yaml asks every client for sslmode=verify-full
+# against the authority in carddemo-tls-secret. A certificate whose subject alternative
+# name is not postgres fails that check, which is the control working rather than a broken
+# deployment.
+#
+# A service runs its Flyway migration while it starts, so it needs a database that already
+# answers. The readiness probe holds the Service endpoint back until then.
+#
+# The decision log this platform still owes is to record every choice in this folder.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -39,9 +51,11 @@ spec:
         app.kubernetes.io/part-of: card-platform
     spec:
       automountServiceAccountToken: false
-      # The image carries the postgres user as 999 in group 999. fsGroup gives
-      # that group the volume, and 00-namespace.yaml admits no Pod that runs
-      # as root.
+      # The image carries the postgres user as 999 in group 999. fsGroup gives that group
+      # the data volume AND the two mounted Secret files, which is what lets the server
+      # read a private key that root owns. PostgreSQL refuses a key file that is group
+      # writable or world readable, and accepts a root-owned one at mode 0640, which is
+      # the mode the volume below sets.
       securityContext:
         runAsNonRoot: true
         runAsUser: 999
@@ -61,35 +75,180 @@ spec:
             capabilities:
               drop:
                 - ALL
+          # Transport Layer Security, on. The entry point passes everything after the
+          # program name to the server, so these three settings reach postgresql.conf
+          # without a configuration file of our own.
+          args:
+            - postgres
+            - -c
+            - ssl=on
+            - -c
+            - ssl_cert_file=/etc/carddemo/tls/server.crt
+            - -c
+            - ssl_key_file=/etc/carddemo/tls/server.key
           ports:
             - name: postgresql
               containerPort: 5432
           env:
-            # 30-configmap.yaml carries the name of the database the server
-            # creates on first start.
+            # 30-configmap.yaml carries the name of the database the server creates on
+            # first start. All six schemas live inside it.
             - name: POSTGRES_DB
               valueFrom:
                 configMapKeyRef:
                   name: carddemo-config
                   key: POSTGRES_DB
-            # The user the server creates, and the password it sets. Both come
-            # from the Secret that 31-secret.example.yaml templates, so neither
-            # value appears here.
+            # The superuser the server creates, and the password it sets. Both come from
+            # the Secret 31-secret.example.yaml templates, so neither value appears here.
+            # No service signs on as this user.
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-secret
+                  name: carddemo-postgres-secret
                   key: POSTGRES_USER
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-secret
+                  name: carddemo-postgres-secret
                   key: POSTGRES_PASSWORD
+            # The image writes `trust` for local and loopback connections by default, so
+            # any process that reached the inside of this container would authenticate as
+            # any role with no password, and the six separate logins below would stop
+            # being separate for anything already on the host. Asking initdb for
+            # scram-sha-256 on both families means a password is required from every
+            # direction. The provisioning program authenticates over the local socket as
+            # the superuser, and the probes run pg_isready, which authenticates nothing.
+            - name: POSTGRES_INITDB_ARGS
+              value: --auth-local=scram-sha-256 --auth-host=scram-sha-256
             # The data directory, one level below the mount point. A volume root
             # can arrive carrying a lost+found directory, and the server refuses
             # to build a data directory in one that is not empty.
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+            # The twenty-four values the provisioning program reads: one database name, one
+            # schema name, one login name and one password per service. A database name, a
+            # schema name and a login name are not credentials and come from the ConfigMap; a
+            # password comes from the Secret. The program pairs them by name, so a missing one
+            # names itself.
+            - name: AUTHORIZATION_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: AUTHORIZATION_DB_NAME
+            - name: AUTHORIZATION_DB_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: AUTHORIZATION_DB_SCHEMA
+            - name: AUTHORIZATION_DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: AUTHORIZATION_DB_USER
+            - name: AUTHORIZATION_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-postgres-secret
+                  key: AUTHORIZATION_DB_PASSWORD
+            - name: LEDGER_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: LEDGER_DB_NAME
+            - name: LEDGER_DB_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: LEDGER_DB_SCHEMA
+            - name: LEDGER_DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: LEDGER_DB_USER
+            - name: LEDGER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-postgres-secret
+                  key: LEDGER_DB_PASSWORD
+            - name: FRAUD_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: FRAUD_DB_NAME
+            - name: FRAUD_DB_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: FRAUD_DB_SCHEMA
+            - name: FRAUD_DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: FRAUD_DB_USER
+            - name: FRAUD_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-postgres-secret
+                  key: FRAUD_DB_PASSWORD
+            - name: NOTIFICATION_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: NOTIFICATION_DB_NAME
+            - name: NOTIFICATION_DB_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: NOTIFICATION_DB_SCHEMA
+            - name: NOTIFICATION_DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: NOTIFICATION_DB_USER
+            - name: NOTIFICATION_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-postgres-secret
+                  key: NOTIFICATION_DB_PASSWORD
+            - name: ACCOUNT_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: ACCOUNT_DB_NAME
+            - name: ACCOUNT_DB_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: ACCOUNT_DB_SCHEMA
+            - name: ACCOUNT_DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: ACCOUNT_DB_USER
+            - name: ACCOUNT_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-postgres-secret
+                  key: ACCOUNT_DB_PASSWORD
+            - name: CARD_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: CARD_DB_NAME
+            - name: CARD_DB_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: CARD_DB_SCHEMA
+            - name: CARD_DB_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: CARD_DB_USER
+            - name: CARD_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-postgres-secret
+                  key: CARD_DB_PASSWORD
           # Both probes run pg_isready, the command
           # card-platform/docker-compose.yml also runs. pg_isready reports
           # whether the server accepts connections, and reads the user and the
@@ -99,11 +258,16 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+                - >-
+                  pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+                  && test -f /tmp/service-databases-ready
             initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 5
-            failureThreshold: 6
+            failureThreshold: 24
+          # Liveness asks only whether the server still answers. It does not read
+          # the marker: a provisioning failure must withdraw this Pod from its
+          # Service, not restart a server that is running correctly.
           livenessProbe:
             exec:
               command:
@@ -124,17 +288,46 @@ spec:
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
-      # Storage is the PersistentVolumeClaim in the third document. Data outlives
-      # a container restart and a Pod replacement, and goes with the claim.
+            # The entry point runs every program in this directory once, while the server
+            # is up on the local socket and before it accepts a connection from the
+            # network. That ordering is why provisioning lives here rather than in a
+            # lifecycle hook: no service can connect while it runs.
+            - name: provisioning
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            # The certificate and key the server presents. Read-only, mode 0640, group 999.
+            - name: server-tls
+              mountPath: /etc/carddemo/tls
+              readOnly: true
       volumes:
+        # Storage is the PersistentVolumeClaim in the third document. Data outlives a
+        # container restart and a Pod replacement, and goes with the claim.
         - name: postgres-data
           persistentVolumeClaim:
             claimName: postgres-data
+        - name: provisioning
+          configMap:
+            name: postgres-provisioning
+            defaultMode: 0555
+        - name: server-tls
+          secret:
+            secretName: carddemo-postgres-secret
+            # 0640 with the fsGroup above: root owns the file, group 999 reads it, nothing
+            # else does. PostgreSQL accepts a root-owned key at u=rw,g=r or less and
+            # refuses anything wider, so 0644 here would stop the server with a message
+            # about permissions.
+            defaultMode: 0640
+            items:
+              - key: POSTGRES_TLS_CRT
+                path: server.crt
+              - key: POSTGRES_TLS_KEY
+                path: server.key
 ---
 # Every service Pod reaches the database at postgres:5432, a short name the
 # Domain Name System (DNS) resolves inside the namespace. 30-configmap.yaml,
 # card-platform/.env.example and card-platform/docker-compose.yml all carry
-# postgres as POSTGRES_HOST.
+# postgres as POSTGRES_HOST. That name is also what a client verifies the server
+# certificate against, so the certificate has to carry it.
 #
 # ClusterIP only. Nothing outside the cluster connects to the database, and the
 # Service carries an endpoint only while the Pod is ready.
@@ -175,3 +368,205 @@ spec:
   resources:
     requests:
       storage: 2Gi
+---
+# Provisioning. Six logins, six schemas, and nothing left for PUBLIC.
+#
+# The entry point runs this program once, on the first start of an empty data directory.
+# That is a real difference from card-platform/docker-compose.yml, which runs its
+# equivalent on every start and therefore re-applies a rotated password by itself. Here,
+# rotating one afterwards takes one statement as the superuser:
+#
+#   kubectl -n carddemo exec deploy/postgres -- \
+#     psql -v ON_ERROR_STOP=1 -c "ALTER ROLE carddemo_ledger_svc PASSWORD 'the new value'"
+#
+# followed by the matching edit to carddemo-postgres-secret and carddemo-ledger-secret.
+#
+# Every name reaching a statement passes an identifier gate first, and psql interpolates
+# :"name" as one quoted identifier and :'value' as one quoted literal, so neither a name
+# nor a password can add a statement of its own.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-provisioning
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: card-platform
+    app.kubernetes.io/managed-by: kubectl
+data:
+  10-service-logins.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # The entry point runs this with the server already up on the local socket. Three
+    # things still have to be said explicitly. The superuser is named in POSTGRES_USER
+    # rather than after the operating system account this runs as, which is postgres and is
+    # not a role here. The database is named because the schema statements below have to
+    # run inside it. And a password is needed even over the local socket, because
+    # POSTGRES_INITDB_ARGS asked initdb for scram-sha-256 on the local family too.
+    #
+    # Every statement arrives on standard input from printf rather than from a here
+    # document, because a here document terminator has to sit at column zero and this
+    # program is indented inside a ConfigMap value. The SQL text is double quoted, so
+    # :"name" and :'value' reach psql exactly as written and psql performs the quoting.
+    psql_run() {
+      PGPASSWORD="${POSTGRES_PASSWORD}" psql --no-psqlrc --set ON_ERROR_STOP=1 --quiet \
+        --username "${POSTGRES_USER}" --dbname "${POSTGRES_DB}" "$@"
+    }
+
+    # A value carrying the REPLACE marker is the placeholder 31-secret.example.yaml
+    # publishes rather than a password. Refusing it here stops the whole data directory
+    # from being built around a credential everyone who can read this repository knows.
+    case "${POSTGRES_PASSWORD:-}" in
+      *REPLACE*)
+        echo "refusing to provision: POSTGRES_PASSWORD still holds the placeholder" \
+             "31-secret.example.yaml publishes." >&2
+        exit 1
+        ;;
+    esac
+
+    # PUBLIC keeps nothing, which is the literal claim the loop below prints. Without these
+    # statements every login could connect to the database, create a schema of its own in
+    # it and write into the public schema, and the six boundaries below would describe an
+    # arrangement rather than enforce one. Each login receives CONNECT back individually as
+    # it is created. TEMPORARY goes too: a temporary table reads no other schema, but it
+    # consumes the volume this claim provides and nothing here needs one.
+    printf %s "
+        REVOKE ALL ON DATABASE :\"database_name\" FROM PUBLIC;
+        REVOKE ALL ON SCHEMA public FROM PUBLIC;
+      " | psql_run --set database_name="${POSTGRES_DB}"
+
+    for prefix in AUTHORIZATION LEDGER FRAUD NOTIFICATION ACCOUNT CARD; do
+      database_var="${prefix}_DB_NAME"
+      schema_var="${prefix}_DB_SCHEMA"
+      user_var="${prefix}_DB_USER"
+      password_var="${prefix}_DB_PASSWORD"
+      database_name="${!database_var:-}"
+      schema_name="${!schema_var:-}"
+      owner_name="${!user_var:-}"
+      owner_password="${!password_var:-}"
+
+      # A database name, a schema name and a login name all become identifiers, so all three
+      # pass the same gate: lower-case letters, digits and underscores, not opening with a
+      # digit, at most the 63 characters PostgreSQL keeps.
+      for identifier in "${database_name}" "${schema_name}" "${owner_name}"; do
+        case "${identifier}" in
+          *[!abcdefghijklmnopqrstuvwxyz0123456789_]* | [!abcdefghijklmnopqrstuvwxyz_]* | "")
+            echo "refusing identifier '${identifier}' from ${prefix}: a name holds" \
+                 "lower-case letters, digits and underscores, and does not open with a" \
+                 "digit" >&2
+            exit 1
+            ;;
+        esac
+        if [ "${#identifier}" -gt 63 ]; then
+          echo "refusing identifier from ${prefix}: a name holds at most 63 characters" >&2
+          exit 1
+        fi
+      done
+
+      if [ -z "${owner_password}" ]; then
+        echo "refusing to provision '${schema_name}': ${password_var} is empty" >&2
+        exit 1
+      fi
+      case "${owner_password}" in
+        *REPLACE*)
+          echo "refusing to provision '${schema_name}': ${password_var} still holds the" \
+               "placeholder 31-secret.example.yaml publishes." >&2
+          exit 1
+          ;;
+      esac
+
+      # One login and one database it owns, which is the same boundary
+      # card-platform/docker-compose.yml draws with the same six names. PostgreSQL runs no
+      # query across two databases, so a service holding one connection cannot read another
+      # service's tables at all, whatever it holds.
+      #
+      # CREATE DATABASE cannot run inside a transaction block and takes no parameter marker,
+      # so the name is interpolated after the identifier gate above has accepted it. psql
+      # reports an existing database as an error, which ON_ERROR_STOP turns into a refusal, so
+      # the statement is guarded by a catalogue read instead.
+      if [ "$(psql_run --tuples-only --no-align \
+                --command "SELECT 1 FROM pg_database WHERE datname = '${database_name}'")" \
+             != "1" ]; then
+        psql_run --command "CREATE DATABASE \"${database_name}\""
+      fi
+
+      # The login, then CONNECT on the one database it owns and nothing on any other, then
+      # the schema it owns inside that database, then a search path that resolves into its own
+      # schema rather than into anyone else's. PUBLIC keeps nothing in the new database
+      # either: without the two REVOKE statements every login could connect to it and write
+      # into its public schema, and the boundary would describe an arrangement rather than
+      # enforce one. No GRANT names another schema, and PostgreSQL grants none by default.
+      printf %s "
+          CREATE ROLE :\"owner_name\" WITH LOGIN PASSWORD :'owner_password';
+          GRANT CONNECT ON DATABASE :\"database_name\" TO :\"owner_name\";
+        " | psql_run \
+              --set database_name="${database_name}" \
+              --set owner_name="${owner_name}" \
+              --set owner_password="${owner_password}"
+
+      printf %s "
+          REVOKE ALL ON DATABASE :\"database_name\" FROM PUBLIC;
+          REVOKE ALL ON SCHEMA public FROM PUBLIC;
+          GRANT CONNECT ON DATABASE :\"database_name\" TO :\"owner_name\";
+          CREATE SCHEMA :\"schema_name\" AUTHORIZATION :\"owner_name\";
+          ALTER ROLE :\"owner_name\" SET search_path TO :\"schema_name\";
+        " | psql_run --dbname "${database_name}" \
+              --set database_name="${database_name}" \
+              --set owner_name="${owner_name}" \
+              --set schema_name="${schema_name}"
+
+      echo "'${owner_name}' owns database '${database_name}' and schema '${schema_name}';" \
+           "PUBLIC holds nothing"
+    done
+---
+# Who may open a connection to the database, at the network layer.
+#
+# The six logins above are the first control and this policy is the second: a Pod that
+# holds no login cannot even reach the port, and a Pod that is not one of the six named
+# below is refused whatever it holds. The previous form of this file declared no policy at
+# all, so every Pod in the cluster could reach 5432 and try passwords.
+#
+# The selector lists services by name rather than matching the broad part-of label. That
+# label reaches the broker Pod and anything else later labelled as part of this platform,
+# and none of those has any business opening a database connection.
+#
+# A cluster whose Container Network Interface plug-in does not implement NetworkPolicy
+# ignores this object. Confirm support before treating the database as isolated.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: card-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+      app.kubernetes.io/part-of: card-platform
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - authorization-service
+                  - ledger-posting-service
+                  - fraud-detection-service
+                  - notification-service
+                  - account-service
+                  - card-service
+              - key: app.kubernetes.io/part-of
+                operator: In
+                values:
+                  - card-platform
+      ports:
+        - port: 5432
+          protocol: TCP

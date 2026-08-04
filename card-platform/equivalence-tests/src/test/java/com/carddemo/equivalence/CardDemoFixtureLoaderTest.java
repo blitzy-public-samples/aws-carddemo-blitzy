@@ -25,14 +25,11 @@ import org.junit.jupiter.api.Test;
  *
  * <p>{@link CardDemoFixtureLoader#cardNumberKey} refuses a card number shorter than
  * {@code XREF-CARD-NUM PIC X(16)} at {@code app/cpy/CVACT03Y.cpy:L5}. Two tests below hold that
- * refusal. Filling the leading positions with zeros would build the key of a different card, so a
- * lookup that ought to miss would hit, and a comparison against the COBOL behaviour would read the
- * wrong row.</p>
+ * refusal. Zeros in the leading positions form the key of a different card.</p>
  *
  * <p>No assertion message and no failure this class provokes carries a card number, an account
  * identifier or any other fixture value. Three tests hold that property against the loader's own
  * failure text.</p>
- *
  */
 class CardDemoFixtureLoaderTest {
 
@@ -62,10 +59,6 @@ class CardDemoFixtureLoaderTest {
 
     // cardNumberKey. The key is text and only a full-width card number can match a row.
 
-    /**
-     * Asserts that a card number of exactly the key width passes through unchanged, and that
-     * surrounding space padding is removed because the fixture delivers a fixed-width field.
-     */
     @Test
     void aCardNumberAtTheKeyWidthPassesThroughUnchanged() {
         assertEquals(KEY_WIDTH_CARD_NUMBER,
@@ -79,11 +72,6 @@ class CardDemoFixtureLoaderTest {
                 "the key holds exactly " + CARD_NUMBER_KEY_WIDTH + " characters");
     }
 
-    /**
-     * Asserts that a card number shorter than the key width is refused, and that the loader
-     * synthesises no key for it. A zero-padded key would name a different card, so a lookup that
-     * ought to miss would hit.
-     */
     @Test
     void aShortCardNumberIsRefusedAndNoKeyIsSynthesised() {
         assertEquals(CARD_NUMBER_KEY_WIDTH - 1, SHORT_CARD_NUMBER.length(),
@@ -106,10 +94,6 @@ class CardDemoFixtureLoaderTest {
                 "the loader builds no key for a short card number, zero-padded or otherwise");
     }
 
-    /**
-     * Asserts that every width from one below the key down to one is refused, so the refusal is a
-     * property of the width and not of one chosen value.
-     */
     @Test
     void everyWidthBelowTheKeyWidthIsRefused() {
         for (int width = 1; width < CARD_NUMBER_KEY_WIDTH; width++) {
@@ -122,7 +106,6 @@ class CardDemoFixtureLoaderTest {
         }
     }
 
-    /** Asserts that a card number past the key width is refused, and names both widths. */
     @Test
     void aCardNumberPastTheKeyWidthIsRefused() {
         IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
@@ -134,11 +117,6 @@ class CardDemoFixtureLoaderTest {
                 "the refusal names the field and the two widths, and carries no value");
     }
 
-    /**
-     * Asserts that an empty card number, a card number of only spaces, a card number holding a
-     * character other than a digit, and a null are each refused, and that no failure carries the
-     * value supplied.
-     */
     @Test
     void aCardNumberThatIsNotSixteenDigitsIsRefusedWithoutEchoingItsValue() {
         assertEquals("XREF-CARD-NUM holds no digits",
@@ -169,10 +147,6 @@ class CardDemoFixtureLoaderTest {
 
     // accountIdentifier. The account key is numeric, matching a NUMERIC(11,0) column.
 
-    /**
-     * Asserts that an account identifier reads as a value at scale zero, that leading zeros make no
-     * difference to the value, and that the value equals the same number written without them.
-     */
     @Test
     void anAccountIdentifierReadsAsAValueAtScaleZero() {
         BigDecimal padded = CardDemoFixtureLoader.accountIdentifier("00000000077");
@@ -189,10 +163,6 @@ class CardDemoFixtureLoaderTest {
                 "surrounding space padding is removed before the value is read");
     }
 
-    /**
-     * Asserts that an account identifier of exactly the field width is accepted and one digit more
-     * is refused, and that neither failure carries the value supplied.
-     */
     @Test
     void anAccountIdentifierPastTheFieldWidthIsRefusedWithoutEchoingItsValue() {
         String atWidth = "9".repeat(ACCOUNT_ID_WIDTH);
@@ -284,7 +254,6 @@ class CardDemoFixtureLoaderTest {
                 "the same fixture parses at the width it delivers");
     }
 
-    /** Asserts that every list and map the loader returns refuses every change. */
     @Test
     void everyReturnedCollectionRefusesEveryChange() {
         List<CopybookRecordParser.CardRecord> cards = CardDemoFixtureLoader.loadCards();
@@ -309,14 +278,6 @@ class CardDemoFixtureLoaderTest {
                 "the numeric account index refuses a clear");
     }
 
-    /**
-     * Asserts that the three indexes hold one entry per record and that each key reaches its own
-     * record. A duplicate key would have failed the load, so a full index proves every key
-     * distinct.
-     *
-     * <p>Each load re-reads its fixture and builds fresh records, so the comparison is by value.
-     * Record equality covers every component, which is what makes it the right comparison here.</p>
-     */
     @Test
     void eachIndexHoldsOneEntryPerRecordAndEachKeyReachesItsOwnRecord() {
         List<CopybookRecordParser.CardCrossReferenceRecord> crossReferences =
@@ -350,10 +311,6 @@ class CardDemoFixtureLoaderTest {
         }
     }
 
-    /**
-     * Asserts that every card number the cross-reference index holds is exactly the key width, so
-     * every key the loader builds from the fixture would pass {@code cardNumberKey}.
-     */
     @Test
     void everyCrossReferenceKeyIsAlreadyAtTheKeyWidth() {
         Map<String, CopybookRecordParser.CardCrossReferenceRecord> byCardNumber =
@@ -371,11 +328,6 @@ class CardDemoFixtureLoaderTest {
 
     // Failure text. No message may carry a fixture value.
 
-    /**
-     * Asserts that no card number and no account identifier of the fixtures appears in the message
-     * of any failure the two key forms report. Each fixture value is fed to the two key forms in a
-     * shape that fails, and the message is searched for the value.
-     */
     @Test
     void noKeyFormFailureCarriesAFixtureValue() {
         List<String> values = new ArrayList<>();
@@ -405,11 +357,6 @@ class CardDemoFixtureLoaderTest {
         }
     }
 
-    /**
-     * Asserts that no rendered record of any load carries a value the platform redacts. The scan
-     * covers every card record, every cross-reference and every customer of the fixtures, and looks
-     * for the full card number, the verification value and the three customer identifiers.
-     */
     @Test
     void noRenderedFixtureRecordCarriesARedactedValue() {
         for (CopybookRecordParser.CardRecord card : CardDemoFixtureLoader.loadCards()) {
@@ -440,10 +387,6 @@ class CardDemoFixtureLoaderTest {
         }
     }
 
-    /**
-     * Asserts that the fixture directory resolves to an existing, absolute path, so a failure to
-     * find the fixtures is reported as a missing directory rather than as a missing record.
-     */
     @Test
     void theFixtureDirectoryResolvesToAnExistingAbsolutePath() {
         java.nio.file.Path directory = CardDemoFixtureLoader.fixtureDirectory();

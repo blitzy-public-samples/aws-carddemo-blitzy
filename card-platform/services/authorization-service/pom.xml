@@ -67,6 +67,20 @@
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
 
+    <!-- Request authentication and authorization. config/SecurityConfig declares two
+         filter chains: one over the actuator surface, leaving health open for a probe
+         and requiring ROLE_MONITORING for metrics and the Prometheus scrape, and one
+         over the API, denying by default and scoping each route to the identity that
+         owns the identifier it names. The starter also installs the response headers
+         that keep a financial or personal-data answer out of every cache, and the
+         delegating password encoder that reads the algorithm prefix of a configured
+         password, so no plaintext password is stored or compared. The version comes
+         from the Spring Boot bill of materials imported by the parent. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+
     <!-- Spring Boot 4 ships auto-configuration in per-technology starters.
          spring-boot-starter-kafka supplies it; spring-kafka alone supplies none. -->
     <dependency>
@@ -98,16 +112,13 @@
       <scope>runtime</scope>
     </dependency>
 
-    <!-- Metric exposition and structured log output. The encoder sits outside the
-         bill of materials, so the aggregator's dependency management pins it and
-         this module inherits that version. -->
+    <!-- Metric exposition. Structured log output comes from the Spring Boot
+         logging starter through the logging.structured.format.console property in
+         application.yml, and this module ships no Logback configuration file. -->
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-registry-prometheus</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>net.logstash.logback</groupId>
-      <artifactId>logstash-logback-encoder</artifactId>
+      <scope>runtime</scope>
     </dependency>
 
     <!-- Test scope. The Testcontainers 2.x module names carry a testcontainers-

@@ -21,10 +21,11 @@
   <name>card-service</name>
   <description>
     Card list, card detail and card update over Representational State Transfer
-    (REST). Publishes a card state-change event on mutation, against the shared
-    versioned contract card-state-changed-v1.json that com.carddemo:event-contracts
-    ships, and validates every payload and its account identity before the event
-    reaches the broker. Consumes no event.
+    (REST). Publishes one CardUpdated event on mutation, against the shared
+    versioned contract card-updated-v1.json that com.carddemo:event-contracts
+    ships, and checks the event type against its topic, the account identity
+    against the message key, and the payload against that contract before the
+    event reaches the broker. Consumes no event.
   </description>
 
   <properties>
@@ -85,7 +86,7 @@
       <scope>runtime</scope>
     </dependency>
 
-    <!-- Messaging. Producer for the card state-change event published on mutation.
+    <!-- Messaging. Producer for the CardUpdated event published on a card update.
          Registers the Kafka auto-configuration, which supplies the KafkaTemplate
          bean and binds every spring.kafka property. The spring-kafka artifact
          below registers none of its own. -->
@@ -97,33 +98,42 @@
       <groupId>org.springframework.kafka</groupId>
       <artifactId>spring-kafka</artifactId>
     </dependency>
-    <!-- KafkaEventPublisher reads the envelope of an already-serialized payload
-         and validates it against the versioned schema document that
-         event-contracts ships, so both artifacts are declared here rather than
-         reached through event-contracts. The aggregator supplies both versions. -->
+    <!-- KafkaEventPublisher reads the envelope of an already-serialized payload,
+         so this artifact is declared here rather than reached through
+         event-contracts. The aggregator supplies its version. Schema validation
+         runs through com.carddemo.events.serde.EventContracts, which
+         event-contracts owns, so no validator artifact is declared here. -->
     <dependency>
       <groupId>tools.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
     </dependency>
-    <dependency>
-      <groupId>com.networknt</groupId>
-      <artifactId>json-schema-validator</artifactId>
-    </dependency>
 
-    <!-- Observability. Health and metrics endpoints, counters and timers, and
-         log output in JavaScript Object Notation. -->
+    <!-- Observability. Health and metrics endpoints, counters and timers. Log
+         output in JavaScript Object Notation comes from the Spring Boot logging
+         starter through the logging.structured.format.console property in
+         application.yml. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- Request authentication and authorization. config/SecurityConfig declares two
+         filter chains: one over the actuator surface, leaving health open for a probe
+         and requiring ROLE_MONITORING for metrics and the Prometheus scrape, and one
+         over the API, denying by default and scoping each route to the identity that
+         owns the identifier it names. The starter also installs the response headers
+         that keep a financial or personal-data answer out of every cache, and the
+         delegating password encoder that reads the algorithm prefix of a configured
+         password, so no plaintext password is stored or compared. The version comes
+         from the Spring Boot bill of materials imported by the parent. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
     </dependency>
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-registry-prometheus</artifactId>
       <scope>runtime</scope>
-    </dependency>
-    <dependency>
-      <groupId>net.logstash.logback</groupId>
-      <artifactId>logstash-logback-encoder</artifactId>
     </dependency>
 
     <!-- Test scope. -->
@@ -135,13 +145,6 @@
     <dependency>
       <groupId>org.springframework.kafka</groupId>
       <artifactId>spring-kafka-test</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <!-- Binds a Testcontainers container to a Spring datasource or broker
-         through a service connection. -->
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-testcontainers</artifactId>
       <scope>test</scope>
     </dependency>
     <!-- Testcontainers 2.x artifact identifiers carry a testcontainers- prefix,

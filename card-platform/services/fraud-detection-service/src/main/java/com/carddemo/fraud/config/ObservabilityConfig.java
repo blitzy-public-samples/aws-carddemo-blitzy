@@ -38,8 +38,6 @@ import org.springframework.context.annotation.Configuration;
  * members only, and keeps a private constructor, so no bean method returns one. This module
  * compiles at release 25 while the Spring Boot parent defaults to 17, and class-file major
  * version 69 is the proof.
- *
- * <p>Rationale for the names and the bean shape: {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
 public class ObservabilityConfig {
@@ -55,7 +53,19 @@ public class ObservabilityConfig {
         return new FraudMeters(registry);
     }
 
-    /** The recording surface of this service. One method names one measured path. */
+    /**
+     * The recording surface of this service. One method names one measured path.
+     *
+     * <p>The path that calls each method, in the order the methods appear below:
+     * {@code messaging/TransactionAuthorizedConsumer.java} calls
+     * {@link FraudMeters#recordEventConsumed()}, {@link FraudMeters#recordProcessingLatency(Duration)},
+     * {@link FraudMeters#recordDeserializeFailure()} and
+     * {@link FraudMeters#recordProcessFailure()}; {@code domain/RiskScoringService.java} calls
+     * {@link FraudMeters#recordAssessmentFlagged()} and
+     * {@link FraudMeters#recordAssessmentCleared()}; and {@code outbox/OutboxRelay.java} calls
+     * {@link FraudMeters#recordPublishFailure()}. Every meter registers at start-up, so each series
+     * is scrapable before its caller records against it.</p>
+     */
     public static final class FraudMeters {
 
         private final Counter eventsConsumed;

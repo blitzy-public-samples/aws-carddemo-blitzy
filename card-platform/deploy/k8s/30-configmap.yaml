@@ -1,11 +1,11 @@
 # Configuration the six card-platform services read. Each service Deployment
 # pulls the whole block through envFrom, so one key here reaches all six.
 #
-# Every key name below also appears in card-platform/.env.example, and the
-# Docker Compose stack reads the same names. A name that exists in one path and
-# not the other is a defect. No credential appears here.
+# Every key name below also appears in card-platform/.env.example, apart from the
+# two SPRING_ bindings at the end, which this path alone sets. A name that exists
+# in one path and not the other is a defect. No credential appears here.
 #
-# Rationale for every value in this folder: card-platform/docs/decision-log.md
+# The decision log this platform still owes is to record every value in this folder.
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -19,17 +19,43 @@ metadata:
     app.kubernetes.io/managed-by: kubectl
 # A ConfigMap carries strings. Every value is quoted, so a port, a count or an
 # interval reaches a container as the text it parses.
+#
+# One key names one setting. This file declares no Spring-specific key whose
+# value repeats a generic key, because the Spring-specific key would win and
+# editing the generic one would then change nothing. Every service
+# application.yml already builds its own datasource address and its own broker
+# address out of the generic keys below, so the generic keys are the only place
+# a host, a port or a database name is written.
 data:
   # PostgreSQL connection
   # Short in-namespace name. The Domain Name System (DNS) resolves it to the
   # Service in 20-postgres.yaml, which listens on the port below.
   POSTGRES_HOST: "postgres"
   POSTGRES_PORT: "5432"
-  # The server creates this database on first start, and 20-postgres.yaml reads
-  # the name from this key.
+  # The maintenance database the server creates on first start. 20-postgres.yaml
+  # reads the name from this key, and its provisioning program connects to it to
+  # create the six service databases below. No service reads it.
   POSTGRES_DB: "carddemo"
 
-  # One schema per service, inside the database above
+  # One private database per service
+  # Each service owns the database named here and reaches no other. PostgreSQL
+  # runs no query across two databases, so a service holding one connection
+  # cannot read another service's tables at all. That is the private-datastore
+  # boundary, and it is the same boundary card-platform/docker-compose.yml
+  # draws with the same six names.
+  #
+  # 20-postgres.yaml binds all six keys and creates the databases they name.
+  # Each service Deployment binds the one key it owns, and its application.yml
+  # builds its datasource address from that name plus POSTGRES_HOST and
+  # POSTGRES_PORT above.
+  AUTHORIZATION_DB_NAME: "carddemo_authorization"
+  LEDGER_DB_NAME: "carddemo_ledger"
+  FRAUD_DB_NAME: "carddemo_fraud"
+  NOTIFICATION_DB_NAME: "carddemo_notification"
+  ACCOUNT_DB_NAME: "carddemo_account"
+  CARD_DB_NAME: "carddemo_card"
+
+  # One schema per service, inside that service's own database
   # Each service migrates its own schema and reads no other. Every name carries
   # a _service suffix, so none collides with a word PostgreSQL reserves. Each
   # service Deployment binds the one key it owns.
@@ -40,60 +66,121 @@ data:
   ACCOUNT_DB_SCHEMA: "account_service"
   CARD_DB_SCHEMA: "card_service"
 
+  # One database login per service, each owning the schema above it
+  # A login is a boundary only when it belongs to one service. One shared login meant a
+  # compromise of any service could read and alter every other service's card, customer,
+  # balance, fraud and event data, and the private schema each service claims to own was a
+  # convention rather than a control. The provisioning program in 20-postgres.yaml creates
+  # each login, gives it its schema, and leaves PUBLIC nothing.
+  #
+  # A username is not a credential and belongs here. The matching passwords are keys of the
+  # per-service Secrets in 31-secret.example.yaml, and each service Deployment binds the one
+  # name it owns onto SPRING_DATASOURCE_USERNAME.
+  AUTHORIZATION_DB_USER: "carddemo_authorization_svc"
+  LEDGER_DB_USER: "carddemo_ledger_svc"
+  FRAUD_DB_USER: "carddemo_fraud_svc"
+  NOTIFICATION_DB_USER: "carddemo_notification_svc"
+  ACCOUNT_DB_USER: "carddemo_account_svc"
+  CARD_DB_USER: "carddemo_card_svc"
+
   # Kafka broker
   # 10-kafka.yaml advertises this address, and its Service targets port 9092.
+  # Every service application.yml reads this key, so it is the only place the
+  # broker address is written for this deployment path.
   KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
-  # The broker writes this identifier into its log directory. 10-kafka.yaml
-  # carries the same value, and a new one orphans the data already there.
+  # The broker writes this identifier into its log directory. 10-kafka.yaml binds
+  # this key rather than repeating the value, and a new value orphans the data
+  # already there.
   KAFKA_CLUSTER_ID: "cardDemoPlatformKRaft1"
+  # Partitions and copies per partition. 10-kafka.yaml binds both keys, for the
+  # broker defaults and for the topics it creates, so raising a number here
+  # reaches the broker and the topics together.
   KAFKA_TOPIC_PARTITIONS: "3"
   # One broker holds one copy of a partition.
   KAFKA_TOPIC_REPLICATION_FACTOR: "1"
 
-  # Event topics
-  # 10-kafka.yaml creates all nine at start and the broker admits no other, so a
-  # mistyped name reaches a service as UNKNOWN_TOPIC_OR_PARTITION.
+  # Broker authentication and authorization
+  # The broker requires a Simple Authentication and Security Layer (SASL) identity on every
+  # client listener and refuses any operation no access control entry allows. Seven
+  # identities exist: one administrator, which is the only super user and the only identity
+  # that creates a topic or an entry, and one per service. 10-kafka.yaml installs the entry
+  # matrix and states it topic by topic.
   #
-  # One authorization call publishes one event to the first topic. The ledger
-  # posting, fraud detection and notification services each read it under their
-  # own consumer group below, and none of the three calls another.
-  # The publish and consume path per event: card-platform/docs/event-flow.md
+  # SASL_SSL, not SASL_PLAINTEXT: the mechanism carries a password, and a cluster pod
+  # network is a path shared with every other workload on the cluster.
+  # card-platform/docker-compose.yml uses SASL_PLAINTEXT and says why, in one sentence: it
+  # publishes on the loopback address of one machine.
+  KAFKA_SECURITY_PROTOCOL: "SASL_SSL"
+  KAFKA_SASL_MECHANISM: "PLAIN"
+  # What a service trusts the broker certificate against. The file arrives from
+  # carddemo-tls-secret, and its password is a key of that Secret rather than a value here.
+  SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION: "/etc/carddemo/tls/truststore.p12"
+  SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_TYPE: "PKCS12"
+  # The seven usernames. A username is not a credential and belongs here; each password is
+  # a key of carddemo-kafka-secret and of that service's own Secret. Each service Deployment
+  # binds the one name it owns onto KAFKA_SASL_USERNAME, so no service can present another
+  # service's identity even by accident.
+  KAFKA_ADMIN_USER: "carddemo-kafka-admin"
+  AUTHORIZATION_KAFKA_USER: "carddemo-authorization"
+  LEDGER_KAFKA_USER: "carddemo-ledger"
+  FRAUD_KAFKA_USER: "carddemo-fraud"
+  NOTIFICATION_KAFKA_USER: "carddemo-notification"
+  ACCOUNT_KAFKA_USER: "carddemo-account"
+  CARD_KAFKA_USER: "carddemo-card"
+
+  # Event topics
+  # 10-kafka.yaml creates all five at start.
+  #
+  # One authorization call is to publish one event: to the first topic on an
+  # approval and to the second on a decline. The ledger posting and fraud
+  # detection services are to read the approval topic directly, each under its own
+  # consumer group below. The notification service is to read what those two
+  # publish, on transaction.posted and fraud.assessed. No consumer calls another.
+  # No module registers a listener yet, so no group holds a read position today.
   TOPIC_TRANSACTION_AUTHORIZED: "transaction.authorized"
   TOPIC_TRANSACTION_DECLINED: "transaction.declined"
   TOPIC_TRANSACTION_POSTED: "transaction.posted"
   TOPIC_FRAUD_ASSESSED: "fraud.assessed"
-  # The account and card services publish these two when a state change occurs.
+  # The account and card services are to publish these two on a state change.
   TOPIC_ACCOUNT_STATE_CHANGED: "account.state-changed"
-  TOPIC_CARD_STATE_CHANGED: "card.state-changed"
-  # Appended to a topic name when a record exhausts its delivery attempts. The
-  # three consumed topics each carry a dead-letter topic named this way.
-  TOPIC_DEAD_LETTER_SUFFIX: ".DLT"
+  TOPIC_CARD_UPDATED: "card.updated"
+  # One shared dead-letter topic. A record that exhausts its delivery attempts,
+  # or that fails schema validation inside poll, goes here.
+  TOPIC_DEAD_LETTER: "carddemo.dead-letter"
 
   # Consumer groups
-  # Five distinct groups, one per listener. Each group receives its own copy of
-  # every event, and two listeners sharing one group would split the events
-  # between them.
+  # Four distinct groups, one per planned listener. Each group receives its own
+  # copy of every event, and two listeners sharing one group would split the
+  # events between them. Ledger posting and fraud detection are the planned
+  # readers of transaction.authorized.
   GROUP_LEDGER_POSTING: "ledger-posting"
   GROUP_FRAUD_DETECTION: "fraud-detection"
-  GROUP_NOTIFICATION_AUTHORIZED: "notification-authorized"
   GROUP_NOTIFICATION_POSTED: "notification-posted"
   GROUP_NOTIFICATION_FRAUD: "notification-fraud"
 
   # Supporting service addresses
-  # The authorization service reads both while it applies the decline rules, and
-  # neither read writes anything. Each address names a Service in this namespace.
-  ACCOUNT_SERVICE_BASE_URL: "http://account-service:8080"
-  CARD_SERVICE_BASE_URL: "http://card-service:8080"
+  # The authorization service is to read both while it applies the decline rules,
+  # and neither read writes anything. Each address names a Service in this
+  # namespace.
+  #
+  # Both are https. What travels on these two calls is a card number, an account
+  # identifier, a credit limit and two cycle balances, and a cluster pod network is a path
+  # shared with every other workload on the cluster. SERVER_SSL_ENABLED below is what makes
+  # the other end answer on it, and the certificate each service presents has to carry its
+  # own Service name, because that is the name written here.
+  ACCOUNT_SERVICE_BASE_URL: "https://account-service:8080"
+  CARD_SERVICE_BASE_URL: "https://card-service:8080"
 
   # Outbox relay
   # Milliseconds between two sweeps for unpublished rows, then the rows one
-  # sweep claims.
+  # sweep claims. These size the planned relay; no module runs one yet.
   OUTBOX_RELAY_INTERVAL_MS: "500"
   OUTBOX_RELAY_BATCH_SIZE: "100"
 
   # Consumer resilience
   # Delivery attempts a consumer makes, then the milliseconds it waits between
-  # two. A record that exhausts the attempts routes to its dead-letter topic.
+  # two. A record that exhausts the attempts routes to the dead-letter topic.
+  # These size the planned retry; no module registers a listener yet.
   CONSUMER_MAX_RETRY_ATTEMPTS: "3"
   CONSUMER_RETRY_BACKOFF_MS: "1000"
 
@@ -104,15 +191,80 @@ data:
   LOG_LEVEL_CARDDEMO: "INFO"
   # Actuator endpoints each service exposes under /actuator. The Deployment
   # probes read /actuator/health, so health stays in the list.
+  #
+  # Exposing an endpoint here does not publish it. config/SecurityConfig in each
+  # service secures this surface in front of the endpoints listed below:
+  # /actuator/health answers with no credential, because a Kubernetes probe and a
+  # container health check carry none, and every other endpoint requires
+  # ROLE_MONITORING. An anonymous caller receives 401 and an identity holding a
+  # business role receives 403. The NetworkPolicy in each service manifest closes
+  # the same gap a second time, at the network rather than the request layer.
   MANAGEMENT_ENDPOINTS: "health,metrics,prometheus"
   # Port each container serves /actuator on. The probes target it, and port 8080
-  # answers no management request.
+  # answers no management request. No Service exposes this port: a pod reaches it
+  # by pod address alone, and only when a NetworkPolicy admits it.
   MANAGEMENT_PORT: "9080"
+  # Keeps /actuator/health/readiness and /actuator/health/liveness available. Every Deployment
+  # probes one group or the other, so a database outage withdraws a Pod from its Service
+  # instead of restarting a Java virtual machine that is running correctly. Spring Boot 4.1.0
+  # registers both groups by default and this pins it: set it to false and both paths answer
+  # 404 and every Pod fails its probes.
+  MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
+
+  # Request identities
+  # Each service maps the three entries below onto one Spring Security user, and
+  # start-up fails when the list is empty. A username is not a credential and
+  # belongs here; the matching password hashes are keys of the Secret in
+  # 31-secret.example.yaml and appear nowhere in this file.
+  #
+  # ADMIN and USER are the two outcomes of the SEC-USR-TYPE fork at
+  # app/cbl/COSGN00C.cbl:L232-L236. MONITORING is additive: it reaches the metrics
+  # and Prometheus endpoints above and no business route at all.
+  ADMIN_USERNAME: "admin001"
+  USER_USERNAME: "user0001"
+  MONITORING_USERNAME: "monitor01"
+  # What the ordinary identity owns, comma separated, one authority per
+  # entitlement: SCOPE_ACCOUNT_<eleven digits>, SCOPE_CUSTOMER_<nine digits> or
+  # SCOPE_CARD_<masked card number>. Each identifier is written exactly as its
+  # column holds it, leading zeros and mask characters included. Empty grants
+  # nothing, so an ownership-scoped route answers 403 until a value appears here.
+  USER_SCOPES: ""
+
+  # Transport Layer Security for the two ports each service serves
+  # On here and off in the compose stack, and the reason is the network rather than the
+  # protocol: a Docker bridge on one machine carries no traffic a third party can read,
+  # while a cluster pod network does. The keystore arrives from carddemo-tls-secret as a
+  # file, and its password is a key of that Secret rather than a value here.
+  #
+  # A service refuses to finish starting if this is true and the keystore is empty. The
+  # check lives in the config/SecurityConfig of each service, beside the credential checks,
+  # because an encrypted port with nothing behind it fails later and further away.
+  SERVER_SSL_ENABLED: "true"
+  SERVER_SSL_KEYSTORE: "file:/etc/carddemo/tls/keystore.p12"
+  SERVER_SSL_KEYSTORE_TYPE: "PKCS12"
+  # The management port carries the same posture as the service port, declared rather than
+  # inherited: a monitoring credential travelling to a collector deserves the same
+  # protection as a cardholder identifier travelling to a client. A probe against an
+  # encrypted management port needs scheme HTTPS, which each service manifest sets.
+  MANAGEMENT_SSL_ENABLED: "true"
 
   # Spring bindings identical in all six services
   # Each service image ships the Docker Compose broker address as its default,
   # and that address resolves nowhere in this namespace.
   SPRING_KAFKA_BOOTSTRAP_SERVERS: "kafka:9092"
-  # One database, six schemas. Each service Deployment adds the schema settings
-  # it owns, and its Flyway migration creates the schema it names.
-  SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/carddemo"
+  # One database, six schemas, six logins. Each service Deployment adds the schema and the
+  # login name it owns, and its Flyway migration creates every table in the schema the
+  # provisioning program already gave it.
+  #
+  # sslmode=verify-full is the strongest mode the driver offers: it encrypts, it checks the
+  # server certificate against the authority below, AND it checks that the certificate names
+  # the host it connected to. verify-ca would accept any certificate that authority ever
+  # issued, including one issued for another name. card-platform/docker-compose.yml asks for
+  # require instead, because a laptop stack has no authority to verify against, and its own
+  # comment says so.
+  # The database name and the schema are deliberately NOT part of this value. Each service
+  # owns one of the six databases above and one schema inside it, so each Deployment builds its
+  # own URL from its own <SERVICE>_DB_NAME and <SERVICE>_DB_SCHEMA and appends these options. A
+  # shared URL naming one database would put all six services back in one datastore, which is
+  # the coupling this platform exists to remove.
+  SPRING_DATASOURCE_OPTIONS: "sslmode=verify-full&sslrootcert=/etc/carddemo/tls/ca.crt"

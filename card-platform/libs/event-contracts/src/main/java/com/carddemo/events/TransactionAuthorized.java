@@ -2,17 +2,18 @@ package com.carddemo.events;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.regex.Pattern;
-
-import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.fasterxml.jackson.annotation.JsonUnwrapped;
 
 import tools.jackson.databind.annotation.JsonSerialize;
 import tools.jackson.databind.ser.std.ToStringSerializer;
 
 /**
- * The event one approved authorization call publishes, and the event three services consume.
+ * The event one approved authorization call publishes, and the event the ledger posting and fraud
+ * detection services are to consume. The notification service reacts to what those two publish, so
+ * three services react to one call.
  *
  * <p>Twelve payload components each carry one field of the 350-byte transaction record at
  * {@code app/cpy/CVTRA05Y.cpy}. Its daily-feed twin at {@code app/cpy/CVTRA06Y.cpy} declares the
@@ -20,10 +21,12 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * {@code app/cbl/CBTRN02C.cbl:L425-L436} moves those twelve fields from the feed record onto the
  * posted record.
  *
- * <p>The wire form is flat. A serialized event holds eighteen properties in one JavaScript Object
- * Notation (JSON) object: the five {@link EventEnvelope} fields and the thirteen declared below. No
- * {@code envelope} key reaches a topic. The contract is
- * {@code schemas/transaction-authorized-v1.json}, and both ends validate against it.
+ * <p>The wire form is flat. A serialized event holds nineteen properties in one JavaScript Object
+ * Notation (JSON) object: the five envelope fields declared first below and the fourteen payload
+ * fields that follow them. No {@code envelope} key reaches a topic. The contract is
+ * {@code schemas/transaction-authorized-v1.json}, which lists all nineteen names in one
+ * {@code required} array and sets {@code additionalProperties} to {@code false}. Both ends validate
+ * against it.
  *
  * <p>Two components are ADDITIVE. {@link #maskedCardNumber()} takes its width and position from
  * {@code TRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L15}. No source program masks a
@@ -37,10 +40,10 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * which {@code app/cbl/CBTRN02C.cbl:L437-L438} stamps later, so {@code TransactionPosted} carries
  * that field instead. All 300 records of {@code app/data/ASCII/dailytran.txt} leave it blank.
  *
- * <p>{@link #accountId()} reads {@code aggregateId} from the envelope, which holds the eleven-digit
- * identifier from {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. That value is
- * the Kafka message key. One account identifier travels on the event, so the key and the payload
- * cannot disagree.
+ * <p>{@link #accountId()} and {@link #aggregateId()} both hold the eleven-digit identifier from
+ * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}, and {@code aggregateId} is the
+ * Kafka message key. The canonical constructor rejects two differing values, so the key and the
+ * payload cannot disagree.
  *
  * <p>{@link #authorizedAt()} holds twenty-six characters shaped
  * {@code YYYY-MM-DD HH:MM:SS.ffffff}, from {@code TRAN-ORIG-TS PIC X(26)} at
@@ -54,16 +57,26 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * toward zero and never rounds half up.
  *
  * <p>The authorization service publishes this event to topic {@code transaction.authorized}. The
- * ledger-posting and fraud-detection services consume it in the consumer groups
+ * ledger-posting and fraud-detection services read it in the consumer groups
  * {@code ledger-posting} and {@code fraud-detection}, and neither calls the other. Adding a
- * consumer needs no change here. For the path this event travels from publish to consume, read
- * {@code card-platform/docs/event-flow.md}; for the reasoning behind the choices above, read
- * {@code card-platform/docs/decision-log.md}.
+ * consumer needs no change here.
  *
- * @param envelope             the five fields every event carries, serialized flat beside the
- *                             thirteen below
+ * @param eventId              the idempotency key each consumer records before it applies side
+ *                             effects, a Universally Unique Identifier (UUID)
+ * @param eventType            the routing discriminator, always {@link #EVENT_TYPE}
+ * @param schemaVersion        the contract version, always
+ *                             {@link EventEnvelope#SCHEMA_VERSION}
+ * @param occurredAt           the moment the producer wrote the event, in Coordinated Universal
+ *                             Time
+ * @param aggregateId          the eleven-digit account identifier, and the Kafka message key. From
+ *                             {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}
  * @param transactionId        the transaction identifier, sixteen characters. From
  *                             {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5}
+ * @param accountId            the account identifier the card resolved to, eleven digits. From
+ *                             {@code XREF-ACCT-ID PIC 9(11)} at
+ *                             {@code app/cpy/CVACT03Y.cpy:L7}. Always equal to the
+ *                             {@code aggregateId} of {@code envelope}. Leading zeros belong to the
+ *                             value
  * @param transactionTypeCode  the transaction type code, at most two characters. From
  *                             {@code TRAN-TYPE-CD PIC X(02)} at {@code app/cpy/CVTRA05Y.cpy:L6}
  * @param merchantCategoryCode the merchant category code, four digits. From
@@ -95,21 +108,39 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * @param authorizedAt         the authorization timestamp, twenty-six characters shaped
  *                             {@code YYYY-MM-DD HH:MM:SS.ffffff}. From
  *                             {@code TRAN-ORIG-TS PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L16}
+ * @param accountId            the same eleven-digit account identifier {@code aggregateId} carries.
+ *                             From {@code XREF-ACCT-ID PIC 9(11)} at
+ *                             {@code app/cpy/CVACT03Y.cpy:L7}. Leading zeros belong to the value
  * @param currency             the currency of the amount, always {@link #CURRENCY}. ADDITIVE. No
  *                             source field exists
  */
-public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, String transactionId,
-        String transactionTypeCode, String merchantCategoryCode, String source, String description,
-        @JsonSerialize(using = ToStringSerializer.class) BigDecimal amount, String merchantId,
-        String merchantName, String merchantCity, String merchantZip, String maskedCardNumber,
-        String authorizedAt, String currency) {
+public record TransactionAuthorized(
+        UUID eventId,
+        String eventType,
+        int schemaVersion,
+        Instant occurredAt,
+        String aggregateId,
+        String transactionId,
+        String transactionTypeCode,
+        String merchantCategoryCode,
+        String source,
+        String description,
+        @JsonSerialize(using = ToStringSerializer.class) BigDecimal amount,
+        String merchantId,
+        String merchantName,
+        String merchantCity,
+        String merchantZip,
+        String maskedCardNumber,
+        String authorizedAt,
+        String accountId,
+        String currency) {
 
     /**
      * The routing discriminator every instance carries, and the simple name of this record.
      *
      * <p>{@code schemas/transaction-authorized-v1.json} pins {@code eventType} to this text with
-     * {@code "const"}. The canonical constructor accepts no envelope carrying another value, and
-     * {@link #of} stamps this one.
+     * {@code "const"}. The canonical constructor accepts no other value, and {@link #of} stamps
+     * this one.
      */
     public static final String EVENT_TYPE = "TransactionAuthorized";
 
@@ -200,6 +231,26 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
     /** Ceiling on {@link #description()}, from {@code TRAN-DESC PIC X(100)}. */
     public static final int DESCRIPTION_MAX_LENGTH = 100;
 
+    /**
+     * The characters a free-text component may hold: printable ones and nothing else.
+     *
+     * <p>The range runs from the space at {@code 0x20} to the tilde at {@code 0x7E}, so
+     * every C0 control character is outside it, carriage return and line feed included.
+     * All three hundred records of {@code app/data/ASCII/dailytran.txt} hold characters
+     * from this range alone, measured across every text field of
+     * {@code app/cpy/CVTRA06Y.cpy}, so the range refuses nothing the source carries.
+     *
+     * <p>The check is here as well as at ingress because this record is the contract, and a
+     * contract that admits a carriage return admits a forged line in the fixed-width alert
+     * record {@code app/cbl/CBSTM03A.CBL:L86-L159} lays out. A producer that reached this
+     * constructor by another route than the request DTO is bound by the same rule.
+     */
+    public static final String PRINTABLE_TEXT_PATTERN = "^[ -~]*$";
+
+    /** {@link #PRINTABLE_TEXT_PATTERN} compiled, and the check each text component runs. */
+    private static final Pattern PRINTABLE_TEXT_MATCHER =
+            Pattern.compile(PRINTABLE_TEXT_PATTERN);
+
     /** Ceiling on {@link #merchantName()}, from {@code TRAN-MERCHANT-NAME PIC X(50)}. */
     public static final int MERCHANT_NAME_MAX_LENGTH = 50;
 
@@ -208,6 +259,14 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
 
     /** Ceiling on {@link #merchantZip()}, from {@code TRAN-MERCHANT-ZIP PIC X(10)}. */
     public static final int MERCHANT_ZIP_MAX_LENGTH = 10;
+
+    /**
+     * {@link EventEnvelope#AGGREGATE_ID_PATTERN} compiled, and the check {@link #accountId()} runs.
+     *
+     * <p>Reusing the envelope constant keeps one pattern behind both account identifiers.
+     */
+    private static final Pattern ACCOUNT_ID_MATCHER =
+            Pattern.compile(EventEnvelope.AGGREGATE_ID_PATTERN);
 
     /** {@link #AMOUNT_PATTERN} compiled. */
     private static final Pattern AMOUNT_MATCHER = Pattern.compile(AMOUNT_PATTERN);
@@ -227,7 +286,14 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
     private static final Pattern AUTHORIZED_AT_MATCHER = Pattern.compile(AUTHORIZED_AT_PATTERN);
 
     /**
-     * Checks all fourteen components and rejects a value
+     * {@link EventEnvelope#AGGREGATE_ID_PATTERN} compiled, and the check both account identifiers
+     * run.
+     */
+    private static final Pattern ACCOUNT_IDENTIFIER_MATCHER =
+            Pattern.compile(EventEnvelope.AGGREGATE_ID_PATTERN);
+
+    /**
+     * Checks all nineteen components and rejects a value
      * {@code schemas/transaction-authorized-v1.json} would reject.
      *
      * <p>Every exception message names the component that failed. The checks match the schema
@@ -245,15 +311,36 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
      * the value, so no card number reaches a log through a failure.
      *
      * @throws NullPointerException     when any component is {@code null}
-     * @throws IllegalArgumentException when the envelope does not carry {@link #EVENT_TYPE}, when a
-     *                                 text component breaks its width, when a component breaks its
-     *                                 pattern, or when {@code currency} is not {@link #CURRENCY}
+     * @throws IllegalArgumentException when {@code eventType} is not {@link #EVENT_TYPE}, when
+     *                                 {@code schemaVersion} is not
+     *                                 {@link EventEnvelope#SCHEMA_VERSION}, when either account
+     *                                 identifier is not eleven decimal digits, when the two account
+     *                                 identifiers differ, when a text component breaks its width,
+     *                                 when a component breaks its pattern, or when
+     *                                 {@code currency} is not {@link #CURRENCY}
      */
     public TransactionAuthorized {
-        Objects.requireNonNull(envelope, "envelope must be present");
-        if (!EVENT_TYPE.equals(envelope.eventType())) {
-            throw new IllegalArgumentException("envelope.eventType must be \"" + EVENT_TYPE
-                    + "\" and the supplied value is \"" + envelope.eventType() + "\"");
+        Objects.requireNonNull(eventId, "eventId must be present");
+        Objects.requireNonNull(eventType, "eventType must be present");
+        Objects.requireNonNull(occurredAt, "occurredAt must be present");
+
+        if (!EVENT_TYPE.equals(eventType)) {
+            throw new IllegalArgumentException("eventType must be \"" + EVENT_TYPE
+                    + "\" and the supplied value is \"" + eventType + "\"");
+        }
+        if (schemaVersion != EventEnvelope.SCHEMA_VERSION) {
+            throw new IllegalArgumentException("schemaVersion must be "
+                    + EventEnvelope.SCHEMA_VERSION + " and the supplied value is " + schemaVersion);
+        }
+
+        requireAccountIdentifier(aggregateId, "aggregateId");
+        if (accountId == null) {
+            accountId = aggregateId;
+        }
+        requireAccountIdentifier(accountId, "accountId");
+        if (!aggregateId.equals(accountId)) {
+            throw new IllegalArgumentException("aggregateId and accountId must hold one account "
+                    + "identifier and the two supplied values differ");
         }
 
         requireExactLength(transactionId, TRANSACTION_ID_LENGTH, "transactionId");
@@ -264,12 +351,21 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
         requireMaxLength(source, SOURCE_MAX_LENGTH, "source");
         requireMaxLength(description, DESCRIPTION_MAX_LENGTH, "description");
 
+        // No control character reaches a consumer that lays this text out by column.
+        requirePrintable(transactionId, "transactionId");
+        requirePrintable(transactionTypeCode, "transactionTypeCode");
+        requirePrintable(source, "source");
+        requirePrintable(description, "description");
+
         amount = requireAmount(amount);
 
         requirePattern(merchantId, MERCHANT_ID_MATCHER, MERCHANT_ID_PATTERN, "merchantId");
         requireMaxLength(merchantName, MERCHANT_NAME_MAX_LENGTH, "merchantName");
         requireMaxLength(merchantCity, MERCHANT_CITY_MAX_LENGTH, "merchantCity");
         requireMaxLength(merchantZip, MERCHANT_ZIP_MAX_LENGTH, "merchantZip");
+        requirePrintable(merchantName, "merchantName");
+        requirePrintable(merchantCity, "merchantCity");
+        requirePrintable(merchantZip, "merchantZip");
         requireMaskedForm(maskedCardNumber);
         requireExactLength(authorizedAt, AUTHORIZED_AT_LENGTH, "authorizedAt");
         requirePattern(authorizedAt, AUTHORIZED_AT_MATCHER, AUTHORIZED_AT_PATTERN, "authorizedAt");
@@ -282,19 +378,33 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
     }
 
     /**
-     * The account identifier the event belongs to, read from the envelope.
+     * The five envelope components, as the carrier a producer builds and a consumer routes on.
      *
-     * <p>Returns {@code aggregateId}, which holds the eleven-digit identifier from
-     * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} and is the Kafka message
-     * key. The value is derived, not stored, so the key and the account a consumer posts to cannot
-     * disagree. A serialized event carries the identifier once, under {@code aggregateId}, and
-     * carries no {@code accountId} property.
+     * <p>The returned envelope holds the values this record already carries, so the two cannot
+     * disagree. Serialization ignores the method, and a serialized event carries no
+     * {@code envelope} key.
      *
-     * @return eleven decimal digits, with leading zeros
+     * @return an envelope holding {@code eventId}, {@code eventType}, {@code schemaVersion},
+     *         {@code occurredAt} and {@code aggregateId}
      */
-    @JsonIgnore
-    public String accountId() {
-        return envelope.aggregateId();
+    public EventEnvelope envelope() {
+        return new EventEnvelope(eventId, eventType, schemaVersion, occurredAt, aggregateId);
+    }
+
+    /**
+     * Checks one account identifier against {@link EventEnvelope#AGGREGATE_ID_PATTERN}.
+     *
+     * @param value     the identifier to check
+     * @param component the component name the failure message reports
+     * @throws IllegalArgumentException when {@code value} is {@code null} or is not eleven decimal
+     *                                  digits. The message reports the length and never the value
+     */
+    private static void requireAccountIdentifier(String value, String component) {
+        if (value == null || !ACCOUNT_IDENTIFIER_MATCHER.matcher(value).matches()) {
+            throw new IllegalArgumentException(component + " must match "
+                    + EventEnvelope.AGGREGATE_ID_PATTERN + " and the supplied value "
+                    + (value == null ? "is null" : "holds " + value.length() + " characters"));
+        }
     }
 
     /**
@@ -303,7 +413,7 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
      * <p>The envelope comes from {@link EventEnvelope#of(String, String)} carrying
      * {@link #EVENT_TYPE}, so {@code eventId}, {@code schemaVersion} and {@code occurredAt} are
      * stamped here. {@code currency} takes {@link #CURRENCY}. The account identifier is supplied
-     * once and becomes {@code aggregateId}, which {@link #accountId()} reads back.
+     * once and becomes both {@code aggregateId} and {@code accountId}.
      *
      * @param accountId            the eleven-digit account identifier, and the Kafka message key
      * @param transactionId        the transaction identifier, sixteen characters
@@ -319,8 +429,8 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
      * @param maskedCardNumber     twelve asterisks then the last four digits
      * @param authorizedAt         the authorization timestamp, shaped
      *                             {@code YYYY-MM-DD HH:MM:SS.ffffff}
-     * @return an event carrying the thirteen supplied values, a stamped envelope and
-     *         {@link #CURRENCY}
+     * @return an event carrying the thirteen supplied values, a stamped envelope, the account
+     *         identifier under both names, and {@link #CURRENCY}
      * @throws NullPointerException     when any argument is {@code null}
      * @throws IllegalArgumentException when an argument breaks its width or its pattern
      */
@@ -329,9 +439,13 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
             String description, BigDecimal amount, String merchantId, String merchantName,
             String merchantCity, String merchantZip, String maskedCardNumber,
             String authorizedAt) {
-        return new TransactionAuthorized(EventEnvelope.of(EVENT_TYPE, accountId), transactionId,
-                transactionTypeCode, merchantCategoryCode, source, description, amount, merchantId,
-                merchantName, merchantCity, merchantZip, maskedCardNumber, authorizedAt, CURRENCY);
+        EventEnvelope envelope = EventEnvelope.of(EVENT_TYPE, accountId);
+
+        return new TransactionAuthorized(envelope.eventId(), envelope.eventType(),
+                envelope.schemaVersion(), envelope.occurredAt(), envelope.aggregateId(),
+                transactionId, transactionTypeCode, merchantCategoryCode, source, description,
+                amount, merchantId, merchantName, merchantCity, merchantZip, maskedCardNumber,
+                authorizedAt, envelope.aggregateId(), CURRENCY);
     }
 
     /**
@@ -349,8 +463,10 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
         String text = stored.toPlainString();
         if (!AMOUNT_MATCHER.matcher(text).matches()) {
             throw new IllegalArgumentException("amount must match " + AMOUNT_PATTERN
-                    + " once stored at scale " + AMOUNT_SCALE + " and the supplied value stores as "
-                    + text);
+                    + " once stored at scale " + AMOUNT_SCALE
+                    + " and the supplied value stores as " + text.length()
+                    + " characters with precision " + stored.precision() + " and scale "
+                    + stored.scale());
         }
         return stored;
     }
@@ -385,6 +501,34 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
      * @throws NullPointerException     when {@code value} is {@code null}
      * @throws IllegalArgumentException when {@code value} is longer than {@code maximum}
      */
+    /**
+     * Rejects a component holding a character outside {@link #PRINTABLE_TEXT_PATTERN}.
+     *
+     * <p>The message reports the position of the first offending character and its code
+     * point, and never the surrounding text, so a failure carries no cardholder value into
+     * a log. A position is what a caller needs in order to find the character it sent.
+     *
+     * @param value     the component to check, already known to be present
+     * @param component the component name for the message
+     * @throws IllegalArgumentException when the value holds a character outside the range
+     */
+    private static void requirePrintable(String value, String component) {
+        if (PRINTABLE_TEXT_MATCHER.matcher(value).matches()) {
+            return;
+        }
+        int position = 0;
+        while (position < value.length()) {
+            char character = value.charAt(position);
+            if (character < ' ' || character > '~') {
+                break;
+            }
+            position++;
+        }
+        throw new IllegalArgumentException(component + " must match " + PRINTABLE_TEXT_PATTERN
+                + " and the supplied value holds code point "
+                + (int) value.charAt(position) + " at position " + position);
+    }
+
     private static void requireMaxLength(String value, int maximum, String component) {
         Objects.requireNonNull(value, component + " must be present");
 
@@ -410,7 +554,7 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
 
         if (!matcher.matcher(value).matches()) {
             throw new IllegalArgumentException(component + " must match " + pattern
-                    + " and the supplied value is \"" + value + "\"");
+                    + " and the supplied value holds " + value.length() + " characters");
         }
     }
 
@@ -435,5 +579,33 @@ public record TransactionAuthorized(@JsonUnwrapped EventEnvelope envelope, Strin
                     + MASKED_CARD_NUMBER_PATTERN + " and the supplied value holds "
                     + value.length() + " characters");
         }
+    }
+    /**
+     * Renders the technical identifiers and withholds every value the payload carries.
+     *
+     * <p>This override replaces the representation the compiler generates for a record. That
+     * generated form prints the amount, the merchant identifier, the merchant name, the merchant
+     * city, the merchant zip code, the description and the masked card number, and it prints the
+     * account identifier the envelope holds.
+     *
+     * <p>Ten components appear as {@link EventEnvelope#WITHHELD}. The five envelope fields and the
+     * transaction identifier render themselves, because none of the six carries cardholder data.
+     *
+     * @return the identifiers of this event with every payload value withheld, never {@code null}
+     */
+    @Override
+    public String toString() {
+        return "TransactionAuthorized[eventId=" + eventId + ", eventType=" + eventType
+                + ", schemaVersion=" + schemaVersion + ", occurredAt=" + occurredAt
+                + ", aggregateId=" + EventEnvelope.WITHHELD
+                + ", transactionId=" + transactionId
+                + ", transactionTypeCode=" + EventEnvelope.WITHHELD + ", merchantCategoryCode="
+                + EventEnvelope.WITHHELD + ", source=" + EventEnvelope.WITHHELD + ", description="
+                + EventEnvelope.WITHHELD + ", amount=" + EventEnvelope.WITHHELD + ", merchantId="
+                + EventEnvelope.WITHHELD + ", merchantName=" + EventEnvelope.WITHHELD
+                + ", merchantCity=" + EventEnvelope.WITHHELD + ", merchantZip="
+                + EventEnvelope.WITHHELD + ", maskedCardNumber=" + EventEnvelope.WITHHELD
+                + ", authorizedAt=" + EventEnvelope.WITHHELD + ", accountId="
+                + EventEnvelope.WITHHELD + ", currency=" + currency + "]";
     }
 }

@@ -3,6 +3,7 @@ package com.carddemo.card.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.Objects;
@@ -20,19 +21,27 @@ import java.util.UUID;
  * statements and cleans nothing up. Each of the eight file definitions in
  * {@code app/csd/CARDDEMO.CSD} carries {@code RECOVERY(NONE)}.
  *
- * <p>A card-service consumer inserts one row inside the same local transaction as its side effects,
- * once those side effects succeed, and supplies both values. A redelivery finds the row present,
- * and the {@code repository} package owns that lookup by primary key.
+ * <p>This service consumes no event today, and that is a measured fact rather than an omission:
+ * {@code card-platform/.env.example} declares four consumer groups, {@code ledger-posting},
+ * {@code fraud-detection}, {@code notification-posted} and {@code notification-fraud}, and none of
+ * them is a card group. The table is declared because every service of this platform declares the
+ * same marker with the same two columns, so a consumer added to this service inherits the contract
+ * unchanged rather than inventing one.
+ *
+ * <p>That contract is fixed. A consumer inserts one row inside the same local transaction as its
+ * side effects, once those side effects succeed, and supplies both values. A redelivery finds the
+ * row present and does nothing, and the {@code repository} package owns that lookup by primary
+ * key.
  *
  * <p>Both columns, and the primary key that is their only access path, come from
  * {@code src/main/resources/db/migration/V1__schema.sql:L80-L84}. The {@link Table} annotation
  * names no schema, and {@code src/main/resources/application.yml} supplies one and sets
  * {@code ddl-auto: validate}, so Hibernate checks this mapping against that migration at start-up.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
-@Table(name = "processed_event")
+@Table(name = "processed_event",
+        indexes = @Index(name = "ix_processed_event_processed_at",
+                columnList = "processed_at"))
 public class ProcessedEventEntity {
 
     /** Event identifier the producing service assigned, a Universally Unique Identifier (UUID). */
@@ -43,6 +52,24 @@ public class ProcessedEventEntity {
     /** Instant at which the caller finished handling the event. */
     @Column(name = "processed_at", nullable = false)
     private Instant processedAt;
+
+    /**
+     * Widest value {@code consumed_topic} holds, from {@code consumed_topic VARCHAR(128)} in
+     * {@code src/main/resources/db/migration/V1__schema.sql}.
+     */
+    public static final int CONSUMED_TOPIC_MAX_LENGTH = 128;
+
+    /**
+     * Which topic the delivery that first handled this event arrived on, or null when the
+     * marker was written without one.
+     *
+     * <p>A marker on its own says an event was handled and nothing about where it came from, which
+     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
+     * came from or arrive on a dead-letter topic during a recovery, and those are different
+     * situations. Recording the topic separates them.
+     */
+    @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
+    private String consumedTopic;
 
     /** No-argument constructor the persistence provider calls before assigning both fields. */
     protected ProcessedEventEntity() {
@@ -60,12 +87,10 @@ public class ProcessedEventEntity {
         this.processedAt = Objects.requireNonNull(processedAt, "processedAt");
     }
 
-    /** {@return the event identifier this marker records, from column {@code event_id}} */
     public UUID getEventId() {
         return eventId;
     }
 
-    /** {@return the handling instant, from column {@code processed_at}} */
     public Instant getProcessedAt() {
         return processedAt;
     }
@@ -94,9 +119,45 @@ public class ProcessedEventEntity {
         return Objects.hashCode(eventId);
     }
 
-    /** Renders both columns for a log line. Neither carries a Primary Account Number (PAN). */
+    /**
+     * Renders both columns. The event identifier is opaque and the instant is operational, so
+     * neither names an account, an amount or a cardholder.
+     */
     @Override
     public String toString() {
         return "ProcessedEventEntity[eventId=" + eventId + ", processedAt=" + processedAt + "]";
+    }
+
+    /**
+     * Returns which topic the delivery that first handled this event arrived on.
+     *
+     * @return the topic name, or null when the marker carries none
+     */
+    public String getConsumedTopic() {
+        return consumedTopic;
+    }
+
+    /**
+     * Records which topic the delivery that first handled this event arrived on.
+     *
+     * <p>A value longer than {@value #CONSUMED_TOPIC_MAX_LENGTH} characters is refused rather than
+     * truncated, because a truncated topic name names a topic that does not exist and is worse than
+     * none.
+     *
+     * @param consumedTopic the topic name, or null to record none
+     * @throws IllegalArgumentException if {@code consumedTopic} is blank or too long
+     */
+    public void setConsumedTopic(String consumedTopic) {
+        if (consumedTopic != null) {
+            if (consumedTopic.isBlank()) {
+                throw new IllegalArgumentException("consumedTopic is blank");
+            }
+            if (consumedTopic.length() > CONSUMED_TOPIC_MAX_LENGTH) {
+                throw new IllegalArgumentException("consumedTopic is " + consumedTopic.length()
+                        + " characters, over the " + CONSUMED_TOPIC_MAX_LENGTH
+                        + " its column holds");
+            }
+        }
+        this.consumedTopic = consumedTopic;
     }
 }

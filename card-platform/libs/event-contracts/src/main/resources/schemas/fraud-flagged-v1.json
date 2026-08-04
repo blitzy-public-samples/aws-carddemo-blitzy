@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://carddemo.example.com/schemas/fraud-flagged-v1.json",
   "title": "FraudFlagged",
-  "description": "The fraud detection service publishes FraudFlagged when its risk rules flag an authorized transaction, and the notification service reads it under the notification-fraud consumer group. No source program scores risk, so the event is additive in full and has no COBOL ancestor. Evolution is additive only: additionalProperties stays true, so a consumer validating against this version accepts an event that carries a field added by a later version. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
-  "$comment": "aggregateId is the only account identifier this document declares, and the Kafka message key is that value, so the key and the payload cannot disagree.",
+  "description": "The fraud detection service publishes FraudFlagged when its risk rules flag an authorized transaction, and the notification service reads it under the notification-fraud consumer group. No source program scores risk, so the event is additive in full and has no COBOL ancestor. Evolution and version policy: card-platform/docs/event-flow.md (planned).",
+  "$comment": "aggregateId and accountId carry one account identifier, and the Kafka message key is that value, so the key and the payload cannot disagree.",
   "type": "object",
   "properties": {
     "eventId": {
@@ -12,7 +12,7 @@
       "minLength": 36,
       "maxLength": 36,
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. Each consumer records this identifier before it applies side effects. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
+      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. A consumer checks this identifier against its own processed_event table before it acts. It then writes its side effects and the marker row in one local transaction, and acknowledges the message only after that transaction commits. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
       "examples": ["3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"]
     },
     "eventType": {
@@ -39,7 +39,7 @@
     "aggregateId": {
       "type": "string",
       "pattern": "^[0-9]{11}$",
-      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. This is the only account identifier the document carries, so the message key and the payload cannot disagree. A consumer maps this field onto its own account column.",
+      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. This is the routing and partitioning key, and the accountId property carries the same value, so a consumer that maps the payload onto its own account column reaches the account the message was keyed on.",
       "examples": ["00000000007"]
     },
     "transactionId": {
@@ -48,6 +48,12 @@
       "maxLength": 16,
       "description": "The identifier of the transaction the rules assessed, sixteen characters. Width borrowed from TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5, so the value matches the transactionId on TransactionAuthorized.",
       "examples": ["0000000000683580"]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier the assessed transaction belongs to, eleven digits. Width borrowed from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The value equals aggregateId, and a consumer maps this field onto its own account column.",
+      "examples": ["00000000007"]
     },
     "riskScore": {
       "type": "integer",
@@ -75,6 +81,19 @@
       "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
       "description": "The time the risk rules finished, in Coordinated Universal Time. Additive. No source field exists.",
       "examples": ["2022-06-10T19:27:53.512Z"]
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction: at most 16 members, each name a short identifier, each value a string of at most 256 characters, and no nested object or array. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "examples": [{"replayOf": "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"}]
     }
   },
   "required": [
@@ -84,9 +103,11 @@
     "occurredAt",
     "aggregateId",
     "transactionId",
+    "accountId",
     "riskScore",
     "triggeredRules",
     "assessedAt"
   ],
-  "additionalProperties": true
+  "maxProperties": 11,
+  "additionalProperties": false
 }

@@ -63,8 +63,8 @@ public final class PanMasker {
      *
      * <p>An argument wider than {@value #CARD_NUMBER_LENGTH} characters normalizes to the stored
      * width. The result keeps the last {@value #VISIBLE_DIGIT_COUNT} characters of the stripped
-     * argument and no other character of it, so the count of mask characters stays at
-     * {@value #CARD_NUMBER_LENGTH} minus {@value #VISIBLE_DIGIT_COUNT} whatever the argument
+     * argument and no other character of it. The mask-character count therefore stays at
+     * {@value #CARD_NUMBER_LENGTH} minus {@value #VISIBLE_DIGIT_COUNT}, whatever the argument
      * width.
      *
      * <p>A {@code null} argument, a blank argument, and an argument of

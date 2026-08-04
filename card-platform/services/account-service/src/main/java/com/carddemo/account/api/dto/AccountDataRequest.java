@@ -1,5 +1,9 @@
 package com.carddemo.account.api.dto;
 
+import com.carddemo.events.EventEnvelope;
+import com.carddemo.account.domain.validation.DomainEdit;
+
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -31,13 +35,6 @@ import jakarta.validation.constraints.Size;
  * {@code app/cbl/COACTUPC.cbl:L797} with {@code ACUP-NEW-CUST-ID-X PIC X(09)} at
  * {@code app/cbl/COACTUPC.cbl:L798}. No component holds a status the service tests before a write,
  * no component holds a checksum, and the record declares no version column and no method.</p>
- *
- * <p>{@code card-platform/docs/traceability-matrix.md} maps each component to its source field,
- * including the corrected spelling of {@link #expirationDate()} against
- * {@code ACCT-EXPIRAION-DATE} at {@code app/cpy/CVACT01Y.cpy:L11}.
- * {@code card-platform/docs/decision-log.md} covers the eight-character request date against the
- * ten-character stored column, the money components carried as raw text, the truncated label below,
- * and that rename.</p>
  *
  * @param activeStatus       one character of account status,
  *                           {@code ACUP-NEW-ACTIVE-STATUS PIC X(01)} at
@@ -108,38 +105,48 @@ public record AccountDataRequest(
 
         @Size(max = ACTIVE_STATUS_MAX_LENGTH,
                 message = ACCOUNT_STATUS_LABEL + MUST_BE_YES_OR_NO_MESSAGE_SUFFIX)
+        @DomainEdit(value = DomainEdit.Edit.YES_NO_FLAG, label = ACCOUNT_STATUS_LABEL)
         String activeStatus,
 
         @Size(max = MONEY_MAX_LENGTH,
                 message = CURRENT_BALANCE_LABEL + IS_NOT_VALID_MESSAGE_SUFFIX)
+        @DomainEdit(value = DomainEdit.Edit.SIGNED_DECIMAL, label = CURRENT_BALANCE_LABEL)
         String currentBalance,
 
         @Size(max = MONEY_MAX_LENGTH,
                 message = CREDIT_LIMIT_LABEL + IS_NOT_VALID_MESSAGE_SUFFIX)
+        @DomainEdit(value = DomainEdit.Edit.SIGNED_DECIMAL, label = CREDIT_LIMIT_LABEL)
         String creditLimit,
 
         @Size(max = MONEY_MAX_LENGTH,
                 message = CASH_CREDIT_LIMIT_LABEL + IS_NOT_VALID_MESSAGE_SUFFIX)
+        @DomainEdit(value = DomainEdit.Edit.SIGNED_DECIMAL, label = CASH_CREDIT_LIMIT_LABEL)
         String cashCreditLimit,
 
         @Size(max = DATE_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.CALENDAR_DATE, label = OPEN_DATE_LABEL)
         String openDate,
 
         @Size(max = DATE_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.CALENDAR_DATE, label = EXPIRY_DATE_LABEL)
         String expirationDate,
 
         @Size(max = DATE_MAX_LENGTH)
+        @DomainEdit(value = DomainEdit.Edit.CALENDAR_DATE, label = REISSUE_DATE_LABEL)
         String reissueDate,
 
         @Size(max = MONEY_MAX_LENGTH,
                 message = CURRENT_CYCLE_CREDIT_LABEL + IS_NOT_VALID_MESSAGE_SUFFIX)
+        @DomainEdit(value = DomainEdit.Edit.SIGNED_DECIMAL, label = CURRENT_CYCLE_CREDIT_LABEL)
         String currentCycleCredit,
 
         @Size(max = MONEY_MAX_LENGTH,
                 message = CURRENT_CYCLE_DEBIT_LABEL + IS_NOT_VALID_MESSAGE_SUFFIX)
+        @DomainEdit(value = DomainEdit.Edit.SIGNED_DECIMAL, label = CURRENT_CYCLE_DEBIT_LABEL)
         String currentCycleDebit,
 
         @Size(max = GROUP_ID_MAX_LENGTH)
+        @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String groupId) {
 
     /**
@@ -239,11 +246,9 @@ public record AccountDataRequest(
      * Label the {@link #currentCycleCredit()} edit runs under:
      * {@value #CURRENT_CYCLE_CREDIT_LABEL}, twenty-five characters. The program moves the
      * twenty-six character literal {@code 'Current Cycle Credit Limit'} at
-     * {@code app/cbl/COACTUPC.cbl:L1515} into a label field of
-     * {@link #EDIT_VARIABLE_NAME_WIDTH} characters. The move drops the final letter, and a trim
-     * cannot restore it, so every message under this label opens with these twenty-five characters.
-     * {@code card-platform/docs/business-rule-flags.md} carries that finding and the naming of two
-     * running totals as limits.
+     * {@code app/cbl/COACTUPC.cbl:L1515} into a label field of {@link #EDIT_VARIABLE_NAME_WIDTH}
+     * characters. The move drops the final letter, and a trim cannot restore it, so every message
+     * under this label opens with these twenty-five characters.
      */
     public static final String CURRENT_CYCLE_CREDIT_LABEL = "Current Cycle Credit Limi";
 
@@ -253,4 +258,45 @@ public record AccountDataRequest(
      * exactly {@link #EDIT_VARIABLE_NAME_WIDTH} characters wide, so the move keeps every character.
      */
     public static final String CURRENT_CYCLE_DEBIT_LABEL = "Current Cycle Debit Limit";
+
+    /**
+     * The characters {@code groupId} may hold: printable ones and nothing else.
+     *
+     * <p>The range runs from the space at {@code 0x20} to the tilde at {@code 0x7E}, so every C0
+     * control character is outside it. The group identifier takes no edit in
+     * {@code app/cbl/COACTUPC.cbl}, and this guard is what bounds its character set. ADDITIVE: the
+     * source reads the field from a fixed-width map area, which no control character can reach.
+     */
+    public static final String PRINTABLE_TEXT_PATTERN = "^[ -~]*$";
+
+    /**
+     * Message a caller reads when {@code groupId} carries a character outside
+     * {@value #PRINTABLE_TEXT_PATTERN}. ADDITIVE, for the reason that pattern records.
+     */
+    public static final String CONTROL_CHARACTER_MESSAGE =
+            "Text fields must hold printable characters only.";
+
+    /**
+     * Names all ten components and withholds every value.
+     *
+     * <p>This override replaces the representation the compiler generates for a record. That
+     * generated form prints the balance, both credit limits and both cycle accumulators, so one
+     * interpolation into a log line, an assertion failure or an exception message would place a
+     * cardholder's balance and available credit there.
+     *
+     * <p>Each component appears as {@link EventEnvelope#WITHHELD}, the platform-wide redaction
+     * marker, so a validation failure or a debugger view discloses no cardholder finances.
+     *
+     * @return a rendering that names all ten components and discloses none, never {@code null}
+     */
+    @Override
+    public String toString() {
+        return "AccountDataRequest[activeStatus=" + EventEnvelope.WITHHELD + ", currentBalance="
+                + EventEnvelope.WITHHELD + ", creditLimit=" + EventEnvelope.WITHHELD
+                + ", cashCreditLimit=" + EventEnvelope.WITHHELD + ", openDate="
+                + EventEnvelope.WITHHELD + ", expirationDate=" + EventEnvelope.WITHHELD
+                + ", reissueDate=" + EventEnvelope.WITHHELD + ", currentCycleCredit="
+                + EventEnvelope.WITHHELD + ", currentCycleDebit=" + EventEnvelope.WITHHELD
+                + ", groupId=" + EventEnvelope.WITHHELD + "]";
+    }
 }

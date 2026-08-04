@@ -40,8 +40,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>Two source losses are reproduced and asserted here. A balance of ten integer digits, declared
  * {@code ACCT-CURR-BAL PIC S9(10)V99} at app/cpy/CVACT01Y.cpy:L7, drops its high-order digit in the
  * nine digit positions of app/cbl/CBSTM03A.CBL:L113. Three full name components emit 78 characters
- * into the 75 of app/cbl/CBSTM03A.CBL:L91 and lose the last three. Both losses are recorded in
- * card-platform/docs/business-rule-flags.md.</p>
+ * into the 75 of app/cbl/CBSTM03A.CBL:L91 and lose the last three.</p>
  *
  * <p>No Spring context, no broker and no database take part, so {@code mvn test} passes on a clean
  * machine. The two render operations belong to their own implementations, and no assertion here
@@ -55,6 +54,19 @@ class NotificationRendererTest {
      * and one trailing sign position. The form sits at app/cbl/CBSTM03A.CBL:L113.
      */
     private static final int EDITED_WIDTH = 13;
+
+    /**
+     * A value carrying all five characters that mean something in markup. It holds no pair of
+     * spaces and no asterisk, so neither delimiter of app/cbl/CBSTM03A.CBL ends it early and every
+     * character reaches the escaping step of the markup renderer.
+     */
+    private static final String HOSTILE_VALUE = "<b>&'\"x</b>";
+
+    /** The entity reference an ampersand becomes. */
+    private static final String ESCAPED_AMPERSAND = "&amp;";
+
+    /** The entity reference an opening angle bracket becomes. */
+    private static final String ESCAPED_OPENING_BRACKET = "&lt;";
 
     /** Integer digit positions of {@code PIC 9(9).99-} at app/cbl/CBSTM03A.CBL:L113. */
     private static final int INTEGER_POSITIONS = 9;
@@ -668,50 +680,59 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that neither edit follows the default locale. The fields at
+     * Asserts that neither edit follows a locale convention. The fields at
      * app/cbl/CBSTM03A.CBL:L113 and app/cbl/CBSTM03A.CBL:L137 fix a point as the decimal
      * separator, no grouping separator and a trailing sign, whatever locale the Java virtual
      * machine (JVM) runs under.
+     *
+     * <p>The comparison names each locale it formats under, so this test changes no default of the
+     * JVM. Mutating the default locale would leak into a test running beside this one.</p>
      */
     @Test
-    @DisplayName("Neither edit follows the default locale")
-    void neitherEditFollowsTheDefaultLocale() {
-        Locale original = Locale.getDefault();
-        try {
-            Locale.setDefault(Locale.GERMANY);
+    @DisplayName("Neither edit follows a locale convention")
+    void neitherEditFollowsALocaleConvention() {
+        String zeroFilled = NotificationRenderer.editTrailingSign9(new BigDecimal("-1234.56"));
+        String suppressed = NotificationRenderer.editTrailingSignZ(new BigDecimal("1234.56"));
 
-            String zeroFilled = NotificationRenderer.editTrailingSign9(new BigDecimal("-1234.56"));
-            String suppressed = NotificationRenderer.editTrailingSignZ(new BigDecimal("1234.56"));
-            String platformFormat = String.format(Locale.getDefault(), "%,.2f",
-                    new BigDecimal("-1234.56"));
+        assertThat(zeroFilled)
+                .as("the zero-filled edit holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(suppressed)
+                .as("the suppressed edit holds 13 characters")
+                .hasSize(EDITED_WIDTH);
+        assertThat(zeroFilled)
+                .as("the zero-filled edit keeps its point, its zeros and its trailing minus")
+                .isEqualTo("000001234.56-");
+        assertThat(suppressed)
+                .as("the suppressed edit keeps its point and its blank positions")
+                .isEqualTo("     1234.56 ");
+        assertThat(zeroFilled)
+                .as("no grouping separator reaches a fixed-width field")
+                .doesNotContain(",");
+        assertThat(suppressed)
+                .as("no grouping separator reaches the suppressed field either")
+                .doesNotContain(",");
+
+        String commaDecimal = String.format(Locale.GERMANY, "%,.2f", new BigDecimal("-1234.56"));
+
+        assertThat(commaDecimal)
+                .as("a locale-sensitive formatter groups digits and leads with the sign")
+                .contains(",")
+                .startsWith("-");
+
+        // A locale-sensitive formatter answers differently under every locale below, so neither
+        // edit can be one in disguise.
+        for (Locale locale : List.of(Locale.GERMANY, Locale.US, Locale.FRANCE)) {
+            String platformFormat = String.format(locale, "%,.2f", new BigDecimal("-1234.56"));
 
             assertThat(zeroFilled)
-                    .as("the zero-filled edit holds 13 characters under a comma-decimal locale")
-                    .hasSize(EDITED_WIDTH);
-            assertThat(suppressed)
-                    .as("the suppressed edit holds 13 characters under the same locale")
-                    .hasSize(EDITED_WIDTH);
-            assertThat(zeroFilled)
-                    .as("the zero-filled edit keeps its point, its zeros and its trailing minus")
-                    .isEqualTo("000001234.56-");
-            assertThat(suppressed)
-                    .as("the suppressed edit keeps its point and its blank positions")
-                    .isEqualTo("     1234.56 ");
-            assertThat(zeroFilled)
-                    .as("no grouping separator reaches a fixed-width field")
-                    .doesNotContain(",");
-            assertThat(suppressed)
-                    .as("no grouping separator reaches the suppressed field either")
-                    .doesNotContain(",");
-            assertThat(platformFormat)
-                    .as("a locale-sensitive formatter groups digits and leads with the sign")
-                    .contains(",")
-                    .startsWith("-");
-            assertThat(zeroFilled)
-                    .as("a substituted locale-sensitive formatter fails these assertions")
+                    .as("the zero-filled edit differs from a %s formatting of the same amount",
+                            locale)
                     .isNotEqualTo(platformFormat);
-        } finally {
-            Locale.setDefault(original);
+            assertThat(suppressed)
+                    .as("the suppressed edit differs from a %s formatting of the same amount",
+                            locale)
+                    .isNotEqualTo(platformFormat);
         }
     }
 
@@ -1048,6 +1069,49 @@ class NotificationRendererTest {
         assertThat(NotificationRenderer.escapeHtmlText(normalField))
                 .as("escaping leaves the width of a normal field alone")
                 .hasSize(20);
+    }
+
+    /**
+     * Asserts that each implementation honours the escaping obligation of this interface through its
+     * real render operations, not only through the helper above.
+     *
+     * <p>The implementation reporting {@code HTML} routes every value-bearing field through
+     * {@link NotificationRenderer#escapeHtmlText(String)}, so a hostile value reaches its output as
+     * entity references and adds no raw markup character. The implementation reporting
+     * {@code PLAIN_TEXT} escapes nothing, because an escaped ampersand would widen the fixed-width
+     * field app/cbl/CBSTM03A.CBL declares.</p>
+     */
+    @Test
+    @DisplayName("Each implementation honours the escaping obligation through its render operations")
+    void eachImplementationHonoursTheEscapingObligation() {
+        NotificationRenderer.CardholderContext hostileContext =
+                new NotificationRenderer.CardholderContext(HOSTILE_VALUE, HOSTILE_VALUE,
+                        HOSTILE_VALUE, HOSTILE_VALUE, HOSTILE_VALUE, HOSTILE_VALUE, HOSTILE_VALUE);
+        List<NotificationRenderer.TransactionRow> hostileRows = List.of(
+                new NotificationRenderer.TransactionRow(HOSTILE_VALUE, HOSTILE_VALUE,
+                        HOSTILE_VALUE));
+        BigDecimal total = new BigDecimal("98765.43");
+
+        for (NotificationRenderer renderer : List.of(new HtmlRenderer(), new PlainTextRenderer())) {
+            String statement = renderer.renderStatementAlert(hostileContext, hostileRows, total);
+            String fraudAlert = renderer.renderFraudAlert(hostileContext, HOSTILE_VALUE, 87,
+                    List.of(HOSTILE_VALUE));
+            boolean escapes =
+                    renderer.format() == NotificationRenderer.RenderedFormat.HTML;
+
+            for (String rendered : List.of(statement, fraudAlert)) {
+                assertThat(rendered.contains(ESCAPED_AMPERSAND))
+                        .as("%s escapes the ampersand a cardholder supplied", renderer.format())
+                        .isEqualTo(escapes);
+                assertThat(rendered.contains(ESCAPED_OPENING_BRACKET))
+                        .as("%s escapes the opening angle bracket a cardholder supplied",
+                                renderer.format())
+                        .isEqualTo(escapes);
+                assertThat(rendered.contains(HOSTILE_VALUE))
+                        .as("%s carries the hostile value unchanged", renderer.format())
+                        .isEqualTo(!escapes);
+            }
+        }
     }
 
     // The nested types: the format enumeration and the two payload records.

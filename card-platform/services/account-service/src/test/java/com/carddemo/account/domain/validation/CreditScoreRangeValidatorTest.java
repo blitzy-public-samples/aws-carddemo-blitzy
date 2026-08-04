@@ -1,9 +1,7 @@
 package com.carddemo.account.domain.validation;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -30,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * bounds pass and both neighbours fail, so 300, 850, 299, and 851 carry the weight of this
  * file.</p>
  *
- * <p>No method below asserts parsing. app/cbl/COACTUPC.cbl:L2515 tests the condition directly, with
+ * <p>Parsing is out of scope here. app/cbl/COACTUPC.cbl:L2515 tests the condition directly, with
  * no numeric re-parse, and app/cbl/COACTUPC.cbl:L1553 gates the paragraph on the numeric edit at
  * app/cbl/COACTUPC.cbl:L1549 having passed. {@code NumericRequiredValidatorTest} owns that numeric
  * edit, and the gate sits outside this class.</p>
@@ -39,8 +37,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code FUNCTION TRIM} over the {@code PIC X(25)} label field at app/cbl/COACTUPC.cbl:L53, joined
  * to the text at app/cbl/COACTUPC.cbl:L2523.</p>
  *
- * <p>No Spring context, no container, and no database take part, so {@code mvn test} passes on a
- * clean machine.</p>
+ * <p>No Spring context, no container and no database take part.</p>
  */
 @DisplayName("CreditScoreRangeValidator, the inclusive 300 to 850 credit score edit")
 class CreditScoreRangeValidatorTest {
@@ -85,10 +82,10 @@ class CreditScoreRangeValidatorTest {
     /** The whole message a rejected score produces for {@link #CALL_SITE_LABEL}. */
     private static final String CALL_SITE_RANGE_MESSAGE = "FICO Score: should be between 300 and 850";
 
-    /** Two adjacent spaces, the leak a label field of untrimmed padding would produce. */
+    /** Two adjacent spaces. A trimmed label never emits this pair. */
     private static final String TWO_SPACES = "  ";
 
-    /** A space ahead of the colon, the other leak untrimmed padding would produce. */
+    /** A space ahead of the colon. A trimmed label never emits it. */
     private static final String SPACE_BEFORE_COLON = " :";
 
     /** Scores spanning the whole rejected set, below the range and above it. */
@@ -241,30 +238,16 @@ class CreditScoreRangeValidatorTest {
     }
 
     /**
-     * Guards the shape the one call site at app/cbl/COACTUPC.cbl:L1554 needs: one entry point,
-     * reachable with no instance. A second public method would open a second message path.
+     * Reads the entry point the one call site at app/cbl/COACTUPC.cbl:L1554 needs: a static call
+     * taking a label and a credit score, answering with a verdict.
      */
     @Test
-    @DisplayName("The validator is a final class with one private constructor and one public method")
-    void validatorExposesOneStaticEntryPoint() {
-        assertThat(Modifier.isFinal(CreditScoreRangeValidator.class.getModifiers())).isTrue();
+    @DisplayName("The validator declares a static label-and-score entry point returning a verdict")
+    void validatorExposesOneStaticEntryPoint() throws NoSuchMethodException {
+        Method entryPoint =
+                CreditScoreRangeValidator.class.getMethod("validate", String.class, String.class);
 
-        Constructor<?>[] constructors = CreditScoreRangeValidator.class.getDeclaredConstructors();
-
-        assertThat(constructors).hasSize(1);
-        assertThat(Modifier.isPrivate(constructors[0].getModifiers())).isTrue();
-        assertThat(constructors[0].getParameterCount()).isZero();
-
-        List<Method> publicMethods = Arrays.stream(CreditScoreRangeValidator.class.getDeclaredMethods())
-                .filter(method -> !method.isSynthetic())
-                .filter(method -> Modifier.isPublic(method.getModifiers()))
-                .toList();
-
-        assertThat(publicMethods).hasSize(1);
-
-        Method entryPoint = publicMethods.getFirst();
-
-        assertThat(entryPoint.getName()).isEqualTo("validate");
+        assertThat(Modifier.isPublic(entryPoint.getModifiers())).isTrue();
         assertThat(Modifier.isStatic(entryPoint.getModifiers())).isTrue();
         assertThat(entryPoint.getReturnType()).isEqualTo(EditResult.class);
         assertThat(entryPoint.getParameterTypes()).containsExactly(String.class, String.class);

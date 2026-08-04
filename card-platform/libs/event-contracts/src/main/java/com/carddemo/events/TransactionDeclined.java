@@ -1,12 +1,15 @@
 package com.carddemo.events;
 
-import com.fasterxml.jackson.annotation.JsonFormat;
-import com.fasterxml.jackson.annotation.JsonUnwrapped;
-
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.util.Objects;
+import java.util.UUID;
 import java.util.regex.Pattern;
+
+import tools.jackson.databind.annotation.JsonSerialize;
+import tools.jackson.databind.ser.std.ToStringSerializer;
 
 /**
  * The event the authorization service publishes when it rejects a transaction.
@@ -33,11 +36,34 @@ import java.util.regex.Pattern;
  * only while the code is still zero, gated at {@code app/cbl/CBTRN02C.cbl:L372}, and no gate
  * separates the credit-limit test from the expiration test.
  *
- * <p>The wire form is flat. {@code envelope} serializes unwrapped, so one JavaScript Object
- * Notation (JSON) object holds the five envelope fields beside the six payload fields. No
- * {@code envelope} key reaches a topic. The document at
- * {@code schemas/transaction-declined-v1.json} validates the result on serialize and on
+ * <p>The wire form is flat. The five envelope fields are declared first below, so one JavaScript
+ * Object Notation (JSON) object holds them beside the six payload fields and no {@code envelope}
+ * key reaches a topic. {@link #envelope()} returns the carrier a producer builds and passes, and
+ * {@link #of(EventEnvelope, String, DeclineReason, BigDecimal, String)} takes it back. The document
+ * at {@code schemas/transaction-declined-v1.json} validates the result on serialize and on
  * deserialize.
+ *
+ * <p>TWO CONTRACTS, ONE RECORD. Reject reason {@code 0100} fires precisely when the keyed read of
+ * the cross-reference file misses at {@code app/cbl/CBTRN02C.cbl:L382-L387}, so at that moment the
+ * platform holds no account identifier it established itself. Version 1 requires one. Publishing a
+ * reason {@code 0100} decline under version 1 would therefore mean either trusting an identifier the
+ * caller supplied beside the card number, which attributes one caller's declined attempt to another
+ * caller's account, or inventing an identifier inside the real account key space. Neither is
+ * acceptable, so that one decline travels under its own contract instead:
+ *
+ * <ul>
+ *   <li>{@code schemas/transaction-declined-v1.json} governs a decline whose account the
+ *       cross-reference resolved, which is reasons {@code 0101}, {@code 0102} and {@code 0103}. It
+ *       is unchanged, so a consumer of resolved declines reads the same bytes it always read.</li>
+ *   <li>{@code schemas/transaction-declined-v2.json} governs reason {@code 0100}. It declares no
+ *       {@code accountId} and keys the event on {@code transactionId}, a deterministic value that
+ *       names no cardholder, no account and no card.</li>
+ * </ul>
+ *
+ * <p>{@link #of(String, String, DeclineReason, BigDecimal, String)} builds the first and
+ * {@link #ofUnresolvedAccount(String, BigDecimal, String)} builds the second. The canonical
+ * constructor refuses every mixture of the two, so a misattributed decline is unrepresentable rather
+ * than merely discouraged.
  *
  * <p>{@code maskedCardNumber} is ADDITIVE. No CardDemo program masks a Primary Account Number
  * (PAN), and {@code app/bms/COCRDSL.bms:L96-L99} defines the card detail field at the full sixteen
@@ -50,23 +76,32 @@ import java.util.regex.Pattern;
  * {@code app/cbl/CBTRN02C.cbl:L377}.
  *
  * <p>The authorization service publishes this event to the {@code transaction.declined} topic, and
- * no service consumes it in the demo topology. For the path each event travels from publish to
- * consume, read {@code card-platform/docs/event-flow.md}; for the reasoning behind the choices
- * above, read {@code card-platform/docs/decision-log.md}.
+ * no service consumes it in the demo topology.
  *
- * @param envelope                 the five fields every event carries, serialized unwrapped beside
- *                                 the six payload fields below. Its {@code eventType} must equal
- *                                 {@link #EVENT_TYPE} and its {@code aggregateId} carries the
- *                                 account identifier that is also the Kafka message key
+ * @param eventId                  the idempotency key each consumer records before it applies
+ *                                 side effects, a Universally Unique Identifier (UUID)
+ * @param eventType                the routing discriminator, always {@link #EVENT_TYPE}
+ * @param schemaVersion            the contract version: {@link EventEnvelope#SCHEMA_VERSION} for a
+ *                                 decline whose account the cross-reference resolved, and
+ *                                 {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION} for the one decline it
+ *                                 could not
+ * @param occurredAt               the moment the producer wrote the event, in Coordinated
+ *                                 Universal Time
+ * @param aggregateId              the eleven-digit account identifier, and the Kafka message key.
+ *                                 From {@code XREF-ACCT-ID PIC 9(11)} at
+ *                                 {@code app/cpy/CVACT03Y.cpy:L7}
  * @param transactionId            the transaction identifier, exactly
  *                                 {@link #TRANSACTION_ID_LENGTH} characters. From
  *                                 {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5} and
  *                                 {@code DALYTRAN-ID} at {@code app/cpy/CVTRA06Y.cpy:L5}
  * @param accountId                the eleven-digit account identifier, from
  *                                 {@code XREF-ACCT-ID PIC 9(11)} at
- *                                 {@code app/cpy/CVACT03Y.cpy:L7}. Always equal to the
- *                                 {@code aggregateId} of {@code envelope}, so the message key and
- *                                 the payload cannot disagree. Leading zeros belong to the value
+ *                                 {@code app/cpy/CVACT03Y.cpy:L7}. Always the identifier the card
+ *                                 cross-reference row carried, never one a caller supplied, and
+ *                                 always equal to the {@code aggregateId} of {@code envelope}, so
+ *                                 the message key and the payload cannot disagree. Leading zeros
+ *                                 belong to the value. Absent, and omitted from the serialized
+ *                                 event, under {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}
  * @param declineReasonCode        the reason the authorization service rejected the transaction,
  *                                 serialized as four zero-padded digits
  * @param declineReasonDescription the reason text, character for character from the source, and
@@ -84,20 +119,24 @@ import java.util.regex.Pattern;
  *                                 {@code app/cpy/CVTRA06Y.cpy:L15}
  */
 public record TransactionDeclined(
-        @JsonUnwrapped EventEnvelope envelope,
+        UUID eventId,
+        String eventType,
+        int schemaVersion,
+        Instant occurredAt,
+        String aggregateId,
         String transactionId,
-        String accountId,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String accountId,
         DeclineReason declineReasonCode,
         String declineReasonDescription,
-        @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal amount,
+        @JsonSerialize(using = ToStringSerializer.class) BigDecimal amount,
         String maskedCardNumber) {
 
     /**
      * The routing discriminator this record carries, and the {@code eventType} the schema document
      * pins with {@code "const": "TransactionDeclined"}.
      *
-     * <p>The canonical constructor accepts no envelope naming another type. {@link #of(String,
-     * String, DeclineReason, BigDecimal, String)} stamps this value.
+     * <p>The canonical constructor accepts no other value. {@link #of(String, String,
+     * DeclineReason, BigDecimal, String)} stamps this one.
      */
     public static final String EVENT_TYPE = "TransactionDeclined";
 
@@ -146,12 +185,49 @@ public record TransactionDeclined(
     public static final int DESCRIPTION_MAX_LENGTH = 76;
 
     /**
+     * The contract version a decline carries when the card cross-reference resolved no account: 2.
+     *
+     * <p>{@code schemas/transaction-declined-v2.json} governs it. That document declares no
+     * {@code accountId} at all and keys the event on {@code transactionId}, so a producer with no
+     * authoritative account identifier neither trusts the one a caller supplied nor invents one.
+     *
+     * <p>Version 1 is unchanged and remains the contract for every other decline, so a consumer
+     * reading resolved declines sees the same bytes it always saw. A consumer that wants the
+     * unresolved decline opts in by reading version 2, which is the additive evolution the platform
+     * promises rather than a break of the existing contract.
+     */
+    public static final int UNRESOLVED_ACCOUNT_SCHEMA_VERSION = 2;
+
+    /**
+     * The one reject reason that fires before an account identifier exists:
+     * {@link DeclineReason#INVALID_CARD_NUMBER}.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L382-L387} performs the keyed read of the cross-reference file
+     * and assigns this reason on an invalid key. {@code app/cbl/CBTRN02C.cbl:L370-L378} reads the
+     * account only while the reason code is still zero, so every later reason has already resolved
+     * an account identifier from the cross-reference row. This reason therefore is the whole set of
+     * declines that {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION} covers.
+     */
+    public static final DeclineReason UNRESOLVED_ACCOUNT_REASON = DeclineReason.INVALID_CARD_NUMBER;
+
+    /**
      * {@link EventEnvelope#AGGREGATE_ID_PATTERN} compiled, and the check {@code accountId} runs.
      *
      * <p>Reusing the envelope constant keeps one pattern behind both account identifiers.
      */
     private static final Pattern ACCOUNT_ID_MATCHER =
             Pattern.compile(EventEnvelope.AGGREGATE_ID_PATTERN);
+
+    /**
+     * {@link EventEnvelope#AGGREGATE_KEY_PATTERN} compiled, and the check {@code aggregateId} runs
+     * under {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}.
+     *
+     * <p>That contract keys the event on the transaction identifier, which is sixteen printable
+     * characters rather than eleven digits, so the key check reads the wider of the two envelope
+     * patterns while {@code accountId} keeps reading the account one.
+     */
+    private static final Pattern AGGREGATE_KEY_MATCHER =
+            Pattern.compile(EventEnvelope.AGGREGATE_KEY_PATTERN);
 
     /** {@link #AMOUNT_PATTERN} compiled, and the check {@code amount} runs once normalized. */
     private static final Pattern AMOUNT_MATCHER = Pattern.compile(AMOUNT_PATTERN);
@@ -173,14 +249,23 @@ public record TransactionDeclined(
      * held value, so the stored amount and the serialized string agree. Every other component is
      * stored as supplied.
      *
-     * @throws NullPointerException     when {@code envelope}, {@code declineReasonCode} or
+     * @throws NullPointerException     when {@code eventId}, {@code eventType},
+     *                                  {@code occurredAt}, {@code declineReasonCode} or
      *                                  {@code amount} is {@code null}
-     * @throws IllegalArgumentException when a component fails its check. The {@code eventType} of
-     *                                  {@code envelope} must be {@link #EVENT_TYPE}, and
+     * @throws IllegalArgumentException when a component fails its check. {@code eventType} must be
+     *                                  {@link #EVENT_TYPE}, {@code schemaVersion} must be
+     *                                  {@link EventEnvelope#SCHEMA_VERSION} or
+     *                                  {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, and
      *                                  {@code transactionId} must hold
-     *                                  {@link #TRANSACTION_ID_LENGTH} characters.
-     *                                  {@code accountId} must be eleven digits and must equal the
-     *                                  {@code aggregateId} of {@code envelope}.
+     *                                  {@link #TRANSACTION_ID_LENGTH} characters. Under
+     *                                  {@link EventEnvelope#SCHEMA_VERSION} both account
+     *                                  identifiers must be eleven digits and must hold the same
+     *                                  value, and {@link DeclineReason#resolvesAccount()} must
+     *                                  answer {@code true} for {@code declineReasonCode}. Under
+     *                                  {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}
+     *                                  {@code accountId} must be absent, {@code aggregateId} must
+     *                                  equal {@code transactionId}, and {@code declineReasonCode}
+     *                                  must be {@link #UNRESOLVED_ACCOUNT_REASON}.
      *                                  {@code declineReasonDescription} must be the
      *                                  {@link DeclineReason#description()} of
      *                                  {@code declineReasonCode}, within
@@ -190,28 +275,82 @@ public record TransactionDeclined(
      *                                  {@link #MASKED_CARD_NUMBER_PATTERN}.
      */
     public TransactionDeclined {
-        Objects.requireNonNull(envelope, "envelope must be present");
+        Objects.requireNonNull(eventId, "eventId must be present");
+        Objects.requireNonNull(eventType, "eventType must be present");
+        Objects.requireNonNull(occurredAt, "occurredAt must be present");
         Objects.requireNonNull(declineReasonCode, "declineReasonCode must be present");
         Objects.requireNonNull(amount, "amount must be present");
 
-        if (!EVENT_TYPE.equals(envelope.eventType())) {
-            throw new IllegalArgumentException("envelope must carry the eventType " + EVENT_TYPE
-                    + " and the supplied envelope carries " + envelope.eventType());
+        if (!EVENT_TYPE.equals(eventType)) {
+            throw new IllegalArgumentException("eventType must be " + EVENT_TYPE
+                    + " and the supplied value is " + eventType);
+        }
+        if (schemaVersion != EventEnvelope.SCHEMA_VERSION
+                && schemaVersion != UNRESOLVED_ACCOUNT_SCHEMA_VERSION) {
+            throw new IllegalArgumentException("schemaVersion must be "
+                    + EventEnvelope.SCHEMA_VERSION + " or " + UNRESOLVED_ACCOUNT_SCHEMA_VERSION
+                    + ", the two contracts this event type ships, and the supplied value is "
+                    + schemaVersion);
+        }
+        if (aggregateId == null
+                || !(schemaVersion == UNRESOLVED_ACCOUNT_SCHEMA_VERSION
+                        ? AGGREGATE_KEY_MATCHER.matcher(aggregateId).matches()
+                        : ACCOUNT_ID_MATCHER.matcher(aggregateId).matches())) {
+            throw new IllegalArgumentException("aggregateId must match "
+                    + (schemaVersion == UNRESOLVED_ACCOUNT_SCHEMA_VERSION
+                            ? EventEnvelope.AGGREGATE_KEY_PATTERN
+                            : EventEnvelope.AGGREGATE_ID_PATTERN)
+                    + " and the supplied value "
+                    + (aggregateId == null ? "is null"
+                            : "holds " + aggregateId.length() + " characters"));
         }
         if (transactionId == null || transactionId.length() != TRANSACTION_ID_LENGTH) {
             throw new IllegalArgumentException("transactionId must hold " + TRANSACTION_ID_LENGTH
                     + " characters and the supplied value " + (transactionId == null ? "is null"
                             : "holds " + transactionId.length() + " characters"));
         }
-        if (accountId == null || !ACCOUNT_ID_MATCHER.matcher(accountId).matches()) {
-            throw new IllegalArgumentException("accountId must match "
-                    + EventEnvelope.AGGREGATE_ID_PATTERN + " and the supplied value "
-                    + (accountId == null ? "is null"
-                            : "holds " + accountId.length() + " characters"));
-        }
-        if (!accountId.equals(envelope.aggregateId())) {
-            throw new IllegalArgumentException("accountId must equal the aggregateId of envelope, "
-                    + "which is the Kafka message key, and the two supplied values differ");
+        if (schemaVersion == UNRESOLVED_ACCOUNT_SCHEMA_VERSION) {
+            // Version 2 is the contract for a decline whose account identity the card
+            // cross-reference could not resolve. It declares no account identifier, so there is
+            // nothing here to misattribute, and it keys the event on the transaction identifier.
+            if (accountId != null) {
+                throw new IllegalArgumentException("accountId must be absent under schemaVersion "
+                        + UNRESOLVED_ACCOUNT_SCHEMA_VERSION + ", the contract for a decline whose"
+                        + " account identity the card cross-reference could not resolve, and a"
+                        + " value of " + accountId.length() + " characters was supplied");
+            }
+            if (!transactionId.equals(aggregateId)) {
+                throw new IllegalArgumentException("aggregateId must equal"
+                        + " transactionId under schemaVersion " + UNRESOLVED_ACCOUNT_SCHEMA_VERSION
+                        + ", because the transaction identifier is the message key when no account"
+                        + " identifier exists, and the two supplied values differ");
+            }
+            if (declineReasonCode != UNRESOLVED_ACCOUNT_REASON) {
+                throw new IllegalArgumentException("schemaVersion "
+                        + UNRESOLVED_ACCOUNT_SCHEMA_VERSION + " carries reason code "
+                        + UNRESOLVED_ACCOUNT_REASON.code() + " alone, because"
+                        + " app/cbl/CBTRN02C.cbl:L370-L378 reads the account only while the reason"
+                        + " code is still zero, so every other reason has already resolved one."
+                        + " The supplied reason code is " + declineReasonCode.code());
+            }
+        } else {
+            if (accountId == null || !ACCOUNT_ID_MATCHER.matcher(accountId).matches()) {
+                throw new IllegalArgumentException("accountId must match "
+                        + EventEnvelope.AGGREGATE_ID_PATTERN + " and the supplied value "
+                        + (accountId == null ? "is null"
+                                : "holds " + accountId.length() + " characters"));
+            }
+            if (!accountId.equals(aggregateId)) {
+                throw new IllegalArgumentException("accountId must equal aggregateId, which is"
+                        + " the Kafka message key, and the two supplied values differ");
+            }
+            if (declineReasonCode == UNRESOLVED_ACCOUNT_REASON) {
+                throw new IllegalArgumentException("reason code "
+                        + UNRESOLVED_ACCOUNT_REASON.code() + " follows a cross-reference read that"
+                        + " resolved no account, so it cannot carry one. Build it with"
+                        + " ofUnresolvedAccount, which publishes it under schemaVersion "
+                        + UNRESOLVED_ACCOUNT_SCHEMA_VERSION + ".");
+            }
         }
         if (!declineReasonCode.description().equals(declineReasonDescription)) {
             throw new IllegalArgumentException("declineReasonDescription must be \""
@@ -230,8 +369,8 @@ public record TransactionDeclined(
         if (!AMOUNT_MATCHER.matcher(amount.toPlainString()).matches()) {
             throw new IllegalArgumentException("amount must match " + AMOUNT_PATTERN
                     + " once held at " + AMOUNT_SCALE
-                    + " fractional digits, and the supplied value holds "
-                    + amount.toPlainString());
+                    + " fractional digits, and the supplied value holds precision "
+                    + amount.precision() + " and scale " + amount.scale());
         }
         if (maskedCardNumber == null
                 || !MASKED_CARD_NUMBER_MATCHER.matcher(maskedCardNumber).matches()) {
@@ -268,8 +407,30 @@ public record TransactionDeclined(
         Objects.requireNonNull(envelope, "envelope must be present");
         Objects.requireNonNull(declineReasonCode, "declineReasonCode must be present");
 
-        return new TransactionDeclined(envelope, transactionId, envelope.aggregateId(),
-                declineReasonCode, declineReasonCode.description(), amount, maskedCardNumber);
+        if (envelope.schemaVersion() == UNRESOLVED_ACCOUNT_SCHEMA_VERSION) {
+            throw new IllegalArgumentException("this factory copies the aggregateId of envelope into"
+                    + " accountId, and schemaVersion " + UNRESOLVED_ACCOUNT_SCHEMA_VERSION
+                    + " carries no account identifier. Build that contract with"
+                    + " ofUnresolvedAccount, which keys the event on its transaction identifier.");
+        }
+        return new TransactionDeclined(envelope.eventId(), envelope.eventType(),
+                envelope.schemaVersion(), envelope.occurredAt(), envelope.aggregateId(),
+                transactionId, envelope.aggregateId(), declineReasonCode,
+                declineReasonCode.description(), amount, maskedCardNumber);
+    }
+
+    /**
+     * The five envelope components, as the carrier a producer builds and a consumer routes on.
+     *
+     * <p>The returned envelope holds the values this record already carries, so the two cannot
+     * disagree. Serialization ignores the method, and a serialized event carries no
+     * {@code envelope} key.
+     *
+     * @return an envelope holding {@code eventId}, {@code eventType}, {@code schemaVersion},
+     *         {@code occurredAt} and {@code aggregateId}
+     */
+    public EventEnvelope envelope() {
+        return new EventEnvelope(eventId, eventType, schemaVersion, occurredAt, aggregateId);
     }
 
     /**
@@ -299,5 +460,75 @@ public record TransactionDeclined(
             DeclineReason declineReasonCode, BigDecimal amount, String maskedCardNumber) {
         return of(EventEnvelope.of(EVENT_TYPE, accountId), transactionId, declineReasonCode, amount,
                 maskedCardNumber);
+    }
+
+    /**
+     * Builds the declined event for a card the cross-reference resolved no account for.
+     *
+     * <p>This is the only path that publishes {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}. It takes
+     * no account identifier, because at this point none exists that the platform itself established:
+     * {@code app/cbl/CBTRN02C.cbl:L382-L387} has just missed on the keyed read of the
+     * cross-reference file. An identifier a caller supplied alongside the card number is not
+     * evidence of ownership, and publishing it here would attribute one caller's declined attempt to
+     * another caller's account. A synthetic identifier would be worse, because it would occupy the
+     * same key space as a real account.
+     *
+     * <p>The event is keyed on {@code transactionId} instead. That key is deterministic, so a
+     * retried publish of the same decline lands on the same partition, and it names no cardholder,
+     * no account and no card.
+     *
+     * <p>The reason code is fixed to {@link #UNRESOLVED_ACCOUNT_REASON} and the description to its
+     * text, so a caller can pair neither with anything else.
+     *
+     * @param transactionId    the transaction identifier, {@link #TRANSACTION_ID_LENGTH}
+     *                         characters, which becomes the message key
+     * @param amount           the attempted amount, held at {@link #AMOUNT_SCALE} fractional digits
+     * @param maskedCardNumber the card number already masked to
+     *                         {@link #MASKED_CARD_NUMBER_PATTERN}
+     * @return a declined event under {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, carrying no account
+     *         identifier
+     * @throws NullPointerException     when {@code amount} is {@code null}
+     * @throws IllegalArgumentException when {@code transactionId} does not hold
+     *                                  {@link #TRANSACTION_ID_LENGTH} characters, or when a
+     *                                  component fails a check of the canonical constructor
+     */
+    public static TransactionDeclined ofUnresolvedAccount(String transactionId, BigDecimal amount,
+            String maskedCardNumber) {
+        if (transactionId == null || transactionId.length() != TRANSACTION_ID_LENGTH) {
+            throw new IllegalArgumentException("transactionId must hold " + TRANSACTION_ID_LENGTH
+                    + " characters, because it is the message key of this contract, and the supplied"
+                    + " value " + (transactionId == null ? "is null"
+                            : "holds " + transactionId.length() + " characters"));
+        }
+        EventEnvelope envelope = EventEnvelope.of(EVENT_TYPE, transactionId,
+                UNRESOLVED_ACCOUNT_SCHEMA_VERSION);
+        return new TransactionDeclined(envelope.eventId(), envelope.eventType(),
+                envelope.schemaVersion(), envelope.occurredAt(), envelope.aggregateId(),
+                transactionId, null, UNRESOLVED_ACCOUNT_REASON,
+                UNRESOLVED_ACCOUNT_REASON.description(), amount, maskedCardNumber);
+    }
+
+    /**
+     * Renders the technical identifiers and the decline reason, and withholds the rest.
+     *
+     * <p>This override replaces the representation the compiler generates for a record. That
+     * generated form prints the amount, the masked card number and the account identifier.
+     *
+     * <p>The reason code and its description stay, because both are fixed constants of
+     * {@link DeclineReason} rather than values a caller supplies, and a reader diagnosing a decline
+     * needs them.
+     *
+     * @return the identifiers and the decline reason of this event, never {@code null}
+     */
+    @Override
+    public String toString() {
+        return "TransactionDeclined[eventId=" + eventId + ", eventType=" + eventType
+                + ", schemaVersion=" + schemaVersion + ", occurredAt=" + occurredAt
+                + ", aggregateId=" + EventEnvelope.WITHHELD
+                + ", transactionId=" + transactionId
+                + ", accountId=" + EventEnvelope.WITHHELD + ", declineReasonCode="
+                + declineReasonCode + ", declineReasonDescription=" + declineReasonDescription
+                + ", amount=" + EventEnvelope.WITHHELD + ", maskedCardNumber="
+                + EventEnvelope.WITHHELD + "]";
     }
 }

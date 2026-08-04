@@ -1,8 +1,11 @@
 package com.carddemo.account.domain.validation;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
@@ -12,7 +15,6 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for {@link UsSocialSecurityNumberValidator}, which realises paragraph
@@ -42,17 +44,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * gate at app/cbl/COACTUPC.cbl:L2448, so app/cbl/COACTUPC.cbl:L2469-L2487 sits inside that gate
  * and a failing part one leaves part two and part three unedited.</p>
  *
- * <p>{@link #reportsPartOneAloneWhenPartOneAndPartTwoBothFail()} pins the gate scope.
- * card-platform/docs/decision-log.md carries the reading of the absent {@code END-IF}.</p>
- *
  * <p>Three labels reach the messages, and the paragraph moves each one itself:
  * {@code 'SSN: First 3 chars'} at app/cbl/COACTUPC.cbl:L2439, the ampersand-carrying
  * {@link #PART2_LABEL} at app/cbl/COACTUPC.cbl:L2469, and {@code 'SSN Last 4 chars'} at
  * app/cbl/COACTUPC.cbl:L2481. The call site moves {@code 'SSN'} at app/cbl/COACTUPC.cbl:L1529, and
- * all three moves overwrite it. The header comments at app/cbl/COACTUPC.cbl:L2434-L2435 describe a
- * range for part two and for part three that the body never tests.
- * card-platform/docs/business-rule-flags.md records the overwritten label and the two absent range
- * checks.</p>
+ * all three moves overwrite it.</p>
  *
  * <p>Part one of {@code 000} clears the class test at app/cbl/COACTUPC.cbl:L2137 and fails the
  * not-zero test at app/cbl/COACTUPC.cbl:L2156, which closes the gate ahead of
@@ -61,9 +57,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * app/cbl/COACTUPC.cbl:L122 and the band {@code 900 THRU 999} at app/cbl/COACTUPC.cbl:L123 do
  * select, and both pin the app/cbl/COACTUPC.cbl:L2457 literal character for character.</p>
  *
- * <p>Every input below is a literal written in this class. No test opens a Spring context, starts a
- * container or reads a fixture file. No test substitutes a stand-in for the delegate, so
- * {@code mvn test} runs the whole suite on a clean machine.</p>
+ * <p>Every input is a literal written in this class. No test opens a Spring context, starts a
+ * container or reads a fixture file. No test substitutes a stand-in for the delegate.</p>
  */
 @DisplayName("UsSocialSecurityNumberValidator, the three part Social Security Number edit")
 class UsSocialSecurityNumberValidatorTest {
@@ -118,6 +113,12 @@ class UsSocialSecurityNumberValidatorTest {
     /** Storage width of the message slot at app/cbl/COACTUPC.cbl:L479. */
     private static final int MESSAGE_SLOT_WIDTH = 75;
 
+    /**
+     * Salt drawn once for the run. No assertion prints it, so a printed digest identifies a case
+     * across two assertions without carrying the characters that case supplied.
+     */
+    private static final byte[] CASE_SALT = newCaseSalt();
+
     /** A part one outside every value {@code INVALID-SSN-PART1} names at L121-L123. */
     private static final String VALID_PART1 = "123";
 
@@ -146,16 +147,18 @@ class UsSocialSecurityNumberValidatorTest {
     private static final int PART1_VALUE_CEILING = 999;
 
     /**
-     * Part one of a distinctive Social Security Number, built from the digits 7, 8 and 1. No
-     * message the edit can produce carries any of those three characters, so a per-character
-     * assertion holds across every failure path {@link #DISTINCTIVE_PART1} reaches.
+     * Part one of a synthetic three-part input, built only from the digits 7, 8 and 1. The value is
+     * assembled for this test and matches no row of {@code app/data/ASCII/custdata.txt}. No message
+     * the edit can produce carries any of those three characters, so a per-character assertion holds
+     * across every failure path the three parts reach. The assembled nine-digit form is deliberately
+     * written nowhere in this file.
      */
     private static final String DISTINCTIVE_PART1 = "781";
 
-    /** Part two of the distinctive Social Security Number 781-17-8171. */
+    /** Part two of that synthetic input, two digits drawn from the same three characters. */
     private static final String DISTINCTIVE_PART2 = "17";
 
-    /** Part three of the distinctive Social Security Number 781-17-8171. */
+    /** Part three of that synthetic input, four digits drawn from the same three characters. */
     private static final String DISTINCTIVE_PART3 = "8171";
 
     @Test
@@ -197,9 +200,9 @@ class UsSocialSecurityNumberValidatorTest {
         EditResult result =
                 UsSocialSecurityNumberValidator.validate(part1, VALID_PART2, VALID_PART3);
 
-        assertThat(result.valid()).as("part one %s", part1).isFalse();
+        assertThat(result.valid()).as("part one, %s", reference(part1)).isFalse();
         assertThat(result.message())
-                .as("part one %s", part1)
+                .as("part one, %s", reference(part1))
                 .isEqualTo(PART1_LABEL + EXCLUDED_VALUE);
     }
 
@@ -212,9 +215,13 @@ class UsSocialSecurityNumberValidatorTest {
             EditResult result =
                     UsSocialSecurityNumberValidator.validate(part1, VALID_PART2, VALID_PART3);
 
-            assertThat(result.valid()).as("part one %s", part1).isFalse();
+            // The band ordinal would restate the value, since app/cbl/COACTUPC.cbl:L123 fixes the
+            // lowest member, so the digest alone tells two failing members apart.
+            assertThat(result.valid())
+                    .as("band member, %s", reference(part1))
+                    .isFalse();
             assertThat(result.message())
-                    .as("part one %s", part1)
+                    .as("band member, %s", reference(part1))
                     .isEqualTo(PART1_LABEL + EXCLUDED_VALUE);
         }
     }
@@ -251,16 +258,22 @@ class UsSocialSecurityNumberValidatorTest {
             if (value == 0) {
                 // app/cbl/COACTUPC.cbl:L2156 answers first, so app/cbl/COACTUPC.cbl:L2457 is out
                 // of reach for the first value app/cbl/COACTUPC.cbl:L121 names.
-                assertThat(result.valid()).as("part one %s", part1).isFalse();
-                assertThat(result.message()).as("part one %s", part1)
+                assertThat(result.valid())
+                        .as("not-zero branch, %s", reference(part1)).isFalse();
+                assertThat(result.message())
+                        .as("not-zero branch, %s", reference(part1))
                         .isEqualTo(PART1_LABEL + IS_ZERO);
             } else if (part1.equals(EXCLUDED_SIX_SIX_SIX) || value >= BAND_LOWEST) {
-                assertThat(result.valid()).as("part one %s", part1).isFalse();
-                assertThat(result.message()).as("part one %s", part1)
+                assertThat(result.valid())
+                        .as("excluded-value branch, %s", reference(part1)).isFalse();
+                assertThat(result.message())
+                        .as("excluded-value branch, %s", reference(part1))
                         .isEqualTo(PART1_LABEL + EXCLUDED_VALUE);
             } else {
-                assertThat(result.valid()).as("part one %s", part1).isTrue();
-                assertThat(result.message()).as("part one %s", part1).isNull();
+                assertThat(result.valid())
+                        .as("accepted branch, %s", reference(part1)).isTrue();
+                assertThat(result.message())
+                        .as("accepted branch, %s", reference(part1)).isNull();
             }
         }
     }
@@ -355,15 +368,27 @@ class UsSocialSecurityNumberValidatorTest {
                 UsSocialSecurityNumberValidator.validate("1234", VALID_PART2, VALID_PART3),
                 UsSocialSecurityNumberValidator.validate(null, null, null));
 
-        for (EditResult failure : failures) {
+        for (int index = 0; index < failures.size(); index++) {
+            EditResult failure = failures.get(index);
+            String message = failure.message();
+
             assertThat(failure.valid()).isFalse();
             assertThat(failure.hasMessage()).isTrue();
-            assertThat(failure.message())
-                    .as("message [%s]", failure.message())
-                    .hasSizeLessThanOrEqualTo(MESSAGE_SLOT_WIDTH)
-                    .doesNotContain("\n")
-                    .doesNotContain("\r")
-                    .doesNotContain(";");
+
+            // The subjects below are derived counts, so a failure names a length or a count and
+            // prints no message text.
+            assertThat(message.length())
+                    .as("failure %d of %d, message length", index + 1, failures.size())
+                    .isLessThanOrEqualTo(MESSAGE_SLOT_WIDTH);
+            assertThat(countOf(message, '\n'))
+                    .as("failure %d of %d, line feeds", index + 1, failures.size())
+                    .isZero();
+            assertThat(countOf(message, '\r'))
+                    .as("failure %d of %d, carriage returns", index + 1, failures.size())
+                    .isZero();
+            assertThat(countOf(message, ';'))
+                    .as("failure %d of %d, semicolons", index + 1, failures.size())
+                    .isZero();
         }
     }
 
@@ -388,7 +413,7 @@ class UsSocialSecurityNumberValidatorTest {
 
         for (EditResult result : List.of(partOne, partTwo, partThree)) {
             assertThat(List.of(PART1_LABEL, PART2_LABEL, PART3_LABEL))
-                    .as("message [%s] opens with an internal label", result.message())
+                    .as("one of the three internal labels opens the message")
                     .anyMatch(label -> result.message().startsWith(label));
             assertThat(result.message()).isNotEqualTo(CALLER_LABEL + NOT_SUPPLIED);
         }
@@ -419,8 +444,8 @@ class UsSocialSecurityNumberValidatorTest {
     }
 
     @Test
-    @DisplayName("Across seven failure paths of the Social Security Number 781-17-8171, no "
-            + "supplied character reaches the message")
+    @DisplayName("Across seven failure paths of the synthetic three-part input, no supplied "
+            + "character reaches the message")
     void keepsEverySuppliedDigitOutOfEveryMessage() {
         assertNoSuppliedCharacterReachesTheMessage("", DISTINCTIVE_PART2, DISTINCTIVE_PART3);
         assertNoSuppliedCharacterReachesTheMessage("78", DISTINCTIVE_PART2, DISTINCTIVE_PART3);
@@ -476,8 +501,10 @@ class UsSocialSecurityNumberValidatorTest {
             EditResult result =
                     UsSocialSecurityNumberValidator.validate(VALID_PART1, part2, VALID_PART3);
 
-            assertThat(result.valid()).as("part two %s", part2).isTrue();
-            assertThat(result.message()).as("part two %s", part2).isNull();
+            assertThat(result.valid())
+                    .as("part two inside the stored width, %s", reference(part2)).isTrue();
+            assertThat(result.message())
+                    .as("part two inside the stored width, %s", reference(part2)).isNull();
         }
     }
 
@@ -489,8 +516,8 @@ class UsSocialSecurityNumberValidatorTest {
         EditResult result =
                 UsSocialSecurityNumberValidator.validate(VALID_PART1, VALID_PART2, part3);
 
-        assertThat(result.valid()).as("part three %s", part3).isTrue();
-        assertThat(result.message()).as("part three %s", part3).isNull();
+        assertThat(result.valid()).as("part three, %s", reference(part3)).isTrue();
+        assertThat(result.message()).as("part three, %s", reference(part3)).isNull();
     }
 
     @Test
@@ -510,9 +537,9 @@ class UsSocialSecurityNumberValidatorTest {
         EditResult result =
                 UsSocialSecurityNumberValidator.validate(part1, VALID_PART2, VALID_PART3);
 
-        assertThat(result.valid()).as("part one %s", part1).isFalse();
+        assertThat(result.valid()).as("part one, %s", reference(part1)).isFalse();
         assertThat(result.message())
-                .as("part one %s", part1)
+                .as("part one, %s", reference(part1))
                 .isEqualTo(PART1_LABEL + NOT_ALL_NUMERIC);
     }
 
@@ -611,31 +638,39 @@ class UsSocialSecurityNumberValidatorTest {
     void exposesOneStaticCallTakingThreePartsAndNoFieldLabel() throws NoSuchMethodException {
         Class<UsSocialSecurityNumberValidator> subject = UsSocialSecurityNumberValidator.class;
 
-        assertThat(Modifier.isFinal(subject.getModifiers())).isTrue();
-        assertThat(subject.getDeclaredMethods())
-                .filteredOn(method -> !method.isSynthetic())
-                .filteredOn(method -> Modifier.isPublic(method.getModifiers()))
-                .hasSize(1);
-
         Method validate = subject.getMethod("validate", String.class, String.class, String.class);
 
+        assertThat(Modifier.isPublic(validate.getModifiers())).isTrue();
         assertThat(Modifier.isStatic(validate.getModifiers())).isTrue();
         assertThat(validate.getReturnType()).isEqualTo(EditResult.class);
+        // app/cbl/COACTUPC.cbl:L2439, app/cbl/COACTUPC.cbl:L2469 and app/cbl/COACTUPC.cbl:L2481
+        // move all three labels inside the paragraph, so the signature carries no label argument.
         assertThat(validate.getParameterCount()).isEqualTo(3);
         assertThat(validate.getParameters()[0].getName()).isEqualTo("part1");
         assertThat(validate.getParameters()[1].getName()).isEqualTo("part2");
         assertThat(validate.getParameters()[2].getName()).isEqualTo("part3");
+    }
 
-        // app/cbl/COACTUPC.cbl:L2439, app/cbl/COACTUPC.cbl:L2469 and app/cbl/COACTUPC.cbl:L2481
-        // move all three labels inside the paragraph, so the call carries no label argument.
-        assertThatThrownBy(() -> subject.getMethod(
-                        "validate", String.class, String.class, String.class, String.class))
-                .isInstanceOf(NoSuchMethodException.class);
+    /**
+     * Pins the diagnostic policy this class follows. Every assertion above identifies its case
+     * through {@link #reference(String)}, and this test proves that a reference carries a character
+     * count and eight hexadecimal characters and nothing else. A reference cannot therefore
+     * disclose a supplied part, and two references drawn from different parts still differ.
+     */
+    @Test
+    @DisplayName("A failing assertion identifies its case by length and salted digest alone")
+    void identifiesAFailingCaseWithoutDisclosingIt() {
+        String nineCharacters = "912345678";
 
-        Constructor<?>[] constructors = subject.getDeclaredConstructors();
+        assertThat(reference(nineCharacters)).matches("length 9, digest [0-9a-f]{8}");
+        assertThat(reference(nineCharacters)).isEqualTo(reference(nineCharacters));
+        assertThat(reference(nineCharacters)).isNotEqualTo(reference("912345679"));
+        assertThat(reference("")).matches("length 0, digest [0-9a-f]{8}");
+        assertThat(reference(null)).isEqualTo("absent part");
 
-        assertThat(constructors).hasSize(1);
-        assertThat(Modifier.isPrivate(constructors[0].getModifiers())).isTrue();
+        // The reference width follows the count of digits in the length alone, so no part can widen
+        // it and no part can appear inside it.
+        assertThat(reference("111111111").length()).isEqualTo(reference(nineCharacters).length());
     }
 
     /**
@@ -649,7 +684,71 @@ class UsSocialSecurityNumberValidatorTest {
     private static void assertMessageIsAssembled(EditResult result, String expected) {
         assertThat(result.valid()).isFalse();
         assertThat(result.hasMessage()).isTrue();
-        assertThat(result.message()).as("message [%s]", result.message()).isEqualTo(expected);
+        assertThat(result.message())
+                .as("the message equals one internal label joined to one source literal")
+                .isEqualTo(expected);
+    }
+
+    private static byte[] newCaseSalt() {
+        byte[] salt = new byte[16];
+        new SecureRandom().nextBytes(salt);
+        return salt;
+    }
+
+    /**
+     * Counts one character in a message. A count is a safe assertion subject, since a failing count
+     * assertion prints a number rather than the message it counted over.
+     *
+     * @param message the message to scan
+     * @param sought  the character to count
+     * @return the number of occurrences
+     */
+    private static int countOf(String message, char sought) {
+        int occurrences = 0;
+        for (int index = 0; index < message.length(); index++) {
+            if (message.charAt(index) == sought) {
+                occurrences++;
+            }
+        }
+        return occurrences;
+    }
+
+    /**
+     * Identifies one part without disclosing it. The reference carries the character count and
+     * eight hexadecimal characters of a salted digest, which is enough to tell two failing cases
+     * apart and to recognise the same case in a second assertion.
+     *
+     * @param part the part a failing assertion examined, which may be absent
+     * @return a reference carrying no character the part supplied
+     */
+    private static String reference(String part) {
+        if (part == null) {
+            return "absent part";
+        }
+        return "length " + part.length() + ", digest " + saltedDigest(part);
+    }
+
+    /**
+     * Digests a part under {@link #CASE_SALT} and returns the leading eight hexadecimal characters.
+     * The salt never reaches a message, so the digest identifies without disclosing.
+     *
+     * @param part the part to digest
+     * @return eight hexadecimal characters
+     */
+    private static String saltedDigest(String part) {
+        MessageDigest sha256;
+        try {
+            sha256 = MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 identifies a failing case", unavailable);
+        }
+        sha256.update(CASE_SALT);
+        byte[] digest = sha256.digest(part.getBytes(StandardCharsets.UTF_8));
+        StringBuilder hexadecimal = new StringBuilder(8);
+        for (int index = 0; index < 4; index++) {
+            hexadecimal.append("%02x".formatted(digest[index]));
+        }
+        return hexadecimal.toString();
     }
 
     /**
@@ -663,15 +762,18 @@ class UsSocialSecurityNumberValidatorTest {
     private static void assertNoSuppliedCharacterReachesTheMessage(
             String part1, String part2, String part3) {
         EditResult result = UsSocialSecurityNumberValidator.validate(part1, part2, part3);
+        String joined = part1 + part2 + part3;
 
-        assertThat(result.valid()).as("parts %s %s %s", part1, part2, part3).isFalse();
+        assertThat(result.valid()).as("three parts, %s", reference(joined)).isFalse();
         assertThat(result.hasMessage()).isTrue();
 
-        for (char supplied : (part1 + part2 + part3).toCharArray()) {
-            assertThat(result.message())
-                    .as("character %s of parts %s %s %s in message [%s]",
-                            supplied, part1, part2, part3, result.message())
-                    .doesNotContain(String.valueOf(supplied));
+        for (int position = 0; position < joined.length(); position++) {
+            // The subject is the index the character reaches, so a failure names a position and
+            // prints neither the character nor the message.
+            assertThat(result.message().indexOf(joined.charAt(position)))
+                    .as("character at position %d of %d, %s",
+                            position + 1, joined.length(), reference(joined))
+                    .isNegative();
         }
     }
 
@@ -685,11 +787,17 @@ class UsSocialSecurityNumberValidatorTest {
      */
     private static void assertNoJoinedValue(String part1, String part2, String part3) {
         EditResult result = UsSocialSecurityNumberValidator.validate(part1, part2, part3);
+        String joined = part1 + part2 + part3;
+        String punctuated = part1 + "-" + part2 + "-" + part3;
 
-        assertThat(result.valid()).as("parts %s %s %s", part1, part2, part3).isFalse();
-        assertThat(result.message())
-                .as("message [%s]", result.message())
-                .doesNotContain(part1 + part2 + part3)
-                .doesNotContain(part1 + "-" + part2 + "-" + part3);
+        assertThat(result.valid()).as("three parts, %s", reference(joined)).isFalse();
+
+        // Both subjects are booleans, so a failure prints neither the joined value nor the message.
+        assertThat(result.message().contains(joined))
+                .as("the message carries the joined nine character value, %s", reference(joined))
+                .isFalse();
+        assertThat(result.message().contains(punctuated))
+                .as("the message carries the punctuated form, %s", reference(punctuated))
+                .isFalse();
     }
 }

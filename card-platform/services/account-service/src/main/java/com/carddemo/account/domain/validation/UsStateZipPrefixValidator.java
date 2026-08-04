@@ -9,17 +9,17 @@ import com.carddemo.cobol.reference.UsStateZipPrefixes;
  * <p>Realises {@code 1280-EDIT-US-STATE-ZIP-CD} at app/cbl/COACTUPC.cbl:L2536. The key is four
  * characters: the two-character state code followed by the first two characters of the zip code.
  * app/cbl/COACTUPC.cbl:L2537-L2540 builds that key with a STRING statement qualified
- * {@code DELIMITED BY SIZE}, so each operand contributes its full declared width into
+ * {@code DELIMITED BY SIZE}. Each operand therefore contributes its full declared width into
  * {@code US-STATE-AND-FIRST-ZIP2}, declared {@code PIC X(4)}.</p>
  *
  * <p>The accepted keys are the 240 values listed under {@code VALID-US-STATE-ZIP-CD2-COMBO} at
  * app/cpy/CSLKPCDY.cpy:L1073. app/cbl/COACTUPC.cbl:L2542 runs the test once. A failing verdict
- * marks the state code and the zip code together, matching app/cbl/COACTUPC.cbl:L2546-L2547, and
+ * marks the state code and the zip code together, matching app/cbl/COACTUPC.cbl:L2546-L2547. It
  * carries the message at app/cbl/COACTUPC.cbl:L2550.</p>
  *
- * <p>app/cbl/COACTUPC.cbl:L1665-L1666 gates the single call site on the state code and the zip code
- * each having passed its own edit. The caller owns that gate. This class tests the combination, and
- * the characters of the zip code past the second take no part in the key.</p>
+ * <p>app/cbl/COACTUPC.cbl:L1665-L1666 gates the single call site. Each of the state code and the
+ * zip code must have passed its own edit, and the caller owns that gate. This class tests the
+ * combination, and the characters of the zip code past the second take no part in the key.</p>
  */
 public final class UsStateZipPrefixValidator {
 
@@ -61,7 +61,6 @@ public final class UsStateZipPrefixValidator {
      */
     private static final int ZIP_FIELD_WIDTH = 10;
 
-    /** No instances. Every member of this class is static. */
     private UsStateZipPrefixValidator() {
     }
 
@@ -83,8 +82,7 @@ public final class UsStateZipPrefixValidator {
      *         app/cbl/COACTUPC.cbl:L2550
      */
     public static EditResult validate(String stateCode, String zipCode) {
-        // ADDITIVE. A value wider than its source field forms no listed combination, so the test
-        // never runs on the first characters of a longer value.
+        // ADDITIVE. A value wider than its source field forms no listed combination.
         if (exceedsDeclaredWidth(stateCode, STATE_CODE_WIDTH)
                 || exceedsDeclaredWidth(zipCode, ZIP_FIELD_WIDTH)) {
             return EditResult.failure(INVALID_ZIP_FOR_STATE_MESSAGE);
@@ -138,9 +136,8 @@ public final class UsStateZipPrefixValidator {
      * Reports whether a value holds more characters than its source field declares.
      *
      * <p>ADDITIVE. The state code arrives from {@code PIC X(02)} at app/cbl/COACTUPC.cbl:L807 and
-     * the zip code from {@code PIC X(10)} at app/cbl/COACTUPC.cbl:L809, so no source path supplies
-     * a wider value. A Representational State Transfer (REST) caller can, and a wider value forms
-     * no combination the list at app/cpy/CSLKPCDY.cpy:L1074-L1313 holds.</p>
+     * the zip code from {@code PIC X(10)} at app/cbl/COACTUPC.cbl:L809. A wider value forms no
+     * combination the list at app/cpy/CSLKPCDY.cpy:L1074-L1313 holds.</p>
      *
      * <p>Trailing spaces past the declared width are the padding the source field itself holds, so
      * they are not content and this test reports false for them.</p>

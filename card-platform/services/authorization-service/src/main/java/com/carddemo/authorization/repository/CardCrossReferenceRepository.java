@@ -1,10 +1,14 @@
 package com.carddemo.authorization.repository;
 
 import com.carddemo.authorization.entity.CardCrossReferenceEntity;
-import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.ListCrudRepository;
+import org.springframework.data.repository.query.Param;
 
 /**
  * Reads and writes {@code card_xref}, the cross-reference from a card number to an account.
@@ -30,16 +34,14 @@ import org.springframework.data.repository.ListCrudRepository;
  *
  * <pre>
  * code   condition name   locator   target
- * 'K'    M03B-READ-K      L106      findByCardNumber and the inherited findById
- * 'R'    M03B-READ        L105      the inherited findAll
+ * 'K'    M03B-READ-K      L106      findByCardNumber, findFirstByAccountIdOrderByCardNumberAsc
+ *                                   and the inherited findById
+ * 'R'    M03B-READ        L105      findByAccountIdOrderByCardNumberAsc and the inherited findAll
  * 'W'    M03B-WRITE       L107      the inherited save
  * 'Z'    M03B-REWRITE     L108      the inherited save
  * 'O'    M03B-OPEN        L103      none
  * 'C'    M03B-CLOSE       L104      none
  * </pre>
- *
- * <p>Design decisions and every deviation from the source contract:
- * {@code card-platform/docs/decision-log.md}.
  */
 public interface CardCrossReferenceRepository
         extends ListCrudRepository<CardCrossReferenceEntity, String> {
@@ -58,16 +60,18 @@ public interface CardCrossReferenceRepository
      * <p>The caller supplies sixteen characters, left-padded with zeros. The source builds that
      * shape at {@code app/cbl/COTRN02C.cbl:L220-L221}, where one {@code MOVE} writes
      * {@code WS-CARD-NUM-N PIC 9(16)} into {@code XREF-CARD-NUM PIC X(16)}. Column
-     * {@code card_number} holds {@code VARCHAR(16)} and the match runs on text. A ten-character
-     * argument such as {@code "4111111111"} matches no row holding {@code "0004111111111111"}.
+     * {@code card_number} holds {@code VARCHAR(16)} and the match runs on text, so an argument of
+     * ten characters matches no sixteen-character row even when the ten are its last ten digits.
+     * No card number, whole or partial, is reproduced in this file.
      *
      * <p>A missing row yields an empty {@link Optional} and throws nothing. Both paragraphs that
      * read this dataset agree: {@code app/cbl/CBTRN02C.cbl:L384} takes its {@code INVALID KEY}
      * branch and {@code app/cbl/COTRN02C.cbl:L624} takes its {@code DFHRESP(NOTFND)} branch, and
-     * neither one ends the run. The rule {@code CardCrossReferenceRule} under
-     * {@code com.carddemo.authorization.domain.rules} turns the empty result into decline reason
-     * 100, assigned at {@code app/cbl/CBTRN02C.cbl:L385} with the text
-     * {@code INVALID CARD NUMBER FOUND} at {@code app/cbl/CBTRN02C.cbl:L386-L387}.
+     * neither one ends the run. The planned cross-reference rule under
+     * {@code com.carddemo.authorization.domain.rules} is to turn the empty result into decline
+     * reason 100, assigned at {@code app/cbl/CBTRN02C.cbl:L385} with the text
+     * {@code INVALID CARD NUMBER FOUND} at {@code app/cbl/CBTRN02C.cbl:L386-L387}. That rule class
+     * is not authored yet.
      *
      * @param cardNumber the full card number, sixteen characters left-padded with zeros
      * @return the matching row, or an empty {@link Optional} when the table holds none
@@ -89,13 +93,107 @@ public interface CardCrossReferenceRepository
      * <p>Index {@code idx_card_xref_account_id} on column {@code account_id} carries no unique
      * constraint. One account holds many cards, and the result may hold more than one row.
      *
+     * <p>Rows arrive ordered by card number, ascending. A query with no {@code ORDER BY} lets the
+     * database return rows in any order, and that order can change between two runs of the same
+     * query after a vacuum, an index rebuild or a plan change. A caller that reads the first row
+     * would then resolve one card today and another tomorrow for one unchanged account. The order is
+     * therefore part of this contract, and {@code card_number} is the column that fixes it because
+     * it is the primary key and holds one value per row.
+     *
+     * <p>Ascending card number is also the order the source reads. {@code KEYS(16 0)} at
+     * {@code app/jcl/XREFFILE.jcl:L43} makes the card number the base-cluster key, and a Virtual
+     * Storage Access Method alternate index stores the duplicate entries of one key in ascending
+     * base-key order. The single {@code EXEC CICS READ} at
+     * {@code app/cbl/COTRN02C.cbl:L577-L585} therefore returns the row with the lowest card number
+     * of that account, and {@code app/cbl/COTRN02C.cbl:L210} moves that card number into the screen
+     * field.
+     *
      * <p>The account identifier carries eleven digits at scale zero, from
      * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. Column
-     * {@code account_id} holds {@code NUMERIC(11,0)} and the match runs on the number. No text
-     * padding applies. An account with no cards yields an empty {@link List} and throws nothing.
+     * {@code account_id} holds {@code CHAR(11)} and the match runs on the eleven-character digit
+     * string the source wrote, leading zeros included. An account with no cards yields an empty
+     * {@link List} and throws nothing.
      *
-     * @param accountId the account identifier, an eleven-digit integer at scale zero
-     * @return every matching row, or an empty {@link List} when the table holds none
+     * @param accountId the account identifier, exactly eleven digits with leading zeros
+     * @return every matching row ordered by card number ascending, or an empty {@link List} when the
+     *         table holds none
      */
-    List<CardCrossReferenceEntity> findByAccountId(BigDecimal accountId);
+    List<CardCrossReferenceEntity> findByAccountIdOrderByCardNumberAsc(String accountId);
+
+    /**
+     * Returns the one cross-reference row an account identifier resolves to.
+     *
+     * <p>This is the selection {@code app/cbl/COTRN02C.cbl:L577-L585} performs. That paragraph
+     * issues one {@code EXEC CICS READ} against the alternate-index path rather than a browse, so it
+     * reads a single row and never iterates. The row it reads is the one with the lowest card number
+     * of that account, for the reason
+     * {@link #findByAccountIdOrderByCardNumberAsc(String)} states.
+     *
+     * <p>An account holding several cards therefore resolves to its lowest card number, every time,
+     * and a caller resolving a card from an account identifier gets one deterministic answer. A
+     * caller that needs every card of the account calls the ordered list method instead.
+     *
+     * <p>An account with no cards yields an empty {@link Optional} and throws nothing.
+     * {@code app/cbl/COTRN02C.cbl:L588-L593} takes its {@code DFHRESP(NOTFND)} branch for the same
+     * condition and reports {@code Account ID NOT found...} without ending the run.
+     *
+     * @param accountId the account identifier, exactly eleven digits with leading zeros
+     * @return the row carrying the lowest card number of that account, or an empty {@link Optional}
+     *         when the table holds none
+     */
+    Optional<CardCrossReferenceEntity> findFirstByAccountIdOrderByCardNumberAsc(
+            String accountId);
+
+    /**
+     * Applies one cross-reference state change, unless the row already carries a newer one.
+     *
+     * <p>One statement rather than read-then-write, for two reasons. It is idempotent: a duplicate
+     * delivery of the same event finds {@code source_occurred_at} already at or past its own and
+     * updates nothing, so replaying the topic converges on the same rows. And it is ordered: the
+     * {@code WHERE} clause on the conflict path discards an event that did not occur after the one
+     * already recorded, so a redelivery arriving behind a newer event cannot move the replica
+     * backwards. A read followed by a write has a window between the two in which both of those
+     * guarantees fail.
+     *
+     * <p>{@code source_occurred_at IS NULL} on the stored row means the row came from
+     * {@code V2__seed.sql}, which is the initial load. Any event supersedes it.
+     *
+     * @param cardNumber       the sixteen-character card number, the primary key
+     * @param customerId       the nine-digit customer identifier the event carried
+     * @param accountId        the eleven-digit account identifier the event carried
+     * @param sourceEventId    the event that carried the change
+     * @param sourceOccurredAt when that event occurred, from its envelope
+     * @param observedAt       when this service applied it
+     * @return 1 when the row was written, and 0 when a newer change was already recorded
+     */
+    @Modifying
+    @Query(value = """
+            INSERT INTO card_xref (card_number, customer_id, account_id,
+                                   source_event_id, source_occurred_at, observed_at)
+            VALUES (:cardNumber, :customerId, :accountId,
+                    :sourceEventId, :sourceOccurredAt, :observedAt)
+            ON CONFLICT (card_number) DO UPDATE SET
+                customer_id        = EXCLUDED.customer_id,
+                account_id         = EXCLUDED.account_id,
+                source_event_id    = EXCLUDED.source_event_id,
+                source_occurred_at = EXCLUDED.source_occurred_at,
+                observed_at        = EXCLUDED.observed_at
+            WHERE card_xref.source_occurred_at IS NULL
+               OR card_xref.source_occurred_at < EXCLUDED.source_occurred_at
+            """, nativeQuery = true)
+    int applyStateChange(@Param("cardNumber") String cardNumber,
+            @Param("customerId") String customerId,
+            @Param("accountId") String accountId,
+            @Param("sourceEventId") UUID sourceEventId,
+            @Param("sourceOccurredAt") Instant sourceOccurredAt,
+            @Param("observedAt") Instant observedAt);
+
+    /**
+     * Counts rows last observed before {@code cutoff}, so a service can report how much of its
+     * replica has gone stale rather than discovering it one authorization at a time.
+     *
+     * @param cutoff the freshness cutoff
+     * @return how many rows were last observed before {@code cutoff}
+     */
+    long countByObservedAtBefore(Instant cutoff);
 }

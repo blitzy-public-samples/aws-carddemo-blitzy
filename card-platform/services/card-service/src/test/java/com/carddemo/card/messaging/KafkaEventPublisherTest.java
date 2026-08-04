@@ -37,25 +37,23 @@ import org.springframework.stereotype.Component;
  * Tests for {@link KafkaEventPublisher}, the card service's only Kafka adapter.
  *
  * <p>Every assertion about forwarding reads the arguments the publisher actually passed to
- * {@code KafkaTemplate.send}, captured with an {@link ArgumentCaptor}. No test asserts a value the
- * mock was configured to return, because a mock returning what it was told to return proves
- * nothing about the class under test.</p>
+ * {@code KafkaTemplate.send}, captured with an {@link ArgumentCaptor}. No assertion here reads a
+ * value the mock was configured to return.</p>
  *
  * <p>The message key carries the eleven-digit account identifier, matching
  * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. Kafka guarantees order inside
- * one partition only, and it partitions on the key, so a wrong key would reorder the balance events
- * of one account. Three tests below hold the key contract.</p>
+ * one partition only, and it partitions on the key. The key must therefore equal the account
+ * identifier.</p>
  *
  * <p>{@code send} returns a future and the publisher calls {@code join} on it, so a broker failure
- * arrives as an unchecked {@link CompletionException} wrapping the cause. Three tests below hold
- * that the failure escapes rather than being swallowed, which is what leaves the outbox row
- * unpublished for the next tick.</p>
+ * arrives as an unchecked {@link CompletionException} wrapping the cause. The failure escapes the
+ * publisher and leaves the outbox row unpublished.</p>
  *
- * <p>The publisher checks the producer settings once, at construction, and checks two properties
- * of every message: the key equals the account identity the payload carries, and the payload
- * satisfies the versioned schema document its envelope names. Every payload below is therefore a
- * complete {@code CardStateChanged} version 1 event, and the stub template reports the four
- * producer settings the platform pins.</p>
+ * <p>The publisher checks the producer settings once, at construction. It checks two properties of
+ * every message: the key equals the account identity the payload carries, and the payload satisfies
+ * the versioned schema document its envelope names. Every payload below is therefore a complete
+ * {@code CardUpdated} version 1 event, and the stub template reports the four producer settings the
+ * platform pins.</p>
  */
 class KafkaEventPublisherTest {
 
@@ -71,15 +69,21 @@ class KafkaEventPublisherTest {
     /** Width of {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. */
     private static final int ACCOUNT_KEY_WIDTH = 11;
 
-    /** Identifier of the event every single-publish test below sends. */
+    /** Identifier of the event every single-publish test sends. */
     private static final String EVENT_ID = "b21f7a45-6c93-4de8-8f02-1a7d94e6c530";
 
     /**
-     * Event body, one serialized {@code CardStateChanged} version 1 event. The publisher validates
+     * A full sixteen-digit Primary Account Number (PAN), used only to prove that a rejection
+     * message carries no value read from the payload. No test of this class publishes it.
+     */
+    private static final String FULL_CARD_NUMBER = "4859452612877065";
+
+    /**
+     * Event body, one serialized {@code CardUpdated} version 1 event. The publisher validates
      * every payload against the document its envelope names, so a body the publisher would reject
      * could not prove anything about forwarding.
      */
-    private static final String PAYLOAD = cardStateChanged(ACCOUNT_KEY, EVENT_ID);
+    private static final String PAYLOAD = cardUpdated(ACCOUNT_KEY, EVENT_ID);
 
     /** The template the publisher sends through. */
     private KafkaTemplateStub template;
@@ -91,16 +95,11 @@ class KafkaEventPublisherTest {
     @BeforeEach
     void setUp() {
         template = new KafkaTemplateStub();
-        publisher = new KafkaEventPublisher(template.template());
+        publisher = new KafkaEventPublisher(template.template(), TOPIC);
     }
 
     // Forwarding. Every assertion reads a captured argument.
 
-    /**
-     * Asserts that the publisher forwards the topic, the key and the payload it was given, and that
-     * it calls the broker exactly once. The three values are read back from the captor, so this
-     * test would fail if the publisher altered, reordered or dropped any of them.
-     */
     @Test
     void publishForwardsTheTopicTheKeyAndThePayloadUnchanged() {
         template.acknowledge();
@@ -116,11 +115,6 @@ class KafkaEventPublisherTest {
                 "the publisher sends the payload it was given");
     }
 
-    /**
-     * Asserts that the payload reaches the broker byte for byte, including the braces, the quotes,
-     * the decimal string that carries a monetary amount, and any line feed. A payload the publisher
-     * reformatted would fail schema validation on the consumer side.
-     */
     @Test
     void thePayloadReachesTheBrokerByteForByte() {
         String awkwardPayload = PAYLOAD
@@ -138,11 +132,6 @@ class KafkaEventPublisherTest {
                 "the payload reaches the broker at its own length");
     }
 
-    /**
-     * Asserts that the key keeps its eleven characters and its leading zeros. The account identifier
-     * is alphanumeric on the wire, so a key that dropped its leading zeros would name a different
-     * partition and break the order of one account's events.
-     */
     @Test
     void theKeyKeepsItsElevenCharactersAndItsLeadingZeros() {
         template.acknowledge();
@@ -160,27 +149,85 @@ class KafkaEventPublisherTest {
                 "the key is not the account identifier with its leading zeros dropped");
     }
 
-    /**
-     * Asserts that every event of one account carries one key, which is what puts them on one
-     * partition and keeps them in order. Three publishes of the same account are captured and all
-     * three keys are compared.
-     */
     @Test
     void everyEventOfOneAccountCarriesTheSameKey() {
         template.acknowledge();
 
         publisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD);
         publisher.publish(TOPIC, ACCOUNT_KEY,
-                cardStateChanged(ACCOUNT_KEY, "5f1c0d3e-2b48-4a19-9c7e-0d3f8b6a2c14"));
-        publisher.publish("card.status.changed", ACCOUNT_KEY,
-                cardStateChanged(ACCOUNT_KEY, "9a2e6b71-4c05-4f83-b1d6-7e40c9a5f238"));
+                cardUpdated(ACCOUNT_KEY, "5f1c0d3e-2b48-4a19-9c7e-0d3f8b6a2c14"));
+        publisher.publish(TOPIC, ACCOUNT_KEY,
+                cardUpdated(ACCOUNT_KEY, "9a2e6b71-4c05-4f83-b1d6-7e40c9a5f238"));
 
         template.captureSends(3);
         assertEquals(List.of(ACCOUNT_KEY, ACCOUNT_KEY, ACCOUNT_KEY), template.capturedKeys(),
-                "every event of one account carries one key, across topics too, so Kafka keeps "
-                        + "them on one partition and in order");
-        assertEquals(List.of(TOPIC, TOPIC, "card.status.changed"), template.capturedTopics(),
+                "every event of one account carries one key, so Kafka keeps them on one partition "
+                        + "and in order");
+        assertEquals(List.of(TOPIC, TOPIC, TOPIC), template.capturedTopics(),
                 "each event reaches the topic it was given, in the order it was published");
+    }
+
+    /**
+     * Asserts that an event reaches no topic other than the one its event type belongs on. The
+     * event type comes from the payload envelope, so a relay that read the wrong topic name from
+     * configuration is stopped here instead of delivering a card update to consumers reading a
+     * transaction topic.
+     */
+    @Test
+    void anEventTypeReachesNoTopicOtherThanTheOneItIsBoundTo() {
+        template.acknowledge();
+
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> publisher.publish("transaction.authorized", ACCOUNT_KEY, PAYLOAD),
+                "a card update must not reach a transaction topic");
+
+        assertTrue(thrown.getMessage().contains("CardUpdated"),
+                "the rejection names the event type that was published");
+        assertTrue(thrown.getMessage().contains(TOPIC),
+                "the rejection names the topic the event type belongs on");
+        template.verifyNothingSent();
+    }
+
+    /**
+     * Asserts that a payload declaring an unregistered event type reaches no topic. An event with
+     * no contract has no schema document and no topic, so publishing it would put a payload on the
+     * bus that no consumer can validate.
+     */
+    @Test
+    void anUnregisteredEventTypeReachesNoTopic() {
+        template.acknowledge();
+        String unregistered = PAYLOAD.replace("\"CardUpdated\"", "\"CardReissued\"");
+
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> publisher.publish(TOPIC, ACCOUNT_KEY, unregistered),
+                "an event type no contract registers must not reach a topic");
+
+        assertTrue(thrown.getMessage().contains("CardReissued"),
+                "the rejection names the unregistered event type");
+        template.verifyNothingSent();
+    }
+
+    /**
+     * Asserts that a schema failure is reported as a pointer and a keyword, and that no value from
+     * the payload reaches the message. A validator message carrying the rejected value would put a
+     * full Primary Account Number (PAN) into the log of every caller that records the failure.
+     */
+    @Test
+    void aSchemaFailureNamesThePropertyAndCarriesNoValueFromThePayload() {
+        template.acknowledge();
+        String unmasked = PAYLOAD.replace("************7065", FULL_CARD_NUMBER);
+
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> publisher.publish(TOPIC, ACCOUNT_KEY, unmasked),
+                "an unmasked card number must not reach a topic");
+
+        assertTrue(thrown.getMessage().contains("maskedCardNumber"),
+                "the rejection names the property that failed");
+        assertFalse(thrown.getMessage().contains(FULL_CARD_NUMBER),
+                "the rejection carries no Primary Account Number read from the payload");
+        assertFalse(thrown.getMessage().contains(ACCOUNT_KEY),
+                "the rejection carries no account identifier read from the payload");
+        template.verifyNothingSent();
     }
 
     /** Asserts that two accounts reach the broker under two different keys. */
@@ -190,7 +237,7 @@ class KafkaEventPublisherTest {
         template.acknowledge();
 
         publisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD);
-        publisher.publish(TOPIC, secondAccountKey, cardStateChanged(secondAccountKey, EVENT_ID));
+        publisher.publish(TOPIC, secondAccountKey, cardUpdated(secondAccountKey, EVENT_ID));
 
         template.captureSends(2);
         List<String> keys = template.capturedKeys();
@@ -200,11 +247,6 @@ class KafkaEventPublisherTest {
                 "two accounts do not share one key, so one account cannot delay another");
     }
 
-    /**
-     * Asserts that the publisher returns normally when the broker acknowledges, and that it sends
-     * once and does nothing else to the template. A retry inside the publisher would double a
-     * posting, because the outbox relay retries on its own tick.
-     */
     @Test
     void publishReturnsWhenTheBrokerAcknowledgesAndSendsExactlyOnce() {
         template.acknowledge();
@@ -217,11 +259,6 @@ class KafkaEventPublisherTest {
 
     // Failure propagation. The failure must escape, not be swallowed.
 
-    /**
-     * Asserts that a broker failure escapes the publisher as a {@link CompletionException} carrying
-     * the cause the broker reported. The failure arrives from the future the publisher joins, not
-     * from a value the mock was told to return.
-     */
     @Test
     void publishPropagatesABrokerFailureWithItsCause() {
         KafkaException brokerFailure = new KafkaException("the broker is unreachable");
@@ -237,11 +274,6 @@ class KafkaEventPublisherTest {
                 "the cause keeps its message");
     }
 
-    /**
-     * Asserts that the publisher swallows no failure and retries nothing. It sends once, the
-     * failure escapes, and the template sees no second call, so the outbox row stays unpublished
-     * for the next tick of the relay.
-     */
     @Test
     void publishSwallowsNoFailureAndRetriesNothing() {
         template.fail(new KafkaException("the broker refused the record"));
@@ -253,10 +285,6 @@ class KafkaEventPublisherTest {
         template.verifySentExactlyOnce();
     }
 
-    /**
-     * Asserts that a failure of any cause type propagates, and that the arguments the publisher
-     * sent are still the arguments it was given. A failing send must not change what was attempted.
-     */
     @Test
     void aFailureOfAnyCauseTypePropagatesAndTheAttemptedArgumentsStand() {
         List<RuntimeException> causes = List.of(
@@ -267,7 +295,8 @@ class KafkaEventPublisherTest {
         for (RuntimeException cause : causes) {
             KafkaTemplateStub failing = new KafkaTemplateStub();
             failing.fail(cause);
-            KafkaEventPublisher failingPublisher = new KafkaEventPublisher(failing.template());
+            KafkaEventPublisher failingPublisher =
+                    new KafkaEventPublisher(failing.template(), TOPIC);
 
             CompletionException thrown = assertThrows(CompletionException.class,
                     () -> failingPublisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
@@ -286,11 +315,6 @@ class KafkaEventPublisherTest {
         }
     }
 
-    /**
-     * Asserts that the assertions of this class read captured arguments and not a configured return
-     * value. The template is told to return a future whose result is null, so the publisher's own
-     * behaviour is the only thing left to observe.
-     */
     @Test
     void theAssertionsReadCapturedArgumentsAndNotAConfiguredReturnValue() {
         template.acknowledgeWithNoResult();
@@ -309,11 +333,6 @@ class KafkaEventPublisherTest {
 
     // The seam. One implementation of the port holds every Kafka type.
 
-    /**
-     * Asserts that the publisher implements the port and is a Spring component, and that the port
-     * itself names no Kafka type. Substituting a managed event service therefore needs one new
-     * implementation of the port and no change anywhere else.
-     */
     @Test
     void thePortNamesNoKafkaTypeSoTheSeamStaysSwappable() {
         assertTrue(EventPublisherPort.class.isAssignableFrom(KafkaEventPublisher.class),
@@ -336,11 +355,6 @@ class KafkaEventPublisherTest {
         }
     }
 
-    /**
-     * Asserts that a second implementation of the port needs no Kafka type at all. The recording
-     * implementation below stands in for a managed event service and receives the same three
-     * arguments the Kafka adapter receives.
-     */
     @Test
     void aSecondImplementationOfThePortNeedsNoKafkaType() {
         RecordingPublisher recording = new RecordingPublisher();
@@ -377,38 +391,25 @@ class KafkaEventPublisherTest {
                     .thenReturn(reliableProducerConfiguration());
         }
 
-        /** Returns the mocked template the publisher under test sends through. */
         private org.springframework.kafka.core.KafkaTemplate<String, String> template() {
             return template;
         }
 
-        /** Makes every send return a future the broker has already acknowledged. */
         private void acknowledge() {
             when(template.send(anyString(), anyString(), anyString()))
                     .thenAnswer(invocation -> CompletableFuture.completedFuture(
                             (SendResult<String, String>) null));
         }
 
-        /**
-         * Makes every send return an acknowledged future carrying no result, so nothing the
-         * publisher could read back from the future is available.
-         */
         private void acknowledgeWithNoResult() {
             acknowledge();
         }
 
-        /** Makes every send return a future the broker failed with {@code cause}. */
         private void fail(Throwable cause) {
             when(template.send(anyString(), anyString(), anyString()))
                     .thenAnswer(invocation -> CompletableFuture.failedFuture(cause));
         }
 
-        /**
-         * Captures the arguments of exactly one send.
-         *
-         * <p>A captor accumulates a value on every verification, so this class verifies once and
-         * every accessor below reads that one verification.</p>
-         */
         private void captureOneSend() {
             verify(template, times(1)).send(topicCaptor.capture(), keyCaptor.capture(),
                     payloadCaptor.capture());
@@ -424,17 +425,20 @@ class KafkaEventPublisherTest {
                     keyCaptor.capture(), payloadCaptor.capture());
         }
 
-        /** Returns the topic of every captured send, in order. */
         private List<String> capturedTopics() {
             return new ArrayList<>(topicCaptor.getAllValues());
         }
 
-        /** Returns the key of every captured send, in order. */
         private List<String> capturedKeys() {
             return new ArrayList<>(keyCaptor.getAllValues());
         }
 
         /** Asserts one send happened, one topic reached the broker, and nothing else was called. */
+        private void verifyNothingSent() {
+            verify(template, never()).send(anyString(), anyString(), anyString());
+            verify(template, never()).send(anyString(), anyString());
+        }
+
         private void verifySentExactlyOnce() {
             verify(template, times(1)).send(topicCaptor.capture(), keyCaptor.capture(),
                     payloadCaptor.capture());
@@ -457,9 +461,9 @@ class KafkaEventPublisherTest {
     }
 
     /**
-     * Builds one serialized {@code CardStateChanged} version 1 event.
+     * Builds one serialized {@code CardUpdated} version 1 event.
      *
-     * <p>The envelope names the document {@code schemas/card-state-changed-v1.json}, and both
+     * <p>The envelope names the document {@code schemas/card-updated-v1.json}, and both
      * account identifiers hold {@code accountKey}, so the publisher's key check and its schema
      * check both pass. The card number is a masked form, so no test of this class holds a Primary
      * Account Number (PAN).</p>
@@ -468,19 +472,18 @@ class KafkaEventPublisherTest {
      * @param eventId    the identifier of this event
      * @return one JSON object, on one line
      */
-    private static String cardStateChanged(String accountKey, String eventId) {
-        return "{\"eventId\":\"" + eventId + "\",\"eventType\":\"CardStateChanged\","
+    private static String cardUpdated(String accountKey, String eventId) {
+        return "{\"eventId\":\"" + eventId + "\",\"eventType\":\"CardUpdated\","
                 + "\"schemaVersion\":1,\"occurredAt\":\"2022-06-10T19:27:53.412Z\","
-                + "\"aggregateId\":\"" + accountKey + "\",\"accountId\":\"" + accountKey + "\","
-                + "\"changeType\":\"CARD_UPDATED\",\"maskedCardNumber\":\"************7065\","
-                + "\"embossedName\":\"JOHN Q PUBLIC\",\"expirationDate\":\"2024-12-31\","
+                + "\"aggregateId\":\"" + accountKey + "\","
+                + "\"maskedCardNumber\":\"************7065\",\"accountId\":\"" + accountKey
+                + "\",\"embossedName\":\"JOHN Q PUBLIC\",\"expirationDate\":\"2024-12-31\","
                 + "\"activeStatus\":\"Y\"}";
     }
 
     /**
      * Returns the four producer settings the platform pins, which the publisher reads once at
-     * construction. A stub template reporting none of them would fail construction before any
-     * test of this class could publish.
+     * construction. Construction fails when a stub template reports none of them.
      *
      * @return acknowledgement from every in-sync replica, idempotent production, a safe in-flight
      *         limit and three bounded timeouts

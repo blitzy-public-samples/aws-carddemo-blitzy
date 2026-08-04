@@ -35,12 +35,10 @@ import com.fasterxml.jackson.annotation.JsonValue;
  * batch job with return code 4 when any record was rejected. The authorization service answers the
  * caller with the reason and publishes one {@code TransactionDeclined} event.
  *
- * <p>Add a fifth reason here, as a new constant. The source marks the same extension point with
- * the comment {@code * ADD MORE VALIDATIONS HERE} at {@code app/cbl/CBTRN02C.cbl:L377}. A new
- * constant also needs its code and its text added to the two value lists in
- * {@code schemas/transaction-declined-v1.json}. For the path each reason travels from publish to
- * consume, read {@code card-platform/docs/event-flow.md}; for the reasoning behind the choices
- * above, read {@code card-platform/docs/decision-log.md}.
+ * <p>Add a fifth reason here, as a new constant. The source marks the same extension point with the
+ * comment {@code * ADD MORE VALIDATIONS HERE} at {@code app/cbl/CBTRN02C.cbl:L377}. A new constant
+ * also needs its code and its text added to the two value lists in
+ * {@code schemas/transaction-declined-v1.json}.
  */
 public enum DeclineReason {
 
@@ -132,6 +130,29 @@ public enum DeclineReason {
      */
     public int numericCode() {
         return Integer.parseInt(code);
+    }
+
+    /**
+     * Whether an account identifier is known by the time this reason is assigned.
+     *
+     * <p>{@link #INVALID_CARD_NUMBER} is assigned inside the {@code INVALID KEY} limb of
+     * {@code READ XREF-FILE INTO CARD-XREF-RECORD} at {@code app/cbl/CBTRN02C.cbl:L383-L387}, so
+     * {@code XREF-ACCT-ID} at {@code app/cpy/CVACT03Y.cpy:L7} was never read. The gate at
+     * {@code app/cbl/CBTRN02C.cbl:L372} then keeps the account lookup from running. The reject
+     * record written at {@code app/cbl/CBTRN02C.cbl:L448-L449} carries the daily transaction record
+     * and the validation trailer, and neither holds an account identifier.
+     *
+     * <p>The other three reasons are assigned after
+     * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code app/cbl/CBTRN02C.cbl:L394}, so an account
+     * identifier is in hand. {@link TransactionDeclined} publishes the one reason that answers
+     * {@code false} under {@link TransactionDeclined#UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, the
+     * contract that declares no account identifier at all.
+     *
+     * @return {@code true} for the three reasons that follow a successful cross-reference read,
+     *         {@code false} for {@link #INVALID_CARD_NUMBER}
+     */
+    public boolean resolvesAccount() {
+        return this != INVALID_CARD_NUMBER;
     }
 
     /**

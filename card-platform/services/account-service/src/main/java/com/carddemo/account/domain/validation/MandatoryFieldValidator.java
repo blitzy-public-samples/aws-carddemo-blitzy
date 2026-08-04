@@ -112,6 +112,7 @@ public final class MandatoryFieldValidator {
      * {@code MOVE} into {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} performs.
      *
      * @param value  the submitted characters, never {@code null} and never empty
+     * @param length the width to read, in characters
      */
     private static String referenceModified(String value, int length) {
         if (value.length() >= length) {
@@ -127,6 +128,7 @@ public final class MandatoryFieldValidator {
      * expands to the width of the compared item.
      *
      * @param field    the reference-modified characters, never {@code null}
+     * @param expected the character every position must hold
      */
     private static boolean containsOnly(String field, char expected) {
         for (int index = 0; index < field.length(); index++) {

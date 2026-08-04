@@ -20,9 +20,7 @@ import java.util.Objects;
  *
  * <p>Four fields map. {@link DisclosureGroupId} carries the three key fields at
  * {@code app/cpy/CVTRA02Y.cpy:L6-L8}, and {@link #getInterestRate()} carries the rate at
- * {@code app/cpy/CVTRA02Y.cpy:L9}. The trailing {@code FILLER PIC X(28)} at
- * {@code app/cpy/CVTRA02Y.cpy:L10} maps to no column;
- * {@code card-platform/docs/traceability-matrix.md} records that omission.</p>
+ * {@code app/cpy/CVTRA02Y.cpy:L9}.</p>
  *
  * <p>{@code app/data/ASCII/discgrp.txt} holds 51 records, each 50 characters wide. This service
  * stores those rows and computes no interest. {@code app/cbl/CBACT04C.cbl:L415} reads the same
@@ -31,7 +29,7 @@ import java.util.Objects;
  * <p>Column names, column types and key order match table {@code disclosure_group} in
  * {@code src/main/resources/db/migration/V1__schema.sql}. Flyway applies that Data Definition
  * Language (DDL), and Jakarta Persistence validates this mapping against the applied schema at
- * start-up. {@code card-platform/docs/data-model.md} maps the eight tables this service owns.</p>
+ * start-up.</p>
  */
 @Entity
 @Table(name = "disclosure_group")
@@ -53,7 +51,6 @@ public class DisclosureGroupEntity {
             scale = PicClause.DIS_INT_RATE_SCALE)
     private BigDecimal interestRate;
 
-    /** Builds an empty row. Jakarta Persistence instantiates a loaded row through this. */
     public DisclosureGroupEntity() {
     }
 
@@ -68,38 +65,18 @@ public class DisclosureGroupEntity {
         this.interestRate = interestRate;
     }
 
-    /**
-     * Reads the composite key.
-     *
-     * @return the three key parts of this row
-     */
     public DisclosureGroupId getId() {
         return id;
     }
 
-    /**
-     * Writes the composite key.
-     *
-     * @param id the three key parts of this row
-     */
     public void setId(DisclosureGroupId id) {
         this.id = id;
     }
 
-    /**
-     * Reads the annual interest rate.
-     *
-     * @return the rate at scale 2
-     */
     public BigDecimal getInterestRate() {
         return interestRate;
     }
 
-    /**
-     * Writes the annual interest rate.
-     *
-     * @param interestRate the rate at scale 2
-     */
     public void setInterestRate(BigDecimal interestRate) {
         this.interestRate = interestRate;
     }
@@ -129,8 +106,12 @@ public class DisclosureGroupEntity {
         private static final String TRANSACTION_TYPE_CODE_COLUMN_TYPE =
                 "bpchar(" + PicClause.DIS_TRAN_TYPE_CD_WIDTH + ")";
 
-        /** Digits after the decimal point in {@code transaction_category_code}. */
-        private static final int TRANSACTION_CATEGORY_CODE_SCALE = 0;
+        /**
+         * Type of {@code transaction_category_code} as PostgreSQL reports it. The migration
+         * declares the column {@code CHAR(4)}, and PostgreSQL names that type {@code bpchar}.
+         */
+        private static final String TRANSACTION_CATEGORY_CODE_COLUMN_TYPE =
+                "bpchar(" + PicClause.DIS_TRAN_CAT_CD_WIDTH + ")";
 
         /**
          * Account group identifier, first part of the key.
@@ -151,15 +132,22 @@ public class DisclosureGroupEntity {
 
         /**
          * Transaction category code, third part of the key. {@code DIS-TRAN-CAT-CD PIC 9(04)} at
-         * {@code app/cpy/CVTRA02Y.cpy:L8}. The column is {@code NUMERIC(4,0)}: four digits,
-         * scale 0.
+         * {@code app/cpy/CVTRA02Y.cpy:L8}. The column is {@code CHAR(4)}: exactly four digit
+         * characters.
+         *
+         * <p>The field is a {@link String} and not a number. {@code PIC 9(04)} is a display field,
+         * the 18 codes of {@code app/data/ASCII/trancatg.txt} read {@code 0001} through
+         * {@code 0016}, and the ledger service holds the same source code as text in
+         * {@code transaction_category.category_code}. A numeric column here would hold {@code 1}
+         * for the code the ledger holds as {@code 0001}, and the two services would stop comparing
+         * equal on a value that comes from one source record. The check constraint
+         * {@code ck_disclosure_group_category_digits} holds the width and the digit class.</p>
          */
         @Column(name = "transaction_category_code", nullable = false,
-                precision = PicClause.DIS_TRAN_CAT_CD_WIDTH,
-                scale = TRANSACTION_CATEGORY_CODE_SCALE)
-        private BigDecimal transactionCategoryCode;
+                length = PicClause.DIS_TRAN_CAT_CD_WIDTH,
+                columnDefinition = TRANSACTION_CATEGORY_CODE_COLUMN_TYPE)
+        private String transactionCategoryCode;
 
-        /** Builds an empty key. Jakarta Persistence instantiates a loaded key through this. */
         public DisclosureGroupId() {
         }
 
@@ -168,47 +156,28 @@ public class DisclosureGroupEntity {
          *
          * @param accountGroupId          the account group identifier, up to ten characters
          * @param transactionTypeCode     the transaction type code, two characters
-         * @param transactionCategoryCode the transaction category code, four digits at scale 0
+         * @param transactionCategoryCode the transaction category code, exactly four digit
+         *                                characters
          */
         public DisclosureGroupId(String accountGroupId, String transactionTypeCode,
-                BigDecimal transactionCategoryCode) {
+                String transactionCategoryCode) {
             this.accountGroupId = accountGroupId;
             this.transactionTypeCode = transactionTypeCode;
             this.transactionCategoryCode = transactionCategoryCode;
         }
 
-        /**
-         * Reads the account group identifier.
-         *
-         * @return the first key part
-         */
         public String getAccountGroupId() {
             return accountGroupId;
         }
 
-        /**
-         * Writes the account group identifier.
-         *
-         * @param accountGroupId the first key part
-         */
         public void setAccountGroupId(String accountGroupId) {
             this.accountGroupId = accountGroupId;
         }
 
-        /**
-         * Reads the transaction type code.
-         *
-         * @return the second key part
-         */
         public String getTransactionTypeCode() {
             return transactionTypeCode;
         }
 
-        /**
-         * Writes the transaction type code.
-         *
-         * @param transactionTypeCode the second key part
-         */
         public void setTransactionTypeCode(String transactionTypeCode) {
             this.transactionTypeCode = transactionTypeCode;
         }
@@ -218,7 +187,7 @@ public class DisclosureGroupEntity {
          *
          * @return the third key part
          */
-        public BigDecimal getTransactionCategoryCode() {
+        public String getTransactionCategoryCode() {
             return transactionCategoryCode;
         }
 
@@ -227,7 +196,7 @@ public class DisclosureGroupEntity {
          *
          * @param transactionCategoryCode the third key part
          */
-        public void setTransactionCategoryCode(BigDecimal transactionCategoryCode) {
+        public void setTransactionCategoryCode(String transactionCategoryCode) {
             this.transactionCategoryCode = transactionCategoryCode;
         }
 

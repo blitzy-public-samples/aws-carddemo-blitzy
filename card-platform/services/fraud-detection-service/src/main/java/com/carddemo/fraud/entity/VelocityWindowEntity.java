@@ -1,9 +1,11 @@
 package com.carddemo.fraud.entity;
 
 import com.carddemo.cobol.PicClause;
+import com.carddemo.events.EventEnvelope;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.IdClass;
 import jakarta.persistence.Table;
 import java.io.Serializable;
@@ -36,18 +38,17 @@ import java.util.Objects;
  * index on the table. {@link VelocityWindowId} carries those two columns at the same two Java
  * types.</p>
  *
- * <p>The consumer adds an amount through {@code com.carddemo.cobol.CobolDecimal}, which truncates
- * every result toward zero. This class stores what the consumer computes and holds no arithmetic.
- * The consumer in the {@code messaging} package checks {@code processed_event} before it acts and
- * writes the marker in the same local transaction as this row, so a duplicate delivery counts
- * once.</p>
+ * <p>This class stores an amount and holds no arithmetic. The planned consumer is to add through
+ * {@code com.carddemo.cobol.CobolDecimal}, which truncates every result toward zero. It is also to
+ * check {@code processed_event} before it acts and write the marker in the same local transaction
+ * as this row, so that a duplicate delivery counts once. No consumer is authored yet.</p>
  *
  * <p>Flyway creates this table, and Jakarta Persistence validates this mapping against it at
- * start-up, so a column name or a column type that differs stops the application.
- * {@code card-platform/docs/decision-log.md} records the mapping decisions.</p>
+ * start-up, so a column name or a column type that differs stops the application.</p>
  */
 @Entity
-@Table(name = "velocity_window")
+@Table(name = "velocity_window",
+        indexes = @Index(name = "ix_velocity_window_start", columnList = "window_start"))
 @IdClass(VelocityWindowEntity.VelocityWindowId.class)
 public class VelocityWindowEntity {
 
@@ -100,7 +101,6 @@ public class VelocityWindowEntity {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    /** Required by the persistence provider, which sets all five fields directly. */
     protected VelocityWindowEntity() {
     }
 
@@ -191,47 +191,22 @@ public class VelocityWindowEntity {
         return value;
     }
 
-    /**
-     * Returns the account the bucket belongs to.
-     *
-     * @return eleven digits, leading zeros kept
-     */
     public String getAccountId() {
         return accountId;
     }
 
-    /**
-     * Returns the inclusive lower bound of the bucket.
-     *
-     * @return the bucket start
-     */
     public Instant getWindowStart() {
         return windowStart;
     }
 
-    /**
-     * Returns the authorizations counted in the bucket.
-     *
-     * @return zero or more
-     */
     public int getAuthorizationCount() {
         return authorizationCount;
     }
 
-    /**
-     * Returns the amounts totalled over the bucket.
-     *
-     * @return a total at two digits after the decimal point, positive or negative
-     */
     public BigDecimal getTotalAmount() {
         return totalAmount;
     }
 
-    /**
-     * Returns the time of the last change to the row.
-     *
-     * @return the time the caller supplied
-     */
     public Instant getUpdatedAt() {
         return updatedAt;
     }
@@ -298,16 +273,22 @@ public class VelocityWindowEntity {
     }
 
     /**
-     * Renders the key and the three counters.
+     * Names the five columns and withholds the account identifier and the two counters.
      *
-     * @return one line naming the class and each of the five columns
+     * <p>The counters are the values the velocity rule reads, and together with the account
+     * identifier they describe one cardholder's recent spending. Each appears as
+     * {@link EventEnvelope#WITHHELD}, the platform-wide redaction marker. The two window
+     * timestamps stay, because they carry no cardholder data.
+     *
+     * @return one line naming the class and each of the five columns, disclosing the timestamps
+     *         alone
      */
     @Override
     public String toString() {
-        return "VelocityWindowEntity[accountId=" + accountId
+        return "VelocityWindowEntity[accountId=" + EventEnvelope.WITHHELD
                 + ", windowStart=" + windowStart
-                + ", authorizationCount=" + authorizationCount
-                + ", totalAmount=" + totalAmount
+                + ", authorizationCount=" + EventEnvelope.WITHHELD
+                + ", totalAmount=" + EventEnvelope.WITHHELD
                 + ", updatedAt=" + updatedAt + "]";
     }
 
@@ -329,7 +310,6 @@ public class VelocityWindowEntity {
         /** Second part of the key, the inclusive lower bound of the bucket. */
         private Instant windowStart;
 
-        /** Required by the persistence provider, which sets both fields directly. */
         public VelocityWindowId() {
         }
 
@@ -346,20 +326,10 @@ public class VelocityWindowEntity {
             this.windowStart = Objects.requireNonNull(windowStart, "windowStart");
         }
 
-        /**
-         * Returns the account the bucket belongs to.
-         *
-         * @return eleven digits, leading zeros kept
-         */
         public String getAccountId() {
             return accountId;
         }
 
-        /**
-         * Returns the inclusive lower bound of the bucket.
-         *
-         * @return the bucket start
-         */
         public Instant getWindowStart() {
             return windowStart;
         }
@@ -393,13 +363,17 @@ public class VelocityWindowEntity {
         }
 
         /**
-         * Renders both parts.
+         * Renders a fixed description carrying neither part.
          *
-         * @return one line naming the class and both key columns
+         * <p>Both parts together name one cardholder's spending window, and a rendering reaches a
+         * log line, an exception message or a debugger view without a caller intending it. A caller
+         * that needs a part reads the accessor for it.</p>
+         *
+         * @return a fixed description naming both key columns and no value
          */
         @Override
         public String toString() {
-            return "VelocityWindowId[accountId=" + accountId
+            return "VelocityWindowId[accountId=" + EventEnvelope.WITHHELD
                     + ", windowStart=" + windowStart + "]";
         }
     }

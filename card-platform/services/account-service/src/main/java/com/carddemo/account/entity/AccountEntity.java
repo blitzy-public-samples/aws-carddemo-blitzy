@@ -1,5 +1,6 @@
 package com.carddemo.account.entity;
 
+import com.carddemo.events.EventEnvelope;
 import java.math.BigDecimal;
 
 import com.carddemo.cobol.PicClause;
@@ -13,12 +14,11 @@ import jakarta.persistence.Table;
  * One row of the {@code account} table, transformed field by field from the group
  * {@code 01 ACCOUNT-RECORD.} at {@code app/cpy/CVACT01Y.cpy:L4}.
  *
- * <p>Twelve mapped fields carry the twelve copybook fields at
- * {@code app/cpy/CVACT01Y.cpy:L5-L16}. Their widths total 122 bytes. The trailing
- * {@code FILLER PIC X(178)} at {@code app/cpy/CVACT01Y.cpy:L17} maps to no column and brings the
- * record to {@link PicClause#ACCOUNT_RECORD_LENGTH} bytes, matching
- * {@code RECORDSIZE(300 300)} at {@code app/jcl/ACCTFILE.jcl:L41}.
- * {@code card-platform/docs/traceability-matrix.md} records the dropped filler.</p>
+ * <p>Twelve mapped fields carry the twelve copybook fields at {@code app/cpy/CVACT01Y.cpy:L5-L16}.
+ * Their widths total 122 bytes. The trailing {@code FILLER PIC X(178)} at
+ * {@code app/cpy/CVACT01Y.cpy:L17} maps to no column and brings the record to
+ * {@link PicClause#ACCOUNT_RECORD_LENGTH} bytes, matching {@code RECORDSIZE(300 300)} at
+ * {@code app/jcl/ACCTFILE.jcl:L41}.</p>
  *
  * <p>{@link #getAccountId()} is the primary key. Its eleven digits come from
  * {@code KEYS(11 0)} at {@code app/jcl/ACCTFILE.jcl:L40}, the key of the Virtual Storage Access
@@ -34,28 +34,33 @@ import jakarta.persistence.Table;
  * <p>The record carries two separate notions of balance with no documented relationship between
  * them. {@link #getCurrentBalance()} at {@code app/cpy/CVACT01Y.cpy:L7} holds the posted balance,
  * and the two billing-cycle accumulators at {@code app/cpy/CVACT01Y.cpy:L13-L14} drive the
- * credit-limit decision. {@code card-platform/docs/business-rule-flags.md} carries that finding and
- * the other flagged account rules.</p>
+ * credit-limit decision.</p>
  *
  * <p>This class holds no arithmetic, no format check and no status check. It declares no
- * association, no version column and no generated value.
- * {@code card-platform/docs/data-model.md} draws this table with the other seven tables of the
- * account schema and the lookup path between them.
- * {@code card-platform/docs/decision-log.md} records the column type and field naming
- * decisions.</p>
+ * association, no version column and no generated value.</p>
  */
 @Entity
 @Table(name = "account")
 public class AccountEntity {
 
     /**
-     * Primary key. {@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5}. Eleven digits,
-     * scale 0. Several source programs compare an account identifier as text, and the column keeps
-     * the digits of the source key.
+     * Primary key. {@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5}. Exactly eleven
+     * digit characters, held in column {@code account_id CHAR(11)}.
+     *
+     * <p>Several source programs compare an account identifier as text, and the column now keeps
+     * the digits of the source key without change. {@code PIC 9(11)} is a display field, and every
+     * record of {@code app/data/ASCII/acctdata.txt} fills all eleven positions: record one holds
+     * {@code 00000000001}. A numeric column stores that as one and returns {@code 1}, so every
+     * consumer of the value would have to re-pad it to reach the eleven-character key at
+     * {@code KEYS(11 0)} in {@code app/jcl/ACCTFILE.jcl:L40}, the account identifier the card
+     * service holds, or the aggregate identifier an event carries. The check constraint
+     * {@code ck_account_account_id_digits} holds the width and the digit class.</p>
      */
     @Id
-    @Column(name = "account_id", nullable = false, precision = PicClause.ACCT_ID_WIDTH)
-    private BigDecimal accountId;
+    @Column(name = "account_id", nullable = false,
+            length = PicClause.ACCT_ID_WIDTH,
+            columnDefinition = "bpchar(" + PicClause.ACCT_ID_WIDTH + ")")
+    private String accountId;
 
     /**
      * Status flag. {@code ACCT-ACTIVE-STATUS PIC X(01)} at {@code app/cpy/CVACT01Y.cpy:L6}. No
@@ -189,10 +194,6 @@ public class AccountEntity {
     @Column(name = "group_id", nullable = false, length = PicClause.ACCT_GROUP_ID_WIDTH)
     private String groupId;
 
-    /**
-     * Creates an account with every field unset. Jakarta Persistence calls this constructor when it
-     * materialises a row, and a caller fills the twelve fields through the setters.
-     */
     public AccountEntity() {
     }
 
@@ -201,222 +202,119 @@ public class AccountEntity {
      *
      * @return the eleven-digit account identifier, or {@code null} when it is unset
      */
-    public BigDecimal getAccountId() {
+    public String getAccountId() {
         return accountId;
     }
 
     /**
      * Sets the primary key.
      *
-     * @param accountId the eleven-digit account identifier
+     * <p>The guard runs here rather than at flush time. A caller that passes {@code "1"} for the
+     * account the record writes as {@code 00000000001} learns so at the call site, instead of
+     * meeting a check-constraint violation from the database several statements later.</p>
+     *
+     * @param accountId the account identifier, exactly {@value PicClause#ACCT_ID_WIDTH} digits
+     * @throws IllegalArgumentException when the argument is absent, the wrong width, or holds a
+     *                                 character that is not a digit
      */
-    public void setAccountId(BigDecimal accountId) {
-        this.accountId = accountId;
+    public void setAccountId(String accountId) {
+        this.accountId = requireDigits("accountId", accountId, PicClause.ACCT_ID_WIDTH);
     }
 
-    /**
-     * Returns the status flag.
-     *
-     * @return one character, or {@code null} when the flag is unset
-     */
     public String getActiveStatus() {
         return activeStatus;
     }
 
-    /**
-     * Sets the status flag.
-     *
-     * @param activeStatus one character
-     */
     public void setActiveStatus(String activeStatus) {
         this.activeStatus = activeStatus;
     }
 
-    /**
-     * Returns the posted balance.
-     *
-     * @return the balance at scale 2, or {@code null} when it is unset
-     */
     public BigDecimal getCurrentBalance() {
         return currentBalance;
     }
 
-    /**
-     * Sets the posted balance.
-     *
-     * @param currentBalance the balance at scale 2
-     */
     public void setCurrentBalance(BigDecimal currentBalance) {
         this.currentBalance = currentBalance;
     }
 
-    /**
-     * Returns the credit limit the authorization decision compares against.
-     *
-     * @return the credit limit at scale 2, or {@code null} when it is unset
-     */
     public BigDecimal getCreditLimit() {
         return creditLimit;
     }
 
-    /**
-     * Sets the credit limit.
-     *
-     * @param creditLimit the credit limit at scale 2
-     */
     public void setCreditLimit(BigDecimal creditLimit) {
         this.creditLimit = creditLimit;
     }
 
-    /**
-     * Returns the cash credit limit.
-     *
-     * @return the cash credit limit at scale 2, or {@code null} when it is unset
-     */
     public BigDecimal getCashCreditLimit() {
         return cashCreditLimit;
     }
 
-    /**
-     * Sets the cash credit limit.
-     *
-     * @param cashCreditLimit the cash credit limit at scale 2
-     */
     public void setCashCreditLimit(BigDecimal cashCreditLimit) {
         this.cashCreditLimit = cashCreditLimit;
     }
 
-    /**
-     * Returns the open date as text.
-     *
-     * @return ten characters, or {@code null} when the date is unset
-     */
     public String getOpenDate() {
         return openDate;
     }
 
-    /**
-     * Sets the open date as text.
-     *
-     * @param openDate ten characters
-     */
     public void setOpenDate(String openDate) {
         this.openDate = openDate;
     }
 
-    /**
-     * Returns the expiration date as text. The authorization decision compares this value with the
-     * leading ten characters of a transaction origin timestamp.
-     *
-     * @return ten characters, or {@code null} when the date is unset
-     */
     public String getExpirationDate() {
         return expirationDate;
     }
 
-    /**
-     * Sets the expiration date as text.
-     *
-     * @param expirationDate ten characters
-     */
     public void setExpirationDate(String expirationDate) {
         this.expirationDate = expirationDate;
     }
 
-    /**
-     * Returns the reissue date as text.
-     *
-     * @return ten characters, or {@code null} when the date is unset
-     */
     public String getReissueDate() {
         return reissueDate;
     }
 
-    /**
-     * Sets the reissue date as text.
-     *
-     * @param reissueDate ten characters
-     */
     public void setReissueDate(String reissueDate) {
         this.reissueDate = reissueDate;
     }
 
-    /**
-     * Returns the billing-cycle credit accumulator.
-     *
-     * @return the accumulator at scale 2, or {@code null} when it is unset
-     */
     public BigDecimal getCurrentCycleCredit() {
         return currentCycleCredit;
     }
 
-    /**
-     * Sets the billing-cycle credit accumulator.
-     *
-     * @param currentCycleCredit the accumulator at scale 2
-     */
     public void setCurrentCycleCredit(BigDecimal currentCycleCredit) {
         this.currentCycleCredit = currentCycleCredit;
     }
 
-    /**
-     * Returns the billing-cycle debit accumulator.
-     *
-     * @return the accumulator at scale 2, or {@code null} when it is unset
-     */
     public BigDecimal getCurrentCycleDebit() {
         return currentCycleDebit;
     }
 
-    /**
-     * Sets the billing-cycle debit accumulator.
-     *
-     * @param currentCycleDebit the accumulator at scale 2
-     */
     public void setCurrentCycleDebit(BigDecimal currentCycleDebit) {
         this.currentCycleDebit = currentCycleDebit;
     }
 
-    /**
-     * Returns the address postal code.
-     *
-     * @return ten characters, or {@code null} when the code is unset
-     */
     public String getAddressZip() {
         return addressZip;
     }
 
-    /**
-     * Sets the address postal code.
-     *
-     * @param addressZip ten characters
-     */
     public void setAddressZip(String addressZip) {
         this.addressZip = addressZip;
     }
 
-    /**
-     * Returns the account group identifier.
-     *
-     * @return ten characters, or {@code null} when the identifier is unset
-     */
     public String getGroupId() {
         return groupId;
     }
 
-    /**
-     * Sets the account group identifier.
-     *
-     * @param groupId ten characters
-     */
     public void setGroupId(String groupId) {
         this.groupId = groupId;
     }
 
     /**
      * Compares this account with another object by account identifier. Two accounts are equal when
-     * both identifiers are present and numerically equal. {@code BigDecimal.equals} separates two
-     * values that differ only in scale, and this method compares with {@code compareTo}.
+     * both identifiers are present and hold the same characters.
+     *
+     * <p>The identifier is a fixed-width digit string, so character equality is the whole test. No
+     * canonical form applies: the width guard admits exactly one spelling of each identifier.</p>
      *
      * @param other the object to compare with this account
      * @return {@code true} when the other object is an account carrying the same identifier
@@ -431,28 +329,71 @@ public class AccountEntity {
         }
         return accountId != null
                 && account.accountId != null
-                && accountId.compareTo(account.accountId) == 0;
+                && accountId.equals(account.accountId);
     }
 
     /**
-     * Returns a hash code taken from the account identifier. {@code stripTrailingZeros} supplies a
-     * canonical form, which keeps this code consistent with {@link #equals(Object)} across scales.
+     * Returns a hash code taken from the account identifier.
      *
-     * @return the hash code of the canonical identifier, or zero when the identifier is unset
+     * <p>The identifier carries a fixed count of digits, so the stored characters are already the
+     * canonical form and this code agrees with {@link #equals(Object)} without normalising
+     * anything.
+     *
+     * @return the hash code of the identifier, or zero when the identifier is unset
      */
     @Override
     public int hashCode() {
-        return accountId == null ? 0 : accountId.stripTrailingZeros().hashCode();
+        return accountId == null ? 0 : accountId.hashCode();
     }
 
     /**
-     * Returns the account identifier and the status flag. No monetary value and no date appears in
-     * the text.
+     * Names the account identifier and the status flag, and withholds both values.
      *
-     * @return a short description of this account
+     * <p>An account identifier identifies the customer this row belongs to, so neither value
+     * reaches the text. Each appears as {@link EventEnvelope#WITHHELD}, the platform-wide redaction
+     * marker. No monetary value and no date appears either.
+     *
+     * @return a short description of this account that discloses no value
      */
     @Override
     public String toString() {
-        return "AccountEntity[accountId=" + accountId + ", activeStatus=" + activeStatus + "]";
+        return "AccountEntity[accountId=" + EventEnvelope.WITHHELD + ", activeStatus="
+                + EventEnvelope.WITHHELD + "]";
+    }
+
+    /**
+     * Rejects an identifier that is the wrong width or carries a character outside {@code 0}
+     * through {@code 9}.
+     *
+     * <p>A {@code PIC 9(n)} display field is exactly n characters wide and holds only digits, and
+     * the column check constraint repeats both halves in the database. Neither message carries a
+     * character of the rejected value: the width message reports a length and the digit message
+     * reports a position, which keeps a Social Security Number out of any log line a caller writes
+     * from a failure.</p>
+     *
+     * @param field the field name the message reports
+     * @param value the value under test
+     * @param width the exact number of digits the source picture clause declares
+     * @return the supplied value
+     * @throws IllegalArgumentException when the value is absent, the wrong width, or holds a
+     *                                 character that is not a digit
+     */
+    private static String requireDigits(String field, String value, int width) {
+        if (value == null) {
+            throw new IllegalArgumentException(field + " is required");
+        }
+        if (value.length() != width) {
+            throw new IllegalArgumentException(field + " must be exactly " + width
+                    + " digits wide, found width " + value.length());
+        }
+        for (int position = 0; position < width; position++) {
+            char character = value.charAt(position);
+            if (character < '0' || character > '9') {
+                throw new IllegalArgumentException(field
+                        + " must hold digits only, found a character outside 0 through 9 at "
+                        + "position " + (position + 1));
+            }
+        }
+        return value;
     }
 }

@@ -76,6 +76,7 @@
     <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
     </dependency>
 
     <!-- Messaging. The starter carries the auto-configuration; spring-kafka
@@ -89,19 +90,32 @@
       <artifactId>spring-kafka</artifactId>
     </dependency>
 
-    <!-- Observability. Actuator exposes health and metrics, the Prometheus
-         registry publishes them, and the encoder writes structured logs. -->
+    <!-- Observability. Actuator exposes health and metrics, and the Prometheus
+         registry publishes them. Structured log output comes from the Spring Boot
+         logging starter through the logging.structured.format.console property in
+         application.yml. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
+
+    <!-- Request authentication and authorization. config/SecurityConfig declares two
+         filter chains: one over the actuator surface, leaving health open for a probe
+         and requiring ROLE_MONITORING for metrics and the Prometheus scrape, and one
+         over the API, denying by default and scoping each route to the identity that
+         owns the identifier it names. The starter also installs the response headers
+         that keep a financial or personal-data answer out of every cache, and the
+         delegating password encoder that reads the algorithm prefix of a configured
+         password, so no plaintext password is stored or compared. The version comes
+         from the Spring Boot bill of materials imported by the parent. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-registry-prometheus</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>net.logstash.logback</groupId>
-      <artifactId>logstash-logback-encoder</artifactId>
+      <scope>runtime</scope>
     </dependency>
 
     <!-- Test scope. Testcontainers 2.x module artifact identifiers carry a

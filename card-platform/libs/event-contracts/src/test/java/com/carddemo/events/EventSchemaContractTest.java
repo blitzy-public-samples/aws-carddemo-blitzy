@@ -54,9 +54,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Two pitfalls this suite guards. Every module declares {@code java.version} 25; the framework
  * parent defaults the language level to 17 and a module that omits the override compiles at 17 with
- * no warning. The wire form is flat: a payload nesting the five envelope fields under an
- * {@code envelope} key fails every document, and a failed check on arrival routes the message to
- * the dead-letter topic.
+ * no warning. The wire form is flat. A payload nesting the five envelope fields under an
+ * {@code envelope} key fails every document.
  *
  * <p>Adding a consumer needs no producer change. The fixed required sets asserted here and the open
  * property set every document declares are what keeps that true. Versions in use: Java 25, Apache
@@ -91,6 +90,12 @@ class EventSchemaContractTest {
 
     /** The account identifier every valid instance in this suite carries. */
     private static final String ACCOUNT_IDENTIFIER = "00000000007";
+
+    /**
+     * The shape both account identifiers take, from {@code XREF-ACCT-ID PIC 9(11)} at
+     * {@code app/cpy/CVACT03Y.cpy:L7}.
+     */
+    private static final String ACCOUNT_IDENTIFIER_PATTERN = "^[0-9]{11}$";
 
     /** A second account identifier, used to build a mismatched pair. */
     private static final String OTHER_ACCOUNT_IDENTIFIER = "00000000011";
@@ -138,10 +143,20 @@ class EventSchemaContractTest {
 
     /** The required-property count each document declares. */
     private static final Map<String, Integer> REQUIRED_COUNTS = Map.of(
-            AUTHORIZED, 18,
-            DECLINED, 10,
-            POSTED, 10,
-            FLAGGED, 9);
+            AUTHORIZED, 19,
+            DECLINED, 11,
+            POSTED, 11,
+            FLAGGED, 10);
+
+    /**
+     * The documents that declare the payload property {@code accountId} beside the envelope
+     * property {@code aggregateId}, matching the components their Java records carry. All four
+     * carry it, because the event contract names an account identifier in the authorized, declined,
+     * posted and flagged events. A document entering or leaving this set fails
+     * {@link #theExecutableRuleEnforcesTheAccountIdentityTheSchemaCannot}.
+     */
+    private static final Set<String> PAYLOAD_ACCOUNT_DOCUMENTS =
+            Set.of(AUTHORIZED, DECLINED, POSTED, FLAGGED);
 
     /** Reads and writes JSON trees. Jackson 3 only; no Jackson 2 type appears in this class. */
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -152,11 +167,13 @@ class EventSchemaContractTest {
 
     /**
      * Asserts that all four documents load from the classpath and compile as Draft 2020-12
-     * schemas, and that each declares the open-object skeleton the wire form depends on.
+     * schemas, and that each declares the closed-object skeleton the wire form depends on.
      *
-     * <p>The property set stays open so a consumer validating against version one accepts an event
-     * that carries a field a later version added. A closed set would break every existing consumer
-     * on the first additive change.</p>
+     * <p>The top-level property set is closed, so a validator refuses a property no document
+     * declares and a producer cannot carry an undeclared field, an unmasked card number among them,
+     * inside a known event type. Additive room lives in the bounded {@code extensions} object
+     * instead, which a consumer validating against version one already accepts, so the first
+     * additive change breaks no existing consumer.</p>
      */
     @Test
     void everyDocumentLoadsFromTheClasspathAndCompiles() {
@@ -169,9 +186,15 @@ class EventSchemaContractTest {
             assertNotNull(tree.get("title"), document + " stopped declaring a title");
             assertEquals("object", tree.get("type").asString(),
                     document + " stopped declaring an object type");
-            assertTrue(tree.get("additionalProperties").asBoolean(),
-                    document + " stopped keeping its property set open, so an added field would "
-                            + "break a consumer validating against this version");
+            assertFalse(tree.get("additionalProperties").asBoolean(),
+                    document + " reopened its top-level property set, so a producer could carry a "
+                            + "field no schema describes inside a known event type");
+            assertEquals(tree.get("properties").size(), tree.get("maxProperties").asInt(),
+                    document + " declares a maxProperties ceiling that does not match the number "
+                            + "of properties it declares");
+            assertNotNull(tree.get("properties").get("extensions"),
+                    document + " stopped declaring the bounded extensions object, so a later "
+                            + "version has nowhere to put an added value");
 
             assertNotNull(schemaFor(document), document + " failed to compile");
             assertFalse(containsReference(tree),
@@ -179,11 +202,6 @@ class EventSchemaContractTest {
         }
     }
 
-    /**
-     * Asserts that the {@code title} of each document equals the {@code const} of its
-     * {@code eventType} property, and that every entry of {@code required} names a declared
-     * property.
-     */
     @Test
     void everyRequiredEntryNamesADeclaredPropertyAndTheTitleMatchesTheEventType() {
         for (String document : DOCUMENTS) {
@@ -202,12 +220,6 @@ class EventSchemaContractTest {
         }
     }
 
-    /**
-     * Asserts the required-property count of each document.
-     *
-     * <p>A change to any count means a field left the contract or joined it, and either one breaks
-     * a consumer compiled against version one.</p>
-     */
     @Test
     void theRequiredPropertyCountOfEachDocumentIsFixed() {
         for (String document : DOCUMENTS) {
@@ -216,10 +228,6 @@ class EventSchemaContractTest {
         }
     }
 
-    /**
-     * Asserts that money travels as a string with two fractional digits, never as a JSON number,
-     * and that the nine-digit amount pattern and the ten-digit balance pattern are not swapped.
-     */
     @Test
     void moneyTravelsAsAStringAndTheTwoWidthsStayApart() {
         for (String document : DOCUMENTS) {
@@ -253,10 +261,6 @@ class EventSchemaContractTest {
                 POSTED + " gave the amount and the balance one pattern");
     }
 
-    /**
-     * Asserts that the two integer properties are the only ones, and that the risk score keeps its
-     * bounds.
-     */
     @Test
     void integerAppearsOnSchemaVersionEverywhereAndOnRiskScoreOnce() {
         for (String document : DOCUMENTS) {
@@ -281,13 +285,6 @@ class EventSchemaContractTest {
         assertEquals(100, riskScore.get("maximum").asInt(), FLAGGED + " changed the score ceiling");
     }
 
-    /**
-     * Asserts that a valid instance of each document validates, survives a write and a read, and
-     * still validates with its amount unchanged as a string.
-     *
-     * <p>The amount is asserted to stay a string node across the round trip. A JSON number would
-     * pass through a binary floating-point value and lose the fixed-point scale.</p>
-     */
     @Test
     void aValidInstanceRoundTripsWithItsAmountScaleIntact() {
         for (String document : DOCUMENTS) {
@@ -318,10 +315,6 @@ class EventSchemaContractTest {
         }
     }
 
-    /**
-     * Asserts that dropping any one required property fails validation and that the failure names
-     * the property.
-     */
     @Test
     void droppingAnyRequiredPropertyFailsValidation() {
         for (String document : DOCUMENTS) {
@@ -343,27 +336,33 @@ class EventSchemaContractTest {
     }
 
     /**
-     * Asserts that an unknown property passes validation, because every document keeps its property
-     * set open. This is what lets a later version add a field without breaking a consumer that
-     * validates against this one, and it is the reason the account identity rule below is
-     * executable rather than declared.
+     * Asserts that an unknown top-level property fails validation while an added value inside the
+     * bounded {@code extensions} object passes.
+     *
+     * <p>The two halves belong together. Refusing the unknown top-level property is what stops a
+     * producer from carrying a field no document describes inside a known event type. Accepting the
+     * value inside {@code extensions} is what lets a later version add something without breaking a
+     * consumer that validates against this one.
      */
     @Test
-    void anUnknownPropertyIsAcceptedSoAnAddedFieldKeepsAConsumerWorking() {
+    void anUnknownPropertyIsRefusedWhileAnAddedExtensionValueKeepsAConsumerWorking() {
         for (String document : DOCUMENTS) {
-            ObjectNode evolved = validInstance(document);
-            evolved.put("unmappedField", "value");
+            ObjectNode smuggled = validInstance(document);
+            smuggled.put("unmappedField", "value");
 
-            assertEquals(List.of(), validate(document, MAPPER.writeValueAsString(evolved)),
-                    document + " rejected a field a later version could add, which would break "
-                            + "every consumer validating against this version");
+            assertFalse(validate(document, MAPPER.writeValueAsString(smuggled)).isEmpty(),
+                    document + " accepted an undeclared top-level property, so a producer could "
+                            + "carry a field no schema describes inside a known event type");
+
+            ObjectNode enriched = validInstance(document);
+            enriched.set("extensions", MAPPER.createObjectNode().put("unmappedField", "value"));
+
+            assertEquals(List.of(), validate(document, MAPPER.writeValueAsString(enriched)),
+                    document + " rejected a value a later version could add inside extensions, "
+                            + "which would break every consumer validating against this version");
         }
     }
 
-    /**
-     * Asserts that a payload nesting the envelope under an {@code envelope} key fails every
-     * document, and that the failure names the missing envelope properties.
-     */
     @Test
     void aNestedEnvelopeShapeFailsEveryDocument() {
         for (String document : DOCUMENTS) {
@@ -391,10 +390,6 @@ class EventSchemaContractTest {
         }
     }
 
-    /**
-     * Asserts that the wrong {@code eventType} fails validation, so a consumer cannot route a
-     * payload of one shape as another.
-     */
     @Test
     void theWrongEventTypeFailsValidation() {
         for (String document : DOCUMENTS) {
@@ -406,10 +401,6 @@ class EventSchemaContractTest {
         }
     }
 
-    /**
-     * Asserts that a money value outside the two-decimal string form fails validation, including a
-     * bare JSON number.
-     */
     @Test
     void aMalformedMoneyValueFailsValidation() {
         String[] rejected = {"50.4", "50.475", "1,000.00", "$50.47", "50", "", "-50.4"};
@@ -443,10 +434,6 @@ class EventSchemaContractTest {
                 POSTED + " rejected a negative balance");
     }
 
-    /**
-     * Asserts that a full Primary Account Number fails validation wherever a masked one belongs,
-     * and that no document declares a card verification value or a card status property.
-     */
     @Test
     void aFullPrimaryAccountNumberFailsValidationAndNoDocumentCarriesACardSecret() {
         for (String document : List.of(AUTHORIZED, DECLINED, POSTED)) {
@@ -567,77 +554,95 @@ class EventSchemaContractTest {
     }
 
     /**
-     * Asserts that the envelope single-sources account identity, that the keyword vocabulary alone
-     * cannot police a second identifier, and that the executable rule does.
+     * Asserts that both account properties are declared, that the keyword vocabulary alone cannot
+     * police their agreement, and that the executable rule does.
      *
-     * <p>{@code aggregateId} is the one account identifier each document declares, and it is the
-     * Kafka message key, so the key and the payload cannot disagree. It holds the eleven-digit
+     * <p>{@code aggregateId} is the Kafka message key and {@code accountId} carries the same value
+     * in the payload, so a consumer reads one account identity. Both hold the eleven-digit
      * identifier from {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}.</p>
      *
-     * <p>The property set stays open, so a payload can still carry an {@code accountId} of its own.
-     * Draft 2020-12 has no keyword comparing one property to another, so
-     * {@link #accountIdentityErrors} carries that check, exactly as the publisher does before it
-     * sends. This test pins both halves.</p>
+     * <p>Four documents declare an {@code accountId} of their own beside the envelope one, because
+     * the user's event contract names an account identifier in the authorized, declined, posted and
+     * flagged events and the records that carry them emit it. Draft 2020-12 has no keyword comparing one property to
+     * another, so {@link #accountIdentityErrors} carries that check, exactly as the publisher does
+     * before it sends. This test pins both halves: which documents declare the payload property,
+     * and that the two properties carry one value under one width.</p>
      */
     @Test
     void theExecutableRuleEnforcesTheAccountIdentityTheSchemaCannot() {
         for (String document : DOCUMENTS) {
             JsonNode tree = readDocument(document);
+            JsonNode properties = tree.get("properties");
 
-            assertTrue(tree.get("properties").has(ENVELOPE_ACCOUNT_PROPERTY),
+            assertTrue(properties.has(ENVELOPE_ACCOUNT_PROPERTY),
                     document + " stopped carrying " + ENVELOPE_ACCOUNT_PROPERTY);
-            assertFalse(tree.get("properties").has(PAYLOAD_ACCOUNT_PROPERTY),
-                    document + " declared " + PAYLOAD_ACCOUNT_PROPERTY + " a second time, so the "
-                            + "two could disagree");
+            assertEquals(PAYLOAD_ACCOUNT_DOCUMENTS.contains(document),
+                    properties.has(PAYLOAD_ACCOUNT_PROPERTY),
+                    document + " changed whether it declares the payload property "
+                            + PAYLOAD_ACCOUNT_PROPERTY);
+            if (properties.has(PAYLOAD_ACCOUNT_PROPERTY)) {
+                assertTrue(requiredSet(document).contains(PAYLOAD_ACCOUNT_PROPERTY),
+                        document + " declares " + PAYLOAD_ACCOUNT_PROPERTY + " without requiring "
+                                + "it, so a producer could omit the identifier the contract names");
+                assertEquals(properties.get(ENVELOPE_ACCOUNT_PROPERTY).get("pattern").asString(),
+                        properties.get(PAYLOAD_ACCOUNT_PROPERTY).get("pattern").asString(),
+                        document + " gave " + PAYLOAD_ACCOUNT_PROPERTY + " a width other than the "
+                                + "one " + ENVELOPE_ACCOUNT_PROPERTY + " carries");
+            }
             assertTrue(declaresAccountIdentity(tree),
-                    document + " stopped declaring which property holds account identity");
+                    document + " stopped declaring which properties hold account identity");
 
             ObjectNode single = validInstance(document);
             assertEquals(List.of(), validate(document, MAPPER.writeValueAsString(single)),
-                    document + " rejected an instance carrying one account identifier");
+                    document + " rejected an instance carrying one account identity");
             assertEquals(List.of(), accountIdentityErrors(document, single),
-                    document + " reported a mismatch where one identifier is carried");
+                    document + " reported a mismatch where one account identity is carried");
 
             ObjectNode agreeing = validInstance(document);
-            agreeing.put(PAYLOAD_ACCOUNT_PROPERTY, ACCOUNT_IDENTIFIER);
+            assertEquals(List.of(), validate(document, MAPPER.writeValueAsString(agreeing)),
+                    document + " rejected an instance whose two account identifiers agree");
             assertEquals(List.of(), accountIdentityErrors(document, agreeing),
-                    document + " reported a mismatch where a second identifier agrees");
+                    document + " reported a mismatch where both identifiers agree");
 
             ObjectNode mismatched = validInstance(document);
             mismatched.put(PAYLOAD_ACCOUNT_PROPERTY, OTHER_ACCOUNT_IDENTIFIER);
 
-            assertEquals(List.of(), validate(document, MAPPER.writeValueAsString(mismatched)),
-                    document + " began expressing property equality as a keyword, so the "
-                            + "executable rule needs revisiting");
+            if (declaresPayloadAccountProperty(document)) {
+                assertEquals(List.of(), validate(document, MAPPER.writeValueAsString(mismatched)),
+                        document + " began expressing property equality as a keyword, so the "
+                                + "executable rule needs revisiting");
+            } else {
+                assertFalse(validate(document, MAPPER.writeValueAsString(mismatched)).isEmpty(),
+                        document + " declares no payload account identifier, so its closed "
+                                + "property set must refuse a second one outright");
+            }
             assertEquals(1, accountIdentityErrors(document, mismatched).size(),
-                    document + " let a second, disagreeing account identifier through the rule");
+                    document + " let two disagreeing account identifiers through the rule");
         }
     }
 
-    /**
-     * Asserts the additive-only evolution rule: the exact required set of each document is fixed,
-     * the version constant stays at one, and the rule list stays open to a new value.
-     */
     @Test
     void evolutionStaysAdditiveSoAnExistingConsumerKeepsWorking() {
         assertEquals(Set.of("eventId", "eventType", "schemaVersion", "occurredAt", "aggregateId",
                         "transactionId", "transactionTypeCode", "merchantCategoryCode", "source",
                         "description", "amount", "merchantId", "merchantName", "merchantCity",
-                        "merchantZip", "maskedCardNumber", "authorizedAt", "currency"),
+                        "merchantZip", "maskedCardNumber", "authorizedAt",
+                        PAYLOAD_ACCOUNT_PROPERTY, "currency"),
                 requiredSet(AUTHORIZED), AUTHORIZED + " changed its required set");
 
         assertEquals(Set.of("eventId", "eventType", "schemaVersion", "occurredAt", "aggregateId",
-                        "transactionId", DECLINE_CODE_PROPERTY, DECLINE_TEXT_PROPERTY,
-                        "amount", "maskedCardNumber"),
+                        "transactionId", PAYLOAD_ACCOUNT_PROPERTY, DECLINE_CODE_PROPERTY,
+                        DECLINE_TEXT_PROPERTY, "amount", "maskedCardNumber"),
                 requiredSet(DECLINED), DECLINED + " changed its required set");
 
         assertEquals(Set.of("eventId", "eventType", "schemaVersion", "occurredAt", "aggregateId",
-                        "transactionId", "newBalance", "postedAt", "amount",
-                        "maskedCardNumber"),
+                        "transactionId", PAYLOAD_ACCOUNT_PROPERTY, "newBalance", "postedAt",
+                        "amount", "maskedCardNumber"),
                 requiredSet(POSTED), POSTED + " changed its required set");
 
         assertEquals(Set.of("eventId", "eventType", "schemaVersion", "occurredAt", "aggregateId",
-                        "transactionId", "riskScore", "triggeredRules", "assessedAt"),
+                        "transactionId", "riskScore", "triggeredRules", "assessedAt",
+                        PAYLOAD_ACCOUNT_PROPERTY),
                 requiredSet(FLAGGED), FLAGGED + " changed its required set");
 
         for (String document : DOCUMENTS) {
@@ -664,14 +669,6 @@ class EventSchemaContractTest {
                 FLAGGED + " changed the rule-identifier set");
     }
 
-    /**
-     * Asserts that the five envelope properties impose identical constraints across all four
-     * documents, with the {@code eventType} constant as the one difference.
-     *
-     * <p>The comparison covers the constraint keywords and skips {@code description} and
-     * {@code examples}. Those two are annotations: a validator ignores them, and each document
-     * names the service that stamps the field.</p>
-     */
     @Test
     void theEnvelopeImposesIdenticalConstraintsInEveryDocument() {
         JsonNode reference = readDocument(AUTHORIZED).get("properties");
@@ -701,10 +698,6 @@ class EventSchemaContractTest {
         }
     }
 
-    /**
-     * Asserts that neither fixed-width COBOL timestamp declares an ISO-8601 format and that the
-     * three timestamps that are ISO-8601 do.
-     */
     @Test
     void onlyTheThreeIsoTimestampsDeclareADateTimeFormat() {
         JsonNode authorizedAt = readDocument(AUTHORIZED).get("properties").get("authorizedAt");
@@ -743,8 +736,6 @@ class EventSchemaContractTest {
                             + " in the wrong layout");
         }
     }
-
-    // Private helpers.
 
     /**
      * The four reason codes in source order, each paired with the text the source moves beside it.
@@ -884,7 +875,7 @@ class EventSchemaContractTest {
     }
 
     /**
-     * Reports whether a document names the one property that holds account identity.
+     * Reports whether a document states that account identity has a single source.
      *
      * @param tree the parsed document
      * @return {@code true} when the statement is present
@@ -898,13 +889,14 @@ class EventSchemaContractTest {
     }
 
     /**
-     * Reports whether a sentence names the envelope property as the only account identifier.
+     * Reports whether a sentence names the property that carries one account identifier.
      *
      * @param text the sentence to inspect
      * @return {@code true} when it does
      */
     private static boolean statesOneValue(String text) {
-        return text.contains(ENVELOPE_ACCOUNT_PROPERTY) && text.contains("only account identifier");
+        return text.contains(ENVELOPE_ACCOUNT_PROPERTY)
+                && text.contains("one account identifier");
     }
 
     /**
@@ -918,6 +910,21 @@ class EventSchemaContractTest {
      * @param event        the instance document
      * @return one message per failure, empty when the instance carries one account identity
      */
+    /**
+     * Reports whether a document declares a payload account identifier beside the envelope one.
+     *
+     * <p>Only a document that declares both can express a disagreeing pair at all. Now that every
+     * document closes its top-level property set, a document declaring only {@code aggregateId}
+     * refuses a second identifier before the executable rule is ever consulted, which is the
+     * stronger of the two outcomes.
+     *
+     * @param resource the classpath path of the schema document
+     * @return {@code true} when the document declares {@value #PAYLOAD_ACCOUNT_PROPERTY}
+     */
+    private static boolean declaresPayloadAccountProperty(String resource) {
+        return readDocument(resource).get("properties").get(PAYLOAD_ACCOUNT_PROPERTY) != null;
+    }
+
     private static List<String> accountIdentityErrors(String documentName, JsonNode event) {
         List<String> errors = new ArrayList<>();
         JsonNode envelopeAccount = event.get(ENVELOPE_ACCOUNT_PROPERTY);
@@ -948,6 +955,14 @@ class EventSchemaContractTest {
         instance.put("occurredAt", "2022-06-10T19:27:53.412Z");
         instance.put(ENVELOPE_ACCOUNT_PROPERTY, ACCOUNT_IDENTIFIER);
         instance.put("transactionId", "0000000000683580");
+        instance.put(PAYLOAD_ACCOUNT_PROPERTY, ACCOUNT_IDENTIFIER);
+
+        // The declined and posted documents declare a payload account identifier beside the
+        // envelope one, and both require it. The user's event contract names an account
+        // identifier in both events, and the records that carry them have always emitted it.
+        if (DECLINED.equals(resource) || POSTED.equals(resource)) {
+            instance.put(PAYLOAD_ACCOUNT_PROPERTY, ACCOUNT_IDENTIFIER);
+        }
 
         if (AUTHORIZED.equals(resource)) {
             instance.put("transactionTypeCode", "01");
@@ -963,11 +978,13 @@ class EventSchemaContractTest {
             instance.put("authorizedAt", "2022-06-10 19:27:53.000000");
             instance.put("currency", "USD");
         } else if (DECLINED.equals(resource)) {
+            instance.put(PAYLOAD_ACCOUNT_PROPERTY, ACCOUNT_IDENTIFIER);
             instance.put(DECLINE_CODE_PROPERTY, "0102");
             instance.put(DECLINE_TEXT_PROPERTY, "OVERLIMIT TRANSACTION");
             instance.put(AMOUNT_PROPERTY, "504.77");
             instance.put(MASKED_CARD_PROPERTY, MASKED_CARD_NUMBER);
         } else if (POSTED.equals(resource)) {
+            instance.put(PAYLOAD_ACCOUNT_PROPERTY, ACCOUNT_IDENTIFIER);
             instance.put(BALANCE_PROPERTY, "1250.75");
             instance.put("postedAt", "2022-07-19-23.16.01.470000");
             instance.put(AMOUNT_PROPERTY, "504.77");

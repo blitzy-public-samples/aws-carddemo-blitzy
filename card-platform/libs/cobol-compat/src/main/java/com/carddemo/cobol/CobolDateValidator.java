@@ -803,11 +803,11 @@ public final class CobolDateValidator {
         }
     }
 
-    // The called program. app/cbl/CSUTLDTC.cbl:L116-L120 calls CEEDAYS; the methods below
-    // reimplement what that call reports.
-
     /**
      * Validates a date against a mask and reports what {@code app/cbl/CSUTLDTC.cbl} reports.
+     *
+     * <p>{@code app/cbl/CSUTLDTC.cbl:L116-L120} calls {@code CEEDAYS}. This method reimplements
+     * what that call reports.</p>
      *
      * <p>The mask names three tokens: {@value #YEAR_TOKEN} for four characters of year,
      * {@value #MONTH_TOKEN} for two of month, and {@value #DAY_TOKEN} for two of day. Each token
@@ -1333,8 +1333,6 @@ public final class CobolDateValidator {
             state.dayFlag = FieldEditFlag.IS_VALID;
         }
     }
-
-    // Private helpers.
 
     /**
      * Builds one outcome carrying no day count.

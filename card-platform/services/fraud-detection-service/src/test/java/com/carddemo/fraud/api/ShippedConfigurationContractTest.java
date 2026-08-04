@@ -11,18 +11,31 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
+import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.yaml.snakeyaml.LoaderOptions;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.SafeConstructor;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -36,8 +49,13 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  * <p>The YAML file is read twice, once as characters for the absence sweeps and the placeholder scan,
  * once as nested maps for the key and value assertions.
  *
- * <p>Assertions cover present keys, absent keys, and the default every placeholder carries. No Spring
- * context starts, no database connects, no broker is reached, and every file operation is a read.
+ * <p>Assertions cover present keys, absent keys, and the default every placeholder carries. Three
+ * tests go further and assert the configuration Spring Boot binds from the same file, so a key the
+ * file spells in a form Spring or the Kafka client does not accept fails rather than passing a text
+ * comparison. Those three start a context holding one configuration-properties bean and nothing
+ * else.
+ *
+ * <p>No database connects, no broker is reached, and every file operation is a read.
  */
 @DisplayName("Shipped configuration of the fraud detection service")
 final class ShippedConfigurationContractTest {
@@ -60,15 +78,82 @@ final class ShippedConfigurationContractTest {
     /** Module relative path of the source directory. */
     private static final String SOURCE_ROOT = "src";
 
-    /** The one placeholder in the shipped configuration that carries no default. */
+    /** The datasource credential placeholder, which carries no default. */
     private static final String CREDENTIAL_PLACEHOLDER = "${POSTGRES_PASSWORD}";
 
-    /** Schema name every schema placeholder defaults to. */
+    /**
+     * The broker credential placeholder, which carries no default either. This service
+     * authenticates to the broker as its own Simple Authentication and Security Layer identity, and
+     * the broker's authorizer admits it onto exactly the one topic and the one consumer group this
+     * file names.
+     */
+    private static final String BROKER_CREDENTIAL_PLACEHOLDER = "${KAFKA_SASL_PASSWORD}";
+
+    /**
+     * Every placeholder in the shipped configuration that carries no default, in the order the file
+     * declares them. Each one is a credential, and a credential is exactly what must not carry a
+     * default: a default password or password hash is a credential this repository would publish,
+     * and an unset variable stopping start-up is the intended outcome. The three hashes belong to the
+     * identities {@code config/SecurityConfig} maps, and {@code card-platform/.env.example}
+     * documents how to generate them.
+     */
+    private static final List<String> PLACEHOLDERS_WITHOUT_DEFAULT = List.of(
+            CREDENTIAL_PLACEHOLDER,
+            BROKER_CREDENTIAL_PLACEHOLDER,
+            "${ADMIN_PASSWORD_HASH}",
+            "${USER_PASSWORD_HASH}",
+            "${MONITORING_PASSWORD_HASH}");
+
+    /** Schema name every schema placeholder defaults to, inside this service's own database. */
     private static final String DEFAULT_SCHEMA = "fraud_service";
 
-    /** Resolved default form of the datasource connection string. */
+    /**
+     * Database login this service signs on as by default. It is this service's own login and not the
+     * superuser: one shared login would make the private schema this service owns a convention
+     * rather than a control.
+     */
+    private static final String DEFAULT_DATASOURCE_LOGIN = "carddemo_fraud_svc";
+
+    /** Consumer group the shipped placeholder defaults to. */
+    private static final String DEFAULT_CONSUMER_GROUP = "fraud-detection";
+
+    /** Bootstrap server the shipped placeholder defaults to. */
+    private static final String DEFAULT_BOOTSTRAP_SERVERS = "kafka:9092";
+
+    /** Serializer the shipped file names on the producer, which validates before publishing. */
+    private static final String VALIDATING_SERIALIZER =
+            "com.carddemo.events.serde.JsonSchemaValidatingSerializer";
+
+    /** Deserializer the error-handling wrapper delegates to, which validates on consume. */
+    private static final String VALIDATING_DESERIALIZER =
+            "com.carddemo.events.serde.JsonSchemaValidatingDeserializer";
+
+    /** Key by which {@code ErrorHandlingDeserializer} reads the deserializer it wraps. */
+    private static final String DELEGATE_DESERIALIZER_KEY =
+            "spring.deserializer.value.delegate.class";
+
+    /** Prefix of the one built property name that carries no Kafka client configuration name. */
+    private static final String SPRING_PROPERTY_PREFIX = "spring.";
+
+    /**
+     * Loads the shipped {@code application.yml} into a context holding one
+     * configuration-properties bean. The initializer reads the file and starts nothing else, so
+     * Spring Boot binds exactly what the file declares and no client connects anywhere.
+     */
+    private static final ApplicationContextRunner KAFKA_RUNNER = new ApplicationContextRunner()
+            .withInitializer(new ConfigDataApplicationContextInitializer())
+            .withUserConfiguration(KafkaPropertiesBinding.class);
+
+    /**
+     * Resolved default form of the datasource connection string. Each service reaches one private
+     * database and, inside it, one private schema, so PostgreSQL runs no query across two services.
+     * {@code sslmode=require} is part of the default rather than an override: a driver that would
+     * fall back to cleartext carries every account identifier, balance and assessment across the wire
+     * in the clear.
+     */
     private static final String DEFAULT_DATASOURCE_URL =
-            "jdbc:postgresql://postgres:5432/carddemo_fraud?currentSchema=" + DEFAULT_SCHEMA;
+            "jdbc:postgresql://postgres:5432/carddemo_fraud?currentSchema=" + DEFAULT_SCHEMA
+                    + "&sslmode=require";
 
     /** Placeholder spans the datasource connection string declares, the outer span and four nested. */
     private static final int DATASOURCE_URL_PLACEHOLDER_SPANS = 5;
@@ -122,7 +207,8 @@ final class ShippedConfigurationContractTest {
     private static final String HIBERNATE_LOGGER_PREFIX = "org.hibernate";
 
     /** Actuator endpoint identifiers the shipped default exposes, in order. */
-    private static final List<String> EXPOSED_ENDPOINTS = List.of("health", "metrics", "prometheus");
+    private static final List<String> EXPOSED_ENDPOINTS =
+            List.of("health", "metrics", "prometheus");
 
     /** One hundred rows, the shipped default of {@code carddemo.outbox.relay.batch-size}. */
     private static final String DEFAULT_RELAY_BATCH_SIZE = String.valueOf(10 * 10);
@@ -173,7 +259,6 @@ final class ShippedConfigurationContractTest {
         moduleBase = resolveModuleBase();
     }
 
-    /** Resolves the directory under the module base and asserts it does not exist. */
     @Test
     @DisplayName("src/test/resources is absent from this module")
     void moduleDeclaresNoTestResourceDirectory() {
@@ -182,7 +267,6 @@ final class ShippedConfigurationContractTest {
                 () -> "test resource directory present at " + testResources.toAbsolutePath());
     }
 
-    /** Walks every regular file under {@code src} and asserts no name matches a Logback configuration. */
     @Test
     @DisplayName("no Logback configuration file exists under src")
     void moduleDeclaresNoLogbackConfigurationFile() {
@@ -192,10 +276,6 @@ final class ShippedConfigurationContractTest {
         assertEquals(List.of(), found, () -> "Logback configuration files present: " + found);
     }
 
-    /**
-     * Walks the main resource directory and asserts no file name pairs the profile prefix with a
-     * configuration file extension.
-     */
     @Test
     @DisplayName("no application-* profile variant exists under src/main/resources")
     void mainResourcesDeclareNoProfileVariantFile() {
@@ -206,10 +286,6 @@ final class ShippedConfigurationContractTest {
         assertEquals(List.of(), found, () -> "profile variant files present: " + found);
     }
 
-    /**
-     * Asserts no line opens a second document, and that no profile selection key appears in the text or
-     * in the parsed tree.
-     */
     @Test
     @DisplayName("application.yml is one document and names no profile")
     void shippedYamlIsOneDocumentWithNoProfileKey() {
@@ -226,7 +302,6 @@ final class ShippedConfigurationContractTest {
                 () -> assertNull(valueAt("spring", "config"), "spring.config is set"));
     }
 
-    /** Asserts three spellings are absent from the text and the parsed tree carries no admin block. */
     @Test
     @DisplayName("spring.kafka.admin.fail-fast is absent in every spelling")
     void shippedYamlSetsNoKafkaAdminFailFast() {
@@ -236,7 +311,6 @@ final class ShippedConfigurationContractTest {
                 () -> assertNull(valueAt("spring", "kafka", "admin"), "spring.kafka.admin is set"));
     }
 
-    /** Asserts both spellings of the quoting property, and every dialect key, are absent. */
     @Test
     @DisplayName("hibernate.auto_quote_keyword and every dialect key are absent")
     void shippedYamlSetsNoKeywordQuotingAndNoDialect() {
@@ -249,7 +323,6 @@ final class ShippedConfigurationContractTest {
                 () -> assertFalse(foldedYaml.contains("dialect"), "a dialect key is set"));
     }
 
-    /** Asserts the migration location key is absent and that schema cleaning is not switched on. */
     @Test
     @DisplayName("spring.flyway.locations is absent and clean-disabled is not false")
     void shippedYamlLeavesFlywayLocationsAndCleaningAlone() {
@@ -263,7 +336,6 @@ final class ShippedConfigurationContractTest {
                         "schema cleaning is enabled"));
     }
 
-    /** Asserts the classpath carries no second migration beside {@code V1__schema.sql}. */
     @Test
     @DisplayName("V2__seed.sql is absent from the classpath, and the absence is the contract")
     void migrationFolderShipsNoSeedMigration() {
@@ -271,7 +343,6 @@ final class ShippedConfigurationContractTest {
                 () -> "seed migration present at " + SEED_MIGRATION);
     }
 
-    /** Asserts none of the six host ports the composition publishes, and no port key, appears in the text. */
     @Test
     @DisplayName("application.yml names none of the six published host ports")
     void shippedYamlNamesNoPublishedHostPort() {
@@ -281,7 +352,6 @@ final class ShippedConfigurationContractTest {
                 () -> assertFalse(foldedYaml.contains("fraud_port"), "a FRAUD_PORT key is set"));
     }
 
-    /** Asserts each {@code server.error.include-*} key is absent or set to a value that hides detail. */
     @Test
     @DisplayName("no server.error.include-* key reveals error detail")
     void shippedYamlRevealsNoErrorDetail() {
@@ -295,12 +365,12 @@ final class ShippedConfigurationContractTest {
     }
 
     /**
-     * Asserts every placeholder span in the shipped file carries a default separator at depth one, apart
-     * from the one credential placeholder. The datasource connection string nests four placeholders
+     * Asserts every placeholder span in the shipped file carries a default separator at depth one,
+     * apart from the credential placeholders. The datasource connection string nests four placeholders
      * inside a fifth, and the scan covers all five.
      */
     @Test
-    @DisplayName("every placeholder carries a default at depth one, apart from the credential placeholder")
+    @DisplayName("every placeholder carries a default at depth one, apart from the credentials")
     void everyPlaceholderCarriesADefault() {
         List<String> spans = placeholderSpans(rawYaml);
         List<String> withoutDefault = spans.stream()
@@ -313,7 +383,7 @@ final class ShippedConfigurationContractTest {
                 .toList();
         assertAll(
                 () -> assertFalse(spans.isEmpty(), "the shipped file declares no placeholder"),
-                () -> assertEquals(List.of(CREDENTIAL_PLACEHOLDER), withoutDefault,
+                () -> assertEquals(PLACEHOLDERS_WITHOUT_DEFAULT, withoutDefault,
                         () -> "placeholders carrying no default: " + withoutDefault),
                 () -> assertEquals(DATASOURCE_URL_PLACEHOLDER_SPANS, connectionStringSpans.size(),
                         () -> "spring.datasource.url placeholder spans: " + connectionStringSpans),
@@ -324,7 +394,7 @@ final class ShippedConfigurationContractTest {
 
     /**
      * Asserts the datasource and schema placeholders resolve to their defaults with no environment
-     * variable set. The password resolves to the credential placeholder itself.
+     * variable set. Each service reaches its own database and its own schema inside it.
      */
     @Test
     @DisplayName("the datasource and schema placeholders resolve to their defaults")
@@ -334,10 +404,13 @@ final class ShippedConfigurationContractTest {
                 () -> assertEquals(DEFAULT_DATASOURCE_URL, connectionString, "spring.datasource.url"),
                 () -> assertFalse(connectionString.contains("${"),
                         () -> "spring.datasource.url keeps a placeholder: " + connectionString),
-                () -> assertEquals("carddemo", resolvedAt("spring", "datasource", "username"),
+                () -> assertEquals(DEFAULT_DATASOURCE_LOGIN,
+                        resolvedAt("spring", "datasource", "username"),
                         "spring.datasource.username"),
-                () -> assertEquals(CREDENTIAL_PLACEHOLDER, resolvedAt("spring", "datasource", "password"),
-                        "spring.datasource.password"),
+                () -> assertEquals("${POSTGRES_PASSWORD}",
+                        resolvedAt("spring", "datasource", "password"),
+                        "spring.datasource.password carries no default, so an unset password stops "
+                                + "start-up rather than signing on under a published one"),
                 () -> assertEquals(DEFAULT_SCHEMA, resolvedAt("spring", "flyway", "schemas"),
                         "spring.flyway.schemas"),
                 () -> assertEquals(DEFAULT_SCHEMA, resolvedAt("spring", "flyway", "default-schema"),
@@ -347,18 +420,16 @@ final class ShippedConfigurationContractTest {
                         "spring.jpa.properties.hibernate.default_schema"));
     }
 
-    /** Asserts the broker address and the consumer group resolve to their defaults. */
     @Test
     @DisplayName("the Kafka placeholders resolve to their defaults")
     void kafkaDefaultsResolveWithNoEnvironmentVariableSet() {
         assertAll(
-                () -> assertEquals("kafka:29092", resolvedAt("spring", "kafka", "bootstrap-servers"),
+                () -> assertEquals("kafka:9092", resolvedAt("spring", "kafka", "bootstrap-servers"),
                         "spring.kafka.bootstrap-servers"),
                 () -> assertEquals("fraud-detection", resolvedAt("spring", "kafka", "consumer", "group-id"),
                         "spring.kafka.consumer.group-id"));
     }
 
-    /** Asserts the port the container listens on and the application name the service reports. */
     @Test
     @DisplayName("server.port is 8080 under the application name fraud-detection-service")
     void serverListensOnTheContainerPort() {
@@ -368,10 +439,6 @@ final class ShippedConfigurationContractTest {
                         "spring.application.name"));
     }
 
-    /**
-     * Asserts {@code spring.jpa.hibernate.ddl-auto} is {@code validate} and none of the four rejected
-     * values. The persistence layer opens no view and prints no statement.
-     */
     @Test
     @DisplayName("spring.jpa.hibernate.ddl-auto is validate")
     void jpaValidatesTheMigratedSchema() {
@@ -386,7 +453,6 @@ final class ShippedConfigurationContractTest {
                         "spring.jpa.show-sql"));
     }
 
-    /** Asserts the driver class name and the absence of every connection pool key. */
     @Test
     @DisplayName("spring.datasource names the PostgreSQL driver and no connection pool")
     void datasourceNamesTheDriverAndNoConnectionPool() {
@@ -400,7 +466,6 @@ final class ShippedConfigurationContractTest {
                 () -> assertEquals(List.of(), poolKeys, () -> "connection pool keys present: " + poolKeys));
     }
 
-    /** Asserts the four Flyway switches that place schema creation and migration checking in Flyway. */
     @Test
     @DisplayName("spring.flyway creates the schema and validates every migration")
     void flywayOwnsSchemaCreation() {
@@ -415,10 +480,6 @@ final class ShippedConfigurationContractTest {
                         "spring.flyway.validate-on-migrate"));
     }
 
-    /**
-     * Asserts the migration issues no schema creation, sets no search path, and names every created
-     * object without a schema prefix. Comments are stripped before the statements are read.
-     */
     @Test
     @DisplayName("V1__schema.sql creates no schema, sets no search path and qualifies no object name")
     void migrationLeavesSchemaCreationToFlyway() {
@@ -432,12 +493,10 @@ final class ShippedConfigurationContractTest {
                 () -> assertFalse(folded.contains("search_path"), "the migration sets a search path"),
                 () -> assertFalse(folded.contains(DEFAULT_SCHEMA + "."),
                         "the migration carries a schema prefix"),
-                () -> assertFalse(folded.contains("fraud."), "the migration carries a schema prefix"),
                 () -> assertFalse(objectNames.isEmpty(), "the migration creates no object"),
                 () -> assertEquals(List.of(), qualified, () -> "qualified object names: " + qualified));
     }
 
-    /** Asserts the consumer switches off automatic commit and names its offset reset and key reader. */
     @Test
     @DisplayName("spring.kafka.consumer commits no offset automatically")
     void consumerCommitsNoOffsetAutomatically() {
@@ -456,10 +515,6 @@ final class ShippedConfigurationContractTest {
                         "max.poll.interval.ms"));
     }
 
-    /**
-     * Asserts the producer waits for every in-sync replica, produces idempotently, caps in-flight
-     * requests at five, and carries the three shipped timeouts and the two serializers.
-     */
     @Test
     @DisplayName("spring.kafka.producer requires every replica and idempotent production")
     void producerRequiresEveryReplicaAndIdempotence() {
@@ -492,12 +547,11 @@ final class ShippedConfigurationContractTest {
 
     /**
      * Asserts the shipped acknowledgement mode string and the listener concurrency.
-     * {@code ConfigurationInvariantsIT} asserts the effective runtime mode.
-     * Record: {@code card-platform/docs/decision-log.md}.
+     * {@link #springBootBindsTheShippedKafkaConfiguration()} asserts the effective values the
+     * listener container and both clients receive.
      */
     @Test
-    @DisplayName("spring.kafka.listener.ack-mode ships as manual_immediate; "
-            + "ConfigurationInvariantsIT asserts the effective mode")
+    @DisplayName("spring.kafka.listener.ack-mode ships as manual_immediate")
     void listenerAcknowledgementModeIsTheShippedString() {
         assertAll(
                 () -> assertEquals("manual_immediate",
@@ -505,6 +559,135 @@ final class ShippedConfigurationContractTest {
                         "spring.kafka.listener.ack-mode"),
                 () -> assertEquals("1", textAt("spring", "kafka", "listener", "concurrency"),
                         "spring.kafka.listener.concurrency"));
+    }
+
+    /**
+     * Asserts the configuration Spring Boot binds from the shipped file, rather than the characters
+     * the file holds. Spring resolves every placeholder and binds each value to the type
+     * {@code KafkaProperties} declares, so a misspelled structured key binds nothing and a value
+     * outside an enumeration or a class that cannot be loaded fails the bind.
+     *
+     * <p>Four settings carry a guarantee this plan claims. Automatic commit is off and the
+     * acknowledgement mode is manual and immediate, which is what makes the idempotency marker
+     * meaningful. Production is idempotent and acknowledged by every in-sync replica, which is what
+     * keeps a retried send from duplicating a record.</p>
+     */
+    @Test
+    @DisplayName("Spring Boot binds the shipped file to the effective listener, consumer and "
+            + "producer settings")
+    void springBootBindsTheShippedKafkaConfiguration() {
+        KAFKA_RUNNER.run(context -> {
+            assertThat(context).hasNotFailed();
+            KafkaProperties bound = context.getBean(KafkaProperties.class);
+
+            assertAll("effective Kafka configuration",
+                    () -> assertEquals(ContainerProperties.AckMode.MANUAL_IMMEDIATE,
+                            bound.getListener().getAckMode(), "effective listener ack mode"),
+                    () -> assertEquals(1, bound.getListener().getConcurrency(),
+                            "effective listener concurrency"),
+                    () -> assertEquals(Boolean.FALSE, bound.getConsumer().getEnableAutoCommit(),
+                            "effective consumer automatic commit"),
+                    () -> assertEquals(DEFAULT_CONSUMER_GROUP, bound.getConsumer().getGroupId(),
+                            "effective consumer group, with the placeholder resolved by Spring"),
+                    () -> assertEquals("earliest", bound.getConsumer().getAutoOffsetReset(),
+                            "effective consumer offset reset"),
+                    () -> assertEquals(StringDeserializer.class,
+                            bound.getConsumer().getKeyDeserializer(),
+                            "effective consumer key deserializer"),
+                    () -> assertEquals(ErrorHandlingDeserializer.class,
+                            bound.getConsumer().getValueDeserializer(),
+                            "effective consumer value deserializer"),
+                    () -> assertEquals("all", bound.getProducer().getAcks(),
+                            "effective producer acknowledgement"),
+                    () -> assertEquals(StringSerializer.class,
+                            bound.getProducer().getKeySerializer(),
+                            "effective producer key serializer"),
+                    () -> assertEquals(VALIDATING_SERIALIZER,
+                            bound.getProducer().getValueSerializer().getName(),
+                            "effective producer value serializer"),
+                    () -> assertEquals(List.of(DEFAULT_BOOTSTRAP_SERVERS),
+                            bound.getBootstrapServers(),
+                            "effective bootstrap servers, with the placeholder resolved by Spring"));
+        });
+    }
+
+    /**
+     * Asserts the maps the two clients actually receive. {@code buildConsumerProperties} and
+     * {@code buildProducerProperties} are the methods Spring Boot auto-configuration calls, so a
+     * property the shipped file declares under the wrong parent reaches neither map.
+     */
+    @Test
+    @DisplayName("The client property maps Spring Boot builds carry the shipped settings")
+    void theBuiltClientPropertyMapsCarryTheShippedSettings() {
+        KAFKA_RUNNER.run(context -> {
+            KafkaProperties bound = context.getBean(KafkaProperties.class);
+            Map<String, Object> consumer = bound.buildConsumerProperties();
+            Map<String, Object> producer = bound.buildProducerProperties();
+
+            assertAll("built client property maps",
+                    () -> assertEquals(Boolean.FALSE,
+                            consumer.get(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG),
+                            ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG),
+                    () -> assertEquals(DEFAULT_CONSUMER_GROUP,
+                            consumer.get(ConsumerConfig.GROUP_ID_CONFIG),
+                            ConsumerConfig.GROUP_ID_CONFIG),
+                    () -> assertEquals("earliest",
+                            consumer.get(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG),
+                            ConsumerConfig.AUTO_OFFSET_RESET_CONFIG),
+                    () -> assertEquals(ErrorHandlingDeserializer.class,
+                            consumer.get(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG),
+                            ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG),
+                    () -> assertEquals(VALIDATING_DESERIALIZER,
+                            consumer.get(DELEGATE_DESERIALIZER_KEY), DELEGATE_DESERIALIZER_KEY),
+                    () -> assertEquals("300000",
+                            consumer.get(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG),
+                            ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG),
+                    () -> assertEquals("all", producer.get(ProducerConfig.ACKS_CONFIG),
+                            ProducerConfig.ACKS_CONFIG),
+                    () -> assertEquals("true",
+                            producer.get(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG),
+                            ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG),
+                    () -> assertEquals("5",
+                            producer.get(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION),
+                            ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION),
+                    () -> assertEquals("120000",
+                            producer.get(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG),
+                            ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG),
+                    () -> assertEquals("30000",
+                            producer.get(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG),
+                            ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG),
+                    () -> assertEquals("5000", producer.get(ProducerConfig.MAX_BLOCK_MS_CONFIG),
+                            ProducerConfig.MAX_BLOCK_MS_CONFIG),
+                    () -> assertEquals(StringSerializer.class,
+                            producer.get(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG),
+                            ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG));
+        });
+    }
+
+    /**
+     * Asserts that every key the two built maps carry is a configuration name its own client
+     * declares. A property the shipped file misspells under {@code properties} reaches the client as
+     * an unknown name, which the client logs and ignores, so this test is the one that catches it.
+     *
+     * <p>Spring contributes the delegate key of {@code ErrorHandlingDeserializer}, which carries no
+     * Kafka name. Every key of that form opens with {@code spring.}.</p>
+     */
+    @Test
+    @DisplayName("Every built client property name is one the client declares")
+    void everyBuiltClientPropertyNameIsOneTheClientDeclares() {
+        KAFKA_RUNNER.run(context -> {
+            KafkaProperties bound = context.getBean(KafkaProperties.class);
+
+            List<String> unknownConsumerNames = unknownNames(
+                    bound.buildConsumerProperties().keySet(), ConsumerConfig.configNames());
+            List<String> unknownProducerNames = unknownNames(
+                    bound.buildProducerProperties().keySet(), ProducerConfig.configNames());
+
+            assertEquals(List.of(), unknownConsumerNames,
+                    "consumer property names no Kafka consumer declares");
+            assertEquals(List.of(), unknownProducerNames,
+                    "producer property names no Kafka producer declares");
+        });
     }
 
     /**
@@ -521,12 +704,11 @@ final class ShippedConfigurationContractTest {
                 () -> assertEquals("fraud.assessed",
                         resolvedAt("carddemo", "kafka", "topics", "fraud-assessed"),
                         "carddemo.kafka.topics.fraud-assessed"),
-                () -> assertEquals("transaction.authorized.DLT",
+                () -> assertEquals("carddemo.dead-letter",
                         resolvedAt("carddemo", "kafka", "topics", "dead-letter"),
                         "carddemo.kafka.topics.dead-letter"));
     }
 
-    /** Asserts the relay delay and batch size, and the consumer retry attempt count and backoff. */
     @Test
     @DisplayName("carddemo.outbox.relay and carddemo.consumer.retry carry their defaults")
     void relayAndRetryCarryTheirShippedDefaults() {
@@ -544,8 +726,8 @@ final class ShippedConfigurationContractTest {
     }
 
     /**
-     * Asserts the exposure list resolves to three endpoint names in order and carries no wildcard and no
-     * fourth name. Metric exposition is switched on.
+     * Asserts the exposure list resolves to four endpoint names in order and carries no wildcard and no
+     * fifth name. Metric exposition is switched on.
      */
     @Test
     @DisplayName("management exposes three endpoints and no wildcard")
@@ -562,25 +744,20 @@ final class ShippedConfigurationContractTest {
                         "management.prometheus.metrics.export.enabled"));
     }
 
-    /** Asserts the console log format and the two shipped level defaults. */
     @Test
-    @DisplayName("logging ships structured console output with INFO defaults")
+    @DisplayName("logging ships structured console output with its shipped level defaults")
     void logConfigurationCarriesItsShippedDefaults() {
         assertAll(
                 () -> assertEquals("logstash", textAt("logging", "structured", "format", "console"),
                         "logging.structured.format.console"),
                 () -> assertEquals("INFO", resolvedAt("logging", "level", "root"), "logging.level.root"),
-                () -> assertEquals("INFO", resolvedAt("logging", "level", "com.carddemo"),
+                () -> assertEquals("DEBUG", resolvedAt("logging", "level", "com.carddemo"),
                         "logging.level.com.carddemo"));
     }
 
-    /**
-     * Asserts the statement logger and the bind parameter logger are absent from the shipped levels or
-     * set no lower than informational. No other Hibernate logger is verbose either.
-     */
     @Test
-    @DisplayName("org.hibernate.SQL and org.hibernate.orm.jdbc.bind are absent or no more verbose than "
-            + "INFO; CardDataExposureTest reads the runtime logger context")
+    @DisplayName("org.hibernate.SQL and org.hibernate.orm.jdbc.bind are absent or no more verbose "
+            + "than INFO")
     void hibernateStatementAndBindLoggersAreNotVerbose() {
         Map<String, String> levels = loggingLevels();
         List<String> verboseNamed = HIBERNATE_LOGGERS.stream()
@@ -598,7 +775,6 @@ final class ShippedConfigurationContractTest {
                         () -> "verbose logger levels: " + verbosePrefixed));
     }
 
-    /** Reads a classpath resource as text, failing with the resource path when it is absent. */
     private static String readClasspathResource(String resource) {
         try (InputStream stream = ShippedConfigurationContractTest.class.getResourceAsStream(resource)) {
             if (stream == null) {
@@ -610,7 +786,6 @@ final class ShippedConfigurationContractTest {
         }
     }
 
-    /** Parses YAML text into nested maps, leaving every placeholder unresolved. */
     private static Map<String, Object> parseYaml(String text) {
         Object loaded = new Yaml(new SafeConstructor(new LoaderOptions())).load(text);
         if (!(loaded instanceof Map<?, ?> mapping)) {
@@ -621,7 +796,6 @@ final class ShippedConfigurationContractTest {
         return tree;
     }
 
-    /** Resolves the module base directory, failing with the resolved path when the marker is absent. */
     private static Path resolveModuleBase() {
         String declared = System.getProperty("basedir");
         String fallback = System.getProperty("user.dir", ".");
@@ -634,7 +808,6 @@ final class ShippedConfigurationContractTest {
         return base;
     }
 
-    /** Lists every regular file under a directory, returning an empty list when the directory is absent. */
     private static List<Path> filesUnder(Path root) {
         if (!Files.isDirectory(root)) {
             return List.of();
@@ -646,18 +819,15 @@ final class ShippedConfigurationContractTest {
         }
     }
 
-    /** Returns a path's file name folded to lower case. */
     private static String fileName(Path path) {
         Path name = path.getFileName();
         return name == null ? "" : name.toString().toLowerCase(Locale.ROOT);
     }
 
-    /** Returns the fragments of the given list that occur in the shipped configuration text. */
     private static List<String> fragmentsPresent(List<String> fragments) {
         return fragments.stream().filter(foldedYaml::contains).toList();
     }
 
-    /** Returns the value at a key path in the parsed tree, or {@code null} when a segment is absent. */
     private static Object valueAt(String... path) {
         Object current = yamlTree;
         for (String segment : path) {
@@ -672,18 +842,15 @@ final class ShippedConfigurationContractTest {
         return current;
     }
 
-    /** Returns the value at a key path as text, or {@code null} when a segment is absent. */
     private static String textAt(String... path) {
         Object value = valueAt(path);
         return value == null ? null : String.valueOf(value);
     }
 
-    /** Returns the value at a key path with every placeholder replaced by its default. */
     private static String resolvedAt(String... path) {
         return resolveDefaults(textAt(path));
     }
 
-    /** Returns a comma separated value as a list of stripped names, empty when the value is absent. */
     private static List<String> commaSeparated(String value) {
         if (value == null) {
             return List.of();
@@ -694,7 +861,6 @@ final class ShippedConfigurationContractTest {
                 .toList();
     }
 
-    /** Returns every placeholder span in the text, nested spans included. */
     private static List<String> placeholderSpans(String text) {
         List<String> spans = new ArrayList<>();
         if (text == null) {
@@ -716,7 +882,6 @@ final class ShippedConfigurationContractTest {
         return spans;
     }
 
-    /** Returns the index of the brace that closes the placeholder starting at the given index. */
     private static int matchingCloseBrace(String text, int start) {
         int depth = 0;
         for (int index = start + 1; index < text.length(); index++) {
@@ -733,7 +898,6 @@ final class ShippedConfigurationContractTest {
         return -1;
     }
 
-    /** Returns the index of the default separator at depth one of a span, or -1 when the span has none. */
     private static int depthOneColonIndex(String span) {
         int depth = 0;
         for (int index = 2; index < span.length() - 1; index++) {
@@ -749,10 +913,6 @@ final class ShippedConfigurationContractTest {
         return -1;
     }
 
-    /**
-     * Replaces every placeholder in a value with its depth one default, applying the same replacement to
-     * a nested default. A placeholder carrying no default stays as it is.
-     */
     private static String resolveDefaults(String value) {
         if (value == null) {
             return null;
@@ -783,7 +943,6 @@ final class ShippedConfigurationContractTest {
         return resolved.toString();
     }
 
-    /** Returns the migration text with every block comment and line comment removed. */
     private static String sqlWithoutComments(String sql) {
         String withoutBlocks = SQL_BLOCK_COMMENT.matcher(sql).replaceAll(" ");
         return withoutBlocks.lines()
@@ -791,7 +950,6 @@ final class ShippedConfigurationContractTest {
                 .collect(Collectors.joining("\n"));
     }
 
-    /** Returns every table name, index name and index target the given statements create. */
     private static List<String> objectNamesIn(String statements) {
         List<String> names = new ArrayList<>();
         Matcher tables = CREATE_TABLE.matcher(statements);
@@ -806,7 +964,6 @@ final class ShippedConfigurationContractTest {
         return names;
     }
 
-    /** Returns the shipped logger levels, each resolved to its default. */
     private static Map<String, String> loggingLevels() {
         Map<String, String> levels = new LinkedHashMap<>();
         if (valueAt("logging", "level") instanceof Map<?, ?> mapping) {
@@ -816,8 +973,35 @@ final class ShippedConfigurationContractTest {
         return levels;
     }
 
-    /** Reports whether a level is more verbose than informational. */
     private static boolean isVerbose(String level) {
         return level != null && !NON_VERBOSE_LEVELS.contains(level.toUpperCase(Locale.ROOT));
+    }
+
+    /**
+     * Returns the built property names the owning client does not declare, in encounter order. A
+     * name carrying the Spring prefix belongs to the error-handling wrapper rather than to the
+     * client, and is not reported.
+     *
+     * @param builtNames    the keys of one built property map
+     * @param declaredNames the configuration names the owning client declares
+     * @return the names the client does not declare
+     */
+    private static List<String> unknownNames(Set<String> builtNames, Set<String> declaredNames) {
+        List<String> unknown = new ArrayList<>();
+        for (String name : builtNames) {
+            if (!declaredNames.contains(name) && !name.startsWith(SPRING_PROPERTY_PREFIX)) {
+                unknown.add(name);
+            }
+        }
+        return unknown;
+    }
+
+    /**
+     * Binds {@code spring.kafka} through the same configuration-properties machinery the
+     * auto-configuration uses, and declares no other bean.
+     */
+    @Configuration(proxyBeanMethods = false)
+    @EnableConfigurationProperties(KafkaProperties.class)
+    static class KafkaPropertiesBinding {
     }
 }

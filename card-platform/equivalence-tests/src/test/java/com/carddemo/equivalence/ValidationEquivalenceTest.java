@@ -3,14 +3,23 @@ package com.carddemo.equivalence;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.account.domain.validation.CreditScoreRangeValidator;
 import com.carddemo.account.domain.validation.EditResult;
+import com.carddemo.card.api.dto.CardDetailResponse;
+import com.carddemo.card.api.dto.CardSummary;
 import com.carddemo.card.api.dto.CardValidationMessages;
+import com.carddemo.card.messaging.CardUpdated;
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
+import com.carddemo.events.EventEnvelope;
+import java.lang.reflect.RecordComponent;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -33,8 +42,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * score. Paragraph {@code 1275-EDIT-FICO-SCORE} at {@code app/cbl/COACTUPC.cbl:L2514-L2532} builds
  * the one failing text from the label at {@code app/cbl/COACTUPC.cbl:L1545}.</p>
  *
- * <p>Every comparison is exact string equality and no failure text carries a fixture value.
- * {@code card-platform/docs/business-rule-flags.md} registers the three account-number texts.</p>
+ * <p>Every comparison is exact string equality and no failure text carries a fixture value.</p>
  */
 class ValidationEquivalenceTest {
 
@@ -56,6 +64,20 @@ class ValidationEquivalenceTest {
      * other line in the band repeats.
      */
     private static final int BAND_REPEATED_TEXT_COUNT = 1;
+
+    /**
+     * Condition names the band declares, one per source line from L190 through L202. The count is
+     * written here rather than read from {@link #BAND_TEXTS_IN_SOURCE_ORDER}, so an eighth entry
+     * added to that list fails rather than moving the denominator with it.
+     */
+    private static final int BAND_CONDITION_NAME_COUNT = 7;
+
+    /**
+     * Distinct texts the seven condition names carry. Written here for the same reason: the count
+     * is a fact about {@code app/cbl/COCRDUPC.cbl:L189-L202}, not about the size of a list in this
+     * file.
+     */
+    private static final int BAND_DISTINCT_TEXT_COUNT = 6;
 
     /**
      * The character {@code app/cbl/COCRDUPC.cbl:L188} carries inside its quotes. No text of the
@@ -145,6 +167,44 @@ class ValidationEquivalenceTest {
      */
     private static final int FIRST_RECORD_ORDINAL = 1;
 
+    /**
+     * A sixteen-digit card number in the shape {@code CARD-NUM PIC X(16)} declares at
+     * {@code app/cpy/CVACT02Y.cpy:L5}. It is a shape and not a fixture row, so nothing real is
+     * masked here, and it is the value shown not to match the masked pattern.
+     */
+    private static final String SHAPED_CARD_NUMBER = "9999888877776666";
+
+    /**
+     * Components of the card response surface that reach a card number under a name that does not
+     * itself say masked. {@code CardSummary.cardNumber} keeps the source field name of
+     * {@code CARD-NUM} at {@code app/cpy/CVACT02Y.cpy:L5}, and the value it carries is measured
+     * against the masked pattern for every record of {@code app/data/ASCII/carddata.txt}.
+     */
+    private static final Set<String> MASKED_BY_CONTRACT = Set.of("CardSummary.cardNumber");
+
+    /**
+     * The number of components {@code CardUpdated.toString()} replaces with
+     * {@link EventEnvelope#WITHHELD}: the aggregate identifier, the account identifier, the masked
+     * card number, the embossed name, the expiry date and the active status.
+     *
+     * <p>The rendering prints the event identifier and withholds everything else, so this count is
+     * the guarantee that rendering carries. A component added to the record without a withholding
+     * entry in the rendering moves this count and fails the test below.
+     */
+    private static final int WITHHELD_RENDERED_COMPONENTS = 6;
+
+    /**
+     * Stands in for the event identifier while a rendering is measured for a card value.
+     *
+     * <p>{@code CardUpdated.toString()} prints {@code eventId}, a random {@link java.util.UUID}
+     * whose hexadecimal digits are drawn from {@code 0-9a-f}. A three-digit
+     * {@code CARD-CVV-CD} at {@code app/cpy/CVACT02Y.cpy:L7} is therefore a substring of roughly one
+     * rendering in every one hundred and thirty by coincidence alone, which a bare containment check
+     * over the whole rendering reports as a leak. Eliding the identifier first leaves the check
+     * measuring the components this contract is about.
+     */
+    private static final String ELIDED_EVENT_IDENTIFIER = "<eventId>";
+
     /** Records of {@code app/data/ASCII/custdata.txt} whose score sits below the lower bound. */
     private static final int CUSTDATA_SCORES_BELOW_LOWER_BOUND = 21;
 
@@ -153,12 +213,6 @@ class ValidationEquivalenceTest {
 
     /** Records of {@code app/data/ASCII/custdata.txt} whose score sits above the upper bound. */
     private static final int CUSTDATA_SCORES_ABOVE_UPPER_BOUND = 0;
-
-    /**
-     * Component label {@link CopybookRecordParser.CardRecord} renders ahead of
-     * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}.
-     */
-    private static final String VERIFICATION_VALUE_LABEL = "cardVerificationValue=";
 
     /**
      * Fixed-width zero-padded form of {@code CUST-FICO-CREDIT-SCORE PIC 9(03)} at
@@ -194,35 +248,20 @@ class ValidationEquivalenceTest {
     }
 
     /**
-     * Reports whether a text holds at least one digit.
+     * Counts the non-overlapping occurrences of one marker in one rendering.
      *
-     * @param candidate the text to scan
-     * @return true when one character of {@code candidate} belongs to the digit class
+     * @param rendering the text to measure
+     * @param marker    the marker to count, never empty
+     * @return the number of times {@code marker} occurs in {@code rendering}
      */
-    private static boolean holdsADigit(String candidate) {
-        for (int position = 0; position < candidate.length(); position++) {
-            if (Character.isDigit(candidate.charAt(position))) {
-                return true;
-            }
-        }
-        return false;
-    }
+    private static int countOccurrences(String rendering, String marker) {
+        int occurrences = 0;
 
-    /**
-     * Reads the characters a card rendering places after
-     * {@link #VERIFICATION_VALUE_LABEL}, at the width of the field they stand for.
-     *
-     * @param rendering one {@link CopybookRecordParser.CardRecord} rendering
-     * @return the characters standing in for {@code CARD-CVV-CD}
-     */
-    private static String renderedVerificationValue(String rendering) {
-        int labelPosition = rendering.indexOf(VERIFICATION_VALUE_LABEL);
-        assertTrue(labelPosition >= 0, "a CardRecord rendering carried no '"
-                + VERIFICATION_VALUE_LABEL + "' label, so CARD-CVV-CD at "
-                + "app/cpy/CVACT02Y.cpy:L7 could not be located in it");
-        int valuePosition = labelPosition + VERIFICATION_VALUE_LABEL.length();
-        return rendering.substring(valuePosition,
-                valuePosition + PicClause.CARD_CVV_CD_WIDTH);
+        for (int from = rendering.indexOf(marker); from >= 0;
+                from = rendering.indexOf(marker, from + marker.length())) {
+            occurrences++;
+        }
+        return occurrences;
     }
 
     /**
@@ -364,18 +403,38 @@ class ValidationEquivalenceTest {
         }
 
         /**
-         * Derives the count of distinct band texts from the seven condition names and the one
-         * repeat at L192.
+         * Holds the two counts of the band independently. Seven condition names carry six distinct
+         * texts, because L192 repeats L190. Both counts are written as literals, so an eighth entry
+         * in the list fails this test rather than moving the expected value with it.
          */
         @Test
-        @DisplayName("the COCRDUPC L189-L202 band carries six distinct texts")
-        void theBandCarriesSixDistinctTexts() {
+        @DisplayName("the COCRDUPC L189-L202 band declares seven condition names carrying six "
+                + "distinct texts")
+        void theBandDeclaresSevenConditionNamesCarryingSixDistinctTexts() {
             Set<String> distinctTexts = new LinkedHashSet<>(BAND_TEXTS_IN_SOURCE_ORDER);
-            assertEquals(BAND_TEXTS_IN_SOURCE_ORDER.size() - BAND_REPEATED_TEXT_COUNT,
-                    distinctTexts.size(),
+
+            assertEquals(BAND_CONDITION_NAME_COUNT, BAND_TEXTS_IN_SOURCE_ORDER.size(),
+                    "the account-and-card band of app/cbl/COCRDUPC.cbl:L189-L202 declares one "
+                            + "condition name per line from L190 through L202");
+            assertEquals(BAND_DISTINCT_TEXT_COUNT, distinctTexts.size(),
                     "the account-and-card band of app/cbl/COCRDUPC.cbl:L189-L202 stopped carrying "
-                            + "the distinct-text count its seven condition names and its one "
-                            + "repeat at L192 give");
+                            + "the distinct-text count its seven condition names give");
+            assertEquals(BAND_REPEATED_TEXT_COUNT,
+                    BAND_CONDITION_NAME_COUNT - BAND_DISTINCT_TEXT_COUNT,
+                    "L192 is the one line of the band whose text repeats an earlier line");
+            assertEquals(BAND_TEXTS_IN_SOURCE_ORDER.get(0), BAND_TEXTS_IN_SOURCE_ORDER.get(1),
+                    "app/cbl/COCRDUPC.cbl:L192 repeats the characters of L190");
+
+            // The exact expected set, typed here rather than read back from the list above.
+            assertEquals(Set.of(
+                            "Account number must be a non zero 11 digit number",
+                            "Card number if supplied must be a 16 digit number",
+                            "Card Active Status must be Y or N",
+                            "Card expiry month must be between 1 and 12",
+                            "Invalid card expiry year",
+                            "Did not find this account in cards database"),
+                    distinctTexts,
+                    "the six distinct texts of app/cbl/COCRDUPC.cbl:L189-L202 changed");
         }
     }
 
@@ -499,10 +558,6 @@ class ValidationEquivalenceTest {
                             + "same condition name at app/cbl/COCRDUPC.cbl:L178");
         }
 
-        /**
-         * Holds the three texts the two programs carry for one concept mutually distinct. One text
-         * sits in the band and two sit in the account programs.
-         */
         @Test
         @DisplayName("COCRDUPC L190, COACTUPC L1807-L1808 and COACTUPC L483-L484 stay distinct")
         void theThreeAccountNumberTextsStayDistinct() {
@@ -539,7 +594,6 @@ class ValidationEquivalenceTest {
                     + "app/cbl/COACTUPC.cbl:L2515");
         }
 
-        /** Holds the lower bound inside the range. */
         @Test
         @DisplayName("the lower bound of COACTUPC L848 passes")
         void theLowerBoundPasses() {
@@ -550,7 +604,6 @@ class ValidationEquivalenceTest {
                     + "inclusive");
         }
 
-        /** Holds the upper bound inside the range. */
         @Test
         @DisplayName("the upper bound of COACTUPC L849 passes")
         void theUpperBoundPasses() {
@@ -639,7 +692,6 @@ class ValidationEquivalenceTest {
                             + "app/cbl/COACTUPC.cbl:L2523");
         }
 
-        /** Holds the failing verdict reporting that its slot holds text. */
         @Test
         @DisplayName("a failing score reports that the message slot holds text")
         void aFailingScoreReportsThatTheSlotHoldsText() {
@@ -650,7 +702,6 @@ class ValidationEquivalenceTest {
                     + "app/cbl/COACTUPC.cbl:L480 names");
         }
 
-        /** Holds a passing verdict free of text, which leaves the slot open for a later edit. */
         @Test
         @DisplayName("a passing score leaves the message slot open")
         void aPassingScoreLeavesTheSlotOpen() {
@@ -663,7 +714,6 @@ class ValidationEquivalenceTest {
                     + "the guard at app/cbl/COACTUPC.cbl:L2520");
         }
 
-        /** Holds the assembled text inside the width of the slot it is written into. */
         @Test
         @DisplayName("the assembled text fits WS-RETURN-MSG PIC X(75) at COACTUPC L479")
         void theAssembledTextFitsTheMessageSlot() {
@@ -749,33 +799,162 @@ class ValidationEquivalenceTest {
     }
 
     /**
-     * Holds {@code CARD-CVV-CD} at {@code app/cpy/CVACT02Y.cpy:L7} out of every rendering the card
-     * fixture produces.
+     * Holds {@code CARD-CVV-CD} at {@code app/cpy/CVACT02Y.cpy:L7} and the full Primary Account
+     * Number (PAN) out of every production output boundary the card service ships.
+     *
+     * <p>Each test below starts from the full values of {@code app/data/ASCII/carddata.txt} and
+     * drives them through production code: the masking step of
+     * {@code CardUpdated.ofUnmaskedCardNumber}, the masked form the response records carry, and the
+     * component sets those records declare. A rendering produced by a helper of this module proves
+     * nothing about what production emits, so no test here reads one.</p>
      */
     @Nested
-    @DisplayName("carddata.txt renderings at CVACT02Y L4-L11")
+    @DisplayName("carddata.txt through the production output boundaries of the card service")
     class CardFixtureRendering {
 
-        /** Holds every rendered verification value away from the value the record carries. */
+        /**
+         * Holds the published event away from both card values. The event is built by the production
+         * factory, from the full card number the fixture carries.
+         *
+         * <p>Three properties are measured for every record. The masking step returns neither the
+         * full card number nor anything outside
+         * {@link CardUpdated#MASKED_CARD_NUMBER_PATTERN}. The rendering withholds every one of its
+         * {@link #WITHHELD_RENDERED_COMPONENTS} payload components. And neither
+         * {@code CARD-CVV-CD} nor {@code CARD-NUM} reaches that rendering or the masked number the
+         * event carries. The event identifier is elided first, for the reason
+         * {@link #ELIDED_EVENT_IDENTIFIER} records.</p>
+         */
         @Test
-        @DisplayName("no carddata.txt rendering carries CARD-CVV-CD at CVACT02Y L7")
-        void noRenderingCarriesItsVerificationValue() {
+        @DisplayName("no published CardUpdated carries the full PAN or CARD-CVV-CD")
+        void noPublishedEventCarriesTheFullPanOrTheVerificationValue() {
             List<CopybookRecordParser.CardRecord> cards = CardDemoFixtureLoader.loadCards();
             assertEquals(PicClause.CARDDATA_FIXTURE_RECORD_COUNT, cards.size(),
                     "app/data/ASCII/carddata.txt stopped holding the record count PicClause "
                             + "publishes");
             int ordinal = FIRST_RECORD_ORDINAL;
             for (CopybookRecordParser.CardRecord card : cards) {
-                String rendered = renderedVerificationValue(card.toString());
-                assertFalse(rendered.equals(card.cardVerificationValue()),
-                        "CARD-CVV-CD at app/cpy/CVACT02Y.cpy:L7 reached the rendering of "
+                CardUpdated published = CardUpdated.ofUnmaskedCardNumber(
+                        card.cardNumber(), card.accountId(), card.embossedName(),
+                        card.expirationDate(), card.activeStatus());
+
+                assertFalse(published.maskedCardNumber().equals(card.cardNumber()),
+                        "the masking step of CardUpdated.ofUnmaskedCardNumber returned the "
+                                + "full CARD-NUM at app/cpy/CVACT02Y.cpy:L5 of "
                                 + "app/data/ASCII/carddata.txt record " + ordinal);
-                assertFalse(holdsADigit(rendered),
-                        "the characters standing in for CARD-CVV-CD at app/cpy/CVACT02Y.cpy:L7 in "
-                                + "app/data/ASCII/carddata.txt record " + ordinal
-                                + " now hold a digit");
+                assertTrue(published.maskedCardNumber()
+                                .matches(CardUpdated.MASKED_CARD_NUMBER_PATTERN),
+                        "the masked card number of app/data/ASCII/carddata.txt record " + ordinal
+                                + " stopped matching the pattern CardUpdated publishes");
+                String rendered = published.toString()
+                        .replace(published.eventId().toString(), ELIDED_EVENT_IDENTIFIER);
+
+                assertEquals(WITHHELD_RENDERED_COMPONENTS,
+                        countOccurrences(rendered, EventEnvelope.WITHHELD),
+                        "the rendering of the published event of app/data/ASCII/carddata.txt "
+                                + "record " + ordinal + " stopped withholding every payload "
+                                + "component");
+                assertFalse(rendered.contains(card.cardVerificationValue()),
+                        "CARD-CVV-CD at app/cpy/CVACT02Y.cpy:L7 reached the published event of "
+                                + "app/data/ASCII/carddata.txt record " + ordinal);
+                assertFalse(rendered.contains(card.cardNumber()),
+                        "CARD-NUM at app/cpy/CVACT02Y.cpy:L5 reached the published event of "
+                                + "app/data/ASCII/carddata.txt record " + ordinal);
+                assertFalse(published.maskedCardNumber().contains(card.cardVerificationValue()),
+                        "CARD-CVV-CD at app/cpy/CVACT02Y.cpy:L7 reached the masked card number of "
+                                + "app/data/ASCII/carddata.txt record " + ordinal);
                 ordinal++;
             }
+        }
+
+        /**
+         * Holds the response and event records away from both card values by construction. No
+         * component of any of the three reaches a verification value, and every component that
+         * reaches a card number is either named for the masked form or is one of the components
+         * listed in {@link #MASKED_BY_CONTRACT}, whose carried value the test below measures against
+         * the masked pattern for every record of the fixture.
+         */
+        @Test
+        @DisplayName("no card response record declares a verification value or an unmasked number")
+        void noCardResponseRecordDeclaresACardSecret() {
+            for (Class<?> boundary : List.of(CardDetailResponse.class, CardSummary.class,
+                    CardUpdated.class)) {
+                List<RecordComponent> components =
+                        new ArrayList<>(List.of(boundary.getRecordComponents()));
+
+                assertFalse(components.isEmpty(),
+                        boundary.getSimpleName() + " declares no component");
+                for (RecordComponent component : components) {
+                    String folded = component.getName().toLowerCase(Locale.ROOT);
+
+                    assertFalse(folded.contains("cvv") || folded.contains("verification"),
+                            boundary.getSimpleName() + " declares the component "
+                                    + component.getName()
+                                    + ", which reaches CARD-CVV-CD at app/cpy/CVACT02Y.cpy:L7");
+
+                    if (folded.contains("cardnumber") || folded.equals("pan")) {
+                        boolean maskedByName = folded.startsWith("masked");
+                        boolean maskedByContract = MASKED_BY_CONTRACT.contains(
+                                boundary.getSimpleName() + "." + component.getName());
+
+                        assertTrue(maskedByName || maskedByContract,
+                                boundary.getSimpleName() + " declares the component "
+                                        + component.getName() + " as "
+                                        + component.getType().getSimpleName()
+                                        + ", which can carry an unmasked CARD-NUM at "
+                                        + "app/cpy/CVACT02Y.cpy:L5");
+                    }
+                }
+            }
+
+            // Both cases are backed by the pattern CardUpdated publishes, and an unmasked
+            // sixteen-character number fails that pattern.
+            assertFalse(SHAPED_CARD_NUMBER.matches(CardUpdated.MASKED_CARD_NUMBER_PATTERN),
+                    "the pattern CardUpdated publishes accepted an unmasked card number");
+            assertTrue(PanMasker.maskCardNumber(SHAPED_CARD_NUMBER)
+                            .matches(CardUpdated.MASKED_CARD_NUMBER_PATTERN),
+                    "the masking step produced a value the CardUpdated pattern refuses");
+        }
+
+        /**
+         * Holds the two card-number slots of the response surface against the full card numbers of
+         * the fixture. Each carried value keeps the last four characters, replaces the other twelve,
+         * and matches the pattern {@link CardUpdated} publishes. The unmasked shape is shown not to
+         * match that pattern, which is what makes the assertions above mean something.
+         */
+        @Test
+        @DisplayName("every response slot that carries a carddata.txt number carries the masked "
+                + "form and never the full one")
+        void everyResponseSlotCarriesTheMaskedFormAndNeverTheFullNumber() {
+            int ordinal = FIRST_RECORD_ORDINAL;
+            for (CopybookRecordParser.CardRecord card : CardDemoFixtureLoader.loadCards()) {
+                String masked = PanMasker.maskCardNumber(card.cardNumber());
+                String lastFour = card.cardNumber().substring(
+                        PanMasker.CARD_NUMBER_LENGTH - PanMasker.VISIBLE_DIGIT_COUNT);
+                List<String> carriedValues = List.of(
+                        new CardSummary(masked, card.accountId(), card.activeStatus()).cardNumber(),
+                        new CardDetailResponse(masked, card.accountId(), card.embossedName(), null,
+                                card.activeStatus()).maskedCardNumber());
+
+                for (String carried : carriedValues) {
+                    assertEquals(CardUpdated.MASKED_CARD_NUMBER_LENGTH, carried.length(),
+                            "the masked form of app/data/ASCII/carddata.txt record " + ordinal
+                                    + " stopped holding the width CardUpdated publishes");
+                    assertTrue(carried.endsWith(lastFour),
+                            "the masked form of app/data/ASCII/carddata.txt record " + ordinal
+                                    + " stopped keeping the last four characters");
+                    assertNotEquals(card.cardNumber(), carried,
+                            "the masked form of app/data/ASCII/carddata.txt record " + ordinal
+                                    + " equals the full CARD-NUM at app/cpy/CVACT02Y.cpy:L5");
+                    assertTrue(carried.matches(CardUpdated.MASKED_CARD_NUMBER_PATTERN),
+                            "the masked form of app/data/ASCII/carddata.txt record " + ordinal
+                                    + " stopped matching the pattern CardUpdated publishes");
+                }
+                ordinal++;
+            }
+
+            assertFalse(SHAPED_CARD_NUMBER.matches(CardUpdated.MASKED_CARD_NUMBER_PATTERN),
+                    "the pattern CardUpdated publishes accepted an unmasked "
+                            + "sixteen-character number");
         }
 
         /**

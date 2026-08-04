@@ -1,0 +1,27 @@
+# card-platform — paths git must never track.
+#
+# Every pattern below is anchored with a leading slash or scoped to this
+# directory, so nothing outside card-platform/ is affected.
+#
+# Verify a rule with:
+#     git check-ignore -v card-platform/.env
+#     git check-ignore -v card-platform/deploy/k8s/31-secret.yaml
+
+# The environment file each developer copies from .env.example. It carries
+# POSTGRES_PASSWORD, which nothing else in this repository supplies.
+/.env
+/.env.*
+!/.env.example
+
+# A rendered Kubernetes Secret. 31-secret.example.yaml is the template and stays
+# tracked; a copy edited with a real value must not follow it into history.
+/deploy/k8s/31-secret.yaml
+/deploy/k8s/*-secret.yaml
+!/deploy/k8s/31-secret.example.yaml
+
+# Maven build output. Every module writes one of these.
+target/
+
+# Editor and operating-system noise.
+*.swp
+.DS_Store

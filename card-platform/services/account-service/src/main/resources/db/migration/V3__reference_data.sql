@@ -1,10 +1,5 @@
 -- Account service reference data, third of three migrations. Every value below is a literal of
 -- app/cpy/CSLKPCDY.cpy, in copybook order. V1__schema.sql declares the three tables.
---
--- Source-to-target field mapping:
---   card-platform/docs/traceability-matrix.md
--- Design decisions:
---   card-platform/docs/decision-log.md
 
 -- us_phone_area_code carries one row per distinct area code. band records which condition name
 -- of app/cpy/CSLKPCDY.cpy declares the code. The two bands are disjoint, and their union is the

@@ -1,5 +1,7 @@
 # card-platform notification-service — the runtime contract for one container.
 #
+# Rationale for the settings below: card-platform/docs/decision-log.md (planned)
+#
 # Values that change between environments read a variable and fall back to a
 # working demo default, so the service starts with no .env file present.
 # docker-compose.yml overrides the values it injects, and
@@ -10,14 +12,27 @@ spring:
   application:
     name: notification-service
 
-  # PostgreSQL. One private database holds one schema, and no other service
-  # reads either. The password default is a demo credential for a disposable
-  # local container.
+  # PostgreSQL. One shared database named carddemo holds one private schema per
+  # service, and no service reads another schema. The credentials below are demo
+  # values for a disposable local container.
   datasource:
+    # sslmode=require encrypts this connection and stops the driver from falling back to
+    # cleartext. It does not verify the certificate, because a direct run has no
+    # certificate authority to verify against; the compose stack overrides this whole URL
+    # with the same mode against a server that presents a certificate it generated for
+    # itself, and deploy/k8s/30-configmap.yaml overrides it with verify-full, because a
+    # cluster has an authority and a network path worth protecting.
     url: "${SPRING_DATASOURCE_URL:jdbc:postgresql://${POSTGRES_HOST:postgres}:\
       ${POSTGRES_PORT:5432}/${NOTIFICATION_DB_NAME:carddemo_notification}\
-      ?currentSchema=${NOTIFICATION_DB_SCHEMA:notification_service}}"
-    username: "${SPRING_DATASOURCE_USERNAME:${POSTGRES_USER:carddemo}}"
+      ?currentSchema=${NOTIFICATION_DB_SCHEMA:notification_service}\
+      &sslmode=require}"
+    # This service's own login, which owns one database on the compose path and one schema on
+    # the cluster path. The superuser is deliberately not the default here: a shared login
+    # would mean the private schema this service claims to own was a convention rather than a
+    # control, and a compromise of any service could read and alter every other service's
+    # card, customer, balance, fraud and event data. A login name is not a credential and
+    # carries a default; the password below carries none.
+    username: "${SPRING_DATASOURCE_USERNAME:${NOTIFICATION_DB_USER:carddemo_notification_svc}}"
     # No fallback. An unset password stops start-up rather than signing on under a
     # password this repository publishes. docker-compose.yml sets
     # SPRING_DATASOURCE_PASSWORD; a direct run sets POSTGRES_PASSWORD.
@@ -25,8 +40,8 @@ spring:
     driver-class-name: org.postgresql.Driver
 
   # Flyway creates the schema on first start, owns every table in it, and
-  # applies the migrations under db/migration. docker-compose.yml creates the
-  # database and defines no schema object.
+  # applies the migrations under db/migration. docker-compose.yml defines no
+  # schema object.
   flyway:
     enabled: true
     create-schemas: true
@@ -48,73 +63,154 @@ spring:
         default_schema: "${SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA:${NOTIFICATION_DB_SCHEMA:notification_service}}"
         auto_quote_keyword: true
 
-  # Kafka. A service container reaches the broker on kafka:29092 inside the
+  # Kafka. A service container reaches the broker on kafka:9092 inside the
   # compose network. Host tooling uses the published port named in
   # .env.example.
   kafka:
-    bootstrap-servers: "${SPRING_KAFKA_BOOTSTRAP_SERVERS:${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}}"
+    bootstrap-servers: "${SPRING_KAFKA_BOOTSTRAP_SERVERS:${KAFKA_BOOTSTRAP_SERVERS:kafka:9092}}"
+
+    # Broker authentication. The broker requires a Simple Authentication and Security
+    # Layer (SASL) identity on every client listener, and its authorizer refuses any
+    # operation no access control entry allows, so this service reaches exactly the
+    # topics and the consumer group its own configuration names and nothing else.
+    # docker-compose.yml installs that matrix at broker start and
+    # deploy/k8s/10-kafka.yaml installs the same one.
+    #
+    # SASL_PLAINTEXT authenticates without encrypting, which is the shipped default and
+    # what the compose stack runs: the broker publishes on the loopback address alone and
+    # every service reaches it across one Docker bridge on one machine.
+    # deploy/k8s/30-configmap.yaml sets SASL_SSL instead, because a cluster pod network
+    # is a shared path, and supplies the truststore by environment as
+    # SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION and _PASSWORD. Those two keys are
+    # deliberately absent here: an empty truststore path in a shipped file reads like a
+    # setting that has been dealt with.
+    security:
+      protocol: "${KAFKA_SECURITY_PROTOCOL:SASL_PLAINTEXT}"
+    properties:
+      sasl.mechanism: "${KAFKA_SASL_MECHANISM:PLAIN}"
+      # A username is not a credential and carries a default. The password carries none,
+      # so an unset variable stops start-up rather than presenting a password this
+      # repository publishes. card-platform/.env.example documents both.
+      sasl.jaas.config: >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="${KAFKA_SASL_USERNAME:carddemo-notification}"
+        password="${KAFKA_SASL_PASSWORD}";
 
     # This module registers no producer, so it carries no spring.kafka.producer
-    # block. It consumes three topics and publishes nothing.
+    # block. It is to consume two topics and publishes nothing.
 
-    # Three listeners read three topics under three group identifiers, named
-    # further down under carddemo. The value below is the default the listener
-    # container factory applies.
+    # Two listeners are to read two topics under two group identifiers, named
+    # further down under carddemo, and no listener is authored yet. The value below
+    # is the default the listener container
+    # factory applies.
     consumer:
       group-id: "${SPRING_KAFKA_CONSUMER_GROUP_ID:${GROUP_NOTIFICATION_POSTED:notification-posted}}"
       enable-auto-commit: false
       auto-offset-reset: "${SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}"
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      # Schema validation runs inside poll, and the wrapper below turns a
+      # Schema validation is to run inside poll, and the wrapper below turns a
       # failure there into a record the listener error handler routes to the
-      # dead-letter topic.
+      # dead-letter topic. The delegate named below is the deserializer
+      # com.carddemo:event-contracts ships, so a payload is validated on consume by
+      # the same document it was validated against on publish. Nothing loads this
+      # setting yet, because this module registers no listener.
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
         spring.deserializer.value.delegate.class: com.carddemo.events.serde.JsonSchemaValidatingDeserializer
 
-    # A listener acknowledges a message once its own writes commit.
-    # manual_immediate commits the offset at that acknowledgement. Plain manual
-    # queues it until the whole poll batch finishes, so a crash mid-batch
-    # redelivers work this service already committed.
+    # A listener is to acknowledge a message once its own writes commit.
+    # manual_immediate commits the offset at that acknowledgement.
     listener:
       ack-mode: manual_immediate
 
-# Platform properties the three listeners and the dead-letter route read
+# Platform properties the two planned listeners and the dead-letter route are to read
 carddemo:
   kafka:
 
-    # One group per listener. Two listeners sharing one group would split the
-    # messages between them. The transaction-authorized group makes this service
-    # the third reader of transaction.authorized, beside ledger posting and
-    # fraud detection, and it reaches no other service to do so.
+    # One group per planned listener. Two listeners sharing one group would split
+    # the messages between them, so each name is distinct.
     groups:
-      transaction-authorized: "${GROUP_NOTIFICATION_AUTHORIZED:notification-authorized}"
       transaction-posted: "${GROUP_NOTIFICATION_POSTED:notification-posted}"
       fraud-assessed: "${GROUP_NOTIFICATION_FRAUD:notification-fraud}"
 
-    # Three consumed topics. transaction.authorized carries the authorization
-    # event this service alerts a cardholder about. transaction.posted carries
-    # the new balance. FraudFlagged and FraudCleared both travel on
-    # fraud.assessed, and that listener routes on the envelope eventType field.
-    # docker-compose.yml creates one dead-letter topic per consumed topic by
-    # appending the suffix below.
+    # Two topics this module is to consume. transaction.posted carries the new
+    # balance. FraudFlagged and FraudCleared both travel on fraud.assessed, and
+    # that listener is to route on the envelope eventType field. One shared
+    # dead-letter topic carries every record no listener could consume.
     topics:
-      transaction-authorized: "${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}"
       transaction-posted: "${TOPIC_TRANSACTION_POSTED:transaction.posted}"
       fraud-assessed: "${TOPIC_FRAUD_ASSESSED:fraud.assessed}"
-      dead-letter-suffix: "${TOPIC_DEAD_LETTER_SUFFIX:.DLT}"
+      dead-letter: "${TOPIC_DEAD_LETTER:carddemo.dead-letter}"
+
+  # Retention. A processed-event marker matters only while a redelivery of its event is
+  # still possible. The purge method on the repository deletes markers past this horizon,
+  # and ix_processed_event_processed_at serves that delete. The table grows without bound
+  # if nothing calls it. This service publishes nothing, so it declares no outbox.
+  processed-event:
+    marker-retention-hours: ${PROCESSED_EVENT_RETENTION_HOURS:168}
+
+  # Read-model retention. statement_transaction and notification_log both grow by one row
+  # per consumed event and nothing removes a row, so each needs a horizon of its own.
+  # A statement row backs the history endpoint, so it outlives an alert by a wide margin.
+  # ix_statement_transaction_processing_timestamp and ix_notification_log_attempted_at
+  # serve the two deletes.
+  history:
+    statement-retention-days: ${STATEMENT_RETENTION_DAYS:400}
+    log-retention-days: ${NOTIFICATION_LOG_RETENTION_DAYS:90}
+
+    # Paging for GET /notifications/{cardToken}. default-page-size applies when a caller
+    # names no limit, and maximum-page-size caps what a caller may ask for. The maximum
+    # matches MAXIMUM_STATEMENT_ROWS on NotificationRenderer, so a rendered alert can
+    # never carry more rows than one page of history returns.
+    default-page-size: ${NOTIFICATION_HISTORY_PAGE_SIZE:50}
+    maximum-page-size: ${NOTIFICATION_HISTORY_MAX_PAGE_SIZE:200}
 
   consumer:
 
-    # Delivery attempts a listener makes before the record routes to the
-    # dead-letter topic, and the wait between two attempts in milliseconds.
+    # Delivery attempts a listener is to make before the record routes to the
+    # dead-letter topic, and the wait between two attempts in milliseconds. No
+    # listener and no dead-letter route is authored yet.
     retry:
       max-attempts: "${CONSUMER_MAX_RETRY_ATTEMPTS:3}"
       backoff-ms: "${CONSUMER_RETRY_BACKOFF_MS:1000}"
 
 # Actuator. The container health check reads /actuator/health on the port
-# below, and the exposure list adds the info, metrics and Prometheus
-# endpoints.
+# below, and the exposure list adds the metrics and Prometheus endpoints.
+
+  # Request identities. config/SecurityConfig maps each entry onto one Spring Security
+  # user, and start-up fails when this list is empty: a service that runs with no
+  # identity would either refuse every request or invite a default one.
+  #
+  # password holds an ALREADY-ENCODED value carrying its algorithm prefix, for example
+  # {bcrypt}$2a$10$... A plaintext value authenticates nothing, which is how this
+  # platform declines to reproduce the plaintext comparison at
+  # app/cbl/COSGN00C.cbl:L223. card-platform/.env.example documents the three variables
+  # and how to generate a hash, and none of them holds a usable default: an unset
+  # variable stops start-up rather than admitting a password this repository publishes.
+  #
+  # role is ADMIN, USER or MONITORING. ADMIN and USER are the two outcomes of the
+  # SEC-USR-TYPE fork at app/cbl/COSGN00C.cbl:L232-L236. MONITORING is additive: it
+  # reaches the metrics and Prometheus endpoints on the management port and no business
+  # route at all.
+  #
+  # scopes carries what an ordinary identity owns, one authority per entitlement:
+  # SCOPE_ACCOUNT_<eleven digits>, SCOPE_CUSTOMER_<nine digits> or
+  # SCOPE_CARD_<masked card number>. Each identifier is written exactly as its column
+  # holds it, leading zeros and mask characters included. An ADMIN entry needs none: it
+  # passes every ownership check by role.
+  security:
+    users:
+      - username: ${ADMIN_USERNAME:admin001}
+        password: ${ADMIN_PASSWORD_HASH}
+        role: ADMIN
+      - username: ${USER_USERNAME:user0001}
+        password: ${USER_PASSWORD_HASH}
+        role: USER
+        scopes: ${USER_SCOPES:}
+      - username: ${MONITORING_USERNAME:monitor01}
+        password: ${MONITORING_PASSWORD_HASH}
+        role: MONITORING
+
 management:
   # /actuator answers on this port and never on the service port above, so a
   # client of the Representational State Transfer (REST) surface reaches no
@@ -122,6 +218,21 @@ management:
   # on the loopback address alone.
   server:
     port: ${MANAGEMENT_PORT:9080}
+    # The management port carries the same posture as the service port above, declared
+    # rather than inherited: a monitoring credential travelling to a collector deserves
+    # the same protection as a cardholder identifier travelling to a client. A Kubernetes
+    # probe against an encrypted management port needs scheme HTTPS, which
+    # deploy/k8s/40-authorization-service.yaml sets.
+    ssl:
+      enabled: "${MANAGEMENT_SSL_ENABLED:${SERVER_SSL_ENABLED:false}}"
+      key-store: "${SERVER_SSL_KEYSTORE:}"
+      key-store-type: "${SERVER_SSL_KEYSTORE_TYPE:PKCS12}"
+      key-store-password: "${SERVER_SSL_KEYSTORE_PASSWORD:}"
+  # config/SecurityConfig secures this surface: /actuator/health answers without a
+  # credential because a container health check and a Kubernetes probe carry none, and
+  # every other endpoint below requires ROLE_MONITORING. An anonymous caller receives
+  # 401 and an identity holding a business role receives 403, so exposing metrics and
+  # the Prometheus scrape here discloses nothing to a pod that merely reaches the port.
   endpoints:
     web:
       exposure:
@@ -136,6 +247,23 @@ management:
 server:
   port: 8080
 
+  # Transport Layer Security for the Representational State Transfer surface, off in the
+  # shipped file and on in the cluster. The compose stack runs every service on one
+  # Docker bridge on one machine and publishes each port on the loopback address alone,
+  # so there is no network path there for a third party to read. A cluster pod network is
+  # a shared path, so deploy/k8s/30-configmap.yaml sets SERVER_SSL_ENABLED to true and
+  # names the keystore deploy/k8s/31-secret.example.yaml templates.
+  #
+  # Every value below carries a default, and the default of the keystore password is
+  # empty rather than absent: a shipped file that stopped start-up over a keystore
+  # nothing has asked for would be a file nobody could run. Enabling the first key
+  # without the other three is what fails, loudly, at start-up.
+  ssl:
+    enabled: "${SERVER_SSL_ENABLED:false}"
+    key-store: "${SERVER_SSL_KEYSTORE:}"
+    key-store-type: "${SERVER_SSL_KEYSTORE_TYPE:PKCS12}"
+    key-store-password: "${SERVER_SSL_KEYSTORE_PASSWORD:}"
+
 # The console format key below turns every log line into JSON, which is the
 # whole of the structured logging setup. This module carries no logging
 # configuration file.
@@ -145,5 +273,4 @@ logging:
       console: logstash
   level:
     root: "${LOGGING_LEVEL_ROOT:${LOG_LEVEL:INFO}}"
-    # INFO by default. A DEBUG default retains identifiers in centralized logs.
-    com.carddemo: "${LOGGING_LEVEL_COM_CARDDEMO:${LOG_LEVEL_CARDDEMO:INFO}}"
+    com.carddemo: "${LOGGING_LEVEL_COM_CARDDEMO:${LOG_LEVEL_CARDDEMO:DEBUG}}"

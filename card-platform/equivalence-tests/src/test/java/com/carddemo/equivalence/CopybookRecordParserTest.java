@@ -8,8 +8,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.Function;
 
 import org.junit.jupiter.api.Test;
 
@@ -17,19 +20,17 @@ import org.junit.jupiter.api.Test;
  * Tests for {@link CopybookRecordParser}, built from records this class assembles field by field.
  *
  * <p>No test here reads a fixture. Each raw record is built from independently chosen field values
- * at the widths the copybooks declare, so a wrong offset inside the parser moves a known value into
- * the wrong component and fails. Reading a fixture instead would compare the parser against itself
- * whenever both agreed on a wrong offset.</p>
+ * at the widths the copybooks declare. A wrong offset inside the parser therefore moves a known
+ * value into the wrong component and fails.</p>
  *
  * <p>The layouts covered are {@code CARD-RECORD} at {@code app/cpy/CVACT02Y.cpy:L4-L11},
  * {@code CARD-XREF-RECORD} at {@code app/cpy/CVACT03Y.cpy:L4-L8} and {@code CUSTOMER-RECORD} at
  * {@code app/cpy/CVCUS01Y.cpy:L4-L23}, together with the four field readers and the overpunch
  * decode every layout depends on.</p>
  *
- * <p>Every field value below is chosen so that no two fields of one record share a value. A parser
- * that read the right width at the wrong offset would return a value belonging to a neighbour, and
- * an assertion naming the field it belongs to would fail.</p>
- *
+ * <p>Every field value below is chosen so that no two fields of one record share a value. A read
+ * at the right width and the wrong offset therefore returns a neighbour's value, and the assertion
+ * naming the field it belongs to fails.</p>
  */
 class CopybookRecordParserTest {
 
@@ -118,10 +119,6 @@ class CopybookRecordParserTest {
 
     // Offsets. Every offset a parse method reaches is the running sum of the widths above it.
 
-    /**
-     * Asserts the seven field widths of {@code CARD-RECORD} sum to its declared length, and
-     * asserts each offset is the running sum of the widths above it.
-     */
     @Test
     void theCardRecordOffsetsAreTheRunningSumsOfItsWidths() {
         List<Integer> widths = List.of(CARD_NUM_WIDTH, CARD_ACCT_ID_WIDTH, CARD_CVV_WIDTH,
@@ -136,10 +133,6 @@ class CopybookRecordParserTest {
                 "each field of app/cpy/CVACT02Y.cpy:L4-L11 starts where the fields above it end");
     }
 
-    /**
-     * Asserts the four field widths of {@code CARD-XREF-RECORD} sum to its declared length, and
-     * asserts the text fixture stops on the last byte of {@code XREF-ACCT-ID}.
-     */
     @Test
     void theCrossReferenceOffsetsAreTheRunningSumsOfItsWidths() {
         List<Integer> widths = List.of(XREF_CARD_NUM_WIDTH, XREF_CUST_ID_WIDTH,
@@ -161,11 +154,6 @@ class CopybookRecordParserTest {
 
     // Whole-record parses against records this class assembles.
 
-    /**
-     * Asserts that every component of {@code CARD-RECORD} comes from its own field. Each field
-     * carries a distinct value, so a read at the wrong offset returns a neighbour's value and
-     * fails.
-     */
     @Test
     void everyCardComponentComesFromItsOwnField() {
         String record = assembledCardRecord();
@@ -212,10 +200,6 @@ class CopybookRecordParserTest {
                         + " characters");
     }
 
-    /**
-     * Asserts that every component of {@code CARD-XREF-RECORD} comes from its own field, at the
-     * width the text fixture delivers and again at the declared width.
-     */
     @Test
     void everyCrossReferenceComponentComesFromItsOwnField() {
         String delivered = assembledCrossReferenceRecord(XREF_DELIVERED_WIDTH);
@@ -270,10 +254,6 @@ class CopybookRecordParserTest {
                 "the refusal names both widths the layout accepts");
     }
 
-    /**
-     * Asserts that every component of {@code CUSTOMER-RECORD} comes from its own field. Eighteen
-     * distinct values are assembled, so a read at a wrong offset returns a neighbour's value.
-     */
     @Test
     void everyCustomerComponentComesFromItsOwnField() {
         Map<String, Integer> layout = customerLayout();
@@ -323,12 +303,6 @@ class CopybookRecordParserTest {
                 "ficoCreditScore comes from CUST-FICO-CREDIT-SCORE, read as a number");
     }
 
-    // Field readers.
-
-    /**
-     * Asserts that {@code fixedText} keeps every byte of its field, including trailing spaces, and
-     * that {@code text} removes trailing spaces and keeps leading ones.
-     */
     @Test
     void fixedTextKeepsPaddingAndTextRemovesTrailingPadding() {
         String record = "AB   CD   ";
@@ -347,10 +321,6 @@ class CopybookRecordParserTest {
                 "a field of only spaces reads as the empty string");
     }
 
-    /**
-     * Asserts that a field running past the end of the record is refused, and that the failure
-     * names the field, the width, the offset and the record length, and no field text.
-     */
     @Test
     void aFieldPastTheEndOfTheRecordIsRefused() {
         IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
@@ -364,7 +334,6 @@ class CopybookRecordParserTest {
         assertFalse(message.contains("ABCDE"), "the refusal carries no text of the record");
     }
 
-    /** Asserts that a negative offset and a negative width are both refused by name. */
     @Test
     void aNegativeOffsetAndANegativeWidthAreRefused() {
         assertTrue(assertThrows(IllegalArgumentException.class,
@@ -379,8 +348,8 @@ class CopybookRecordParserTest {
 
     /**
      * Asserts that {@code unsignedInteger} reads a {@code PIC 9(n)} field and drops its leading
-     * zeros, and that a character other than a digit is refused with the position and the width and
-     * no field text.
+     * zeros. A character other than a digit is refused, and the refusal names the position and the
+     * width and no field text.
      */
     @Test
     void unsignedIntegerDropsLeadingZerosAndRefusesANonDigit() {
@@ -403,12 +372,6 @@ class CopybookRecordParserTest {
                 "the refusal carries no character of the field");
     }
 
-    // Overpunch decode.
-
-    /**
-     * Asserts the twenty sign overpunch characters decode to the ten digits with the two signs. The
-     * expected pairs are typed here from the position of each character in its published list.
-     */
     @Test
     void allTwentyOverpunchCharactersDecodeToTheirDigitAndSign() {
         String positive = "{ABCDEFGHI";
@@ -437,10 +400,6 @@ class CopybookRecordParserTest {
         }
     }
 
-    /**
-     * Asserts that a plain trailing digit reads as a positive value, and that the result carries
-     * exactly the scale requested and drops no digit.
-     */
     @Test
     void aPlainTrailingDigitReadsAsPositiveAtTheScaleRequested() {
         assertEquals(new BigDecimal("123.45"),
@@ -459,11 +418,6 @@ class CopybookRecordParserTest {
                 "a scale of zero leaves the value whole");
     }
 
-    /**
-     * Asserts that a trailing character that is neither a digit nor an overpunch is refused, and
-     * that a leading character that is not a digit is refused. Neither failure carries the text of
-     * the field or the offending character.
-     */
     @Test
     void anUnreadableSignAndANonDigitAreRefusedWithoutEchoingTheField() {
         IllegalArgumentException sign = assertThrows(IllegalArgumentException.class,
@@ -490,26 +444,50 @@ class CopybookRecordParserTest {
     // Redaction of rendered records.
 
     /**
-     * Asserts that the rendered {@code CardRecord} carries no full card number and no verification
-     * value, and that it publishes the masked card number instead.
+     * Asserts that the rendered {@code CardRecord} carries no full card number, no verification
+     * value, no embossed name and no expiry date, and that it publishes the masked card number and
+     * the two operational fields instead.
+     *
+     * <p>The embossed name and the expiry date joined the redacted set because the two of them
+     * beside four real digits of the number are what a card-not-present authorization asks for.
+     * Before that, this test asserted the embossed name was still rendered, which is the contract
+     * the finding names rather than the one the code should hold.
      */
     @Test
-    void theRenderedCardRecordCarriesNoFullCardNumberAndNoVerificationValue() {
+    void theRenderedCardRecordCarriesNoFullCardNumberAndNoCardholderValue() {
         String rendered = CopybookRecordParser.parseCard(assembledCardRecord()).toString();
 
         assertFalse(rendered.contains(CARD_NUMBER),
                 "the rendered card record holds the full card number of the assembled record");
         assertFalse(rendered.contains(CARD_VERIFICATION_VALUE),
                 "the rendered card record holds the verification value of the assembled record");
+        assertFalse(rendered.contains(CARD_EMBOSSED_NAME),
+                "the rendered card record holds the embossed name of the assembled record");
+        assertFalse(rendered.contains(CARD_EXPIRATION_DATE),
+                "the rendered card record holds the expiry date of the assembled record");
+
         assertTrue(rendered.contains(maskOf(CARD_NUMBER)),
                 "the rendered card record publishes the masked card number instead");
         assertTrue(rendered.contains(String.valueOf(MASK_CHARACTER).repeat(CARD_CVV_WIDTH)),
                 "the verification value renders as " + CARD_CVV_WIDTH + " mask characters");
-        assertTrue(rendered.contains(CARD_EMBOSSED_NAME),
-                "the rendered card record keeps the fields that are not redacted");
+        assertTrue(
+                rendered.contains(
+                        String.valueOf(MASK_CHARACTER).repeat(CARD_EMBOSSED_NAME.length())),
+                "the embossed name renders as " + CARD_EMBOSSED_NAME.length()
+                        + " mask characters, the width the parser delivered after stripping the"
+                        + " padding of the " + CARD_EMBOSSED_NAME_WIDTH + " character field");
+        assertTrue(
+                rendered.contains(
+                        String.valueOf(MASK_CHARACTER).repeat(CARD_EXPIRATION_DATE_WIDTH)),
+                "the expiry date renders as " + CARD_EXPIRATION_DATE_WIDTH + " mask characters");
+
+        assertTrue(rendered.contains("accountId=" + CARD_ACCOUNT_ID),
+                "the rendered card record keeps the account identifier, so a diverging row is"
+                        + " nameable");
+        assertTrue(rendered.contains("activeStatus=" + CARD_ACTIVE_STATUS),
+                "the rendered card record keeps the status flag, which identifies nobody");
     }
 
-    /** Asserts that the rendered {@code CardCrossReferenceRecord} carries no full card number. */
     @Test
     void theRenderedCrossReferenceCarriesNoFullCardNumber() {
         String rendered = CopybookRecordParser
@@ -527,19 +505,29 @@ class CopybookRecordParserTest {
     }
 
     /**
-     * Asserts that the rendered {@code CustomerRecord} carries none of its three identifiers, and
-     * that each renders as mask characters at the width of the value it replaced.
+     * Asserts that the rendered {@code CustomerRecord} carries none of its fourteen identifying
+     * values, and that each renders as mask characters at the width of the value it replaced.
+     *
+     * <p>Three of the fourteen were redacted before: the Social Security Number, the government
+     * identifier and the bank account identifier. The other eleven are the ones the finding names.
+     * A name, a home address, a postal code, two telephone numbers, a date of birth and a credit
+     * score identify a person as surely as the first three do, and this test asserted the date of
+     * birth was still rendered.
      */
     @Test
-    void theRenderedCustomerRecordCarriesNoneOfItsThreeIdentifiers() {
+    void theRenderedCustomerRecordCarriesNoneOfItsFourteenIdentifyingValues() {
         Map<String, String> values = customerValues();
         String rendered = CopybookRecordParser
                 .parseCustomer(assembledFixedWidthRecord(customerLayout(), values)).toString();
 
         Map<String, String> redacted = new LinkedHashMap<>();
-        redacted.put("CUST-SSN", values.get("CUST-SSN"));
-        redacted.put("CUST-GOVT-ISSUED-ID", values.get("CUST-GOVT-ISSUED-ID").strip());
-        redacted.put("CUST-EFT-ACCOUNT-ID", values.get("CUST-EFT-ACCOUNT-ID").strip());
+        for (String field : new String[] {"CUST-FIRST-NAME", "CUST-MIDDLE-NAME", "CUST-LAST-NAME",
+                "CUST-ADDR-LINE-1", "CUST-ADDR-LINE-2", "CUST-ADDR-LINE-3", "CUST-ADDR-ZIP",
+                "CUST-PHONE-NUM-1", "CUST-PHONE-NUM-2", "CUST-SSN", "CUST-GOVT-ISSUED-ID",
+                "CUST-DOB-YYYY-MM-DD", "CUST-EFT-ACCOUNT-ID", "CUST-FICO-CREDIT-SCORE"}) {
+            redacted.put(field, values.get(field).strip());
+        }
+        assertEquals(14, redacted.size(), "every identifying component of the record is listed");
 
         for (Map.Entry<String, String> field : redacted.entrySet()) {
             assertFalse(rendered.contains(field.getValue()),
@@ -551,16 +539,74 @@ class CopybookRecordParserTest {
                             + " mask characters");
         }
 
-        assertTrue(rendered.contains(values.get("CUST-DOB-YYYY-MM-DD")),
-                "the rendered customer record keeps the fields that are not redacted");
-        assertTrue(rendered.contains(values.get("CUST-ID")),
-                "the rendered customer record keeps the customer identifier");
+        assertTrue(rendered.contains("customerId=" + values.get("CUST-ID")),
+                "the rendered customer record keeps the customer identifier, so a diverging row is"
+                        + " nameable");
+        assertTrue(rendered.contains("stateCode=" + values.get("CUST-ADDR-STATE-CD")),
+                "the rendered customer record keeps the state code, which narrows a record to a"
+                        + " state and no further");
+        assertTrue(rendered.contains("countryCode=" + values.get("CUST-ADDR-COUNTRY-CD")),
+                "the rendered customer record keeps the country code");
+        assertTrue(
+                rendered.contains(
+                        "primaryCardHolderIndicator=" + values.get("CUST-PRI-CARD-HOLDER-IND")),
+                "the rendered customer record keeps the cardholder indicator, a single flag");
     }
 
     /**
-     * Asserts that the rendered {@code RejectedTransactionRecord} carries none of its transaction
-     * blob. The blob holds a whole daily transaction record, whose card number sits at offset 15.
+     * Asserts that the rendered posted and daily transaction records carry no spending detail, and
+     * that the two renderings agree component for component.
+     *
+     * <p>The two layouts are the same layout at the same copybook lines, so a redaction applied to
+     * one and missed on the other would be a hole with no visible cause. The assertion that the
+     * two renderings differ only in the class name is what closes it.
      */
+    @Test
+    void theRenderedTransactionRecordsCarryNoSpendingDetail() {
+        String description = "PARSER FIXTURE DESCRIPTION";
+        BigDecimal amount = new BigDecimal("-1234.56");
+        String merchantName = "PARSER FIXTURE MERCHANT";
+        String merchantCity = "PARSER FIXTURE CITY";
+        String merchantZip = "820019999";
+        String merchantId = "000000000123456";
+
+        CopybookRecordParser.PostedTransactionRecord posted =
+                new CopybookRecordParser.PostedTransactionRecord("TRAN000000000001", "01", "0001",
+                        "POS", description, amount, merchantId, merchantName, merchantCity,
+                        merchantZip, CARD_NUMBER, "2031-08-31 10:11:12.13", "2031-09-01 00:00:00");
+        CopybookRecordParser.DailyTransactionRecord daily =
+                new CopybookRecordParser.DailyTransactionRecord("TRAN000000000001", "01", "0001",
+                        "POS", description, amount, merchantId, merchantName, merchantCity,
+                        merchantZip, CARD_NUMBER, "2031-08-31 10:11:12.13", "2031-09-01 00:00:00");
+
+        for (String rendered : List.of(posted.toString(), daily.toString())) {
+            assertFalse(rendered.contains(CARD_NUMBER),
+                    "the rendering holds the full card number: " + rendered);
+            assertTrue(rendered.contains(maskOf(CARD_NUMBER)),
+                    "the rendering publishes the masked card number instead");
+            for (String withheld : List.of(description, amount.toPlainString(), merchantName,
+                    merchantCity, merchantZip)) {
+                assertFalse(rendered.contains(withheld),
+                        "the rendering holds a withheld value: " + withheld);
+                assertTrue(
+                        rendered.contains(
+                                String.valueOf(MASK_CHARACTER).repeat(withheld.length())),
+                        withheld.length() + " mask characters stand in for the withheld value");
+            }
+            assertTrue(rendered.contains("transactionId=TRAN000000000001"),
+                    "the rendering keeps the transaction identifier, so a diverging record is"
+                            + " nameable");
+            assertTrue(rendered.contains("merchantId=" + merchantId),
+                    "the rendering keeps the merchant identifier, a key the merchant table"
+                            + " resolves");
+        }
+
+        assertEquals(posted.toString().replace("PostedTransactionRecord", ""),
+                daily.toString().replace("DailyTransactionRecord", ""),
+                "the two layouts are byte for byte the same, so the two renderings redact the same"
+                        + " components");
+    }
+
     @Test
     void theRenderedRejectedRecordCarriesNoneOfItsTransactionBlob() {
         int blobWidth = 350;
@@ -585,10 +631,6 @@ class CopybookRecordParserTest {
                 "the rendered rejected record keeps its reject description");
     }
 
-    /**
-     * Asserts that a redacted component holding null renders without a failure. A rendering that
-     * threw would turn a diagnostic into a second failure.
-     */
     @Test
     void aRedactedComponentHoldingNullRendersWithoutFailing() {
         String rendered = new CopybookRecordParser.CardRecord(null, null, null, null, null, null)
@@ -602,6 +644,483 @@ class CopybookRecordParserTest {
                 .toString();
         assertTrue(blobless.contains("transactionData=null"),
                 "a null blob renders as the four characters null and not as a failure");
+    }
+
+    // Widths and values of CVTRA05Y TRAN-RECORD, which CVTRA06Y DALYTRAN-RECORD repeats field for
+    // field under a different prefix. Typed from the copybooks, as the card widths above are.
+
+    /** Declared length of {@code TRAN-RECORD} at {@code app/cpy/CVTRA05Y.cpy:L4-L18}. */
+    private static final int TRANSACTION_RECORD_LENGTH = 350;
+
+    /** Offset of {@code TRAN-AMT}, the sum of the five widths above it. */
+    private static final int TRANSACTION_AMOUNT_OFFSET = 132;
+
+    /** Offset of {@code TRAN-CARD-NUM}, the sum of the ten widths above it. */
+    private static final int TRANSACTION_CARD_NUMBER_OFFSET = 262;
+
+    /** {@code TRAN-ID} of the assembled transaction record, sixteen characters. */
+    private static final String TRANSACTION_ID = "9000000000000001";
+
+    /** {@code TRAN-TYPE-CD} of the assembled transaction record. */
+    private static final String TRANSACTION_TYPE_CODE = "07";
+
+    /** {@code TRAN-CAT-CD} of the assembled transaction record. */
+    private static final String TRANSACTION_CATEGORY_CODE = "0042";
+
+    /** {@code TRAN-SOURCE} of the assembled transaction record, before its padding. */
+    private static final String TRANSACTION_SOURCE = "PARSERSRC";
+
+    /** {@code TRAN-DESC} of the assembled transaction record, before its padding. */
+    private static final String TRANSACTION_DESCRIPTION = "PARSER FIXTURE DESCRIPTION";
+
+    /**
+     * {@code TRAN-AMT} as the fixture encodes it: ten digits and a trailing negative overpunch, the
+     * character {@code N} standing for the digit five with a negative sign.
+     */
+    private static final String TRANSACTION_AMOUNT_ENCODED = "0000001234N";
+
+    /** {@code TRAN-AMT} as {@code PIC S9(09)V99} decodes, at the scale its picture declares. */
+    private static final BigDecimal TRANSACTION_AMOUNT = new BigDecimal("-123.45");
+
+    /** {@code TRAN-MERCHANT-ID} of the assembled transaction record, nine digits. */
+    private static final String TRANSACTION_MERCHANT_ID = "700000009";
+
+    /** {@code TRAN-MERCHANT-NAME} of the assembled transaction record, before its padding. */
+    private static final String TRANSACTION_MERCHANT_NAME = "PARSER MERCHANT NAME";
+
+    /** {@code TRAN-MERCHANT-CITY} of the assembled transaction record, before its padding. */
+    private static final String TRANSACTION_MERCHANT_CITY = "PARSER MERCHANT CITY";
+
+    /** {@code TRAN-MERCHANT-ZIP} of the assembled transaction record, ten characters. */
+    private static final String TRANSACTION_MERCHANT_ZIP = "ZIP0000001";
+
+    /** {@code TRAN-CARD-NUM} of the assembled transaction record, sixteen digits. */
+    private static final String TRANSACTION_CARD_NUMBER = "6011333344445555";
+
+    /** {@code TRAN-ORIG-TS} of the assembled transaction record, twenty-six characters. */
+    private static final String TRANSACTION_ORIGIN_TIMESTAMP = "2024-03-04 05:06:07.891011";
+
+    /** {@code TRAN-PROC-TS} of the assembled transaction record, twenty-six characters. */
+    private static final String TRANSACTION_PROCESSING_TIMESTAMP = "2024-09-10-11.12.13.140000";
+
+    /** Declared length of {@code REJECT-RECORD} at {@code app/cbl/CBTRN02C.cbl:L176-L178}. */
+    private static final int REJECT_RECORD_LENGTH = 430;
+
+    /** Width of {@code VALIDATION-TRAILER} at {@code app/cbl/CBTRN02C.cbl:L178}. */
+    private static final int REJECT_TRAILER_WIDTH = 80;
+
+    /** Width of {@code WS-VALIDATION-FAIL-REASON} at {@code app/cbl/CBTRN02C.cbl:L181}. */
+    private static final int REJECT_REASON_WIDTH = 4;
+
+    /** Width of {@code WS-VALIDATION-FAIL-REASON-DESC} at {@code app/cbl/CBTRN02C.cbl:L182}. */
+    private static final int REJECT_REASON_DESCRIPTION_WIDTH = 76;
+
+    /** Reason {@code app/cbl/CBTRN02C.cbl:L403-L413} assigns, used where one reason is enough. */
+    private static final int REJECT_REASON_OVERLIMIT = 102;
+
+    /**
+     * The four reject reasons and their descriptions, quoted from
+     * {@code app/cbl/CBTRN02C.cbl:L385-L420} character for character.
+     */
+    private static final Map<Integer, String> REJECT_REASONS = rejectReasons();
+
+    /** Builds {@link #REJECT_REASONS} in the order the validation chain assigns them. */
+    private static Map<Integer, String> rejectReasons() {
+        Map<Integer, String> reasons = new LinkedHashMap<>();
+        reasons.put(100, "INVALID CARD NUMBER FOUND");
+        reasons.put(101, "ACCOUNT RECORD NOT FOUND");
+        reasons.put(REJECT_REASON_OVERLIMIT, "OVERLIMIT TRANSACTION");
+        reasons.put(103, "TRANSACTION RECEIVED AFTER ACCT EXPIRATION");
+        return reasons;
+    }
+
+    /** Characters {@code app/cbl/CBTRN02C.cbl:L414} compares against an account expiry field. */
+    private static final int ACCOUNT_EXPIRATION_COMPARISON_WIDTH = 10;
+
+    /** Width of {@code TRAN-PROC-TS} at {@code app/cpy/CVTRA05Y.cpy:L17}. */
+    private static final int PROCESSING_TIMESTAMP_WIDTH = 26;
+
+    /** Offset of the four digits {@code app/cbl/CBTRN02C.cbl:L701} writes as zeros. */
+    private static final int PROCESSING_TIMESTAMP_TRAILING_ZEROS_OFFSET = 22;
+
+    /** Count of those four digits. */
+    private static final int PROCESSING_TIMESTAMP_TRAILING_ZERO_DIGITS = 4;
+
+    /** Fractional digits {@code app/cbl/CBTRN02C.cbl:L700} carries into the field. */
+    private static final int PROCESSING_TIMESTAMP_SIGNIFICANT_FRACTION_DIGITS = 2;
+
+    /** Record layouts the parser publishes a parse operation for. */
+    private static final int PARSE_OPERATION_COUNT = 11;
+
+    /**
+     * One parse operation and the width its layout accepts.
+     *
+     * @param layoutLabel   copybook and record name the operation reports on a failure
+     * @param acceptedWidth a width the operation accepts
+     * @param parse         the operation
+     */
+    private record ParseOperation(String layoutLabel, int acceptedWidth,
+            Function<String, Object> parse) {
+    }
+
+    /** Every parse operation the parser publishes, with a width its layout accepts. */
+    private static final List<ParseOperation> PARSE_OPERATIONS = List.of(
+            new ParseOperation("CVACT01Y ACCOUNT-RECORD", 300,
+                    CopybookRecordParser::parseAccount),
+            new ParseOperation("CVACT02Y CARD-RECORD", CARD_RECORD_LENGTH,
+                    CopybookRecordParser::parseCard),
+            new ParseOperation("CVACT03Y CARD-XREF-RECORD", XREF_DELIVERED_WIDTH,
+                    CopybookRecordParser::parseCardCrossReference),
+            new ParseOperation("CVCUS01Y CUSTOMER-RECORD", 500,
+                    CopybookRecordParser::parseCustomer),
+            new ParseOperation("CVTRA01Y TRAN-CAT-BAL-RECORD", 50,
+                    CopybookRecordParser::parseTransactionCategoryBalance),
+            new ParseOperation("CVTRA02Y DIS-GROUP-RECORD", 50,
+                    CopybookRecordParser::parseDisclosureGroup),
+            new ParseOperation("CVTRA03Y TRAN-TYPE-RECORD", 60,
+                    CopybookRecordParser::parseTransactionType),
+            new ParseOperation("CVTRA04Y TRAN-CAT-RECORD", 60,
+                    CopybookRecordParser::parseTransactionCategory),
+            new ParseOperation("CVTRA05Y TRAN-RECORD", TRANSACTION_RECORD_LENGTH,
+                    CopybookRecordParser::parsePostedTransaction),
+            new ParseOperation("CVTRA06Y DALYTRAN-RECORD", TRANSACTION_RECORD_LENGTH,
+                    CopybookRecordParser::parseDailyTransaction),
+            new ParseOperation("CBTRN02C REJECT-RECORD", REJECT_RECORD_LENGTH,
+                    CopybookRecordParser::parseRejectedTransaction));
+
+    // CVTRA05Y TRAN-RECORD and CVTRA06Y DALYTRAN-RECORD, the two layouts that share every offset.
+
+    /**
+     * Asserts the fourteen field widths of the transaction layout sum to its declared length, and
+     * asserts each offset is the running sum of the widths above it.
+     */
+    @Test
+    void theTransactionRecordOffsetsAreTheRunningSumsOfItsWidths() {
+        List<Integer> widths = List.copyOf(transactionLayout().values());
+        List<String> fields = List.copyOf(transactionLayout().keySet());
+
+        int total = 0;
+        for (int width : widths) {
+            total += width;
+        }
+        assertEquals(TRANSACTION_RECORD_LENGTH, total,
+                "the fourteen widths of app/cpy/CVTRA05Y.cpy:L4-L18 sum to its declared length");
+
+        List<Integer> offsets = runningSums(widths);
+        assertEquals(0, offsets.get(fields.indexOf("TRAN-ID")), "TRAN-ID opens the record");
+        assertEquals(TRANSACTION_AMOUNT_OFFSET, offsets.get(fields.indexOf("TRAN-AMT")),
+                "TRAN-AMT sits at the sum of the five widths above it");
+        assertEquals(TRANSACTION_CARD_NUMBER_OFFSET, offsets.get(fields.indexOf("TRAN-CARD-NUM")),
+                "TRAN-CARD-NUM sits at the sum of the ten widths above it");
+    }
+
+    /**
+     * Asserts that {@link CopybookRecordParser#parsePostedTransaction} reads each of its thirteen
+     * components from its own field. Every value differs from every other, so a read at the wrong
+     * offset returns a neighbour's value.
+     */
+    @Test
+    void everyPostedTransactionComponentComesFromItsOwnField() {
+        CopybookRecordParser.PostedTransactionRecord record =
+                CopybookRecordParser.parsePostedTransaction(assembledTransactionRecord());
+
+        assertEquals(TRANSACTION_ID, record.transactionId(), "TRAN-ID");
+        assertEquals(TRANSACTION_TYPE_CODE, record.typeCode(), "TRAN-TYPE-CD");
+        assertEquals(TRANSACTION_CATEGORY_CODE, record.categoryCode(), "TRAN-CAT-CD");
+        assertEquals(TRANSACTION_SOURCE, record.source(), "TRAN-SOURCE, its padding removed");
+        assertEquals(TRANSACTION_DESCRIPTION, record.description(),
+                "TRAN-DESC, its padding removed");
+        assertEquals(TRANSACTION_AMOUNT, record.amount(),
+                "TRAN-AMT, decoded from its trailing sign overpunch");
+        assertEquals(TRANSACTION_MERCHANT_ID, record.merchantId(), "TRAN-MERCHANT-ID");
+        assertEquals(TRANSACTION_MERCHANT_NAME, record.merchantName(), "TRAN-MERCHANT-NAME");
+        assertEquals(TRANSACTION_MERCHANT_CITY, record.merchantCity(), "TRAN-MERCHANT-CITY");
+        assertEquals(TRANSACTION_MERCHANT_ZIP, record.merchantZip(), "TRAN-MERCHANT-ZIP");
+        assertEquals(TRANSACTION_CARD_NUMBER, record.cardNumber(), "TRAN-CARD-NUM");
+        assertEquals(TRANSACTION_ORIGIN_TIMESTAMP, record.originTimestamp(), "TRAN-ORIG-TS");
+        assertEquals(TRANSACTION_PROCESSING_TIMESTAMP, record.processingTimestamp(),
+                "TRAN-PROC-TS");
+    }
+
+    /**
+     * Asserts that the posted layout of {@code app/cpy/CVTRA05Y.cpy} and the daily layout of
+     * {@code app/cpy/CVTRA06Y.cpy} read the same thirteen offsets from the same record.
+     *
+     * <p>The two copybooks declare identical widths in identical order and differ only in their
+     * field name prefix. Nothing enforces that, so it is asserted here: the posting service copies
+     * a daily record onto a posted record field by field at
+     * {@code app/cbl/CBTRN02C.cbl:L424-L437}, and a width that drifted in one copybook would move
+     * every field below it in one layout and not the other.</p>
+     */
+    @Test
+    void theDailyAndPostedLayoutsReadTheSameOffsets() {
+        String record = assembledTransactionRecord();
+
+        CopybookRecordParser.PostedTransactionRecord posted =
+                CopybookRecordParser.parsePostedTransaction(record);
+        CopybookRecordParser.DailyTransactionRecord daily =
+                CopybookRecordParser.parseDailyTransaction(record);
+
+        assertEquals(posted.transactionId(), daily.transactionId(), "TRAN-ID against DALYTRAN-ID");
+        assertEquals(posted.typeCode(), daily.typeCode(), "the type code of both layouts");
+        assertEquals(posted.categoryCode(), daily.categoryCode(), "the category code of both");
+        assertEquals(posted.source(), daily.source(), "the source of both");
+        assertEquals(posted.description(), daily.description(), "the description of both");
+        assertEquals(posted.amount(), daily.amount(), "the amount of both, at the same scale");
+        assertEquals(posted.merchantId(), daily.merchantId(), "the merchant identifier of both");
+        assertEquals(posted.merchantName(), daily.merchantName(), "the merchant name of both");
+        assertEquals(posted.merchantCity(), daily.merchantCity(), "the merchant city of both");
+        assertEquals(posted.merchantZip(), daily.merchantZip(), "the merchant zip of both");
+        assertEquals(posted.cardNumber(), daily.cardNumber(), "the card number of both");
+        assertEquals(posted.originTimestamp(), daily.originTimestamp(),
+                "the origin timestamp of both");
+        assertEquals(posted.processingTimestamp(), daily.processingTimestamp(),
+                "the processing timestamp of both");
+    }
+
+    /**
+     * Asserts that the rendered {@code PostedTransactionRecord} publishes a masked card number and
+     * no full Primary Account Number.
+     */
+    @Test
+    void theRenderedPostedTransactionCarriesNoFullCardNumber() {
+        String rendered = CopybookRecordParser
+                .parsePostedTransaction(assembledTransactionRecord()).toString();
+
+        assertFalse(rendered.contains(TRANSACTION_CARD_NUMBER),
+                "the rendered posted transaction holds its full card number");
+        assertTrue(rendered.contains(maskOf(TRANSACTION_CARD_NUMBER)),
+                "the rendered posted transaction publishes the masked card number");
+        assertTrue(rendered.contains(TRANSACTION_ID),
+                "the rendered posted transaction keeps its transaction identifier");
+    }
+
+    // CBTRN02C REJECT-RECORD, the 430-byte record the reject path writes.
+
+    /**
+     * Asserts that {@link CopybookRecordParser#parseRejectedTransaction} reads the transaction blob,
+     * the reason code and the description from their own fields, for each of the four reasons
+     * {@code app/cbl/CBTRN02C.cbl:L385-L420} assigns.
+     */
+    @Test
+    void everyRejectedTransactionComponentComesFromItsOwnField() {
+        String blob = assembledTransactionRecord();
+
+        for (Map.Entry<Integer, String> reason : REJECT_REASONS.entrySet()) {
+            String record = assembledRejectRecord(blob, reason.getKey(), reason.getValue());
+
+            CopybookRecordParser.RejectedTransactionRecord rejected =
+                    CopybookRecordParser.parseRejectedTransaction(record);
+
+            assertEquals(blob, rejected.transactionData(),
+                    "REJECT-TRAN-DATA of reason " + reason.getKey()
+                            + " holds the whole transaction record");
+            assertEquals(reason.getKey().intValue(), rejected.failReason(),
+                    "WS-VALIDATION-FAIL-REASON of reason " + reason.getKey());
+            assertEquals(reason.getValue(), rejected.failReasonDescription(),
+                    "WS-VALIDATION-FAIL-REASON-DESC of reason " + reason.getKey()
+                            + ", its padding removed");
+        }
+    }
+
+    /**
+     * Asserts that the eighty-byte validation trailer of {@code app/cbl/CBTRN02C.cbl:L178} follows
+     * the transaction data and splits into the four-digit reason and its seventy-six-character
+     * description.
+     */
+    @Test
+    void theRejectTrailerFollowsTheTransactionData() {
+        assertEquals(REJECT_RECORD_LENGTH, TRANSACTION_RECORD_LENGTH + REJECT_TRAILER_WIDTH,
+                "the reject record is the transaction record plus the validation trailer");
+        assertEquals(REJECT_TRAILER_WIDTH,
+                REJECT_REASON_WIDTH + REJECT_REASON_DESCRIPTION_WIDTH,
+                "the trailer splits into the reason of app/cbl/CBTRN02C.cbl:L181 and the "
+                        + "description of app/cbl/CBTRN02C.cbl:L182");
+
+        String record = assembledRejectRecord(assembledTransactionRecord(),
+                REJECT_REASON_OVERLIMIT, REJECT_REASONS.get(REJECT_REASON_OVERLIMIT));
+        assertEquals(REJECT_RECORD_LENGTH, record.length(),
+                "the assembled reject record holds the length its layout declares");
+        assertEquals(REJECT_REASONS.get(REJECT_REASON_OVERLIMIT).length(),
+                CopybookRecordParser
+                        .text(record, TRANSACTION_RECORD_LENGTH + REJECT_REASON_WIDTH,
+                                REJECT_REASON_DESCRIPTION_WIDTH, "WS-VALIDATION-FAIL-REASON-DESC")
+                        .length(),
+                "the description read from its own offset holds the text and none of its padding");
+    }
+
+    /**
+     * Asserts that a reason field holding a character outside the digit class is refused, and that
+     * the failure quotes neither the field nor the record.
+     */
+    @Test
+    void aRejectReasonOutsideTheDigitClassIsRefused() {
+        String blob = assembledTransactionRecord();
+        String record = blob + "10x2"
+                + padded(REJECT_REASONS.get(REJECT_REASON_OVERLIMIT),
+                        REJECT_REASON_DESCRIPTION_WIDTH);
+        assertEquals(REJECT_RECORD_LENGTH, record.length(),
+                "the assembled record holds the length its layout declares");
+
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                () -> CopybookRecordParser.parseRejectedTransaction(record),
+                "a reason field holding a character other than a digit is refused");
+
+        assertTrue(refused.getMessage().contains("WS-VALIDATION-FAIL-REASON"),
+                "the failure names the field it could not read");
+        assertFalse(refused.getMessage().contains(record),
+                "the failure quotes none of the record");
+        assertFalse(refused.getMessage().contains(TRANSACTION_CARD_NUMBER),
+                "the failure quotes no card number from inside the blob");
+    }
+
+    // Width refusal, for every one of the eleven parse operations.
+
+    /**
+     * Asserts that each parse operation refuses a record of any width its layout does not declare,
+     * that the failure names the layout, and that it quotes none of the record.
+     *
+     * <p>The cross-reference layout accepts two widths, the one the text fixture delivers and the
+     * one the dataset definition declares. The two widths tested for it are one either side of the
+     * delivered width, so neither is the declared width.</p>
+     */
+    @Test
+    void everyLayoutRefusesARecordOfAnotherWidthWithoutEchoingIt() {
+        for (ParseOperation operation : PARSE_OPERATIONS) {
+            for (int width : List.of(operation.acceptedWidth() - 1,
+                    operation.acceptedWidth() + 1)) {
+                String record = "Z".repeat(width);
+
+                IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                        () -> operation.parse().apply(record),
+                        operation.layoutLabel() + " accepted a record of " + width + " characters");
+
+                assertTrue(refused.getMessage().contains(operation.layoutLabel()),
+                        "the failure of " + operation.layoutLabel() + " names its layout");
+                assertTrue(refused.getMessage().contains(String.valueOf(width)),
+                        "the failure of " + operation.layoutLabel() + " names the width supplied");
+                assertFalse(refused.getMessage().contains(record),
+                        "the failure of " + operation.layoutLabel() + " quotes the record");
+            }
+        }
+    }
+
+    /**
+     * Asserts the operation table names one operation per record layout the parser publishes, and
+     * names each layout once. A parse operation added later without a table entry fails here.
+     */
+    @Test
+    void theWidthRefusalTableCoversEveryParseOperation() {
+        Set<String> labels = new LinkedHashSet<>();
+        for (ParseOperation operation : PARSE_OPERATIONS) {
+            assertTrue(labels.add(operation.layoutLabel()),
+                    operation.layoutLabel() + " appears in the table more than once");
+        }
+
+        assertEquals(PARSE_OPERATION_COUNT, PARSE_OPERATIONS.size(),
+                "the table names one operation per record layout the parser publishes");
+        assertEquals(PARSE_OPERATION_COUNT, labels.size(), "the table names each layout once");
+    }
+
+    // Timestamp operations.
+
+    /**
+     * Asserts that the expiration comparison of {@code app/cbl/CBTRN02C.cbl:L414} reads exactly the
+     * leading ten characters of a timestamp and compares them as text.
+     */
+    @Test
+    void theExpirationComparisonReadsTenCharactersOfATimestamp() {
+        String datePart =
+                CopybookRecordParser.timestampDatePart(TRANSACTION_ORIGIN_TIMESTAMP);
+
+        assertEquals(ACCOUNT_EXPIRATION_COMPARISON_WIDTH, datePart.length(),
+                "the comparison reads the width app/cbl/CBTRN02C.cbl:L414 reads");
+        assertEquals(TRANSACTION_ORIGIN_TIMESTAMP.substring(0,
+                        ACCOUNT_EXPIRATION_COMPARISON_WIDTH), datePart,
+                "the comparison reads the leading characters and no others");
+        assertEquals(datePart, CopybookRecordParser.timestampDatePart(datePart),
+                "a field already at the comparison width reads unchanged");
+    }
+
+    /** Asserts that a timestamp shorter than the comparison reads is refused, value withheld. */
+    @Test
+    void aTimestampShorterThanTheComparisonIsRefused() {
+        String tooShort = TRANSACTION_ORIGIN_TIMESTAMP.substring(0,
+                ACCOUNT_EXPIRATION_COMPARISON_WIDTH - 1);
+
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                () -> CopybookRecordParser.timestampDatePart(tooShort),
+                "a timestamp shorter than the comparison reads is refused");
+
+        assertTrue(refused.getMessage()
+                        .contains(String.valueOf(ACCOUNT_EXPIRATION_COMPARISON_WIDTH)),
+                "the failure names the width the comparison reads");
+        assertFalse(refused.getMessage().contains(tooShort),
+                "the failure quotes none of the timestamp");
+    }
+
+    /**
+     * Asserts that the truncation of {@code app/cbl/CBTRN02C.cbl:L700-L701} keeps two fractional
+     * digits and sets the trailing four to zero, leaving every character above them alone.
+     */
+    @Test
+    void theProcessingTimestampTruncationZeroesTheTrailingFourDigits() {
+        String rendered = "2024-09-10-11.12.13.987654";
+        assertEquals(PROCESSING_TIMESTAMP_WIDTH, rendered.length(),
+                "the timestamp under test holds the width its field declares");
+
+        String truncated = CopybookRecordParser.truncateProcessingTimestampToHundredths(rendered);
+
+        assertEquals(PROCESSING_TIMESTAMP_WIDTH, truncated.length(),
+                "the truncation keeps the width of the field");
+        assertEquals(rendered.substring(0, PROCESSING_TIMESTAMP_TRAILING_ZEROS_OFFSET),
+                truncated.substring(0, PROCESSING_TIMESTAMP_TRAILING_ZEROS_OFFSET),
+                "every character above the trailing digits is left alone");
+        assertEquals("0".repeat(PROCESSING_TIMESTAMP_TRAILING_ZERO_DIGITS),
+                truncated.substring(PROCESSING_TIMESTAMP_TRAILING_ZEROS_OFFSET),
+                "the trailing digits are the zeros app/cbl/CBTRN02C.cbl:L701 writes");
+        assertEquals("98", truncated.substring(PROCESSING_TIMESTAMP_TRAILING_ZEROS_OFFSET
+                        - PROCESSING_TIMESTAMP_SIGNIFICANT_FRACTION_DIGITS,
+                PROCESSING_TIMESTAMP_TRAILING_ZEROS_OFFSET),
+                "the two significant fractional digits of app/cbl/CBTRN02C.cbl:L700 survive");
+    }
+
+    /**
+     * Asserts that the truncation is idempotent and that a field holding only padding reads
+     * unchanged, which is how an unposted daily record carries an empty processing timestamp.
+     */
+    @Test
+    void theProcessingTimestampTruncationIsIdempotentAndLeavesPaddingAlone() {
+        String truncated = CopybookRecordParser
+                .truncateProcessingTimestampToHundredths("2024-09-10-11.12.13.987654");
+
+        assertEquals(truncated,
+                CopybookRecordParser.truncateProcessingTimestampToHundredths(truncated),
+                "truncating an already truncated timestamp changes nothing");
+
+        String padding = " ".repeat(PROCESSING_TIMESTAMP_WIDTH);
+        assertEquals(padding,
+                CopybookRecordParser.truncateProcessingTimestampToHundredths(padding),
+                "a field holding only padding reads unchanged rather than gaining four zeros");
+    }
+
+    /** Asserts that a populated timestamp of another width is refused, value withheld. */
+    @Test
+    void aProcessingTimestampOfAnotherWidthIsRefused() {
+        String tooLong = "2024-09-10-11.12.13.9876543";
+        assertEquals(PROCESSING_TIMESTAMP_WIDTH + 1, tooLong.length(),
+                "the timestamp under test is one character wider than its field");
+
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                () -> CopybookRecordParser.truncateProcessingTimestampToHundredths(tooLong),
+                "a timestamp of another width is refused");
+
+        assertTrue(refused.getMessage().contains("TRAN-PROC-TS"),
+                "the failure names the field it could not read");
+        assertTrue(refused.getMessage().contains(String.valueOf(PROCESSING_TIMESTAMP_WIDTH)),
+                "the failure names the width the field holds");
+        assertFalse(refused.getMessage().contains(tooLong),
+                "the failure quotes none of the timestamp");
     }
 
     // Record assembly. Each helper builds a raw record from field values this class chose.
@@ -676,6 +1195,82 @@ class CopybookRecordParserTest {
         layout.put("CUST-FICO-CREDIT-SCORE", 3);
         layout.put("FILLER", 168);
         return layout;
+    }
+
+    /**
+     * Returns the fourteen field widths of {@code TRAN-RECORD}, which {@code DALYTRAN-RECORD}
+     * repeats. Field names are the posted spelling; the daily copybook prefixes them
+     * {@code DALYTRAN} and declares the same widths in the same order.
+     */
+    private static Map<String, Integer> transactionLayout() {
+        Map<String, Integer> layout = new LinkedHashMap<>();
+        layout.put("TRAN-ID", 16);
+        layout.put("TRAN-TYPE-CD", 2);
+        layout.put("TRAN-CAT-CD", 4);
+        layout.put("TRAN-SOURCE", 10);
+        layout.put("TRAN-DESC", 100);
+        layout.put("TRAN-AMT", 11);
+        layout.put("TRAN-MERCHANT-ID", 9);
+        layout.put("TRAN-MERCHANT-NAME", 50);
+        layout.put("TRAN-MERCHANT-CITY", 50);
+        layout.put("TRAN-MERCHANT-ZIP", 10);
+        layout.put("TRAN-CARD-NUM", 16);
+        layout.put("TRAN-ORIG-TS", 26);
+        layout.put("TRAN-PROC-TS", 26);
+        layout.put("FILLER", 20);
+        return layout;
+    }
+
+    /** Returns one distinct value per field of {@code TRAN-RECORD}, each at its field width. */
+    private static Map<String, String> transactionValues() {
+        Map<String, Integer> layout = transactionLayout();
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("TRAN-ID", TRANSACTION_ID);
+        values.put("TRAN-TYPE-CD", TRANSACTION_TYPE_CODE);
+        values.put("TRAN-CAT-CD", TRANSACTION_CATEGORY_CODE);
+        values.put("TRAN-SOURCE", padded(TRANSACTION_SOURCE, layout.get("TRAN-SOURCE")));
+        values.put("TRAN-DESC", padded(TRANSACTION_DESCRIPTION, layout.get("TRAN-DESC")));
+        values.put("TRAN-AMT", TRANSACTION_AMOUNT_ENCODED);
+        values.put("TRAN-MERCHANT-ID", TRANSACTION_MERCHANT_ID);
+        values.put("TRAN-MERCHANT-NAME",
+                padded(TRANSACTION_MERCHANT_NAME, layout.get("TRAN-MERCHANT-NAME")));
+        values.put("TRAN-MERCHANT-CITY",
+                padded(TRANSACTION_MERCHANT_CITY, layout.get("TRAN-MERCHANT-CITY")));
+        values.put("TRAN-MERCHANT-ZIP", TRANSACTION_MERCHANT_ZIP);
+        values.put("TRAN-CARD-NUM", TRANSACTION_CARD_NUMBER);
+        values.put("TRAN-ORIG-TS", TRANSACTION_ORIGIN_TIMESTAMP);
+        values.put("TRAN-PROC-TS", TRANSACTION_PROCESSING_TIMESTAMP);
+        values.put("FILLER", " ".repeat(layout.get("FILLER")));
+        return values;
+    }
+
+    /** Returns one raw {@code TRAN-RECORD}, which is also one raw {@code DALYTRAN-RECORD}. */
+    private static String assembledTransactionRecord() {
+        return assembledFixedWidthRecord(transactionLayout(), transactionValues());
+    }
+
+    /**
+     * Returns one raw {@code REJECT-RECORD}: the transaction data followed by the eighty-byte
+     * validation trailer.
+     *
+     * @param transactionData the 350 bytes of {@code REJECT-TRAN-DATA}
+     * @param reason          the reject reason, rendered at its four-digit width
+     * @param description     the reject description, padded to its declared width
+     * @return the assembled raw record
+     */
+    private static String assembledRejectRecord(String transactionData, int reason,
+            String description) {
+        Map<String, Integer> layout = new LinkedHashMap<>();
+        layout.put("REJECT-TRAN-DATA", TRANSACTION_RECORD_LENGTH);
+        layout.put("WS-VALIDATION-FAIL-REASON", REJECT_REASON_WIDTH);
+        layout.put("WS-VALIDATION-FAIL-REASON-DESC", REJECT_REASON_DESCRIPTION_WIDTH);
+        Map<String, String> values = new LinkedHashMap<>();
+        values.put("REJECT-TRAN-DATA", transactionData);
+        values.put("WS-VALIDATION-FAIL-REASON",
+                String.format("%0" + REJECT_REASON_WIDTH + "d", reason));
+        values.put("WS-VALIDATION-FAIL-REASON-DESC",
+                padded(description, REJECT_REASON_DESCRIPTION_WIDTH));
+        return assembledFixedWidthRecord(layout, values);
     }
 
     /** Returns one distinct value per field of {@code CUSTOMER-RECORD}, each at its field width. */

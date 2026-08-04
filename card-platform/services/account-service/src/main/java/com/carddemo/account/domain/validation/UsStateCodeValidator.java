@@ -13,14 +13,17 @@ import com.carddemo.cobol.reference.UsStateCodes;
  * edit tests membership in that band and nothing more.</p>
  *
  * <p>app/cbl/COACTUPC.cbl:L2494 fills the {@code PIC X(2)} host field with a plain
- * {@code MOVE}, so letter case stays significant and no space leaves either end of the
- * submitted value. A value of {@code "ny"}, {@code "N "}, or two spaces matches no
+ * {@code MOVE}. Letter case therefore stays significant, and no space leaves either end
+ * of the submitted value. A value of {@code "ny"}, {@code "N "}, or two spaces matches no
  * literal and fails. The failure text repeats app/cbl/COACTUPC.cbl:L2502-L2503: the
  * label under {@code FUNCTION TRIM}, then {@code ': is not a valid state code'}.</p>
  *
  * <p>The caller owns the edits that surround this one, including the character-class
  * edit at app/cbl/COACTUPC.cbl:L1595 and the state-and-zip edit
  * {@code 1280-EDIT-US-STATE-ZIP-CD} at app/cbl/COACTUPC.cbl:L2536.</p>
+ *
+ * <p>Every deviation this class carries from paragraph behaviour is labelled ADDITIVE below and
+ * recorded in {@code card-platform/docs/decision-log.md} (planned).
  */
 public final class UsStateCodeValidator {
 
@@ -39,7 +42,6 @@ public final class UsStateCodeValidator {
     /** That same host field holding spaces in both positions. */
     private static final String HOST_FIELD_SPACES = "  ";
 
-    /** This class holds static members only. */
     private UsStateCodeValidator() {
     }
 
@@ -88,13 +90,9 @@ public final class UsStateCodeValidator {
      * <p>A one-character value, an empty value, and {@code null} fill the positions that remain
      * with spaces. Letter case survives, and no space leaves either end.</p>
      *
-     * <p>ADDITIVE. The source {@code MOVE} drops everything past the second position, and no
-     * source path supplies a longer value: it arrives from a {@code PIC X(02)} screen field at
-     * app/cbl/COACTUPC.cbl:L807. A Representational State Transfer (REST) caller can supply one,
-     * so this method keeps every character. The membership test at app/cpy/CSLKPCDY.cpy:L1012
-     * lists two-character codes alone, so a longer value fails it and takes the message the
-     * source writes at app/cbl/COACTUPC.cbl:L2501-L2506. The edit therefore passes no verdict on
-     * the first two characters of a longer value.</p>
+     * <p>ADDITIVE. A longer value keeps every character here. The membership test at
+     * app/cpy/CSLKPCDY.cpy:L1012 lists two-character codes alone, so a longer value fails it and
+     * takes the message the source writes at app/cbl/COACTUPC.cbl:L2501-L2506.</p>
      *
      * @param stateCode the submitted value, may be {@code null}
      * @return two characters, space-filled on the right where the value ran out, and the whole
@@ -142,11 +140,9 @@ public final class UsStateCodeValidator {
     /**
      * Reports whether the state code carries a character other than a space past the host width.
      *
-     * <p>ADDITIVE. The {@code MOVE} at app/cbl/COACTUPC.cbl:L2494 drops everything past the second
-     * position, and the value it moves comes from a {@code PIC X(02)} field, so it drops nothing
-     * but padding. This test separates the two cases for a wider argument: trailing spaces are the
-     * padding the source itself holds, and any other character is content the edit would not
-     * read.</p>
+     * <p>ADDITIVE. Trailing spaces past the second position are the padding the source
+     * {@code PIC X(02)} field itself holds, and any other character there is content the edit does
+     * not read.</p>
      *
      * @param stateCode the submitted value, never null
      * @return true when a character other than a space sits past the second position

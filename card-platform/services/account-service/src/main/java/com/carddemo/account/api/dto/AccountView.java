@@ -1,9 +1,17 @@
 package com.carddemo.account.api.dto;
 
+import com.carddemo.events.EventEnvelope;
 import java.math.BigDecimal;
 
 /**
  * Account projection returned by {@code GET /accounts/{accountId}}.
+ *
+ * <p>DEMO SURFACE, NO AUTHENTICATION. This projection carries a credit limit, a balance and both
+ * cycle counters, and no module of this platform declares Spring Security, OAuth or JSON Web Token
+ * support. Any caller that reaches the port reaches these figures. The demo stack binds each
+ * published port to the loopback address and seeds only the synthetic rows of
+ * {@code app/data/ASCII/acctdata.txt}. Do not expose the port, and do not load real account data.
+ * Authentication and authorization are separate work.
  *
  * <p>Eleven components carry the eleven values that {@code 1200-SETUP-SCREEN-VARS.} at
  * {@code app/cbl/COACTVWC.cbl:L460} moves for a located account. The gate
@@ -15,7 +23,8 @@ import java.math.BigDecimal;
  * That order differs from the declaration order of {@code 01 ACCOUNT-RECORD.} at
  * {@code app/cpy/CVACT01Y.cpy:L4}. The copybook declares the three dates at L10 through L12 ahead
  * of the two billing-cycle accumulators at L13 and L14. The source moves the two accumulators
- * first, and {@code src/main/resources/openapi.yaml} describes the order this record declares.
+ * first, and this record follows the source order rather than the copybook order. This module ships
+ * no {@code openapi.yaml} yet, so no document beside this record describes that order.
  *
  * <p>Three copybook fields reach this record under a changed shape or not at all.
  * {@code ACCT-ADDR-ZIP} at {@code app/cpy/CVACT01Y.cpy:L15} is absent, and the paragraph at
@@ -23,7 +32,6 @@ import java.math.BigDecimal;
  * {@code app/cpy/CVACT01Y.cpy:L11} arrives as {@link #expirationDate()}, the field name
  * {@code AccountEntity} carries. The trailing {@code FILLER PIC X(178)} at
  * {@code app/cpy/CVACT01Y.cpy:L17} maps to no component.
- * {@code card-platform/docs/traceability-matrix.md} records all three.
  *
  * <p>The record holds no customer identifier under any name. {@code 01 ACCOUNT-RECORD.} declares
  * none, and an account reaches a customer through the card cross-reference alone, which another
@@ -31,9 +39,7 @@ import java.math.BigDecimal;
  *
  * <p>Every component name matches the field of the same value on {@code AccountEntity}. A mapper
  * between the two renames nothing. The record carries values and holds no arithmetic, no format
- * check and no status check. {@code card-platform/docs/decision-log.md} records the component type
- * and naming decisions, and {@code card-platform/docs/business-rule-flags.md} carries the flagged
- * account rules.
+ * check and no status check.
  *
  * @param accountId          eleven-character account identifier, left-padded with zeros.
  *                           {@code app/cbl/COACTVWC.cbl:L468} moves {@code CC-ACCT-ID} into the
@@ -122,4 +128,28 @@ public record AccountView(
         String expirationDate,
         String reissueDate,
         String groupId) {
+    /**
+     * Names all eleven components and withholds every value.
+     *
+     * <p>This override replaces the representation the compiler generates for a record. That
+     * generated form prints the account identifier, the balance, both credit limits and both cycle
+     * accumulators.
+     *
+     * <p>Every component of an account view describes one cardholder's finances, so the text
+     * discloses none of them. Each appears as {@link EventEnvelope#WITHHELD}, the platform-wide
+     * redaction marker.
+     *
+     * @return a rendering that names all eleven components and discloses none, never {@code null}
+     */
+    @Override
+    public String toString() {
+        return "AccountView[accountId=" + EventEnvelope.WITHHELD + ", activeStatus="
+                + EventEnvelope.WITHHELD + ", currentBalance=" + EventEnvelope.WITHHELD
+                + ", creditLimit=" + EventEnvelope.WITHHELD + ", cashCreditLimit="
+                + EventEnvelope.WITHHELD + ", currentCycleCredit=" + EventEnvelope.WITHHELD
+                + ", currentCycleDebit=" + EventEnvelope.WITHHELD + ", openDate="
+                + EventEnvelope.WITHHELD + ", expirationDate=" + EventEnvelope.WITHHELD
+                + ", reissueDate=" + EventEnvelope.WITHHELD + ", groupId=" + EventEnvelope.WITHHELD
+                + "]";
+    }
 }

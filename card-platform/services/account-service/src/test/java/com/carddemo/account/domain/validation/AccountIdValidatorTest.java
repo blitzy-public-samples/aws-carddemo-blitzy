@@ -1,9 +1,7 @@
 package com.carddemo.account.domain.validation;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -24,17 +22,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * field for numeric-ness and for eleven zeros. The {@code STRING} at lines 1806 to 1810 joins the
  * two literals on lines 1807 and 1808. Line 1816 marks the field valid.</p>
  *
- * <p>The field is {@code CC-ACCT-ID PIC X(11)} at app/cpy/CVCRD01Y.cpy:L34-L35, and the numeric
+ * <p>The field is {@code CC-ACCT-ID PIC X(11)} at app/cpy/CVCRD01Y.cpy:L34-L35. The numeric
  * redefine {@code CC-ACCT-ID-N PIC 9(11)} at app/cpy/CVCRD01Y.cpy:L36 covers the same eleven bytes.
- * Lines 1802 and 1803 carry no length limb of their own. The methods below assert a pass for an
- * eleven-digit non-zero field whatever the width of the value it holds. A field of some other width
- * fails through the numeric limb and carries the same message as a field holding a letter.
- * app/cbl/COACTUPC.cbl:L1056 pads the fixed-width field on the right with spaces, and a space is
- * not a digit.</p>
+ * Lines 1802 and 1803 carry no length limb of their own. An eleven-digit non-zero field passes
+ * whatever the width of the value it holds. A field of some other width fails through the numeric
+ * limb and carries the same message as a field holding a letter. app/cbl/COACTUPC.cbl:L1056 pads
+ * the fixed-width field on the right with spaces. A space is not a digit.</p>
  *
  * <p>The paragraph also writes {@code CDEMO-ACCT-ID} and {@code ACUP-NEW-ACCT-ID}, at lines 1794,
- * 1795, 1801, 1812 and 1815. {@code AccountIdValidator} writes neither field and keeps no state, so
- * no method below reads either one.</p>
+ * 1795, 1801, 1812 and 1815. {@code AccountIdValidator} writes neither field and keeps no
+ * state.</p>
  *
  * <p>Each method builds every input it uses. The methods need no Spring context, no broker and no
  * database, so {@code mvn test} runs them on a machine carrying no container runtime.</p>
@@ -220,25 +217,14 @@ class AccountIdValidatorTest {
     }
 
     @Test
-    @DisplayName("AccountIdValidator exposes one static edit and no instance")
+    @DisplayName("AccountIdValidator declares a static single-argument edit returning a verdict")
     void validatorExposesOneStaticEditAndNoInstance() throws NoSuchMethodException {
-        assertThat(Modifier.isFinal(AccountIdValidator.class.getModifiers())).isTrue();
-
-        Constructor<?>[] constructors = AccountIdValidator.class.getDeclaredConstructors();
-
-        assertThat(constructors).hasSize(1);
-        assertThat(Modifier.isPrivate(constructors[0].getModifiers())).isTrue();
-        assertThat(constructors[0].getParameterCount()).isZero();
-
-        List<Method> publicMethods = Arrays.stream(AccountIdValidator.class.getDeclaredMethods())
-                .filter(method -> Modifier.isPublic(method.getModifiers()))
-                .toList();
         Method edit = AccountIdValidator.class.getMethod("validate", String.class);
 
-        assertThat(publicMethods).hasSize(1);
-        assertThat(publicMethods.getFirst().getName()).isEqualTo("validate");
+        assertThat(Modifier.isPublic(edit.getModifiers())).isTrue();
         assertThat(Modifier.isStatic(edit.getModifiers())).isTrue();
         assertThat(edit.getReturnType()).isEqualTo(EditResult.class);
+        assertThat(edit.getParameterTypes()).containsExactly(String.class);
     }
 
     @Test

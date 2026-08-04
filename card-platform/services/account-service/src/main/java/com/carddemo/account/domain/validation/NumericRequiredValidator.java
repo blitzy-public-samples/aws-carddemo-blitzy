@@ -33,6 +33,9 @@ import java.math.BigDecimal;
  * {@code app/cbl/COACTUPC.cbl:L479}. Keeping the first message of a validation pass is the caller's
  * work. This class reads its arguments and changes none of them, so a second call on the same
  * arguments returns the same verdict.</p>
+ *
+ * <p>Every deviation this class carries from paragraph behaviour is labelled ADDITIVE below and
+ * recorded in {@code card-platform/docs/decision-log.md} (planned).
  */
 public final class NumericRequiredValidator {
 
@@ -58,10 +61,8 @@ public final class NumericRequiredValidator {
      * ADDITIVE. Opens the message text for a value wider than the edited field. No source
      * literal carries this text.
      *
-     * <p>The source fills {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at
-     * {@code app/cbl/COACTUPC.cbl:L61} by a {@code MOVE} from a fixed-width screen field, so a
-     * wider value cannot reach the source paragraph. A Representational State Transfer (REST)
-     * caller can supply one, and this edit refuses it instead of reading its first
+     * <p>The edit refuses a value wider than {@code WS-EDIT-ALPHANUM-LENGTH} at
+     * {@code app/cbl/COACTUPC.cbl:L62} and reads none of its
      * characters.</p>
      */
     private static final String ADDITIVE_NO_LONGER_THAN = " must be no longer than ";
@@ -126,8 +127,7 @@ public final class NumericRequiredValidator {
             return EditResult.failure(trimSpaces(fieldLabel) + NOT_SUPPLIED_MESSAGE);
         }
 
-        // ADDITIVE. A value wider than the edited field is refused, so the edit never passes a
-        // verdict on the first characters of a longer value.
+        // ADDITIVE. A value wider than the edited field is refused.
         if (carriesContentPastEditedWidth(value, length)) {
             return EditResult.failure(trimSpaces(fieldLabel) + ADDITIVE_NO_LONGER_THAN
                     + length + ADDITIVE_CHARACTERS);
@@ -195,6 +195,7 @@ public final class NumericRequiredValidator {
      * stands as the source writes it.</p>
      *
      * @param value     the submitted characters; may be {@code null}
+     * @param editField the reference-modified field content, never {@code null}
      */
     private static boolean isNotSupplied(String value, String editField) {
         return value == null
@@ -211,6 +212,7 @@ public final class NumericRequiredValidator {
      * to the width of the compared item.</p>
      *
      * @param editField the reference-modified field content, never {@code null}
+     * @param expected  the character every position must hold
      */
     private static boolean containsOnly(String editField, char expected) {
         for (int index = 0; index < editField.length(); index++) {
@@ -240,14 +242,6 @@ public final class NumericRequiredValidator {
         return true;
     }
 
-    /**
-     * Reports whether one character satisfies {@code IS NUMERIC} on an alphanumeric item.
-     *
-     * <p>{@link Character#isDigit(char)} answers the decimal-digit class. The range bound narrows
-     * that class to the ten characters {@code 0} through {@code 9}, which are the digits COBOL
-     * tests in a single-byte character set and the digits
-     * {@link NumvalParser#numval(String)} converts.</p>
-     */
     private static boolean isDigit(char character) {
         return Character.isDigit(character)
                 && character >= ZERO_DIGIT
@@ -306,9 +300,8 @@ public final class NumericRequiredValidator {
      *
      * <p>ADDITIVE. The source moves a fixed-width screen field into its edit field, so the
      * {@code MOVE} drops nothing but padding. A Representational State Transfer (REST) caller can
-     * supply a wider value, and this test separates the two cases: trailing spaces past the width
-     * are the padding the source itself holds, and any other character past the width is content
-     * the edit would not inspect.</p>
+     * supply a wider value. Trailing spaces past the width are the padding the source itself holds.
+     * Any other character past the width is content the edit does not inspect.</p>
      *
      * <p>A width of zero or less inspects nothing, and this test reports false for it, leaving the
      * not-supplied arm to answer.</p>

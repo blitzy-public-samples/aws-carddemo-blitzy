@@ -2,7 +2,6 @@ package com.carddemo.account.outbox;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 
 import java.lang.reflect.Modifier;
@@ -32,21 +31,18 @@ import com.carddemo.account.messaging.DeadLetterMetadata;
  * {@code ABEND-REASON PIC X(50)} at L26 and {@code ABEND-MSG PIC X(72)} at L28. Two batch
  * programs fill the group, {@code app/cbl/CBTRN02C.cbl} and {@code app/cbl/COACTUPC.cbl}.
  *
- * <p>Every field of the group carries {@code VALUE SPACES}. The tests below hold that a
- * {@code null} component arrives as the empty string, one component at a time and all four at
- * once.
+ * <p>Every field of the group carries {@code VALUE SPACES}. A {@code null} component therefore
+ * arrives as the empty string, one component at a time and all four at once.
  *
  * <p>This class sits in {@code com.carddemo.account.outbox} and the record sits in
  * {@code com.carddemo.account.messaging}. Only public members reach here. One test names every
  * public member an outbox caller uses, so a narrowed modifier fails here.
  *
  * <p>Building the record raises nothing. A component longer than its maximum keeps its leading
- * characters, and {@link DeadLetterMetadata#truncatedComponents()} names it. The tests below hold
- * that behaviour at each of the four widths.
+ * characters. The tests below hold that behaviour at each of the four widths.
  *
  * <p>The header at {@code app/cpy/CSMSG02Y.cpy:L2} names the file {@code CABENDD.CPY}, and the
- * version stamp at L34 reads {@code 2022-07-19 23:15:58 CDT}. See
- * {@code card-platform/docs/business-rule-flags.md}.
+ * version stamp at L34 reads {@code 2022-07-19 23:15:58 CDT}.
  *
  * <p>The last test reads {@code application.yml} from the test classpath and holds the module's
  * configured topic surface: one published topic and no dead-letter topic. No test here starts an
@@ -72,9 +68,6 @@ class DeadLetterMetadataTest {
 
     /** Fields the group declares at {@code app/cpy/CSMSG02Y.cpy:L22}, L24, L26 and L28. */
     private static final int TEXT_COMPONENT_COUNT = 4;
-
-    /** Name of the component the record derives. It has no copybook ancestor. */
-    private static final String TRUNCATION_COMPONENT = "truncatedComponents";
 
     /** The four text components, in the field order of {@code 01 ABEND-DATA}. */
     private static final List<String> TEXT_COMPONENTS =
@@ -109,12 +102,19 @@ class DeadLetterMetadataTest {
     /** Name the published topic key resolves to with no environment override in place. */
     private static final String PUBLISHED_TOPIC_NAME = "account.state-changed";
 
-    /** Dead-letter topic key. The module declares none. */
+    /** Key naming the shared dead-letter topic every service routes to. */
     private static final String DEAD_LETTER_TOPIC_KEY = TOPIC_KEY_PREFIX + "dead-letter";
 
-    /** Prefixes that would appear if the module registered a listener. */
+    /** Name the dead-letter topic key resolves to with no environment override in place. */
+    private static final String DEAD_LETTER_TOPIC_NAME = "carddemo.dead-letter";
+
+    /** Prefixes a consumer or a listener setting takes. */
     private static final List<String> LISTENER_KEY_PREFIXES =
             List.of("spring.kafka.consumer.", "spring.kafka.listener.");
+
+    /** The two acknowledgement settings all six services carry, in name order. */
+    private static final List<String> UNIFORM_LISTENER_KEYS =
+            List.of("spring.kafka.consumer.enable-auto-commit", "spring.kafka.listener.ack-mode");
 
     /** Opening delimiter of a configured placeholder. */
     private static final String PLACEHOLDER_OPEN = "${";
@@ -127,40 +127,35 @@ class DeadLetterMetadataTest {
 
     /**
      * Asserts that the record declares the four fields of {@code 01 ABEND-DATA} as {@code String}
-     * components. The order follows {@code app/cpy/CSMSG02Y.cpy:L22}, L24, L26 and L28, and the
-     * derived list of shortened names follows the four.
+     * components, and declares no fifth. The order follows {@code app/cpy/CSMSG02Y.cpy:L22}, L24,
+     * L26 and L28.
      */
     @Test
-    @DisplayName("Five components: the four copybook fields in order, then the truncation list")
-    void declaresTheFourCopybookFieldsThenTheTruncationList() {
+    @DisplayName("Four components: the four copybook fields, in copybook order, and no more")
+    void declaresTheFourCopybookFieldsAndNoMore() {
         assertThat(DeadLetterMetadata.class.isRecord())
                 .as("DeadLetterMetadata is a record")
                 .isTrue();
 
         RecordComponent[] components = DeadLetterMetadata.class.getRecordComponents();
         assertThat(components)
-                .as("the four fields of app/cpy/CSMSG02Y.cpy:L21 plus the derived truncation list")
-                .hasSize(TEXT_COMPONENT_COUNT + 1);
+                .as("the four fields of app/cpy/CSMSG02Y.cpy:L21 and no other component")
+                .hasSize(TEXT_COMPONENT_COUNT);
 
         List<String> names = new ArrayList<>();
         for (RecordComponent component : components) {
             names.add(component.getName());
         }
-        List<String> expected = new ArrayList<>(TEXT_COMPONENTS);
-        expected.add(TRUNCATION_COMPONENT);
         assertThat(names)
                 .as("component order follows the field order of app/cpy/CSMSG02Y.cpy:L22 onward")
-                .containsExactlyElementsOf(expected);
+                .containsExactlyElementsOf(TEXT_COMPONENTS);
 
-        for (int index = 0; index < TEXT_COMPONENT_COUNT; index++) {
-            assertThat(components[index].getType())
+        for (RecordComponent component : components) {
+            assertThat(component.getType())
                     .as("field %s of app/cpy/CSMSG02Y.cpy:L21 is alphanumeric",
-                            components[index].getName())
+                            component.getName())
                     .isEqualTo(String.class);
         }
-        assertThat(components[TEXT_COMPONENT_COUNT].getType())
-                .as("%s holds names, and no copybook field declares it", TRUNCATION_COMPONENT)
-                .isEqualTo(List.class);
     }
 
     /**
@@ -205,11 +200,6 @@ class DeadLetterMetadataTest {
                 arguments("message", MESSAGE_WIDTH));
     }
 
-    /**
-     * Asserts that a value at a component's width arrives whole and names nothing, and that one
-     * character more keeps the leading characters and names that component alone. Each case runs
-     * against a distinct value per position, so the assertion measures which characters survive.
-     */
     @ParameterizedTest(name = "{0} holds {1} characters and shortens one character more")
     @MethodSource("textComponentWidths")
     @DisplayName("A component holds its copybook width and shortens one character more")
@@ -219,9 +209,6 @@ class DeadLetterMetadataTest {
         assertThat(valueOf(whole, component))
                 .as("%s holds a value of width %d whole", component, width)
                 .isEqualTo(atWidth);
-        assertThat(whole.truncatedComponents())
-                .as("a value at its width is not named as shortened")
-                .isEmpty();
 
         String pastWidth = printableRun(width + 1);
         DeadLetterMetadata shortened = buildWith(component, pastWidth);
@@ -230,18 +217,22 @@ class DeadLetterMetadataTest {
                         width + 1)
                 .isEqualTo(atWidth)
                 .hasSize(width);
-        assertThat(shortened.truncatedComponents())
-                .as("the truncation list names %s and no other component", component)
-                .containsExactly(component);
+        for (String other : TEXT_COMPONENTS) {
+            if (!other.equals(component)) {
+                assertThat(valueOf(shortened, other))
+                        .as("shortening %s leaves %s empty", component, other)
+                        .isEmpty();
+            }
+        }
     }
 
     /**
      * Asserts that a {@code null} in every position arrives as the empty string, matching the
      * {@code VALUE SPACES} clause every field of {@code 01 ABEND-DATA} carries at
-     * {@code app/cpy/CSMSG02Y.cpy:L21}. A missing value names no shortened component.
+     * {@code app/cpy/CSMSG02Y.cpy:L21}.
      */
     @Test
-    @DisplayName("Four null components arrive as four empty strings and name nothing")
+    @DisplayName("Four null components arrive as four empty strings")
     void fourNullComponentsArriveAsFourEmptyStrings() {
         DeadLetterMetadata metadata = DeadLetterMetadata.of(null, null, null, null);
 
@@ -251,15 +242,8 @@ class DeadLetterMetadataTest {
                             + "app/cpy/CSMSG02Y.cpy:L21", component)
                     .isEmpty();
         }
-        assertThat(metadata.truncatedComponents())
-                .as("a null component is not named as shortened")
-                .isEmpty();
     }
 
-    /**
-     * Asserts that one {@code null} arrives as the empty string while the other three keep their
-     * values. Each of the four positions is covered, so an all-or-nothing branch fails here.
-     */
     @Test
     @DisplayName("One null component arrives empty and leaves the other three untouched")
     void oneNullComponentLeavesTheOtherThreeUntouched() {
@@ -281,16 +265,9 @@ class DeadLetterMetadataTest {
                             .isEqualTo(FITTING_VALUES.get(other));
                 }
             }
-            assertThat(metadata.truncatedComponents())
-                    .as("every supplied value fits its copybook width")
-                    .isEmpty();
         }
     }
 
-    /**
-     * Asserts that a value shorter than its maximum arrives unchanged. The record pads nothing out
-     * to the copybook width and trims nothing, and a space survives as printable text.
-     */
     @Test
     @DisplayName("A short value arrives unchanged, with no padding and no trimming")
     void aShortValueArrivesUnchangedWithNoPaddingAndNoTrimming() {
@@ -305,9 +282,6 @@ class DeadLetterMetadataTest {
         assertThat(metadata.message())
                 .as("message keeps its leading and trailing spaces")
                 .isEqualTo(" account row ");
-        assertThat(metadata.truncatedComponents())
-                .as("no component is shortened")
-                .isEmpty();
 
         DeadLetterMetadata single = DeadLetterMetadata.of("9", "r", "o", "b");
         for (String component : TEXT_COMPONENTS) {
@@ -317,11 +291,6 @@ class DeadLetterMetadataTest {
         }
     }
 
-    /**
-     * Asserts that building the record raises nothing when every component runs far past its
-     * maximum and carries control characters. The record describes a failure that already
-     * happened, and a failure raised here would suppress the dead-letter message.
-     */
     @Test
     @DisplayName("Building the record raises nothing, whatever the four components carry")
     void buildingTheRecordRaisesNothing() {
@@ -342,11 +311,6 @@ class DeadLetterMetadataTest {
         assertThat(metadata.message()).hasSize(MESSAGE_WIDTH);
     }
 
-    /**
-     * Asserts that a character outside printable American Standard Code for Information Interchange
-     * (ASCII) arrives as one {@link DeadLetterMetadata#SUBSTITUTE_CHARACTER}. No line break, no tab
-     * and no null character survives, so one dead-letter record stays on one log line.
-     */
     @Test
     @DisplayName("A character outside printable ASCII arrives as the substitute character")
     void aCharacterOutsidePrintableAsciiArrivesAsTheSubstituteCharacter() {
@@ -369,55 +333,52 @@ class DeadLetterMetadataTest {
     }
 
     /**
-     * Asserts that the truncation list names shortened components in component order, and that the
-     * list refuses change. The order follows {@code app/cpy/CSMSG02Y.cpy:L22}, L24, L26 and L28.
+     * Asserts that every component over its width is shortened to that width, and that a component
+     * within its width arrives whole. The widths follow {@code app/cpy/CSMSG02Y.cpy:L22}, L24, L26
+     * and L28.
      */
     @Test
-    @DisplayName("The truncation list follows component order and refuses change")
-    void theTruncationListFollowsComponentOrderAndRefusesChange() {
+    @DisplayName("Every component over its width is shortened, and a whole one is left alone")
+    void everyComponentOverItsWidthIsShortened() {
         String pastEveryWidth = printableRun(MESSAGE_WIDTH + 1);
 
-        List<String> shortened =
-                DeadLetterMetadata.of(pastEveryWidth, pastEveryWidth, pastEveryWidth,
-                        pastEveryWidth).truncatedComponents();
+        DeadLetterMetadata allShortened = DeadLetterMetadata.of(pastEveryWidth, pastEveryWidth,
+                pastEveryWidth, pastEveryWidth);
 
-        assertThat(shortened)
-                .as("all four components are shortened, in the field order of "
-                        + "app/cpy/CSMSG02Y.cpy:L21")
-                .containsExactlyElementsOf(TEXT_COMPONENTS);
-        assertThatThrownBy(() -> shortened.add(TRUNCATION_COMPONENT))
-                .as("the truncation list refuses an addition")
-                .isInstanceOf(UnsupportedOperationException.class);
-        assertThatThrownBy(shortened::clear)
-                .as("the truncation list refuses a removal")
-                .isInstanceOf(UnsupportedOperationException.class);
+        assertThat(allShortened.abendCode()).hasSize(ABEND_CODE_WIDTH);
+        assertThat(allShortened.culprit()).hasSize(CULPRIT_WIDTH);
+        assertThat(allShortened.reason()).hasSize(REASON_WIDTH);
+        assertThat(allShortened.message()).hasSize(MESSAGE_WIDTH);
 
         DeadLetterMetadata twoShortened = DeadLetterMetadata.of(printableRun(ABEND_CODE_WIDTH),
                 printableRun(CULPRIT_WIDTH + 1), printableRun(REASON_WIDTH),
                 printableRun(MESSAGE_WIDTH + 1));
-        assertThat(twoShortened.truncatedComponents())
-                .as("the list names the two shortened components and skips the two whole ones")
-                .containsExactly("culprit", "message");
+
+        assertThat(twoShortened.abendCode())
+                .as("a whole abendCode arrives at its own length")
+                .hasSize(ABEND_CODE_WIDTH);
+        assertThat(twoShortened.culprit()).hasSize(CULPRIT_WIDTH);
+        assertThat(twoShortened.reason())
+                .as("a whole reason arrives at its own length")
+                .hasSize(REASON_WIDTH);
+        assertThat(twoShortened.message()).hasSize(MESSAGE_WIDTH);
     }
 
     /**
-     * Asserts that a supplied {@code truncatedComponents} argument is discarded and rebuilt, so the
-     * fifth component always agrees with the four text components.
+     * Asserts that the canonical constructor sanitises the same way the factory does, so a caller
+     * that bypasses the factory gains nothing.
      */
     @Test
-    @DisplayName("A supplied truncation list is discarded and rebuilt from the four components")
-    void aSuppliedTruncationListIsDiscardedAndRebuilt() {
-        DeadLetterMetadata claimingTruncation = new DeadLetterMetadata("0902", "outbox", "reason",
-                "message", List.of("abendCode", "culprit", "reason", "message"));
-        assertThat(claimingTruncation.truncatedComponents())
-                .as("no component is shortened, so the list is empty")
-                .isEmpty();
+    @DisplayName("The canonical constructor sanitises the same way the factory does")
+    void theCanonicalConstructorSanitisesTheSameWayTheFactoryDoes() {
+        assertThat(new DeadLetterMetadata("0902", "outbox", "reason", "message"))
+                .as("the canonical constructor and the factory agree on a whole value")
+                .isEqualTo(DeadLetterMetadata.of("0902", "outbox", "reason", "message"));
 
-        DeadLetterMetadata denyingTruncation = new DeadLetterMetadata(
-                printableRun(ABEND_CODE_WIDTH + 1), "outbox", "reason", "message", List.of());
-        assertThat(denyingTruncation.truncatedComponents())
-                .as("abendCode is shortened, so the list names it")
-                .containsExactly("abendCode");
+        assertThat(new DeadLetterMetadata(printableRun(ABEND_CODE_WIDTH + 1), "outbox", "reason",
+                "message").abendCode())
+                .as("the canonical constructor shortens an over-long abendCode")
+                .hasSize(ABEND_CODE_WIDTH);
     }
 
     /**
@@ -440,9 +401,6 @@ class DeadLetterMetadataTest {
         assertThat(metadata.culprit())
                 .as("culprit keeps the leading %d characters of the type name", CULPRIT_WIDTH)
                 .isEqualTo(typeName.substring(0, CULPRIT_WIDTH));
-        assertThat(metadata.truncatedComponents())
-                .as("the truncation list names culprit")
-                .containsExactly("culprit");
         assertThat(List.of(metadata.abendCode(), metadata.culprit(), metadata.reason(),
                 metadata.message()))
                 .as("the failure text reaches no component")
@@ -453,11 +411,6 @@ class DeadLetterMetadataTest {
                 .isEmpty();
     }
 
-    /**
-     * Asserts that every member an outbox caller uses is public, and that the record sits in a
-     * different package from this test. A narrowed modifier stops this class compiling, and these
-     * assertions name the members the compiler would otherwise fail on without explanation.
-     */
     @Test
     @DisplayName("Every member an outbox caller uses is public and reaches a different package")
     void everyMemberAnOutboxCallerUsesIsPublic() {
@@ -503,22 +456,22 @@ class DeadLetterMetadataTest {
 
     /**
      * Asserts the module's configured topic surface, read from {@code application.yml} on the test
-     * classpath. The module declares one topic, {@code account.state-changed}, and no dead-letter
-     * topic. The module also declares no consumer and no listener, and a dead-letter topic carries
-     * a message a listener could not consume.
+     * classpath. The module declares two topics: {@code account.state-changed}, which it publishes,
+     * and the shared dead-letter topic carrying a {@link DeadLetterMetadata} payload.
      *
-     * <p>The published topic name arrives as a placeholder holding a default, and the assertion
-     * reads that default. No application context, database or broker starts here.
+     * <p>The published topic name arrives as a plain literal and the dead-letter name as a
+     * placeholder holding a default. The module registers no listener, so it names no consumer
+     * group. No application context, database or broker starts here.
      */
     @Test
-    @DisplayName("The configured topic surface holds one published topic and no dead-letter topic")
-    void theConfiguredTopicSurfaceHoldsOnePublishedTopicAndNoDeadLetterTopic() {
+    @DisplayName("The configured topic surface holds one published topic and the dead-letter topic")
+    void theConfiguredTopicSurfaceHoldsOnePublishedTopicAndTheDeadLetterTopic() {
         Properties configuration = loadConfiguration();
 
         assertThat(configuration.stringPropertyNames())
-                .as("%s declares one topic under %s", CONFIGURATION_RESOURCE, TOPIC_KEY_PREFIX)
+                .as("%s declares two topics under %s", CONFIGURATION_RESOURCE, TOPIC_KEY_PREFIX)
                 .filteredOn(name -> name.startsWith(TOPIC_KEY_PREFIX))
-                .containsExactly(PUBLISHED_TOPIC_KEY);
+                .containsExactlyInAnyOrder(PUBLISHED_TOPIC_KEY, DEAD_LETTER_TOPIC_KEY);
 
         String configured = configuration.getProperty(PUBLISHED_TOPIC_KEY);
         assertThat(configured)
@@ -529,13 +482,22 @@ class DeadLetterMetadataTest {
                         PUBLISHED_TOPIC_KEY)
                 .isEqualTo(PUBLISHED_TOPIC_NAME);
 
-        assertThat(configuration.getProperty(DEAD_LETTER_TOPIC_KEY))
-                .as("the module declares no dead-letter topic")
-                .isNull();
-        assertThat(configuration.stringPropertyNames())
-                .as("the module registers no listener, so no consumer key appears")
-                .filteredOn(name -> LISTENER_KEY_PREFIXES.stream().anyMatch(name::startsWith))
-                .isEmpty();
+        String configuredDeadLetter = configuration.getProperty(DEAD_LETTER_TOPIC_KEY);
+        assertThat(configuredDeadLetter)
+                .as("%s carries a value", DEAD_LETTER_TOPIC_KEY)
+                .isNotNull();
+        assertThat(configuredDefault(configuredDeadLetter))
+                .as("%s resolves to the shared dead-letter topic name", DEAD_LETTER_TOPIC_KEY)
+                .isEqualTo(DEAD_LETTER_TOPIC_NAME);
+
+        List<String> acknowledgementKeys = configuration.keySet().stream()
+                .map(String::valueOf)
+                .filter(name -> LISTENER_KEY_PREFIXES.stream().anyMatch(name::startsWith))
+                .sorted()
+                .toList();
+        assertThat(acknowledgementKeys)
+                .as("the module registers no listener, so it names no consumer group")
+                .isEqualTo(UNIFORM_LISTENER_KEYS);
     }
 
     /**

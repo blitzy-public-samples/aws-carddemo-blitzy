@@ -21,6 +21,9 @@ import com.carddemo.cobol.reference.UsPhoneAreaCodes;
  * <p>{@code WS-RETURN-MSG} at app/cbl/COACTUPC.cbl:L479 holds one message per validation pass, so
  * this class returns the first message its checks produce. app/cbl/COACTUPC.cbl:L2233 records that
  * a phone number is optional.</p>
+ *
+ * <p>Every deviation this class carries from paragraph behaviour is labelled ADDITIVE below and
+ * recorded in {@code card-platform/docs/decision-log.md} (planned).
  */
 public final class UsPhoneNumberValidator {
 
@@ -71,7 +74,6 @@ public final class UsPhoneNumberValidator {
     /** Literal at app/cbl/COACTUPC.cbl:L2410. */
     private static final String LINE_NUMBER_ZERO = ": Line number code cannot be zero";
 
-    /** This class holds no state and is never instantiated. */
     private UsPhoneNumberValidator() {
     }
 
@@ -134,7 +136,6 @@ public final class UsPhoneNumberValidator {
      * app/cbl/COACTUPC.cbl:L2239. The line number is never tested for spaces. A blank area code, a
      * blank prefix, and a populated line number therefore reach app/cbl/COACTUPC.cbl:L2240, which
      * marks all three parts valid.</p>
-     *
      *
      * @param areaCode   the area code as supplied
      * @param prefix     the prefix as supplied
@@ -241,11 +242,8 @@ public final class UsPhoneNumberValidator {
      * app/cbl/COACTUPC.cbl:L87, L92 or L97 stores. A short value therefore fails the digit test,
      * since a trailing space is not a digit.</p>
      *
-     * <p>ADDITIVE. The source {@code MOVE} drops every character past the declared width, and no
-     * source path supplies one: the value arrives from a fixed-width screen field. A
-     * Representational State Transfer (REST) caller can supply a longer value, so this method
-     * keeps every character and {@link #isNumericAtWidth(String, int)} refuses the result. The
-     * edit then passes no verdict on the first characters of a longer value.</p>
+     * <p>ADDITIVE. A value longer than the declared width keeps every character here, and
+     * {@link #isNumericAtWidth(String, int)} refuses the result.</p>
      *
      * @param value the value as supplied, possibly null
      * @param width the declared width of the field
@@ -264,10 +262,9 @@ public final class UsPhoneNumberValidator {
      * Reports whether the value carries a character other than a space past the declared width.
      *
      * <p>ADDITIVE. The {@code MOVE} at app/cbl/COACTUPC.cbl:L87, L92 or L97 drops everything past
-     * the declared width, and the value it moves comes from a screen field of that exact width, so
-     * it drops nothing but padding. This test separates the two cases for a wider argument:
-     * trailing spaces are the padding the source itself holds, and any other character is content
-     * the edit would not read.</p>
+     * the declared width. The value it moves comes from a screen field of that exact width, so it
+     * drops nothing but padding. For a wider argument, trailing spaces are that padding, and any
+     * other character is content the edit does not read.</p>
      *
      * @param supplied the value as supplied, never null
      * @param width    the declared width of the field
@@ -327,8 +324,8 @@ public final class UsPhoneNumberValidator {
      * {@code width} of them.
      *
      * <p>The width clause is ADDITIVE and it is unreachable from the source, where the field
-     * cannot hold more than {@code width} characters. It makes a wider value fail the check that
-     * the message at app/cbl/COACTUPC.cbl:L2272, L2343 or L2396 already describes: each one reads
+     * cannot hold more than {@code width} characters. It makes a wider value fail. The message at
+     * app/cbl/COACTUPC.cbl:L2272, L2343 or L2396 already describes that failure: each one reads
      * that the part must be a number of a stated digit count.</p>
      *
      * @param stored the field contents, at its declared width or wider

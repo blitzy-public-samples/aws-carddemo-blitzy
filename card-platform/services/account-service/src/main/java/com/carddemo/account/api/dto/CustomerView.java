@@ -1,7 +1,16 @@
 package com.carddemo.account.api.dto;
 
+import com.carddemo.events.EventEnvelope;
+
 /**
  * Customer projection the account service returns for one customer record.
+ *
+ * <p>DEMO SURFACE, NO AUTHENTICATION. Every component below is personal data, and no module of this
+ * platform declares Spring Security, OAuth or JSON Web Token support. Any caller that reaches the
+ * port reaches this projection. The demo stack binds each published port to the loopback address and
+ * seeds only the synthetic rows of {@code app/data/ASCII/custdata.txt}, so no real customer appears
+ * in it. Do not expose the port, and do not load real customer data. Authentication and
+ * authorization are separate work.
  *
  * <p>Sixteen components carry sixteen of the eighteen fields that {@code 01 CUSTOMER-RECORD}
  * declares at {@code app/cpy/CVCUS01Y.cpy:L5-L22}. Component order follows the order the account
@@ -10,15 +19,7 @@ package com.carddemo.account.api.dto;
  * code and the country code arrive in the order L514, L515 and L516 move them. The copybook
  * declares those three at L12, L13 and L14.
  *
- * <p>The two fields at {@code app/cpy/CVCUS01Y.cpy:L17-L18} map to no component here. The account
- * view program moves both to the screen, one through the hyphenating {@code STRING} at
- * {@code app/cbl/COACTVWC.cbl:L496-L504} and one plain at {@code app/cbl/COACTVWC.cbl:L519}.
- * card-platform/docs/business-rule-flags.md carries that divergence, and
- * card-platform/docs/decision-log.md records it alongside the text form of {@code customerId}.
- *
- * <p>The trailing {@code FILLER PIC X(168)} at {@code app/cpy/CVCUS01Y.cpy:L23} maps to no
- * component. card-platform/docs/traceability-matrix.md records those dropped bytes and the
- * {@code CUST-ADDR-LINE-3} to {@code addressCity} name change.
+ * <p>The two fields at {@code app/cpy/CVCUS01Y.cpy:L17-L18} map to no component here.
  *
  * <p>Fifteen components hold text as the customer record stores it, with the stored width as the
  * maximum and no trimming applied. The sixteenth, {@code ficoCreditScore}, holds a number. Any
@@ -97,4 +98,30 @@ public record CustomerView(
         String phoneNumber2,
         String eftAccountId,
         String primaryCardHolderIndicator) {
+    /**
+     * Names all sixteen components and withholds every value.
+     *
+     * <p>This override replaces the representation the compiler generates for a record. That
+     * generated form prints a name, a date of birth, three address lines, two telephone numbers, an
+     * electronic funds transfer account identifier and a credit score.
+     *
+     * <p>Every component appears as {@link EventEnvelope#WITHHELD}, the platform-wide redaction
+     * marker. A customer view holds nothing that belongs in a log line.
+     *
+     * @return a rendering that names all sixteen components and discloses none, never {@code null}
+     */
+    @Override
+    public String toString() {
+        return "CustomerView[customerId=" + EventEnvelope.WITHHELD + ", ficoCreditScore="
+                + EventEnvelope.WITHHELD + ", dateOfBirth=" + EventEnvelope.WITHHELD
+                + ", firstName=" + EventEnvelope.WITHHELD + ", middleName="
+                + EventEnvelope.WITHHELD + ", lastName=" + EventEnvelope.WITHHELD
+                + ", addressLine1=" + EventEnvelope.WITHHELD + ", addressLine2="
+                + EventEnvelope.WITHHELD + ", addressCity=" + EventEnvelope.WITHHELD
+                + ", addressStateCode=" + EventEnvelope.WITHHELD + ", addressZip="
+                + EventEnvelope.WITHHELD + ", addressCountryCode=" + EventEnvelope.WITHHELD
+                + ", phoneNumber1=" + EventEnvelope.WITHHELD + ", phoneNumber2="
+                + EventEnvelope.WITHHELD + ", eftAccountId=" + EventEnvelope.WITHHELD
+                + ", primaryCardHolderIndicator=" + EventEnvelope.WITHHELD + "]";
+    }
 }

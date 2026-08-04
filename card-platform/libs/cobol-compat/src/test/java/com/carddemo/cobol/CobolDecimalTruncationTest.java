@@ -17,7 +17,6 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -55,9 +54,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>A {@code COMPUTE} stores once. {@code app/cbl/CBTRN02C.cbl:L403-L405} and
  * {@code app/cbl/CBACT04C.cbl:L464-L465} each evaluate a whole expression and truncate the result
- * on the single store into the target field, so this class evaluates the expression exactly and
- * then applies one store. An {@code ADD} or a {@code SUBTRACT} stores once as well, into the
- * field it names.
+ * on that single store. This class therefore evaluates the expression exactly and then applies one
+ * store. An {@code ADD} or a {@code SUBTRACT} stores once as well, into the field it names.
  *
  * <p>Three programs supply every expected value in this class: {@code app/cbl/CBTRN02C.cbl},
  * {@code app/cbl/COBIL00C.cbl}, and {@code app/cbl/CBACT04C.cbl}. Scales and precisions come from
@@ -74,6 +72,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Every guard {@link CobolDecimal} declares has a method below that names the exception type
  * and checks the message carries no operand value.
+ *
+ * <p>This class asserts arithmetic and source text, and it models no business behaviour. Which
+ * accumulator one transaction reaches belongs to the ledger posting service, and the online payment
+ * path belongs to the account service. Each of those services asserts its own behaviour against its
+ * own code. Where a statement below needs the shape of a branch, it reads that branch out of the
+ * program at its locator rather than reimplementing it.
  */
 class CobolDecimalTruncationTest {
 
@@ -207,7 +211,7 @@ class CobolDecimalTruncationTest {
     /** The truncated balance after the add at {@code app/cbl/CBTRN02C.cbl:L547}. */
     private static final BigDecimal TRUNCATED_ACCOUNT_BALANCE = new BigDecimal("1025.55");
 
-    /** The half-up balance from the same two operands. */
+    /** The half-up balance from the same two operands the add at L547 takes. */
     private static final BigDecimal HALF_UP_ACCOUNT_BALANCE = new BigDecimal("1025.56");
 
     /** The balance after adding an amount already at the stored scale. */
@@ -295,7 +299,7 @@ class CobolDecimalTruncationTest {
     private static final BigDecimal TRUNCATED_BALANCE_AFTER_PARTIAL_PAYMENT =
             new BigDecimal("749.99");
 
-    /** The half-up balance from the same two operands. */
+    /** The half-up balance from the same two operands the subtraction takes. */
     private static final BigDecimal HALF_UP_BALANCE_AFTER_PARTIAL_PAYMENT =
             new BigDecimal("750.00");
 
@@ -629,52 +633,56 @@ class CobolDecimalTruncationTest {
     }
 
     /**
-     * Site 3. Asserts that the branch {@code IF DALYTRAN-AMT >= 0} at
-     * {@code app/cbl/CBTRN02C.cbl:L548} sends the amount to the cycle credit accumulator at
-     * {@code app/cbl/CBTRN02C.cbl:L549} and leaves the cycle debit accumulator alone, and that a
-     * negative amount does the opposite at {@code app/cbl/CBTRN02C.cbl:L551}. Zero takes the credit
-     * branch.
+     * Site 3. The branch {@code IF DALYTRAN-AMT >= 0} at {@code app/cbl/CBTRN02C.cbl:L548} sends
+     * the amount to the cycle credit accumulator at {@code app/cbl/CBTRN02C.cbl:L549} and leaves
+     * the cycle debit accumulator alone. A negative amount does the opposite at
+     * {@code app/cbl/CBTRN02C.cbl:L551}. Zero takes the credit branch.
      *
-     * <p>{@link AccountRecordUnderPosting} holds both accumulators and the balance in mutable
-     * fields, so each assertion compares the state after the update against the state before it.
-     * The branch itself belongs to the ledger posting service; this method exercises the branch as
-     * the source writes it and the accumulator arithmetic {@link CobolDecimal} supplies.
+     * <p>This class owns the arithmetic and not the branch. The three assertions below read the
+     * branch out of {@code app/cbl/CBTRN02C.cbl} and then apply the accumulator add
+     * {@link CobolDecimal} supplies to the operands each limb selects. Which limb one transaction
+     * takes is a property of the ledger posting service, and that service asserts it against its own
+     * code.
      */
     @Test
     void theSignOfTheAmountSelectsOneAccumulatorAndLeavesTheOtherUnchanged() {
-        AccountRecordUnderPosting purchase =
-                new AccountRecordUnderPosting(ACCOUNT_BALANCE, CYCLE_CREDIT_BEFORE_PURCHASE,
-                        NEGATIVE_CYCLE_DEBIT);
-        BigDecimal debitBeforePurchase = purchase.cycleDebit;
+        assertTrue(sourceLine(POSTING_PROGRAM, 548).contains("IF DALYTRAN-AMT >= 0"),
+                "app/cbl/CBTRN02C.cbl:L548 stopped opening the branch on a non-negative amount");
+        assertTrue(sourceLine(POSTING_PROGRAM, 549).contains("ACCT-CURR-CYC-CREDIT"),
+                "app/cbl/CBTRN02C.cbl:L549 stopped naming the cycle credit accumulator");
+        assertTrue(sourceLine(POSTING_PROGRAM, 550).contains("ELSE"),
+                "app/cbl/CBTRN02C.cbl:L550 stopped separating the two limbs");
+        assertTrue(sourceLine(POSTING_PROGRAM, 551).contains("ACCT-CURR-CYC-DEBIT"),
+                "app/cbl/CBTRN02C.cbl:L551 stopped naming the cycle debit accumulator");
 
-        purchase.post(PURCHASE_AMOUNT);
+        BigDecimal creditAfterPurchase = CobolDecimal.add(CYCLE_CREDIT_BEFORE_PURCHASE,
+                PURCHASE_AMOUNT, PicClause.ACCT_CURR_CYC_CREDIT_SCALE);
 
-        assertEquals(CYCLE_CREDIT_AFTER_PURCHASE, purchase.cycleCredit,
-                "a non-negative amount stopped reaching the cycle credit accumulator");
-        assertEquals(debitBeforePurchase, purchase.cycleDebit,
-                "a non-negative amount moved the cycle debit accumulator");
+        assertEquals(CYCLE_CREDIT_AFTER_PURCHASE, creditAfterPurchase,
+                "the cycle credit add at app/cbl/CBTRN02C.cbl:L549 stopped reaching its expected "
+                        + "value");
 
-        AccountRecordUnderPosting zeroAmount =
-                new AccountRecordUnderPosting(ACCOUNT_BALANCE, CYCLE_CREDIT_BEFORE_PURCHASE,
-                        NEGATIVE_CYCLE_DEBIT);
+        BigDecimal creditAfterZero = CobolDecimal.add(CYCLE_CREDIT_BEFORE_PURCHASE,
+                ZERO_ACCUMULATOR, PicClause.ACCT_CURR_CYC_CREDIT_SCALE);
 
-        zeroAmount.post(ZERO_ACCUMULATOR);
+        assertEquals(CYCLE_CREDIT_BEFORE_PURCHASE, creditAfterZero,
+                "adding zero to the cycle credit accumulator moved it, and zero takes the credit "
+                        + "limb of app/cbl/CBTRN02C.cbl:L548");
+        assertEquals(0, BigDecimal.ZERO.compareTo(ZERO_ACCUMULATOR),
+                "the operand standing for a zero amount stopped comparing equal to zero, so it no "
+                        + "longer reaches the limb app/cbl/CBTRN02C.cbl:L548 sends zero to");
 
-        assertEquals(CYCLE_CREDIT_BEFORE_PURCHASE, zeroAmount.cycleCredit,
-                "zero stopped taking the cycle credit branch");
-        assertEquals(NEGATIVE_CYCLE_DEBIT, zeroAmount.cycleDebit,
-                "zero moved the cycle debit accumulator");
+        BigDecimal debitAfterRefund = CobolDecimal.add(NEGATIVE_CYCLE_DEBIT,
+                NEGATIVE_AMOUNT_THREE_DECIMALS, PicClause.ACCT_CURR_CYC_DEBIT_SCALE);
 
-        AccountRecordUnderPosting refund =
-                new AccountRecordUnderPosting(ACCOUNT_BALANCE, CYCLE_CREDIT_BEFORE_PURCHASE,
-                        NEGATIVE_CYCLE_DEBIT);
-
-        refund.post(NEGATIVE_AMOUNT_THREE_DECIMALS);
-
-        assertEquals(TRUNCATED_CYCLE_DEBIT, refund.cycleDebit,
-                "a negative amount stopped reaching the cycle debit accumulator");
-        assertEquals(CYCLE_CREDIT_BEFORE_PURCHASE, refund.cycleCredit,
-                "a negative amount moved the cycle credit accumulator");
+        assertEquals(TRUNCATED_CYCLE_DEBIT, debitAfterRefund,
+                "the cycle debit add at app/cbl/CBTRN02C.cbl:L551 stopped truncating toward zero");
+        assertNotEquals(HALF_UP_CYCLE_DEBIT, debitAfterRefund,
+                "the cycle debit add began agreeing with half-up rounding, and the rounding phrase "
+                        + "appears in none of the twenty-eight programs under app/cbl");
+        assertEquals(-1, NEGATIVE_AMOUNT_THREE_DECIMALS.signum(),
+                "the operand standing for a refund stopped being negative, so it no longer reaches "
+                        + "the limb app/cbl/CBTRN02C.cbl:L551 opens");
     }
 
     /**
@@ -742,45 +750,48 @@ class CobolDecimalTruncationTest {
      */
     @Test
     void billPaymentSubtractReachesZeroAndLeavesBothCycleAccumulatorsUntouched() {
-        AccountRecordUnderPayment record = new AccountRecordUnderPayment(BALANCE_BEFORE_PAYMENT,
-                CYCLE_CREDIT, CYCLE_DEBIT);
-        BigDecimal cycleCreditBeforePayment = record.cycleCredit;
-        BigDecimal cycleDebitBeforePayment = record.cycleDebit;
+        assertTrue(sourceLine(BILL_PAYMENT_PROGRAM, 234).contains("ACCT-CURR-BAL - TRAN-AMT"),
+                "app/cbl/COBIL00C.cbl:L234 stopped subtracting the payment amount from the "
+                        + "balance");
+        assertEquals(0, countOccurrences(BILL_PAYMENT_PROGRAM, "ACCT-CURR-CYC"),
+                "app/cbl/COBIL00C.cbl began naming a cycle accumulator, so the online payment path "
+                        + "no longer diverges from the batch posting path at "
+                        + "app/cbl/CBTRN02C.cbl:L548-L551");
 
-        BigDecimal paymentAmount = CobolDecimal.truncateToPictureField(record.currentBalance,
+        BigDecimal paymentAmount = CobolDecimal.truncateToPictureField(BALANCE_BEFORE_PAYMENT,
                 PicClause.TRAN_AMT_PRECISION, PicClause.TRAN_AMT_SCALE);
 
-        assertEquals(BALANCE_BEFORE_PAYMENT, paymentAmount);
+        assertEquals(BALANCE_BEFORE_PAYMENT, paymentAmount,
+                "the whole balance stopped fitting the amount field TRAN-AMT PIC S9(09)V99 at "
+                        + "app/cpy/CVTRA05Y.cpy:L10, which app/cbl/COBIL00C.cbl:L224 moves it "
+                        + "into");
 
-        record.pay(paymentAmount);
+        BigDecimal balanceAfterPayment = CobolDecimal.subtract(BALANCE_BEFORE_PAYMENT,
+                paymentAmount, PicClause.ACCT_CURR_BAL_SCALE);
 
-        assertEquals(BALANCE_AFTER_PAYMENT, record.currentBalance);
-        assertEquals(0, record.currentBalance.signum());
-        assertEquals(PicClause.ACCT_CURR_BAL_SCALE, record.currentBalance.scale());
-
-        assertNotEquals(BALANCE_BEFORE_PAYMENT, record.currentBalance,
+        assertEquals(BALANCE_AFTER_PAYMENT, balanceAfterPayment,
+                "the subtract at app/cbl/COBIL00C.cbl:L234 stopped reaching zero when the payment "
+                        + "is the whole balance");
+        assertEquals(0, balanceAfterPayment.signum(),
+                "the balance after a full payment stopped being zero");
+        assertEquals(PicClause.ACCT_CURR_BAL_SCALE, balanceAfterPayment.scale(),
+                "the balance after a full payment stopped holding the scale of "
+                        + "ACCT-CURR-BAL PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L7");
+        assertNotEquals(BALANCE_BEFORE_PAYMENT, balanceAfterPayment,
                 "the payment left the balance where it started");
-        assertSame(cycleCreditBeforePayment, record.cycleCredit,
-                "the payment path moved the cycle credit accumulator");
-        assertSame(cycleDebitBeforePayment, record.cycleDebit,
-                "the payment path moved the cycle debit accumulator");
-        assertEquals(CYCLE_CREDIT, record.cycleCredit);
-        assertEquals(CYCLE_DEBIT, record.cycleDebit);
 
-        AccountRecordUnderPayment partial = new AccountRecordUnderPayment(ACCOUNT_BALANCE,
-                CYCLE_CREDIT, CYCLE_DEBIT);
+        BigDecimal balanceAfterPartialPayment = CobolDecimal.subtract(ACCOUNT_BALANCE,
+                PAYMENT_WITH_THIRD_DECIMAL, PicClause.ACCT_CURR_BAL_SCALE);
 
-        partial.pay(PAYMENT_WITH_THIRD_DECIMAL);
-
-        assertEquals(TRUNCATED_BALANCE_AFTER_PARTIAL_PAYMENT, partial.currentBalance);
+        assertEquals(TRUNCATED_BALANCE_AFTER_PARTIAL_PAYMENT, balanceAfterPartialPayment,
+                "the subtract at app/cbl/COBIL00C.cbl:L234 stopped truncating toward zero");
         assertEquals(HALF_UP_BALANCE_AFTER_PARTIAL_PAYMENT, ACCOUNT_BALANCE
                 .subtract(PAYMENT_WITH_THIRD_DECIMAL)
-                .setScale(PicClause.ACCT_CURR_BAL_SCALE, RoundingMode.HALF_UP));
-        assertNotEquals(HALF_UP_BALANCE_AFTER_PARTIAL_PAYMENT, partial.currentBalance);
-        assertEquals(CYCLE_CREDIT, partial.cycleCredit,
-                "the partial payment moved the cycle credit accumulator");
-        assertEquals(CYCLE_DEBIT, partial.cycleDebit,
-                "the partial payment moved the cycle debit accumulator");
+                .setScale(PicClause.ACCT_CURR_BAL_SCALE, RoundingMode.HALF_UP),
+                "the half-up value this test pins stopped matching what half-up rounding returns");
+        assertNotEquals(HALF_UP_BALANCE_AFTER_PARTIAL_PAYMENT, balanceAfterPartialPayment,
+                "the subtract began agreeing with half-up rounding, and the rounding phrase "
+                        + "appears in none of the twenty-eight programs under app/cbl");
     }
 
     /**
@@ -1229,10 +1240,6 @@ class CobolDecimalTruncationTest {
                 "the money-moving statement list repeats a locator");
     }
 
-    /**
-     * Asserts that the {@code ROUNDED} phrase appears in none of the three programs this class
-     * reads. Every store in those programs therefore truncates toward zero.
-     */
     @Test
     void theRoundedPhraseAppearsInNoneOfTheThreeProgramsThisClassReads() {
         for (String programFileName : List.of(POSTING_PROGRAM, BILL_PAYMENT_PROGRAM,
@@ -1247,10 +1254,6 @@ class CobolDecimalTruncationTest {
     // The guards CobolDecimal declares. Each method names the exception type and checks the
     // message carries no operand value.
 
-    /**
-     * Asserts that every arithmetic method rejects a {@code null} operand with
-     * {@link NullPointerException} and names the parameter in the message.
-     */
     @Test
     void everyArithmeticMethodRejectsANullOperand() {
         assertEquals("augend must not be null", assertThrows(NullPointerException.class,
@@ -1288,10 +1291,6 @@ class CobolDecimalTruncationTest {
                 () -> CobolDecimal.formatProcessingTimestamp(null));
     }
 
-    /**
-     * Asserts that a divisor of zero reaches {@link ArithmeticException} rather than returning a
-     * value, on both the plain division and the multiply-then-divide form.
-     */
     @Test
     void aDivisorOfZeroIsRejected() {
         assertThrows(ArithmeticException.class,
@@ -1302,10 +1301,6 @@ class CobolDecimalTruncationTest {
                         BigDecimal.ZERO, PicClause.WS_MONTHLY_INT_SCALE));
     }
 
-    /**
-     * Asserts that a negative scale is rejected by every method that takes one, and that the
-     * message names the scale and no operand value.
-     */
     @Test
     void aNegativeScaleIsRejectedByEveryMethodThatTakesOne() {
         IllegalArgumentException rejected = assertThrows(IllegalArgumentException.class,
@@ -1372,8 +1367,6 @@ class CobolDecimalTruncationTest {
                 "the largest year the field holds stopped rendering");
     }
 
-    // Private helpers and holders.
-
     /**
      * Returns one line of one program under {@code app/cbl}.
      *
@@ -1387,6 +1380,27 @@ class CobolDecimalTruncationTest {
         assertTrue(oneIndexedLine <= lines.size(),
                 "app/cbl/" + programFileName + " is shorter than line " + oneIndexedLine);
         return lines.get(oneIndexedLine - 1);
+    }
+
+    /**
+     * How many lines of one program hold a given text.
+     *
+     * <p>A count of zero is evidence a program never names a field. The online payment path never
+     * names either cycle accumulator, which is how it diverges from the batch posting path.
+     *
+     * @param programFileName file name under {@code app/cbl}
+     * @param text            the text to count, compared literally
+     * @return the number of lines holding that text
+     */
+    private static int countOccurrences(String programFileName, String text) {
+        int found = 0;
+
+        for (String line : programLines(programFileName)) {
+            if (line.contains(text)) {
+                found++;
+            }
+        }
+        return found;
     }
 
     /**
@@ -1437,81 +1451,4 @@ class CobolDecimalTruncationTest {
      */
     private record SourceStatement(String programFileName, int oneIndexedLine,
                                    String expectedText) { }
-
-    /**
-     * The three account fields {@code 2800-UPDATE-ACCOUNT-REC} at
-     * {@code app/cbl/CBTRN02C.cbl:L545-L560} changes, held in mutable fields so a test can compare
-     * the state after an update against the state before it.
-     */
-    private static final class AccountRecordUnderPosting {
-
-        /** {@code ACCT-CURR-BAL}, {@code app/cpy/CVACT01Y.cpy:L7}. */
-        private BigDecimal currentBalance;
-
-        /** {@code ACCT-CURR-CYC-CREDIT}, {@code app/cpy/CVACT01Y.cpy:L13}. */
-        private BigDecimal cycleCredit;
-
-        /** {@code ACCT-CURR-CYC-DEBIT}, {@code app/cpy/CVACT01Y.cpy:L14}. */
-        private BigDecimal cycleDebit;
-
-        AccountRecordUnderPosting(BigDecimal currentBalance, BigDecimal cycleCredit,
-                BigDecimal cycleDebit) {
-            this.currentBalance = currentBalance;
-            this.cycleCredit = cycleCredit;
-            this.cycleDebit = cycleDebit;
-        }
-
-        /**
-         * Applies {@code app/cbl/CBTRN02C.cbl:L547-L552}: the amount reaches the balance, then the
-         * sign of the amount selects one accumulator.
-         *
-         * @param amount {@code DALYTRAN-AMT}, {@code app/cpy/CVTRA06Y.cpy:L10}
-         */
-        void post(BigDecimal amount) {
-            currentBalance = CobolDecimal.add(currentBalance, amount,
-                    PicClause.ACCT_CURR_BAL_SCALE);
-            if (amount.compareTo(BigDecimal.ZERO) >= 0) {
-                cycleCredit = CobolDecimal.add(cycleCredit, amount,
-                        PicClause.ACCT_CURR_CYC_CREDIT_SCALE);
-            } else {
-                cycleDebit = CobolDecimal.add(cycleDebit, amount,
-                        PicClause.ACCT_CURR_CYC_DEBIT_SCALE);
-            }
-        }
-    }
-
-    /**
-     * The same three account fields under the online payment path. {@code app/cbl/COBIL00C.cbl}
-     * holds no reference to either accumulator, so {@link #pay(BigDecimal)} changes the balance
-     * alone.
-     */
-    private static final class AccountRecordUnderPayment {
-
-        /** {@code ACCT-CURR-BAL}, {@code app/cpy/CVACT01Y.cpy:L7}. */
-        private BigDecimal currentBalance;
-
-        /** {@code ACCT-CURR-CYC-CREDIT}, {@code app/cpy/CVACT01Y.cpy:L13}. */
-        private BigDecimal cycleCredit;
-
-        /** {@code ACCT-CURR-CYC-DEBIT}, {@code app/cpy/CVACT01Y.cpy:L14}. */
-        private BigDecimal cycleDebit;
-
-        AccountRecordUnderPayment(BigDecimal currentBalance, BigDecimal cycleCredit,
-                BigDecimal cycleDebit) {
-            this.currentBalance = currentBalance;
-            this.cycleCredit = cycleCredit;
-            this.cycleDebit = cycleDebit;
-        }
-
-        /**
-         * Applies {@code COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT} at
-         * {@code app/cbl/COBIL00C.cbl:L234}.
-         *
-         * @param paymentAmount {@code TRAN-AMT}, {@code app/cpy/CVTRA05Y.cpy:L10}
-         */
-        void pay(BigDecimal paymentAmount) {
-            currentBalance = CobolDecimal.truncateToScale(
-                    currentBalance.subtract(paymentAmount), PicClause.ACCT_CURR_BAL_SCALE);
-        }
-    }
 }

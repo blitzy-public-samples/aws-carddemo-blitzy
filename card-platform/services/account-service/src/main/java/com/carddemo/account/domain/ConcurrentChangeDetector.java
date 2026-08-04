@@ -66,23 +66,19 @@ import com.carddemo.cobol.PicClause;
  *
  * <p>Each sliced date is read at {@code (1:4)}, {@code (6:2)} and {@code (9:2)}. Positions 4 and 7
  * hold a separator, and no condition reads either position, so two dates differing in a separator
- * alone compare as unchanged. {@code card-platform/docs/business-rule-flags.md} carries that
- * finding, the comparison of {@code CUST-ADDR-LINE-2} against the optional-field comment at
- * {@code app/cbl/COACTUPC.cbl:L1613}, and the exit both failure branches take at
- * {@code app/cbl/COACTUPC.cbl:L4144} and {@code app/cbl/COACTUPC.cbl:L4190}.</p>
+ * alone compare as unchanged.</p>
  *
  * <p>The date of birth carries two offset sets in the source. The re-read side is
  * {@code CUST-DOB-YYYY-MM-DD PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:L19}, ten bytes holding two
  * separators, read at {@code (1:4)}, {@code (6:2)} and {@code (9:2)}. The saved side is
  * {@code ACUP-OLD-CUST-DOB-YYYY-MM-DD PIC X(08)} at {@code app/cbl/COACTUPC.cbl:L746}, eight bytes
  * holding none, read at {@code (1:4)}, {@code (5:2)} and {@code (7:2)}. Both arguments here supply
- * {@link CustomerEntity#getDateOfBirth()}, one ten-character form, and one offset set covers both.
- * {@code card-platform/docs/decision-log.md} records that and two further deviations.</p>
+ * {@link CustomerEntity#getDateOfBirth()}, one ten-character form, and one offset set covers
+ * both.</p>
  *
  * <p>A caller reads both rows, re-reads them, and passes the four states to
  * {@link #storedRecordChanged}. This class holds no repository, no transaction boundary and no
- * logging, it names no field in any output, and it returns a verdict for every input.
- * {@code card-platform/docs/data-model.md} draws the two tables and the path between them.</p>
+ * logging, it names no field in any output, and it returns a verdict for every input.</p>
  */
 @Component
 public final class ConcurrentChangeDetector {
@@ -269,9 +265,11 @@ public final class ConcurrentChangeDetector {
                 // L4170 CUST-PHONE-NUM-2 EQUAL ACUP-OLD-CUST-PHONE-NUM-2
                 && matchesAsSupplied(reRead.getPhoneNumber2(), fetched.getPhoneNumber2(),
                         PicClause.CUST_PHONE_NUM_2_WIDTH)
-                // L4171 CUST-SSN EQUAL ACUP-OLD-CUST-SSN
-                && matchesNumerically(reRead.getSocialSecurityNumber(),
-                        fetched.getSocialSecurityNumber(), INTEGRAL_SCALE)
+                // L4171 CUST-SSN EQUAL ACUP-OLD-CUST-SSN. The source compares two PIC 9(09)
+                // display fields, which is a comparison of nine characters, and the column holds
+                // those nine characters. matchesAsSupplied reproduces it exactly.
+                && matchesAsSupplied(reRead.getSocialSecurityNumber(),
+                        fetched.getSocialSecurityNumber(), PicClause.CUST_SSN_WIDTH)
                 // L4172-L4173 FUNCTION UPPER-CASE (CUST-GOVT-ISSUED-ID)
                 && matchesFoldedToUpperCase(reRead.getGovernmentIssuedId(),
                         fetched.getGovernmentIssuedId(), PicClause.CUST_GOVT_ISSUED_ID_WIDTH)

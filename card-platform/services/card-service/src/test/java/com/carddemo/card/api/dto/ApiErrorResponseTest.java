@@ -143,10 +143,13 @@ final class ApiErrorResponseTest {
     /** The route template the payload under test carries. */
     private static final String SUPPLIED_ROUTE = "/cards";
 
-    /** Route template of the endpoint that takes a card number as a path variable. */
-    private static final String CARD_NUMBER_ROUTE = "/cards/{cardNumber}";
+    /**
+     * Route template of the card detail endpoint. No route of this service takes a card number as a
+     * path variable: the detail route is a {@code POST} whose body carries the card number, so a
+     * full Primary Account Number reaches no access log, proxy log, trace or browser history.
+     */
+    private static final String CARD_NUMBER_ROUTE = "/cards/detail";
 
-    /** JUnit builds one instance of this class per test method through this constructor. */
     ApiErrorResponseTest() {
     }
 
@@ -167,12 +170,6 @@ final class ApiErrorResponseTest {
                         + " Declared components: " + componentNames());
     }
 
-    /**
-     * Asserts the three component names, position by position.
-     *
-     * <p>A renamed or reordered component fails here with the role of that position named in the
-     * message.
-     */
     @Test
     void errorResponseNamesThreeComponentsInDeclarationOrder() {
         List<String> declared = componentNames();
@@ -246,7 +243,7 @@ final class ApiErrorResponseTest {
                                 + " java.lang.String."));
     }
 
-    // Absences. Each test below holds a shape the payload does not have.
+    // Absences: shapes the payload does not have.
 
     /**
      * Asserts that no component holds a collection, an array or a map.
@@ -283,13 +280,6 @@ final class ApiErrorResponseTest {
         }
     }
 
-    /**
-     * Asserts that no component name points at a violation list, a detail list or a sub-error
-     * list.
-     *
-     * <p>The scan folds every component name to lower case and looks for the fragments a violation
-     * list would carry. The declared names read {@code status}, {@code message} and {@code route}.
-     */
     @Test
     void errorResponseDeclaresNoViolationOrDetailComponent() {
         for (String name : lowerCaseComponentNames()) {
@@ -306,9 +296,9 @@ final class ApiErrorResponseTest {
     /**
      * Asserts that no component name points at a field-to-message map.
      *
-     * <p>The scan covers the fragments a per-field map would carry, including the plural
-     * {@code messages}. {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173} holds
-     * text and carries no field identifier beside it.
+     * <p>The scan covers the per-field map fragments, including the plural {@code messages}.
+     * {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173} holds text and carries
+     * no field identifier beside it.
      */
     @Test
     void errorResponseDeclaresNoPerFieldMessageMap() {
@@ -422,11 +412,6 @@ final class ApiErrorResponseTest {
                                 + MESSAGE_FIELD_WIDTH + " characters."));
     }
 
-    /**
-     * Asserts that the record and its three components carry no annotation.
-     *
-     * <p>The caller supplies every value the payload holds.
-     */
     @Test
     void errorResponseAndItsComponentsCarryNoAnnotation() {
         assertEquals(0, ApiErrorResponse.class.getAnnotations().length,
@@ -456,6 +441,9 @@ final class ApiErrorResponseTest {
                 "A route template is valid. The card number stays a path variable name.");
         assertFalse(templated.route().matches(".*[0-9]{5,}.*"),
                 "A route template holds no run of five digits or more.");
+        assertFalse(templated.route().contains("{"),
+                "No route of this service declares a path variable, so none can resolve to a "
+                        + "card number or an account identifier.");
 
         for (String resolved : List.of("/cards/" + "0".repeat(12) + "5740", "/cards/00000000050",
                 "/accounts/00000000050/cards")) {
@@ -468,10 +456,6 @@ final class ApiErrorResponseTest {
 
     // Reflection helpers.
 
-    /**
-     * Reads the record components of {@link ApiErrorResponse}. The record check runs first, so a
-     * class that stops being a record fails with a named assertion.
-     */
     private static RecordComponent[] components() {
         assertTrue(ApiErrorResponse.class.isRecord(),
                 "ApiErrorResponse must be a record. Its three components carry a status code, the"
@@ -480,9 +464,6 @@ final class ApiErrorResponseTest {
         return ApiErrorResponse.class.getRecordComponents();
     }
 
-    /**
-     * Reads the component names of {@link ApiErrorResponse}.
-     */
     private static List<String> componentNames() {
         List<String> names = new ArrayList<>();
         for (RecordComponent component : components()) {
@@ -491,9 +472,6 @@ final class ApiErrorResponseTest {
         return List.copyOf(names);
     }
 
-    /**
-     * Reads the component names and folds each one to lower case for a fragment search.
-     */
     private static List<String> lowerCaseComponentNames() {
         List<String> names = new ArrayList<>();
         for (String name : componentNames()) {
@@ -502,9 +480,6 @@ final class ApiErrorResponseTest {
         return List.copyOf(names);
     }
 
-    /**
-     * Reads the one component named {@value #MESSAGE_COMPONENT_NAME}.
-     */
     private static RecordComponent messageComponent() {
         for (RecordComponent component : components()) {
             if (MESSAGE_COMPONENT_NAME.equals(component.getName())) {

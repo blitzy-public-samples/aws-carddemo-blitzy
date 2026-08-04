@@ -3,28 +3,30 @@ package com.carddemo.notification.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Records one event identifier the notification service has already processed.
+ * Records one event identifier the notification service has processed.
  *
  * <p>One instance maps to one row of the table {@code processed_event}, whose two columns this
  * module declares at {@code src/main/resources/db/migration/V1__schema.sql:L73-L77}. A second
- * insert of one identifier violates the primary key {@code pk_processed_event}.</p>
+ * insert of one identifier violates the primary key {@code pk_processed_event}. No listener is
+ * authored yet, so nothing writes this table.</p>
  *
  * <p>ADDITIVE: no Common Business Oriented Language (COBOL) copybook and no COBOL program declares
  * an equivalent record. CardDemo detects no duplicate delivery anywhere. The transaction write at
  * {@code app/cbl/CBTRN02C.cbl:L562-L579} reaches {@code PERFORM 9999-ABEND-PROGRAM} at L577 on a
  * duplicate key. Each of the eight Customer Information Control System (CICS) file definitions in
  * {@code app/csd/CARDDEMO.CSD} specifies {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.</p>
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.</p>
  */
 @Entity
-@Table(name = "processed_event")
+@Table(name = "processed_event",
+        indexes = @Index(name = "ix_processed_event_processed_at",
+                columnList = "processed_at"))
 public class ProcessedEventEntity {
 
     /**
@@ -44,6 +46,24 @@ public class ProcessedEventEntity {
      */
     @Column(name = "processed_at", nullable = false)
     private Instant processedAt;
+
+    /**
+     * Widest value {@code consumed_topic} holds, from {@code consumed_topic VARCHAR(128)} in
+     * {@code src/main/resources/db/migration/V1__schema.sql}.
+     */
+    public static final int CONSUMED_TOPIC_MAX_LENGTH = 128;
+
+    /**
+     * Which topic the delivery that first handled this event arrived on, or null when the
+     * marker was written without one.
+     *
+     * <p>A marker on its own says an event was handled and nothing about where it came from, which
+     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
+     * came from or arrive on a dead-letter topic during a recovery, and those are different
+     * situations. Recording the topic separates them.
+     */
+    @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
+    private String consumedTopic;
 
     /**
      * No-argument constructor for the Jakarta Persistence provider.
@@ -66,20 +86,10 @@ public class ProcessedEventEntity {
         this.processedAt = Objects.requireNonNull(processedAt, "processedAt must not be null");
     }
 
-    /**
-     * Returns the identifier of the processed event.
-     *
-     * @return the event identifier, never {@code null} after the public constructor runs
-     */
     public UUID getEventId() {
         return eventId;
     }
 
-    /**
-     * Returns the instant at which processing finished.
-     *
-     * @return the processing instant, never {@code null} after the public constructor runs
-     */
     public Instant getProcessedAt() {
         return processedAt;
     }
@@ -112,12 +122,46 @@ public class ProcessedEventEntity {
     }
 
     /**
-     * Renders both fields for a log line. Neither field carries a card number.
+     * Renders both fields. The event identifier is opaque and the instant is operational, so
+     * neither field names an account, an amount or a cardholder.
      *
      * @return the simple class name followed by the event identifier and the processing instant
      */
     @Override
     public String toString() {
         return "ProcessedEventEntity[eventId=" + eventId + ", processedAt=" + processedAt + "]";
+    }
+
+    /**
+     * Returns which topic the delivery that first handled this event arrived on.
+     *
+     * @return the topic name, or null when the marker carries none
+     */
+    public String getConsumedTopic() {
+        return consumedTopic;
+    }
+
+    /**
+     * Records which topic the delivery that first handled this event arrived on.
+     *
+     * <p>A value longer than {@value #CONSUMED_TOPIC_MAX_LENGTH} characters is refused rather than
+     * truncated, because a truncated topic name names a topic that does not exist and is worse than
+     * none.
+     *
+     * @param consumedTopic the topic name, or null to record none
+     * @throws IllegalArgumentException if {@code consumedTopic} is blank or too long
+     */
+    public void setConsumedTopic(String consumedTopic) {
+        if (consumedTopic != null) {
+            if (consumedTopic.isBlank()) {
+                throw new IllegalArgumentException("consumedTopic is blank");
+            }
+            if (consumedTopic.length() > CONSUMED_TOPIC_MAX_LENGTH) {
+                throw new IllegalArgumentException("consumedTopic is " + consumedTopic.length()
+                        + " characters, over the " + CONSUMED_TOPIC_MAX_LENGTH
+                        + " its column holds");
+            }
+        }
+        this.consumedTopic = consumedTopic;
     }
 }

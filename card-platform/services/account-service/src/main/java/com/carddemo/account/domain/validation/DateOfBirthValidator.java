@@ -1,6 +1,7 @@
 package com.carddemo.account.domain.validation;
 
 import com.carddemo.cobol.CobolDateValidator;
+import java.time.LocalDate;
 
 /**
  * Checks that a date of birth is strictly earlier than today. Today's own date fails.
@@ -16,6 +17,10 @@ import com.carddemo.cobol.CobolDateValidator;
  * only when that paragraph accepted the value. The caller owns that gate.
  *
  * <p>{@link CobolDateValidator} carries the comparison and the one message text.
+ *
+ * <p>Two overloads exist. {@link #validate(String, String)} reads today from the clock, and
+ * {@link #validate(String, String, java.time.LocalDate)} takes the day the comparison runs
+ * against, so a caller can state it.
  */
 public final class DateOfBirthValidator {
 
@@ -48,8 +53,31 @@ public final class DateOfBirthValidator {
      *         carrying the one message the paragraph composes
      */
     public static EditResult validate(String fieldLabel, String dateOfBirth) {
+        return validate(fieldLabel, dateOfBirth, LocalDate.now());
+    }
+
+    /**
+     * Applies the same check against a reference date the caller supplies.
+     *
+     * <p>{@code FUNCTION CURRENT-DATE} at {@code app/cpy/CSUTLDPY.cpy:L343} reads the date the
+     * two-argument overload reads. This overload takes that date as an argument, so a caller that
+     * needs a fixed verdict states which day the comparison runs against. The verdict is otherwise
+     * identical: {@link #validate(String, String)} calls this method with today's date.
+     *
+     * @param fieldLabel    the label the caller supplies, {@code 'Date of Birth'} at
+     *                      {@code app/cbl/COACTUPC.cbl:L1533}; a {@code null} label reads as the
+     *                      all-space field it models and contributes no text
+     * @param dateOfBirth   the eight characters of century, year, month, and day held by
+     *                      {@code WS-EDIT-DATE-CCYYMMDD}; may be {@code null}
+     * @param referenceDate the day the comparison at {@code app/cpy/CSUTLDPY.cpy:L350} runs against
+     * @return a passing verdict for a value earlier than {@code referenceDate}, otherwise a failing
+     *         verdict carrying the one message the paragraph composes
+     * @throws NullPointerException when {@code referenceDate} is {@code null}
+     */
+    public static EditResult validate(String fieldLabel, String dateOfBirth,
+            LocalDate referenceDate) {
         CobolDateValidator.FieldEditResult outcome =
-                CobolDateValidator.editDateOfBirth(dateOfBirth, fieldLabel);
+                CobolDateValidator.editDateOfBirth(dateOfBirth, fieldLabel, referenceDate);
         if (isReasonablenessRejection(outcome)) {
             return EditResult.failure(outcome.firstReturnMessage());
         }

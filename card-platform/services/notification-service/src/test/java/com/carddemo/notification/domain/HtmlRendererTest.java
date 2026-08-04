@@ -6,10 +6,13 @@ import com.carddemo.cobol.PanMasker;
 import com.carddemo.notification.domain.NotificationRenderer.CardholderContext;
 import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import com.carddemo.notification.domain.NotificationRenderer.TransactionRow;
+import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -49,7 +52,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code app/cbl/CBSTM03A.CBL:L439-L454}.</p>
  *
  * <p>Every input is built in line, so no test reads a file. No Spring application context, no
- * broker and no database take part, and {@code mvn test} passes on a clean machine.</p>
+ * broker and no database take part.</p>
  *
  * <p>Three neighbouring test classes hold the assertions this one leaves out. The fixed-width
  * text records of {@code app/cbl/CBSTM03A.CBL:L488-L502} belong to
@@ -592,6 +595,38 @@ class HtmlRendererTest {
      */
     private static final BigDecimal TOTAL = new BigDecimal("98765.43");
 
+    /**
+     * The full sixteen-character Primary Account Number (PAN) of the card a statement covers.
+     * {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} declares the width, and the
+     * card detail screen shows all sixteen characters at {@code LENGTH=16} in
+     * {@code app/bms/COCRDSL.bms:L99}.
+     */
+    private static final String CARD_NUMBER = "9999888877776666";
+
+    /**
+     * The card verification value of the same card, {@code CARD-CVV-CD PIC 9(03)} at
+     * {@code app/cpy/CVACT02Y.cpy:L7}.
+     */
+    private static final String CARD_VERIFICATION_VALUE = "357";
+
+    /**
+     * A value carrying all five characters that mean something in markup. It holds no pair of
+     * spaces and no asterisk, so neither delimiter of
+     * {@code app/cbl/CBSTM03A.CBL} ends it early and every character reaches the escaping step.
+     */
+    private static final String HOSTILE_VALUE = "<b>&'\"x</b>";
+
+    /** The five entity references {@link NotificationRenderer#escapeHtmlText(String)} writes. */
+    private static final String ESCAPED_HOSTILE_VALUE =
+            "&lt;b&gt;&amp;&#39;&quot;x&lt;/b&gt;";
+
+    /** The four raw markup characters an escaped rendering must not gain. */
+    private static final char[] RAW_MARKUP_CHARACTERS = {'<', '>', '"', '\''};
+
+    /** The five entity references an ampersand may open in a rendering. */
+    private static final List<String> ENTITY_REFERENCES =
+            List.of("&amp;", "&lt;", "&gt;", "&quot;", "&#39;");
+
     /** Expected content of the account-number heading, the group write at
      * {@code app/cbl/CBSTM03A.CBL:L530}. */
     private static final String EXPECTED_ACCOUNT_HEADING =
@@ -1002,9 +1037,8 @@ class HtmlRendererTest {
 
         /**
          * {@code HTML-LTDS} at {@code app/cbl/CBSTM03A.CBL:L161} is declared and never set and
-         * never written, so no record carries an unadorned cell opening element. Every cell
-         * opening element a record does carry names a style attribute. The unused condition name
-         * is recorded in {@code card-platform/docs/business-rule-flags.md}.
+         * never written, so no record carries an unadorned cell opening element. Every cell opening
+         * element a record does carry names a style attribute.
          */
         @Test
         @DisplayName("The declared and unused cell opening element reaches no record")
@@ -1678,9 +1712,8 @@ class HtmlRendererTest {
      * markup lines at {@code app/cbl/CBSTM03A.CBL:L148-L223} declare no card-number field.
      *
      * <p>The source masks nothing. The card detail screen shows all sixteen characters at
-     * {@code app/bms/COCRDSL.bms:L99}, and the card record stores
-     * {@code CARD-CVV-CD PIC 9(03)} in the clear at {@code app/cpy/CVACT02Y.cpy:L7}. Masking is an
-     * additive deviation, recorded in {@code card-platform/docs/decision-log.md}.</p>
+     * {@code app/bms/COCRDSL.bms:L99}, and the card record stores {@code CARD-CVV-CD PIC 9(03)} in
+     * the clear at {@code app/cpy/CVACT02Y.cpy:L7}.</p>
      */
     @Nested
     @DisplayName("The absent card number and card verification value")
@@ -1696,16 +1729,22 @@ class HtmlRendererTest {
         @Test
         @DisplayName("A full card number reaches no markup record")
         void aFullCardNumberReachesNoMarkupRecord() {
-            String cardNumber = "9999888877776666";
-            String maskedCardNumber = PanMasker.maskCardNumber(cardNumber);
+            String maskedCardNumber = PanMasker.maskCardNumber(CARD_NUMBER);
+
+            assertThat(maskedCardNumber).hasSize(PanMasker.CARD_NUMBER_LENGTH);
+            assertThat(maskedCardNumber.contains(CARD_NUMBER))
+                    .as("the masked form carries the full card number").isFalse();
+
             TransactionRow row = new TransactionRow(transactionIdAt(0),
                     "PURCHASE CARD " + maskedCardNumber, EDITED_ROW_AMOUNT);
-            String rendered = renderer.renderStatementAlert(
-                    referenceContext(), List.of(row), TOTAL);
-            List<String> contents = contentsOf(recordsOf(rendered));
+            List<String> records = recordsOf(renderer.renderStatementAlert(
+                    referenceContext(), List.of(row), TOTAL));
 
-            assertThat(rendered).doesNotContain(cardNumber);
-            assertThat(contents.get(FIRST_ROW_INDEX + ROW_DESCRIPTION_OFFSET))
+            assertNoRecordCarries(records, "the full card number", CARD_NUMBER);
+            assertNoRecordCarries(records, "the leading twelve card characters",
+                    CARD_NUMBER.substring(0, PanMasker.CARD_NUMBER_LENGTH
+                            - PanMasker.VISIBLE_DIGIT_COUNT));
+            assertThat(contentsOf(records).get(FIRST_ROW_INDEX + ROW_DESCRIPTION_OFFSET))
                     .isEqualTo(OPEN_PARAGRAPH + "PURCHASE CARD " + CLOSE_PARAGRAPH);
         }
 
@@ -1717,14 +1756,18 @@ class HtmlRendererTest {
         @Test
         @DisplayName("A card verification value reaches no markup record")
         void aCardVerificationValueReachesNoMarkupRecord() {
-            String cardVerificationValue = "357";
-            String redacted = PanMasker.redactCardVerificationValue(cardVerificationValue);
+            String redacted = PanMasker.redactCardVerificationValue(CARD_VERIFICATION_VALUE);
+
+            assertThat(redacted.contains(CARD_VERIFICATION_VALUE))
+                    .as("the redacted form carries the verification value").isFalse();
+
             TransactionRow row = new TransactionRow(transactionIdAt(0),
                     "PURCHASE CARD " + redacted, EDITED_ROW_AMOUNT);
-            String rendered = renderer.renderStatementAlert(
-                    referenceContext(), List.of(row), TOTAL);
+            List<String> records = recordsOf(renderer.renderStatementAlert(
+                    referenceContext(), List.of(row), TOTAL));
 
-            assertThat(rendered).doesNotContain(cardVerificationValue);
+            assertNoRecordCarries(records, "the card verification value",
+                    CARD_VERIFICATION_VALUE);
         }
 
         /**
@@ -1735,11 +1778,312 @@ class HtmlRendererTest {
         @Test
         @DisplayName("A fraud alert carries no full card number")
         void aFraudAlertCarriesNoFullCardNumber() {
-            String cardNumber = "9999888877776666";
-            String rendered = renderer.renderFraudAlert(referenceContext(), transactionIdAt(0),
-                    87, List.of("VELOCITY", PanMasker.maskCardNumber(cardNumber)));
+            List<String> records = recordsOf(renderer.renderFraudAlert(referenceContext(),
+                    transactionIdAt(0), 87,
+                    List.of("VELOCITY", PanMasker.maskCardNumber(CARD_NUMBER))));
 
-            assertThat(rendered).doesNotContain(cardNumber);
+            assertNoRecordCarries(records, "the full card number", CARD_NUMBER);
         }
+
+        /**
+         * Neither record the renderer reads declares a card number or a card verification value, so
+         * no caller can route either into a markup record. The markup lines at
+         * {@code app/cbl/CBSTM03A.CBL:L148-L223} declare no card-number field either.
+         */
+        @Test
+        @DisplayName("Neither renderer input record declares a card field")
+        void neitherRendererInputRecordDeclaresACardField() {
+            assertThat(componentNamesOf(CardholderContext.class))
+                    .as("components CardholderContext declares")
+                    .isNotEmpty()
+                    .noneMatch(HtmlRendererTest::namesACardField);
+            assertThat(componentNamesOf(TransactionRow.class))
+                    .as("components TransactionRow declares")
+                    .isNotEmpty()
+                    .noneMatch(HtmlRendererTest::namesACardField);
+        }
+    }
+
+    /**
+     * Markup characters supplied by a cardholder reach every record as an entity reference.
+     *
+     * <p>ADDITIVE. {@code app/cbl/CBSTM03A.CBL} escapes nothing, because a 3270 screen and a
+     * fixed-width dataset carry no markup meaning. A rendering sent to a browser does, so
+     * {@link HtmlRenderer} routes every value-bearing field through
+     * {@link NotificationRenderer#escapeHtmlText(String)}. The tests below supply hostile values to
+     * every interpolated field of both render operations and read the whole rendering back.</p>
+     *
+     * <p>The oracle counts raw markup characters. A benign rendering carries a known number of
+     * them, all from the literals of the source, and a hostile rendering must carry exactly the
+     * same number: every character the cardholder supplied has become an entity reference. That
+     * comparison needs no second copy of the escaping rule.</p>
+     */
+    @Nested
+    @DisplayName("The escaping of cardholder-supplied markup")
+    class MarkupEscaping {
+
+        /**
+         * A hostile value in every statement field adds no raw markup character to the rendering,
+         * and the element count therefore cannot grow.
+         */
+        @Test
+        @DisplayName("Hostile values in every statement field add no raw markup character")
+        void hostileValuesInEveryStatementFieldAddNoRawMarkupCharacter() {
+            String benign = renderer.renderStatementAlert(referenceContext(), rows(1), TOTAL);
+            String hostile = renderer.renderStatementAlert(hostileContext(), hostileRows(), TOTAL);
+
+            assertNoRawMarkupCharacterGained(benign, hostile);
+            assertEveryAmpersandOpensAnEntity(hostile);
+        }
+
+        /**
+         * A hostile value in every fraud-alert field adds no raw markup character either. The alert
+         * interpolates the cardholder fields, the transaction identifier and the joined rule
+         * list.
+         */
+        @Test
+        @DisplayName("Hostile values in every fraud-alert field add no raw markup character")
+        void hostileValuesInEveryFraudAlertFieldAddNoRawMarkupCharacter() {
+            String benign = renderer.renderFraudAlert(referenceContext(), transactionIdAt(0), 87,
+                    List.of("VELOCITY"));
+            String hostile = renderer.renderFraudAlert(hostileContext(), HOSTILE_VALUE, 87,
+                    List.of(HOSTILE_VALUE));
+
+            assertNoRawMarkupCharacterGained(benign, hostile);
+            assertEveryAmpersandOpensAnEntity(hostile);
+        }
+
+        /**
+         * Each interpolated field escapes on its own. One field at a time carries the hostile
+         * value, so a field that skipped the escaping step fails under its own name rather than
+         * hiding behind the others.
+         */
+        @Test
+        @DisplayName("Each interpolated statement field escapes on its own")
+        void eachInterpolatedStatementFieldEscapesOnItsOwn() {
+            String benign = renderer.renderStatementAlert(referenceContext(), rows(1), TOTAL);
+
+            for (Map.Entry<String, CardholderContext> field : hostileByField().entrySet()) {
+                String hostile =
+                        renderer.renderStatementAlert(field.getValue(), rows(1), TOTAL);
+
+                assertNoRawMarkupCharacterGained(benign, hostile, field.getKey());
+            }
+
+            String hostileIdentifier = renderer.renderStatementAlert(referenceContext(),
+                    List.of(new TransactionRow(HOSTILE_VALUE, DESCRIPTION, EDITED_ROW_AMOUNT)),
+                    TOTAL);
+            assertNoRawMarkupCharacterGained(benign, hostileIdentifier,
+                    "the transaction identifier");
+
+            String hostileDescription = renderer.renderStatementAlert(referenceContext(),
+                    List.of(new TransactionRow(transactionIdAt(0), HOSTILE_VALUE,
+                            EDITED_ROW_AMOUNT)), TOTAL);
+            assertNoRawMarkupCharacterGained(benign, hostileDescription, "the description");
+
+            String hostileAmount = renderer.renderStatementAlert(referenceContext(),
+                    List.of(new TransactionRow(transactionIdAt(0), DESCRIPTION, HOSTILE_VALUE)),
+                    TOTAL);
+            assertNoRawMarkupCharacterGained(benign, hostileAmount, "the edited amount");
+        }
+
+        /**
+         * The escaped form of a hostile value reaches the rendering, so the escaping replaced the
+         * characters rather than dropping them. The description field carries the value whole with
+         * its fixed-width pad, because it reaches the record through the asterisk delimiter.
+         */
+        @Test
+        @DisplayName("The escaped form of a hostile description reaches its own record")
+        void theEscapedFormOfAHostileDescriptionReachesItsOwnRecord() {
+            List<String> contents = contentsOf(recordsOf(renderer.renderStatementAlert(
+                    referenceContext(),
+                    List.of(new TransactionRow(transactionIdAt(0), HOSTILE_VALUE,
+                            EDITED_ROW_AMOUNT)),
+                    TOTAL)));
+            String pad = " ".repeat(
+                    NotificationRenderer.ST_TRANDT_WIDTH - HOSTILE_VALUE.length());
+
+            assertThat(contents.get(FIRST_ROW_INDEX + ROW_DESCRIPTION_OFFSET))
+                    .as("the description record of a hostile row")
+                    .isEqualTo(OPEN_PARAGRAPH + ESCAPED_HOSTILE_VALUE + pad + CLOSE_PARAGRAPH);
+        }
+
+        /** Builds a cardholder fixture whose every component carries the hostile value. */
+        private CardholderContext hostileContext() {
+            return new CardholderContext(HOSTILE_VALUE, HOSTILE_VALUE, HOSTILE_VALUE,
+                    HOSTILE_VALUE, HOSTILE_VALUE, HOSTILE_VALUE, HOSTILE_VALUE);
+        }
+
+        /** Builds one detail row whose every component carries the hostile value. */
+        private List<TransactionRow> hostileRows() {
+            return List.of(new TransactionRow(HOSTILE_VALUE, HOSTILE_VALUE, HOSTILE_VALUE));
+        }
+
+        /**
+         * Builds one cardholder fixture per component, each carrying the hostile value in that
+         * component alone, keyed by the field it names.
+         */
+        private Map<String, CardholderContext> hostileByField() {
+            Map<String, CardholderContext> byField = new LinkedHashMap<>();
+            byField.put("the assembled name", new CardholderContext(HOSTILE_VALUE, ADDRESS_LINE_1,
+                    ADDRESS_LINE_2, ADDRESS_LINE_3, ACCOUNT_ID, EDITED_BALANCE, FICO_SCORE));
+            byField.put("address line one", new CardholderContext(ASSEMBLED_NAME, HOSTILE_VALUE,
+                    ADDRESS_LINE_2, ADDRESS_LINE_3, ACCOUNT_ID, EDITED_BALANCE, FICO_SCORE));
+            byField.put("address line two", new CardholderContext(ASSEMBLED_NAME, ADDRESS_LINE_1,
+                    HOSTILE_VALUE, ADDRESS_LINE_3, ACCOUNT_ID, EDITED_BALANCE, FICO_SCORE));
+            byField.put("address line three", new CardholderContext(ASSEMBLED_NAME, ADDRESS_LINE_1,
+                    ADDRESS_LINE_2, HOSTILE_VALUE, ACCOUNT_ID, EDITED_BALANCE, FICO_SCORE));
+            byField.put("the account identifier", new CardholderContext(ASSEMBLED_NAME,
+                    ADDRESS_LINE_1, ADDRESS_LINE_2, ADDRESS_LINE_3, HOSTILE_VALUE, EDITED_BALANCE,
+                    FICO_SCORE));
+            byField.put("the edited balance", new CardholderContext(ASSEMBLED_NAME, ADDRESS_LINE_1,
+                    ADDRESS_LINE_2, ADDRESS_LINE_3, ACCOUNT_ID, HOSTILE_VALUE, FICO_SCORE));
+            byField.put("the credit score", new CardholderContext(ASSEMBLED_NAME, ADDRESS_LINE_1,
+                    ADDRESS_LINE_2, ADDRESS_LINE_3, ACCOUNT_ID, EDITED_BALANCE, HOSTILE_VALUE));
+            return byField;
+        }
+    }
+
+    /**
+     * Asserts a hostile rendering gained no raw markup character over a benign one, so no supplied
+     * character reached the markup unescaped.
+     *
+     * @param benign  a rendering of the reference fixture
+     * @param hostile a rendering carrying the hostile value
+     */
+    private static void assertNoRawMarkupCharacterGained(String benign, String hostile) {
+        assertNoRawMarkupCharacterGained(benign, hostile, "a hostile value");
+    }
+
+    /**
+     * Asserts a hostile rendering gained no raw markup character over a benign one, naming the
+     * field under test.
+     *
+     * <p>The comparison is an upper bound rather than an equality. An escaped value is longer than
+     * the value it replaces, so an assembled line can pass the hundred characters of
+     * {@code FD-HTMLFILE-REC PIC X(100)} at {@code app/cbl/CBSTM03A.CBL:L47} and lose its tail to
+     * the same truncation a COBOL {@code MOVE} performs. A rendering that lost a character of its
+     * own markup carries no character a cardholder supplied, so the security property is the upper
+     * bound.</p>
+     *
+     * <p>The ampersand is checked separately by
+     * {@link #assertEveryAmpersandOpensAnEntity(String)}, because every escaped character
+     * introduces one.</p>
+     *
+     * @param benign  a rendering of the reference fixture
+     * @param hostile a rendering carrying the hostile value
+     * @param field   a description of the field carrying the hostile value
+     */
+    private static void assertNoRawMarkupCharacterGained(String benign, String hostile,
+            String field) {
+        for (char markup : RAW_MARKUP_CHARACTERS) {
+            assertThat(countOf(hostile, markup))
+                    .as("raw %s characters after %s carried markup", markupName(markup), field)
+                    .isLessThanOrEqualTo(countOf(benign, markup));
+        }
+        assertThat(recordsOf(hostile))
+                .as("records after %s carried markup", field)
+                .hasSameSizeAs(recordsOf(benign));
+    }
+
+    /**
+     * Asserts every ampersand in a rendering opens one of the five entity references
+     * {@link NotificationRenderer#escapeHtmlText(String)} writes. A bare ampersand would leave the
+     * rendering able to carry an entity a cardholder chose.
+     *
+     * <p>The scan runs record by record and reads each record without its trailing pad. An entity
+     * reference sitting at the hundredth character loses its tail to the record width, so a
+     * trailing fragment that opens one of the five references satisfies the check.</p>
+     *
+     * @param rendered the output of one render operation
+     */
+    private static void assertEveryAmpersandOpensAnEntity(String rendered) {
+        List<String> records = recordsOf(rendered);
+
+        for (int index = 0; index < records.size(); index++) {
+            String content = contentOf(records.get(index));
+            for (int position = 0; position < content.length(); position++) {
+                if (content.charAt(position) != '&') {
+                    continue;
+                }
+                String tail = content.substring(position);
+                boolean opensAnEntity = ENTITY_REFERENCES.stream().anyMatch(tail::startsWith);
+                boolean cutByTheRecordWidth =
+                        ENTITY_REFERENCES.stream().anyMatch(entity -> entity.startsWith(tail));
+
+                assertThat(opensAnEntity || cutByTheRecordWidth)
+                        .as("the ampersand at position %d of record %d of %d opens one of the "
+                                + "five entity references", position + 1, index + 1, records.size())
+                        .isTrue();
+            }
+        }
+    }
+
+    /**
+     * Asserts a forbidden value reaches no record, naming the field type and the record index.
+     *
+     * <p>The subject of each assertion is a boolean, so a failure reports which record carried
+     * something forbidden and prints neither the record nor the value it carried.</p>
+     *
+     * @param records   the rendered records, in write order
+     * @param fieldType a description of the forbidden value, carrying none of its characters
+     * @param forbidden the value no record may carry
+     */
+    private static void assertNoRecordCarries(List<String> records, String fieldType,
+            String forbidden) {
+        for (int index = 0; index < records.size(); index++) {
+            assertThat(records.get(index).contains(forbidden))
+                    .as("%s reaches record %d of %d", fieldType, index + 1, records.size())
+                    .isFalse();
+        }
+    }
+
+    /** Counts one character in a rendering. */
+    private static int countOf(String rendered, char sought) {
+        int found = 0;
+        for (int position = 0; position < rendered.length(); position++) {
+            if (rendered.charAt(position) == sought) {
+                found++;
+            }
+        }
+        return found;
+    }
+
+    /** Names one markup character for a failure description. */
+    private static String markupName(char markup) {
+        return switch (markup) {
+            case '<' -> "opening angle bracket";
+            case '>' -> "closing angle bracket";
+            case '"' -> "double quotation mark";
+            case '\'' -> "apostrophe";
+            default -> "markup";
+        };
+    }
+
+    /**
+     * Returns the component names one record type declares, in declaration order.
+     *
+     * @param recordType a record class
+     * @return the component names
+     */
+    private static List<String> componentNamesOf(Class<?> recordType) {
+        List<String> names = new ArrayList<>();
+        for (RecordComponent component : recordType.getRecordComponents()) {
+            names.add(component.getName());
+        }
+        return names;
+    }
+
+    /**
+     * Reports whether a component name reaches a card number or a card verification value.
+     *
+     * @param componentName one record component name
+     * @return {@code true} when the name reaches a card value
+     */
+    private static boolean namesACardField(String componentName) {
+        String folded = componentName.toLowerCase(Locale.ROOT);
+
+        return folded.contains("card") || folded.contains("pan") || folded.contains("cvv")
+                || folded.contains("verification");
     }
 }

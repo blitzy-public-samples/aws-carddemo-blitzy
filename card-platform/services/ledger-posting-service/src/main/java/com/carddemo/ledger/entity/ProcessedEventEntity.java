@@ -3,6 +3,7 @@ package com.carddemo.ledger.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.Objects;
@@ -13,11 +14,12 @@ import java.util.UUID;
  *
  * <p>One instance maps to one row of the table {@code processed_event}, whose two columns are
  * declared in this module at {@code src/main/resources/db/migration/V1__schema.sql}. ADDITIVE: no
- * Common Business Oriented Language (COBOL) program carries an equivalent record. Rationale is
- * recorded in card-platform/docs/decision-log.md.</p>
+ * Common Business Oriented Language (COBOL) program carries an equivalent record.</p>
  */
 @Entity
-@Table(name = "processed_event")
+@Table(name = "processed_event",
+        indexes = @Index(name = "ix_processed_event_processed_at",
+                columnList = "processed_at"))
 public class ProcessedEventEntity {
 
     /**
@@ -37,6 +39,24 @@ public class ProcessedEventEntity {
      */
     @Column(name = "processed_at", nullable = false)
     private Instant processedAt;
+
+    /**
+     * Widest value {@code consumed_topic} holds, from {@code consumed_topic VARCHAR(128)} in
+     * {@code src/main/resources/db/migration/V1__schema.sql}.
+     */
+    public static final int CONSUMED_TOPIC_MAX_LENGTH = 128;
+
+    /**
+     * Which topic the delivery that first handled this event arrived on, or null when the
+     * marker was written without one.
+     *
+     * <p>A marker on its own says an event was handled and nothing about where it came from, which
+     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
+     * came from or arrive on a dead-letter topic during a recovery, and those are different
+     * situations. Recording the topic separates them.
+     */
+    @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
+    private String consumedTopic;
 
     /**
      * No-argument constructor for the Jakarta Persistence API (JPA) provider.
@@ -59,20 +79,10 @@ public class ProcessedEventEntity {
         this.processedAt = Objects.requireNonNull(processedAt, "processedAt");
     }
 
-    /**
-     * Returns the identifier of the consumed event.
-     *
-     * @return the event identifier, never {@code null} after the public constructor runs
-     */
     public UUID getEventId() {
         return eventId;
     }
 
-    /**
-     * Returns the instant at which processing finished.
-     *
-     * @return the processing instant, never {@code null} after the public constructor runs
-     */
     public Instant getProcessedAt() {
         return processedAt;
     }
@@ -105,12 +115,46 @@ public class ProcessedEventEntity {
     }
 
     /**
-     * Renders both fields for a log line.
+     * Renders both fields. The event identifier is opaque and the instant is operational, so
+     * neither field names an account, an amount or a cardholder.
      *
      * @return the simple class name followed by the event identifier and the processing instant
      */
     @Override
     public String toString() {
         return "ProcessedEventEntity[eventId=" + eventId + ", processedAt=" + processedAt + "]";
+    }
+
+    /**
+     * Returns which topic the delivery that first handled this event arrived on.
+     *
+     * @return the topic name, or null when the marker carries none
+     */
+    public String getConsumedTopic() {
+        return consumedTopic;
+    }
+
+    /**
+     * Records which topic the delivery that first handled this event arrived on.
+     *
+     * <p>A value longer than {@value #CONSUMED_TOPIC_MAX_LENGTH} characters is refused rather than
+     * truncated, because a truncated topic name names a topic that does not exist and is worse than
+     * none.
+     *
+     * @param consumedTopic the topic name, or null to record none
+     * @throws IllegalArgumentException if {@code consumedTopic} is blank or too long
+     */
+    public void setConsumedTopic(String consumedTopic) {
+        if (consumedTopic != null) {
+            if (consumedTopic.isBlank()) {
+                throw new IllegalArgumentException("consumedTopic is blank");
+            }
+            if (consumedTopic.length() > CONSUMED_TOPIC_MAX_LENGTH) {
+                throw new IllegalArgumentException("consumedTopic is " + consumedTopic.length()
+                        + " characters, over the " + CONSUMED_TOPIC_MAX_LENGTH
+                        + " its column holds");
+            }
+        }
+        this.consumedTopic = consumedTopic;
     }
 }

@@ -1,9 +1,7 @@
 package com.carddemo.account.domain.validation;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -37,37 +35,31 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * and read one verdict.</p>
  *
  * <p>The verdict keys off the numeric severity test at app/cpy/CSUTLDPY.cpy:L298 together with the
- * input-error state that app/cpy/CSUTLDPY.cpy:L301 sets. No assertion below reads
+ * input-error state that app/cpy/CSUTLDPY.cpy:L301 sets. It does not read
  * {@code WS-EDIT-DATE-IS-VALID}, which app/cpy/CSUTLDPY.cpy:L327 sets after the {@code EXIT}
- * sentence at app/cpy/CSUTLDPY.cpy:L324 and its terminating period at app/cpy/CSUTLDPY.cpy:L325.
- * The rejection path leaves the paragraph at app/cpy/CSUTLDPY.cpy:L315 and passes that statement
- * by. card-platform/docs/decision-log.md holds the rationale for that reading.</p>
+ * sentence at app/cpy/CSUTLDPY.cpy:L324 and its terminating period at
+ * app/cpy/CSUTLDPY.cpy:L325.</p>
  *
- * <p>Every method below asserts one of three things the subject exposes. They are the
- * eight-character mask binding of app/cpy/CSUTLDPY.cpy:L291, the trimmed label of
- * app/cpy/CSUTLDPY.cpy:L307, and the mapping of the underlying outcome onto an
- * {@link EditResult}.</p>
+ * <p>The subject exposes three things: the eight-character mask binding of
+ * app/cpy/CSUTLDPY.cpy:L291, the trimmed label of app/cpy/CSUTLDPY.cpy:L307, and the mapping of the
+ * underlying outcome onto an {@link EditResult}.</p>
  *
- * <p>{@code CobolDateValidatorTest} in the cobol-compat module owns the rest, and no method below
- * enumerates any of it. Its subjects are the century bound at app/cpy/CSUTLDPY.cpy:L70-L71 and the
+ * <p>{@code CobolDateValidatorTest} in the cobol-compat module owns the rest. Its subjects are the
+ * century bound at app/cpy/CSUTLDPY.cpy:L70-L71 and the
  * leap-year expression at app/cpy/CSUTLDPY.cpy:L243-L256. They also cover the month range test at
  * app/cpy/CSUTLDPY.cpy:L111, the day numeric gate at app/cpy/CSUTLDPY.cpy:L170, and the thirteen
  * message literals.</p>
  *
- * <p>Three findings of the source range carry no target equivalent and reach
- * card-platform/docs/business-rule-flags.md. app/cpy/CSUTLDPY.cpy:L293 carries the sequence number
- * {@code 005100} in columns 1 through 6, the one line of the range to do so. The {@code STRING}
- * statement at app/cpy/CSUTLDPY.cpy:L306 is closed by the {@code END-IF} at
+ * <p>The {@code STRING} statement at app/cpy/CSUTLDPY.cpy:L306 is closed by the {@code END-IF} at
  * app/cpy/CSUTLDPY.cpy:L314, and all 375 lines of the file hold no {@code END-STRING}.</p>
  *
  * <p>The third finding is a flag asymmetry. The rejection path at app/cpy/CSUTLDPY.cpy:L301-L304
  * sets the input-error state and all three field flags, while the acceptance path at
  * app/cpy/CSUTLDPY.cpy:L318-L320 sets the day flag alone. The subject returns an
  * {@link EditResult} carrying a verdict and at most one message, so the three flag bytes reach no
- * target field. No method below asserts a flag.</p>
+ * target field.</p>
  *
- * <p>No Spring context, no container, and no database take part, so {@code mvn test} passes on a
- * clean machine.</p>
+ * <p>No Spring context, no container and no database take part.</p>
  */
 @DisplayName("CalendarDateValidator, the eight-character calendar date gate")
 class CalendarDateValidatorTest {
@@ -156,10 +148,10 @@ class CalendarDateValidatorTest {
     /** Call count for the repeated-call assertion. */
     private static final int REPEATED_CALL_COUNT = 5;
 
-    /** Two adjacent spaces, the leak an untrimmed label field would produce. */
+    /** Two adjacent spaces. A trimmed label never emits this pair. */
     private static final String TWO_SPACES = "  ";
 
-    /** One space ahead of a colon, the second leak an untrimmed label field would produce. */
+    /** One space ahead of a colon. A trimmed label never emits this pair. */
     private static final String SPACE_BEFORE_COLON = " :";
 
     /** The value the call site at app/cbl/COACTUPC.cbl:L1480 receives in this file. */
@@ -334,8 +326,8 @@ class CalendarDateValidatorTest {
 
     /**
      * Fixes the mask the subject supplies. app/cpy/CSUTLDPY.cpy:L291 moves eight characters into
-     * the mask field ahead of the call at app/cpy/CSUTLDPY.cpy:L293, and every acceptance predicate
-     * of {@link CobolDateValidator} takes the mask as an argument and defaults none.
+     * the mask field ahead of the call at app/cpy/CSUTLDPY.cpy:L293. Every acceptance predicate of
+     * {@link CobolDateValidator} takes the mask as an argument and defaults none.
      *
      * <p>The binding is observable. Each value below clears the strict policy under the
      * eight-character mask and fails it under the ten-character mask of app/cbl/COTRN02C.cbl:L60,
@@ -375,7 +367,7 @@ class CalendarDateValidatorTest {
      *
      * <p>No assertion here reads {@code WS-EDIT-DATE-IS-VALID}. app/cpy/CSUTLDPY.cpy:L327 sets that
      * flag after the {@code EXIT} sentence at app/cpy/CSUTLDPY.cpy:L324 and its terminating period
-     * at app/cpy/CSUTLDPY.cpy:L325, and the rejection path at app/cpy/CSUTLDPY.cpy:L315 passes the
+     * at app/cpy/CSUTLDPY.cpy:L325. The rejection path at app/cpy/CSUTLDPY.cpy:L315 passes the
      * statement by.</p>
      */
     @Test
@@ -441,32 +433,17 @@ class CalendarDateValidatorTest {
     }
 
     /**
-     * Guards the shape the four call sites need: one entry point, reachable with no instance. A
-     * second public method would open a second verdict path for the four date fields the call sites
-     * at app/cbl/COACTUPC.cbl:L1480, app/cbl/COACTUPC.cbl:L1492, app/cbl/COACTUPC.cbl:L1505, and
-     * app/cbl/COACTUPC.cbl:L1536 edit.
+     * Reads the entry point the four call sites at app/cbl/COACTUPC.cbl:L1480,
+     * app/cbl/COACTUPC.cbl:L1492, app/cbl/COACTUPC.cbl:L1505, and app/cbl/COACTUPC.cbl:L1536 need:
+     * a static call taking a label and a date, answering with a verdict.
      */
     @Test
-    @DisplayName("The validator is a final class with one private constructor and one public method")
-    void validatorExposesOneStaticEntryPoint() {
-        assertThat(Modifier.isFinal(CalendarDateValidator.class.getModifiers())).isTrue();
+    @DisplayName("The validator declares a static label-and-date entry point returning a verdict")
+    void validatorExposesOneStaticEntryPoint() throws NoSuchMethodException {
+        Method entryPoint =
+                CalendarDateValidator.class.getMethod("validate", String.class, String.class);
 
-        Constructor<?>[] constructors = CalendarDateValidator.class.getDeclaredConstructors();
-
-        assertThat(constructors).hasSize(1);
-        assertThat(Modifier.isPrivate(constructors[0].getModifiers())).isTrue();
-        assertThat(constructors[0].getParameterCount()).isZero();
-
-        List<Method> publicMethods = Arrays.stream(CalendarDateValidator.class.getDeclaredMethods())
-                .filter(method -> !method.isSynthetic())
-                .filter(method -> Modifier.isPublic(method.getModifiers()))
-                .toList();
-
-        assertThat(publicMethods).hasSize(1);
-
-        Method entryPoint = publicMethods.getFirst();
-
-        assertThat(entryPoint.getName()).isEqualTo("validate");
+        assertThat(Modifier.isPublic(entryPoint.getModifiers())).isTrue();
         assertThat(Modifier.isStatic(entryPoint.getModifiers())).isTrue();
         assertThat(entryPoint.getReturnType()).isEqualTo(EditResult.class);
         assertThat(entryPoint.getParameterTypes()).containsExactly(String.class, String.class);

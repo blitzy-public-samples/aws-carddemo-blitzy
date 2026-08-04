@@ -6,14 +6,6 @@
 -- No COBOL (Common Business Oriented Language) program in app/cbl/ scores risk.
 -- Four tables follow: two carry columns derived from copybook Picture clauses,
 -- two are additive infrastructure.
---
--- Field-by-field source mapping, omitted fields included:
---   card-platform/docs/traceability-matrix.md
--- Design decisions:
---   card-platform/docs/decision-log.md
--- Flagged source behaviour:
---   card-platform/docs/business-rule-flags.md
-
 
 -- fraud_assessment: one row per assessed transaction.
 CREATE TABLE fraud_assessment (
@@ -27,18 +19,32 @@ CREATE TABLE fraud_assessment (
     risk_score      INTEGER                     NOT NULL,
     -- True when at least one rule triggered; net new; no COBOL ancestor.
     flagged         BOOLEAN                     NOT NULL,
-    -- Rule names in evaluation order, comma separated, empty when none
-    -- triggered; net new; no COBOL ancestor.
+    -- Rule names in evaluation order as a JSON array, [] when none triggered;
+    -- net new; no COBOL ancestor. A JSON array carries a comma inside a quoted
+    -- string and never between two values, so an identifier holding one
+    -- survives a round trip. All three names span 49 of the 64 characters.
     triggered_rules VARCHAR(64)                 NOT NULL,
     -- Assessment time; net new; no COBOL ancestor.
     assessed_at     TIMESTAMP(6) WITH TIME ZONE NOT NULL,
     CONSTRAINT pk_fraud_assessment PRIMARY KEY (transaction_id),
-    CONSTRAINT ck_fraud_assessment_risk_score CHECK (risk_score BETWEEN 0 AND 100)
+    -- Bounds of riskScore in libs/event-contracts fraud-flagged-v1.json.
+    CONSTRAINT ck_fraud_assessment_risk_score CHECK (risk_score BETWEEN 0 AND 100),
+    -- The account identifier keeps leading zeros, so CHAR(11) holds digits only.
+    CONSTRAINT ck_fraud_assessment_account_id CHECK (account_id ~ '^[0-9]{11}$'),
+    -- A JSON array of the identifiers the enum of fraud-flagged-v1.json permits,
+    -- and nothing else. [] is the cleared verdict.
+    CONSTRAINT ck_fraud_assessment_triggered_rules CHECK (
+        triggered_rules ~ ('^\[("(VELOCITY|AMOUNT_ANOMALY|MERCHANT_CATEGORY)"'
+                        || '(,"(VELOCITY|AMOUNT_ANOMALY|MERCHANT_CATEGORY)")*)?\]$')),
+    -- flagged summarises the rule list, so the two cannot disagree. A row
+    -- flagged with no rule names no reason for the flag.
+    CONSTRAINT ck_fraud_assessment_verdict CHECK (
+        (flagged = FALSE AND triggered_rules = '[]')
+        OR (flagged = TRUE AND triggered_rules <> '[]'))
 );
 
 -- Non-unique index on the account identifier. One account holds many rows.
 CREATE INDEX ix_fraud_assessment_account ON fraud_assessment (account_id);
-
 
 -- velocity_window: one row per account and window, holding the counters the
 -- velocity rule reads.
@@ -60,32 +66,156 @@ CREATE TABLE velocity_window (
     CONSTRAINT pk_velocity_window PRIMARY KEY (account_id, window_start)
 );
 
-
 -- outbox_event: ADDITIVE. One row per event this service publishes.
+-- payload is bounded at 8192 octets, the ceiling
+-- libs/event-contracts/.../serde/EventWireBounds.java applies on the wire, so the stored
+-- bound and the published bound are one bound. The seven relay-state columns are ADDITIVE
+-- with no COBOL ancestor: without a claim, two relay instances read the same unpublished
+-- row and publish it twice, and without an attempt count and a next-attempt time one
+-- undeliverable row is retried forever and blocks the rows behind it.
 CREATE TABLE outbox_event (
+    -- Idempotency key. The same value travels in the EventEnvelope.eventId field of
+    -- the payload, and every consumer records it in its own processed_event marker.
     event_id     UUID                        NOT NULL,
     -- FraudFlagged and FraudCleared are the two values written.
-    event_type   VARCHAR(32)                 NOT NULL,
-    -- Account identifier, eleven characters, and the Kafka message key.
+    event_type   VARCHAR(50)                 NOT NULL,
+    -- Account identifier, eleven characters, and the Kafka message key. Fixed-width
+    -- character storage keeps a leading zero, which XREF-ACCT-ID PIC 9(11) at
+    -- app/cpy/CVACT03Y.cpy:L7 carries in 50 of the 50 rows of
+    -- app/data/ASCII/cardxref.txt.
     aggregate_id CHAR(11)                    NOT NULL,
-    -- One JavaScript Object Notation (JSON) document, envelope fields and
-    -- payload fields at the same level.
+    -- One event payload as JavaScript Object Notation (JSON) text, envelope fields
+    -- and payload fields at the same level. ck_outbox_event_payload_bytes below holds
+    -- it to the same 8192-octet ceiling the wire applies, so the stored bound and the
+    -- published bound are one bound.
     payload      TEXT                        NOT NULL,
     published    BOOLEAN                     NOT NULL DEFAULT FALSE,
+    -- Arrival order, and the leading column the relay orders its batch on.
     created_at   TIMESTAMP(6) WITH TIME ZONE NOT NULL,
-    -- The one column in this migration that accepts NULL.
+    -- PENDING, CLAIMED, PUBLISHED or ABANDONED. Terminal states are the last two.
+    relay_state     VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    -- How many publish attempts this row has taken. The relay abandons a row at its own
+    -- ceiling rather than at a constraint, so exceeding the ceiling is a decision and not
+    -- a failed statement.
+    attempt_count   INTEGER     NOT NULL DEFAULT 0,
+    -- When the relay may next attempt this row. A new row is due as soon as it is written.
+    next_attempt_at TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+    last_attempt_at TIMESTAMP(6) WITH TIME ZONE,
+    -- A short, redacted reason. Never the payload and never an event value: the column is
+    -- bounded so that a stack trace cannot be stored here by accident.
+    last_error      VARCHAR(500),
+    -- Which relay instance holds the claim, and since when. Both or neither.
+    claimed_by      VARCHAR(64),
+    claimed_at      TIMESTAMP(6) WITH TIME ZONE,
     published_at TIMESTAMP(6) WITH TIME ZONE,
-    CONSTRAINT pk_outbox_event PRIMARY KEY (event_id)
+    CONSTRAINT pk_outbox_event PRIMARY KEY (event_id),
+    CONSTRAINT ck_outbox_event_payload_bytes CHECK (octet_length(payload) <= 8192),
+    -- The flag and the timestamp move together. A row is either unpublished with no
+    -- timestamp or published with one, and no third state reaches the table.
+    CONSTRAINT ck_outbox_event_publication CHECK (
+        (published = FALSE AND published_at IS NULL)
+        OR (published = TRUE AND published_at IS NOT NULL)),
+    CONSTRAINT ck_outbox_event_relay_state
+        CHECK (relay_state IN ('PENDING', 'CLAIMED', 'PUBLISHED', 'ABANDONED')),
+    CONSTRAINT ck_outbox_event_attempt_count CHECK (attempt_count >= 0),
+    -- A claim has both halves or neither, so a half-written claim cannot strand a row.
+    CONSTRAINT ck_outbox_event_claim_pairing
+        CHECK ((claimed_by IS NULL) = (claimed_at IS NULL)),
+    -- The boolean and the state cannot drift apart, whichever one a reader trusts.
+    CONSTRAINT ck_outbox_event_published_agrees
+        CHECK (published = (relay_state = 'PUBLISHED')),
+    CONSTRAINT ck_outbox_event_published_at
+        CHECK ((published_at IS NOT NULL) = (relay_state = 'PUBLISHED'))
 );
 
 -- Non-unique index. The relay reads unpublished rows in arrival order.
-CREATE INDEX ix_outbox_event_unpublished ON outbox_event (published, created_at);
+-- Partial index over pending rows alone. The relay claims only unpublished rows, so a
+-- published row carries no index entry and the index stays the size of the backlog
+-- rather than the size of the table. The two key columns are the relay's ordering:
+-- created_at first, then event_id to break a tie, so two relay instances agree on
+-- which row comes next.
+CREATE INDEX ix_outbox_event_pending
+    ON outbox_event (created_at, event_id) WHERE published = FALSE;
+-- The claim query filters on relay_state and orders by next_attempt_at, so both columns are
+-- covered. This index is also the purge path for rows in a terminal state.
+CREATE INDEX ix_outbox_event_claimable ON outbox_event (relay_state, next_attempt_at);
 
 
+
+-- Retention. A published row has done its work and stays only for diagnosis. This index
+-- serves the purge that deletes published rows past the retention horizon.
+CREATE INDEX ix_outbox_event_published_at
+    ON outbox_event (published_at) WHERE published = TRUE;
 -- processed_event: ADDITIVE. One row per event identifier a consumer has already
 -- handled. The primary key is the only access path.
+-- The primary key is the guard as well as the key: an insert that collides is how a consumer
+-- learns the event was already handled, so the guard cannot be checked and then raced past.
+-- The consumer inserts this row in the same local transaction as its side effects and
+-- acknowledges the message only after that transaction commits, which is why a crash between
+-- the two leaves no half-processed event.
 CREATE TABLE processed_event (
     event_id     UUID                        NOT NULL,
     processed_at TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+    -- Which topic the delivery arrived on. NULL for a marker written before this column
+    -- existed; every marker written since carries one.
+    consumed_topic VARCHAR(128),
     CONSTRAINT pk_processed_event PRIMARY KEY (event_id)
 );
+
+
+-- ============================================================================
+-- Retention and erasure
+-- ============================================================================
+-- No source dataset carries a retention rule. app/csd/CARDDEMO.CSD defines eight files
+-- with RECOVERY(NONE) and JOURNAL(NO) and no expiry, the Job Control Language members
+-- under app/jcl/ define datasets without an EXPDT or RETPD parameter, and no program
+-- under app/cbl/ deletes a record: the only DELETE in the repository is IDCAMS deleting
+-- a whole dataset before it is redefined. A table that only ever grows is a table whose
+-- oldest row is as exposed as its newest, so this platform states a rule for every table
+-- it owns.
+--
+-- Each COMMENT below reads as four fields followed by a sentence, so an operator can
+-- read the policy out of the catalogue rather than out of a document:
+--   retention=<window>      how long a row may stay, or the word relationship for a business
+--                           record whose life is the customer relationship
+--   purge_key=<column>      the column a purge job ranges over, or 'none'
+--   personal_data=<yes|no>  whether the row describes an identifiable person
+-- Read them back with:
+--   SELECT relname, obj_description(oid, 'pg_class') FROM pg_class
+--    WHERE relkind = 'r' ORDER BY relname;
+--
+-- The windows below are the demo baseline this platform ships with. No requirement in
+-- scope fixes a legal retention period, and card-platform/docs/suggested-next-tasks.md (planned)
+-- carries the task of replacing them with the periods a deployment's jurisdiction
+-- requires. The purge job itself is out of scope for the same reason: nothing in the
+-- Agent Action Plan schedules one, and a job that deletes financial records is not
+-- something to add without an owner. The columns and indexes it needs are here.
+
+-- The range a purge job scans.
+CREATE INDEX ix_fraud_assessment_assessed_at ON fraud_assessment (assessed_at);
+
+-- The range a purge job scans.
+CREATE INDEX ix_velocity_window_start ON velocity_window (window_start);
+
+-- The range a purge job scans.
+CREATE INDEX ix_processed_event_processed_at ON processed_event (processed_at);
+
+COMMENT ON TABLE fraud_assessment IS
+    'retention=90 days; purge_key=assessed_at; personal_data=no. One risk verdict per
+     transaction. The service has no COBOL ancestor and no regulatory record to keep, so a
+     verdict expires once it can no longer explain a decision under review: purge rows whose
+     assessed_at is older than 90 days.';
+
+COMMENT ON TABLE velocity_window IS
+    'retention=7 days; purge_key=window_start; personal_data=no. Rolling per-account counter.
+     A window older than the widest velocity rule can influence no verdict: purge rows whose
+     window_start is older than 7 days.';
+
+COMMENT ON TABLE outbox_event IS
+    'retention=7 days after published; purge_key=created_at; personal_data=no. One assessment
+     event awaiting publication. Purge rows where published is true and created_at is older
+     than 7 days.';
+
+COMMENT ON TABLE processed_event IS
+    'retention=30 days; purge_key=processed_at; personal_data=no. Duplicate-delivery marker,
+     kept longer than broker topic retention.';

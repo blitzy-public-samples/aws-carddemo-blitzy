@@ -3,13 +3,14 @@ package com.carddemo.fraud.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * One row per event identifier this service has already handled, in table {@code processed_event}.
+ * One row per event identifier this service has handled, in table {@code processed_event}.
  *
  * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. Searching all 28 Common Business Oriented
  * Language (COBOL) programs in {@code app/cbl/} for {@code fraud}, {@code risk}, {@code velocit},
@@ -20,8 +21,9 @@ import java.util.UUID;
  * L707-L711, four statements ending in {@code CALL 'CEE3ABD'}. A replayed feed hits a duplicate key
  * and abends.
  *
- * <p>A consumer in the sibling {@code messaging} package reads this table before acting, then
- * inserts the marker in the same local transaction as its side effects.
+ * <p>The planned consumer in the sibling {@code messaging} package is to read this table before
+ * acting, then insert the marker in the same local transaction as its side effects. No consumer is
+ * authored yet, so the table is empty.
  *
  * <p>Flyway 12.4.0 creates both columns on PostgreSQL 18.4 from
  * {@code src/main/resources/db/migration/V1__schema.sql}. The primary key is the only access path,
@@ -39,11 +41,11 @@ import java.util.UUID;
  * configuration sets {@code spring.jpa.hibernate.ddl-auto} to {@code validate}, and the Jakarta
  * Persistence API (JPA) provider then checks this mapping against the Data Definition Language
  * (DDL) above at start-up. A column name or type mismatch stops the service.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
-@Table(name = "processed_event")
+@Table(name = "processed_event",
+        indexes = @Index(name = "ix_processed_event_processed_at",
+                columnList = "processed_at"))
 public class ProcessedEventEntity {
 
     /** Identifier of the handled event, assigned by the producing service. */
@@ -54,6 +56,24 @@ public class ProcessedEventEntity {
     /** Instant at which this service finished handling the event. */
     @Column(name = "processed_at", nullable = false)
     private Instant processedAt;
+
+    /**
+     * Widest value {@code consumed_topic} holds, from {@code consumed_topic VARCHAR(128)} in
+     * {@code src/main/resources/db/migration/V1__schema.sql}.
+     */
+    public static final int CONSUMED_TOPIC_MAX_LENGTH = 128;
+
+    /**
+     * Which topic the delivery that first handled this event arrived on, or null when the
+     * marker was written without one.
+     *
+     * <p>A marker on its own says an event was handled and nothing about where it came from, which
+     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
+     * came from or arrive on a dead-letter topic during a recovery, and those are different
+     * situations. Recording the topic separates them.
+     */
+    @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
+    private String consumedTopic;
 
     /**
      * No-argument constructor for the Jakarta Persistence API provider.
@@ -77,20 +97,10 @@ public class ProcessedEventEntity {
         this.processedAt = Objects.requireNonNull(processedAt, "processedAt");
     }
 
-    /**
-     * Returns the identifier of the handled event.
-     *
-     * @return value of column {@code event_id}
-     */
     public UUID getEventId() {
         return eventId;
     }
 
-    /**
-     * Returns the instant at which handling finished.
-     *
-     * @return value of column {@code processed_at}
-     */
     public Instant getProcessedAt() {
         return processedAt;
     }
@@ -132,5 +142,38 @@ public class ProcessedEventEntity {
     @Override
     public String toString() {
         return "ProcessedEventEntity[eventId=" + eventId + ", processedAt=" + processedAt + "]";
+    }
+
+    /**
+     * Returns which topic the delivery that first handled this event arrived on.
+     *
+     * @return the topic name, or null when the marker carries none
+     */
+    public String getConsumedTopic() {
+        return consumedTopic;
+    }
+
+    /**
+     * Records which topic the delivery that first handled this event arrived on.
+     *
+     * <p>A value longer than {@value #CONSUMED_TOPIC_MAX_LENGTH} characters is refused rather than
+     * truncated, because a truncated topic name names a topic that does not exist and is worse than
+     * none.
+     *
+     * @param consumedTopic the topic name, or null to record none
+     * @throws IllegalArgumentException if {@code consumedTopic} is blank or too long
+     */
+    public void setConsumedTopic(String consumedTopic) {
+        if (consumedTopic != null) {
+            if (consumedTopic.isBlank()) {
+                throw new IllegalArgumentException("consumedTopic is blank");
+            }
+            if (consumedTopic.length() > CONSUMED_TOPIC_MAX_LENGTH) {
+                throw new IllegalArgumentException("consumedTopic is " + consumedTopic.length()
+                        + " characters, over the " + CONSUMED_TOPIC_MAX_LENGTH
+                        + " its column holds");
+            }
+        }
+        this.consumedTopic = consumedTopic;
     }
 }

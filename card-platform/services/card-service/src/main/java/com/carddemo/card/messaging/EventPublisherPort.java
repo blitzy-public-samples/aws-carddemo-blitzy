@@ -34,12 +34,28 @@ public interface EventPublisherPort {
      * separate key argument, so the key and the payload cannot name different accounts. It checks
      * {@code aggregateId} against {@link #AGGREGATE_ID_PATTERN} and rejects any other value.
      *
+     * <p>Every implementation binds the payload to {@code topic} before it sends. It reads
+     * {@code eventType} from the payload envelope, looks that type up in
+     * {@code com.carddemo.events.serde.EventContracts}, and rejects the call when the type does not
+     * belong on {@code topic}. The event type therefore has one source, the payload, and a caller
+     * cannot route a card update onto a transaction topic.
+     *
+     * <p>Every implementation also validates the payload against the versioned schema document that
+     * event type names, and rejects a payload that fails it.
+     *
+     * <p>A rejection message holds a JSON pointer, a broken keyword, an event type, a topic name or
+     * a length, and never a value read from the payload. A caller that logs a rejection therefore
+     * records no Primary Account Number (PAN) and no account identifier.
+     *
      * @param topic       the destination topic name, which the caller reads from configuration
      * @param aggregateId the eleven-digit account identifier the event belongs to, and the value
      *                    the payload carries in its own {@code aggregateId} field. Callers pass
      *                    all eleven characters, leading zeros included.
      * @param payload     the event body, already serialized as JavaScript Object Notation (JSON)
      *                    and taken from the {@code payload} column of {@code outbox_event}
+     * @throws IllegalArgumentException when an argument is absent, when {@code aggregateId} misses
+     *         {@link #AGGREGATE_ID_PATTERN}, when the payload declares an event type that does not
+     *         belong on {@code topic}, or when the payload fails the document that type names
      */
     void publish(String topic, String aggregateId, String payload);
 }

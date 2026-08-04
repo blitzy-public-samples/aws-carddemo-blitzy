@@ -19,12 +19,12 @@
   <packaging>jar</packaging>
 
   <name>CardDemo Notification Service</name>
-  <description>The notification service consumes three topics under three
-    consumer groups of its own: transaction.authorized, which makes it the third
-    independent consumer of the one event an authorization call publishes,
-    alongside ledger posting and fraud detection; transaction.posted, which
-    carries the new balance; and fraud.assessed. It publishes no event and calls
-    no other service.</description>
+  <description>The notification service consumes two topics under two consumer
+    groups of its own. transaction.posted carries the new balance a posting
+    produced. fraud.assessed carries a risk assessment, and the service alerts on
+    a flagged one. Both topics sit downstream of the authorization event, which
+    ledger posting and fraud detection consume directly. This service publishes no
+    event and calls no other service.</description>
 
   <properties>
     <!-- Compiler release for this module. The Spring Boot parent defaults it to 17. -->
@@ -64,6 +64,20 @@
       <artifactId>spring-boot-starter-actuator</artifactId>
     </dependency>
 
+    <!-- Request authentication and authorization. config/SecurityConfig declares two
+         filter chains: one over the actuator surface, leaving health open for a probe
+         and requiring ROLE_MONITORING for metrics and the Prometheus scrape, and one
+         over the API, denying by default and scoping each route to the identity that
+         owns the identifier it names. The starter also installs the response headers
+         that keep a financial or personal-data answer out of every cache, and the
+         delegating password encoder that reads the algorithm prefix of a configured
+         password, so no plaintext password is stored or compared. The version comes
+         from the Spring Boot bill of materials imported by the parent. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+
     <!-- Messaging. Spring Boot 4 ships Kafka auto-configuration in its own
          starter; spring-kafka alone ships none. -->
     <dependency>
@@ -81,6 +95,7 @@
     <dependency>
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
     </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
@@ -95,14 +110,13 @@
       <artifactId>flyway-database-postgresql</artifactId>
     </dependency>
 
-    <!-- Exposes metrics for scraping and writes structured logs. -->
+    <!-- Exposes metrics for scraping. Structured log output comes from the Spring
+         Boot logging starter through the logging.structured.format.console property
+         in application.yml. -->
     <dependency>
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-registry-prometheus</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>net.logstash.logback</groupId>
-      <artifactId>logstash-logback-encoder</artifactId>
+      <scope>runtime</scope>
     </dependency>
 
     <!-- Test scope: slice tests, an embedded broker, containers, and

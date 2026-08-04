@@ -3,9 +3,11 @@ package com.carddemo.account.entity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * Jakarta Persistence entity for the {@code processed_event} table: the identifier of one consumed
@@ -16,33 +18,58 @@ import java.time.Instant;
  * each posted transaction with no duplicate check and routes every file status other than
  * {@code '00'} to {@code 9999-ABEND-PROGRAM}.</p>
  *
- * <p>The account service registers no listener, so it writes no row here today. Flyway creates the
- * table, which stays empty until this module gains a consumer.</p>
+ * <p>The account service registers no listener, so it writes no row here today.
+ * {@code card-platform/.env.example} declares four consumer groups and none of them is an account
+ * group. The table is declared because every service of this platform declares the same marker with
+ * the same two columns, so a consumer added to this service inherits the contract unchanged rather
+ * than inventing one.</p>
  *
- * <p>Two columns carry the marker: {@code event_id}, a 36-character identifier that is also the
- * primary key, and {@code processed_at}, the moment a consumer's side effects committed. A second
- * insert of one identifier violates that primary key. A consumer inserts the row in the same local
- * transaction as those side effects, and the {@code repository} package owns the existence check.
- * Configuration supplies the schema name, and the table annotation names none.</p>
+ * <p>Two columns carry the marker: {@code event_id}, a Universally Unique Identifier (UUID) that is
+ * also the primary key, and {@code processed_at}, the moment a consumer's side effects committed. A
+ * second insert of one identifier violates that primary key. A consumer inserts the row in the same
+ * local transaction as those side effects, and {@code repository/ProcessedEventRepository} owns the
+ * existence check, the insert and the retention purge. Configuration supplies the schema name, and
+ * the table annotation names none.</p>
  *
- * <p>{@code card-platform/docs/decision-log.md} records the idempotent-consumer decision.</p>
+ * <p>{@code card-platform/docs/decision-log.md} (planned) records the idempotent-consumer
+ * decision.</p>
  */
 @Entity
-@Table(name = "processed_event")
+@Table(name = "processed_event",
+        indexes = @Index(name = "ix_processed_event_processed_at",
+                columnList = "processed_at"))
 public class ProcessedEventEntity {
 
     /**
-     * Identifier of the consumed event, in the canonical 36-character text form of a universally
-     * unique identifier. The same value travels in the event envelope and in
-     * {@code outbox_event.event_id}, so the two tables compare with no translation.
+     * Identifier of the consumed event, a Universally Unique Identifier (UUID). The same value
+     * travels in the event envelope and in {@code outbox_event.event_id}, so the two tables compare
+     * with no translation.
      */
     @Id
-    @Column(name = "event_id", nullable = false, length = 36)
-    private String eventId;
+    @Column(name = "event_id", nullable = false, updatable = false)
+    private UUID eventId;
 
     /** Moment a consumer's side effects committed. */
     @Column(name = "processed_at", nullable = false)
     private Instant processedAt;
+
+    /**
+     * Widest value {@code consumed_topic} holds, from {@code consumed_topic VARCHAR(128)} in
+     * {@code src/main/resources/db/migration/V1__schema.sql}.
+     */
+    public static final int CONSUMED_TOPIC_MAX_LENGTH = 128;
+
+    /**
+     * Which topic the delivery that first handled this event arrived on, or null when the
+     * marker was written without one.
+     *
+     * <p>A marker on its own says an event was handled and nothing about where it came from, which
+     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
+     * came from or arrive on a dead-letter topic during a recovery, and those are different
+     * situations. Recording the topic separates them.
+     */
+    @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
+    private String consumedTopic;
 
     /** Creates an empty marker. Jakarta Persistence instantiates the entity through this one. */
     public ProcessedEventEntity() {
@@ -54,7 +81,7 @@ public class ProcessedEventEntity {
      * @param eventId     identifier of the consumed event, 36 characters
      * @param processedAt moment the consumer's side effects committed
      */
-    public ProcessedEventEntity(String eventId, Instant processedAt) {
+    public ProcessedEventEntity(UUID eventId, Instant processedAt) {
         this.eventId = eventId;
         this.processedAt = processedAt;
     }
@@ -64,7 +91,7 @@ public class ProcessedEventEntity {
      *
      * @return identifier of the consumed event
      */
-    public String getEventId() {
+    public UUID getEventId() {
         return eventId;
     }
 
@@ -73,24 +100,14 @@ public class ProcessedEventEntity {
      *
      * @param eventId identifier of the consumed event, 36 characters
      */
-    public void setEventId(String eventId) {
+    public void setEventId(UUID eventId) {
         this.eventId = eventId;
     }
 
-    /**
-     * Reads the processing time.
-     *
-     * @return moment the consumer's side effects committed
-     */
     public Instant getProcessedAt() {
         return processedAt;
     }
 
-    /**
-     * Writes the processing time.
-     *
-     * @param processedAt moment the consumer's side effects committed
-     */
     public void setProcessedAt(Instant processedAt) {
         this.processedAt = processedAt;
     }
@@ -131,5 +148,38 @@ public class ProcessedEventEntity {
     @Override
     public String toString() {
         return "ProcessedEventEntity[eventId=" + eventId + ", processedAt=" + processedAt + "]";
+    }
+
+    /**
+     * Returns which topic the delivery that first handled this event arrived on.
+     *
+     * @return the topic name, or null when the marker carries none
+     */
+    public String getConsumedTopic() {
+        return consumedTopic;
+    }
+
+    /**
+     * Records which topic the delivery that first handled this event arrived on.
+     *
+     * <p>A value longer than {@value #CONSUMED_TOPIC_MAX_LENGTH} characters is refused rather than
+     * truncated, because a truncated topic name names a topic that does not exist and is worse than
+     * none.
+     *
+     * @param consumedTopic the topic name, or null to record none
+     * @throws IllegalArgumentException if {@code consumedTopic} is blank or too long
+     */
+    public void setConsumedTopic(String consumedTopic) {
+        if (consumedTopic != null) {
+            if (consumedTopic.isBlank()) {
+                throw new IllegalArgumentException("consumedTopic is blank");
+            }
+            if (consumedTopic.length() > CONSUMED_TOPIC_MAX_LENGTH) {
+                throw new IllegalArgumentException("consumedTopic is " + consumedTopic.length()
+                        + " characters, over the " + CONSUMED_TOPIC_MAX_LENGTH
+                        + " its column holds");
+            }
+        }
+        this.consumedTopic = consumedTopic;
     }
 }

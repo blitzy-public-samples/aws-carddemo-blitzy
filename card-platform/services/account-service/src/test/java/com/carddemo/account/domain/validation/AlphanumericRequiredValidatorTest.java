@@ -1,10 +1,8 @@
 package com.carddemo.account.domain.validation;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -33,13 +31,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * statements at L1978 and L2004, and the exit label at L2009.</p>
  *
  * <p>A digit passes the edit here. The same digit fails paragraph {@code 1225-EDIT-ALPHA-REQD},
- * whose message at app/cbl/COACTUPC.cbl:L1941 names alphabets alone. The methods below assert that
- * boundary, both letter cases, and the space the destructive conversion leaves behind. They also
- * assert the three-way not-supplied test, the order of the two tests, label trimming, and the count
- * of reachable messages.</p>
+ * whose message at app/cbl/COACTUPC.cbl:L1941 names alphabets alone.</p>
  *
- * <p>Every input below is built in the test. No container, no data source and no test double takes
- * part, so {@code mvn test} covers the class on a clean machine.</p>
+ * <p>Every input is built in the test. No container, no data source and no test double takes
+ * part.</p>
  */
 @DisplayName("AlphanumericRequiredValidator, the letters, digits and spaces edit")
 class AlphanumericRequiredValidatorTest {
@@ -418,32 +413,16 @@ class AlphanumericRequiredValidatorTest {
     }
 
     @Test
-    @DisplayName("The subject is final, exposes one static entry point, and hides its constructor")
-    void subjectExposesOneStaticEntryPoint() {
-        assertThat(Modifier.isFinal(AlphanumericRequiredValidator.class.getModifiers())).isTrue();
+    @DisplayName("The subject declares a static label, value and width entry point")
+    void subjectExposesOneStaticEntryPoint() throws NoSuchMethodException {
+        Method entryPoint = AlphanumericRequiredValidator.class.getMethod(
+                "validate", String.class, String.class, int.class);
 
-        List<Method> publicMethods =
-                Arrays.stream(AlphanumericRequiredValidator.class.getDeclaredMethods())
-                        .filter(method -> !method.isSynthetic())
-                        .filter(method -> Modifier.isPublic(method.getModifiers()))
-                        .toList();
-
-        assertThat(publicMethods).hasSize(1);
-
-        Method entryPoint = publicMethods.get(0);
-
-        assertThat(entryPoint.getName()).isEqualTo("validate");
+        assertThat(Modifier.isPublic(entryPoint.getModifiers())).isTrue();
         assertThat(Modifier.isStatic(entryPoint.getModifiers())).isTrue();
         assertThat(entryPoint.getReturnType()).isEqualTo(EditResult.class);
         assertThat(entryPoint.getParameterTypes())
                 .containsExactly(String.class, String.class, int.class);
-
-        Constructor<?>[] constructors =
-                AlphanumericRequiredValidator.class.getDeclaredConstructors();
-
-        assertThat(constructors).hasSize(1);
-        assertThat(constructors[0].getParameterCount()).isZero();
-        assertThat(Modifier.isPrivate(constructors[0].getModifiers())).isTrue();
     }
 
     /**

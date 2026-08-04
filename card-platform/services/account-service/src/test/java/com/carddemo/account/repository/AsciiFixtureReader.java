@@ -35,7 +35,8 @@ import java.util.List;
  *
  * <p>The counts and widths in that table come from measuring the three files.</p>
  *
- * <p>Decision: module-local fixture reader.</p>
+ * <p>This reader is module-local rather than shared with the equivalence suite, a choice recorded
+ * in {@code card-platform/docs/decision-log.md} (planned).</p>
  */
 final class AsciiFixtureReader {
 
@@ -249,7 +250,6 @@ final class AsciiFixtureReader {
     /** Carriage return, stripped from the end of a record when one is present. */
     private static final char CARRIAGE_RETURN = '\r';
 
-    /** Holds static operations only. */
     private AsciiFixtureReader() {
     }
 

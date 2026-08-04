@@ -39,8 +39,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <ul>
  *   <li>{@code app/cbl/COACTUPC.cbl} gates five account money fields at L1078, L1092, L1106,
- *       L1120 and L1134, then converts them at L1080, L1094, L1108, L1122 and L1136. L2156 tests
- *       a sliced alphanumeric field for zero, and L2201 gates a fifteen-character signed field.
+ *       L1120 and L1134. It converts them at L1080, L1094, L1108, L1122 and L1136. L2156 tests a
+ *       sliced alphanumeric field for zero, and L2201 gates a fifteen-character signed field.
  *   <li>{@code app/cbl/COTRN02C.cbl} converts an account identifier at L204 and a card number at
  *       L218 with the plain function. L383 and L456 convert one transaction amount field twice
  *       with the currency function.
@@ -706,17 +706,6 @@ class NumvalParserTest {
 
     // The source census, read from app/cbl and app/cpy rather than narrated.
 
-    /**
-     * Asserts the call-site count of each of the four COBOL numeric functions across
-     * {@code app/cbl} and {@code app/cpy}, and asserts that each count comes from the files the
-     * class documentation names.
-     *
-     * <p>The scan reads every member of both directories and skips a line carrying {@code *} or
-     * {@code /} in column 7, the COBOL comment indicators. A name is matched at its longest form
-     * first, so {@code FUNCTION TEST-NUMVAL-C} is never counted as {@code FUNCTION NUMVAL-C} or as
-     * {@code FUNCTION TEST-NUMVAL}. Both directories hold members whose extension is upper case,
-     * so the scan names no extension.
-     */
     @Test
     void everyCobolNumericFunctionCallSiteIsCounted() {
         Map<String, Integer> tally = countCobolFunctionCallSites();
@@ -737,10 +726,6 @@ class NumvalParserTest {
                 "the total call-site count changed");
     }
 
-    /**
-     * Asserts that the four call-site counts come from exactly the four members the class
-     * documentation names, and from no other member of {@code app/cbl} or {@code app/cpy}.
-     */
     @Test
     void onlyFourSourceMembersCallACobolNumericFunction() {
         assertEquals(Set.of("COACTUPC.cbl", "CORPT00C.cbl", "COTRN02C.cbl", "CSUTLDPY.cpy"),
@@ -783,15 +768,6 @@ class NumvalParserTest {
                 "the currency-tolerant null-argument rejection message changed");
     }
 
-    /**
-     * Asserts that no rejection message carries a card number, a card verification value, or a
-     * money value, whatever the argument held.
-     *
-     * <p>The oracle bans every two-character run of the argument rather than every single
-     * character, because the message closes with a full stop and reports a length in digits.
-     * Banning single characters would fail on that punctuation and on those digits while proving
-     * nothing about the argument.</p>
-     */
     @Test
     void noRejectionMessageCarriesASensitiveArgument() {
         String[] sensitiveArguments = {
@@ -822,8 +798,6 @@ class NumvalParserTest {
             }
         }
     }
-
-    // Private helpers for the source census.
 
     /**
      * Counts every call site of the four COBOL numeric functions across {@code app/cbl} and

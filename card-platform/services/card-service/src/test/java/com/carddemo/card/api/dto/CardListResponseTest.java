@@ -26,7 +26,7 @@ import org.junit.jupiter.api.Test;
  * only tools a run needs.
  *
  * <p>A page declares three components: the rows, a flag stating whether a further page exists, and
- * the number the next request asks for. The card list program projects one row per card at
+ * the cursor the next request passes back. The card list program projects one row per card at
  * {@code app/cbl/COCRDLIC.cbl:L1165-L1171}. The row table holds seven rows at
  * {@code app/cbl/COCRDLIC.cbl:L250-L260}.
  *
@@ -38,21 +38,17 @@ import org.junit.jupiter.api.Test;
  * {@code DFHRESP(ENDFILE)} at L1215 sets {@code CA-NEXT-PAGE-NOT-EXISTS} at L1216.
  *
  * <p>The source keeps its browse position in {@code WS-CA-LAST-CARD-NUM PIC X(16)} at
- * {@code app/cbl/COCRDLIC.cbl:L231}, a full Primary Account Number (PAN). The read loop captures it
- * at L1194-L1195 and refreshes it at L1212-L1214. The page-down path reads it as the browse key at
- * {@code app/cbl/COCRDLIC.cbl:L488-L489}. That field lives in a communication area between screen
- * turns and never leaves the mainframe, so no component of this response carries it. The page number
- * carries the same paging intent and no card data. Several tests here hold that boundary: they
- * assert the response declares no free-text component, and that its paging component is a whole
- * number rather than a browse key.
+ * {@code app/cbl/COCRDLIC.cbl:L231}. The read loop captures it at L1194-L1195 and refreshes it at
+ * L1212-L1214. The page-down path reads it as the browse key at
+ * {@code app/cbl/COCRDLIC.cbl:L488-L489}. The next cursor of this response carries that same
+ * position, as a card-number value the next request passes back, and the next page starts after it.
+ * Several tests here hold that boundary: the cursor is text, it agrees with the next-page flag, and
+ * no component names a page ordinal.
  *
- * fixes the locator of the derived next-page flag at {@code app/cbl/COCRDLIC.cbl:L1191-L1216} and
- * supersedes the earlier citation of L1284-L1287. Lines L1284-L1286 compute
- * {@code WS-SCRN-COUNTER} as {@code WS-MAX-SCREEN-LINES + 1}, L1287 sets
- * {@code CA-NEXT-PAGE-EXISTS} with no condition, and L1288 sets {@code MORE-RECORDS-TO-READ}.
- * Those five lines preset the backward browse.
- *
- * at {@code app/cbl/COCRDLIC.cbl:L1287}.
+ * <p>The locator of the derived next-page flag is {@code app/cbl/COCRDLIC.cbl:L1191-L1216}, not
+ * L1284-L1287. Lines L1284-L1286 compute {@code WS-SCRN-COUNTER} as
+ * {@code WS-MAX-SCREEN-LINES + 1}. L1287 sets {@code CA-NEXT-PAGE-EXISTS} with no condition, and
+ * L1288 sets {@code MORE-RECORDS-TO-READ}. Those five lines preset the backward browse.
  *
  * <p>Three fields stay out of {@link CardListResponse}: a total count, a row offset and a page size.
  * {@code WS-SCRN-COUNTER PIC S9(4) COMP} at
@@ -73,15 +69,22 @@ final class CardListResponseTest {
     /** Component that states whether a further page exists. */
     private static final String COMPONENT_NEXT_PAGE_EXISTS = "nextPageExists";
 
-    /** Component that holds the number the next request asks for. */
-    private static final String COMPONENT_NEXT_PAGE_NUMBER = "nextPageNumber";
+    /** Component that holds the cursor the next request passes back. */
+    private static final String COMPONENT_NEXT_CURSOR = "nextCursor";
 
     /** The three component names, in the order {@link CardListResponse} declares them. */
     private static final List<String> EXPECTED_COMPONENT_NAMES =
-            List.of(COMPONENT_CARDS, COMPONENT_NEXT_PAGE_EXISTS, COMPONENT_NEXT_PAGE_NUMBER);
+            List.of(COMPONENT_CARDS, COMPONENT_NEXT_PAGE_EXISTS, COMPONENT_NEXT_CURSOR);
 
-    /** The number the next request asks for on a page that reports a further page. */
-    private static final int SECOND_PAGE_NUMBER = CardListResponse.FIRST_PAGE_NUMBER + 1;
+    /**
+     * The cursor a page that reports a further page carries: the card number of its last row, at
+     * the width of {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}. The value is a
+     * masked form, so no test in this class holds a full Primary Account Number (PAN).
+     */
+    private static final String NEXT_CURSOR = "************5746";
+
+    /** A second cursor, for the inequality assertion of two pages. */
+    private static final String OTHER_CURSOR = "************5747";
 
     /**
      * The masked card number of record one of {@code app/data/ASCII/carddata.txt}: twelve mask
@@ -109,8 +112,8 @@ final class CardListResponseTest {
 
     /**
      * Leading characters of a masked card number a construction test supplies. One ordinal digit
-     * completes it into the twelve masks and four digits {@link MaskedCardNumber} accepts, so no
-     * test in this class holds a full Primary Account Number (PAN).
+     * completes it into twelve mask characters then four digits, so no test in this class holds a
+     * full Primary Account Number (PAN).
      */
     private static final String MASKED_CARD_NUMBER_PREFIX = "************574";
 
@@ -119,17 +122,14 @@ final class CardListResponseTest {
             "Derived by the forward lookahead at app/cbl/COCRDLIC.cbl:L1191-L1216, which sets "
                     + "CA-NEXT-PAGE-EXISTS at L1210-L1211 and CA-NEXT-PAGE-NOT-EXISTS at L1216.";
 
-    /**
-     * Locator of the browse key the source keeps between screen turns, and which no component of
-     * this response carries.
-     */
+    /** Locator of the browse key the source keeps between screen turns, and which the cursor carries. */
     private static final String BROWSE_KEY_LOCATOR =
-            "The source keeps its browse position in WS-CA-LAST-CARD-NUM PIC X(16), a full Primary "
-                    + "Account Number, at app/cbl/COCRDLIC.cbl:L231. It is captured at "
+            "The source keeps its browse position in WS-CA-LAST-CARD-NUM PIC X(16) at "
+                    + "app/cbl/COCRDLIC.cbl:L231. It is captured at "
                     + "app/cbl/COCRDLIC.cbl:L1194-L1195, refreshed at "
                     + "app/cbl/COCRDLIC.cbl:L1212-L1214 and read as the browse key at "
-                    + "app/cbl/COCRDLIC.cbl:L488-L489. It stays in a communication area between "
-                    + "screen turns. A page number carries the same paging intent and no card data.";
+                    + "app/cbl/COCRDLIC.cbl:L488-L489. The next cursor carries that same position, "
+                    + "and the next page starts after it.";
 
     /** Locator of the row projection and the row table. */
     private static final String ROW_LOCATOR =
@@ -147,37 +147,34 @@ final class CardListResponseTest {
             "WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7 at app/cbl/COCRDLIC.cbl:L176-L178 is a "
                     + "program constant, and no component of this payload carries it.";
 
-    /** Lower-case name fragments that would expose a total count. */
+    /** Lower-case name fragments no component name may carry, each one naming a total count. */
     private static final List<String> TOTAL_COUNT_FRAGMENTS = List.of("total", "count");
 
     /**
-     * Lower-case name fragments that would name card data or a browse key on a paging component.
+     * Lower-case name fragments that would name a page ordinal.
      *
-     * <p>The fragments cover the card number, its common abbreviations, the source field name and
-     * the words a later contributor might reach for when reinstating a key-based browse marker. The
+     * <p>The source browses forward and backward from a key and holds no page ordinal, so a
+     * component under any of these names would invent a capability the source does not have. The
      * scan skips the row list, whose name legitimately carries the word {@code card}.
      */
-    private static final List<String> BROWSE_KEY_FRAGMENTS = List.of(
-            "cardnum",
-            "cardnumber",
-            "pan",
-            "primaryaccount",
-            "cursor",
-            "browsekey",
-            "lastcard",
-            "lastkey",
-            "token",
-            "marker");
+    private static final List<String> PAGE_ORDINAL_FRAGMENTS = List.of(
+            "pagenumber",
+            "pageno",
+            "pageindex",
+            "pageordinal",
+            "currentpage",
+            "firstpage",
+            "lastpage");
 
-    /** Lower-case name fragments that would expose a row offset. */
+    /** Lower-case name fragments no component name may carry, each one naming a row offset. */
     private static final List<String> ROW_OFFSET_FRAGMENTS =
             List.of("offset", "skip", "startat", "firstresult");
 
-    /** Lower-case name fragments that would expose a page size. */
+    /** Lower-case name fragments no component name may carry, each one naming a page size. */
     private static final List<String> PAGE_SIZE_FRAGMENTS =
             List.of("size", "limit", "maxresult", "perpage", "screenlines");
 
-    /** Types a total count, a page ordinal, a row offset or a page size would need. */
+    /** Whole-number types: those of a total count, a page ordinal, a row offset or a page size. */
     private static final List<Class<?>> WHOLE_NUMBER_TYPES = List.of(
             short.class,
             int.class,
@@ -186,17 +183,9 @@ final class CardListResponseTest {
             Integer.class,
             Long.class);
 
-    /** JUnit builds one instance of this class per test method through this constructor. */
     CardListResponseTest() {
     }
 
-    /**
-     * Asserts that a page declares exactly three components.
-     *
-     * <p>A page carries the rows, the next-page flag and the next page number. {@link #ROW_LOCATOR}
-     * covers the rows, {@link #LOOKAHEAD_LOCATOR} the flag and {@link #BROWSE_KEY_LOCATOR} the
-     * paging position the source held as a card number.
-     */
     @Test
     void pageDeclaresExactlyThreeComponents() {
         assertEquals(EXPECTED_COMPONENT_COUNT, components().length,
@@ -209,8 +198,8 @@ final class CardListResponseTest {
      * Asserts the three component names, position by position.
      *
      * <p>A renamed or reordered component fails here with the expected name in the message. The
-     * page number closes the page, and the source captures its own paging position once the page
-     * fills, at {@code app/cbl/COCRDLIC.cbl:L1191-L1195}.
+     * cursor closes the page, and the source captures its own paging position once the page fills,
+     * at {@code app/cbl/COCRDLIC.cbl:L1191-L1195}.
      */
     @Test
     void pageNamesThreeComponentsInDeclarationOrder() {
@@ -279,46 +268,45 @@ final class CardListResponseTest {
     }
 
     /**
-     * Asserts the next page number arrives as a nullable {@link Integer} and holds no value on the
-     * final page.
+     * Asserts the next cursor arrives as a {@link String} and holds no value on the final page.
      *
-     * <p>{@link Integer} rather than {@code int} because a page that ends the browse names no
-     * successor, and the primitive has no absent value. A whole number cannot hold the sixteen
-     * characters of {@code WS-CA-LAST-CARD-NUM PIC X(16)} at {@code app/cbl/COCRDLIC.cbl:L231}, so
-     * the type itself keeps a card number out of the paging component.
+     * <p>The cursor carries a card-number value, sixteen characters wide, so its type matches
+     * {@code WS-CA-LAST-CARD-NUM PIC X(16)} at {@code app/cbl/COCRDLIC.cbl:L231}. A page that ends
+     * the browse names no successor and carries no cursor.
      */
     @Test
-    void pageTypesTheNextPageNumberAsANullableInteger() {
-        RecordComponent pageNumber = componentNamed(COMPONENT_NEXT_PAGE_NUMBER);
+    void pageTypesTheNextCursorAsANullableString() {
+        RecordComponent cursor = componentNamed(COMPONENT_NEXT_CURSOR);
 
-        assertEquals(Integer.class, pageNumber.getType(),
-                "Component " + COMPONENT_NEXT_PAGE_NUMBER + " must have type "
-                        + Integer.class.getName() + ". Declared type: "
-                        + pageNumber.getType().getName() + ". " + BROWSE_KEY_LOCATOR);
+        assertEquals(String.class, cursor.getType(),
+                "Component " + COMPONENT_NEXT_CURSOR + " must have type " + String.class.getName()
+                        + ". Declared type: " + cursor.getType().getName() + ". "
+                        + BROWSE_KEY_LOCATOR);
 
         CardListResponse finalPage = new CardListResponse(List.of(), false, null);
 
-        assertNull(finalPage.nextPageNumber(),
-                "Accessor " + COMPONENT_NEXT_PAGE_NUMBER + " must return null on the final page. "
+        assertNull(finalPage.nextCursor(),
+                "Accessor " + COMPONENT_NEXT_CURSOR + " must return null on the final page. "
                         + BROWSE_KEY_LOCATOR);
     }
 
     /**
-     * Asserts that no paging component names card data or a browse key, and that no component
-     * declares a free-text type.
+     * Asserts that the cursor is the one text component, and that no component names a page ordinal.
      *
-     * <p>A {@link String} component is the shape a browse key would take, so its absence is the
-     * structural guarantee. The row list is exempt from the name scan: it legitimately carries the
-     * word {@code cards}, and {@link CardSummaryTest} pins its element to a masked card number.
+     * <p>The row list is exempt from the name scan: it legitimately carries the word {@code cards},
+     * and {@link CardSummaryTest} pins its element to a masked card number.
      */
     @Test
-    void pageDeclaresNoBrowseKeyAndNoFreeTextComponent() {
+    void theCursorIsTheOneTextComponentAndNoComponentNamesAPageOrdinal() {
         for (RecordComponent component : components()) {
+            if (COMPONENT_NEXT_CURSOR.equals(component.getName())) {
+                continue;
+            }
             assertFalse(String.class.equals(component.getType()),
                     "Component " + component.getName() + " declares type "
                             + String.class.getName() + ". A page carries "
-                            + EXPECTED_COMPONENT_NAMES + " and no free-text component that could "
-                            + "hold a card number. " + BROWSE_KEY_LOCATOR);
+                            + EXPECTED_COMPONENT_NAMES + ", and the cursor is its one text "
+                            + "component. " + BROWSE_KEY_LOCATOR);
         }
 
         List<String> declared = componentNames();
@@ -330,45 +318,44 @@ final class CardListResponseTest {
 
             String folded = foldedComponentNames().get(index);
 
-            for (String fragment : BROWSE_KEY_FRAGMENTS) {
+            for (String fragment : PAGE_ORDINAL_FRAGMENTS) {
                 assertFalse(folded.contains(fragment),
                         "Component name '" + declared.get(index) + "' holds the fragment '"
-                                + fragment + "', which names card data or a browse key. A page "
-                                + "carries " + EXPECTED_COMPONENT_NAMES + ". " + BROWSE_KEY_LOCATOR);
+                                + fragment + "', which names a page ordinal. A page carries "
+                                + EXPECTED_COMPONENT_NAMES + ". " + BROWSE_KEY_LOCATOR);
             }
         }
     }
 
     /**
-     * Asserts that a page reporting a further page names the number of that page, and that a final
-     * page names none.
+     * Asserts that a page reporting a further page carries the cursor of that page, and that a
+     * final page carries none.
      *
      * <p>The two states come from the lookahead: {@code CA-NEXT-PAGE-EXISTS} at
      * {@code app/cbl/COCRDLIC.cbl:L1210-L1211} and {@code CA-NEXT-PAGE-NOT-EXISTS} at L1216. A
-     * response that carried the flag and the number independently could report a further page and
+     * response that carried the flag and the cursor independently could report a further page and
      * leave the client with no way to ask for it.
      */
     @Test
-    void pageKeepsItsFlagAndItsNumberInAgreement() {
-        CardListResponse pageWithSuccessor =
-                new CardListResponse(List.of(), true, SECOND_PAGE_NUMBER);
+    void pageKeepsItsFlagAndItsCursorInAgreement() {
+        CardListResponse pageWithSuccessor = new CardListResponse(List.of(), true, NEXT_CURSOR);
         CardListResponse finalPage = new CardListResponse(List.of(), false, null);
 
-        assertEquals(SECOND_PAGE_NUMBER, pageWithSuccessor.nextPageNumber(),
-                "A page that reports a further page must name the number of that page. "
+        assertEquals(NEXT_CURSOR, pageWithSuccessor.nextCursor(),
+                "A page that reports a further page must carry the cursor of that page. "
                         + LOOKAHEAD_LOCATOR);
-        assertNull(finalPage.nextPageNumber(),
-                "A final page must name no page number. " + LOOKAHEAD_LOCATOR);
+        assertNull(finalPage.nextCursor(),
+                "A final page must carry no cursor. " + LOOKAHEAD_LOCATOR);
 
         assertThrows(IllegalArgumentException.class,
                 () -> new CardListResponse(List.of(), true, null),
-                "a page reported a further page and named no number for it");
+                "a page reported a further page and carried no cursor for it");
         assertThrows(IllegalArgumentException.class,
-                () -> new CardListResponse(List.of(), false, SECOND_PAGE_NUMBER),
-                "a page reported no further page and named a number anyway");
+                () -> new CardListResponse(List.of(), false, NEXT_CURSOR),
+                "a page reported no further page and carried a cursor anyway");
         assertThrows(IllegalArgumentException.class,
-                () -> new CardListResponse(List.of(), true, CardListResponse.FIRST_PAGE_NUMBER),
-                "a page named itself as its own successor");
+                () -> new CardListResponse(List.of(), true, "   "),
+                "a page carried a blank cursor, which names no row");
     }
 
     /**
@@ -384,7 +371,7 @@ final class CardListResponseTest {
     void pageCopiesItsRowListAndAcceptsNoRowsAtAll() {
         List<CardSummary> supplied = new ArrayList<>();
         supplied.add(new CardSummary(
-                MaskedCardNumber.of(FIXTURE_MASKED_CARD_NUMBER),
+                FIXTURE_MASKED_CARD_NUMBER,
                 FIXTURE_ACCOUNT_ID,
                 FIXTURE_ACTIVE_STATUS));
 
@@ -399,12 +386,6 @@ final class CardListResponseTest {
                 "A page built with no row list must carry an empty list. " + ROW_LOCATOR);
     }
 
-    /**
-     * Asserts that no component name exposes a total count.
-     *
-     * <p>The lookahead answers whether a further page exists and yields no size. A total would
-     * need a full pass over the card file, which the browse never makes.
-     */
     @Test
     void pageDeclaresNoTotalCount() {
         assertNoComponentNameMatches("a total count", TOTAL_COUNT_FRAGMENTS, COUNTER_LOCATOR);
@@ -414,8 +395,8 @@ final class CardListResponseTest {
      * Asserts that no component name exposes a row offset.
      *
      * <p>The source moves its browse key into the read key at
-     * {@code app/cbl/COCRDLIC.cbl:L488-L489} and starts the read from that key. The page number
-     * names a page, not a row, so no row position enters the response.
+     * {@code app/cbl/COCRDLIC.cbl:L488-L489} and starts the read from that key. The cursor names a
+     * card number, not a row position, so no row offset enters the response.
      */
     @Test
     void pageDeclaresNoRowOffset() {
@@ -435,20 +416,15 @@ final class CardListResponseTest {
     }
 
     /**
-     * Asserts that the next page number is the only whole-number component.
+     * Asserts that no component declares a whole-number type.
      *
-     * <p>A total count, a row offset and a page size each need one of the six types in
-     * {@link #WHOLE_NUMBER_TYPES}. The check gates the three omissions by type, so a component that
-     * carries a bound under an unforeseen name still fails. The next page number is the one
-     * permitted whole number, and it names a page rather than a bound on the rows.
+     * <p>A total count, a page ordinal, a row offset and a page size each need one of the six types
+     * in {@link #WHOLE_NUMBER_TYPES}. The check gates all four omissions by type, so a component
+     * that carries one under an unforeseen name still fails.
      */
     @Test
-    void pageDeclaresNoWholeNumberComponentBeyondTheNextPageNumber() {
+    void pageDeclaresNoWholeNumberComponent() {
         for (RecordComponent component : components()) {
-            if (COMPONENT_NEXT_PAGE_NUMBER.equals(component.getName())) {
-                continue;
-            }
-
             Class<?> type = component.getType();
 
             assertFalse(WHOLE_NUMBER_TYPES.contains(type),
@@ -507,11 +483,11 @@ final class CardListResponseTest {
         return List.copyOf(names);
     }
 
-    // Construction. Every test below builds a page and reads the values it holds.
+    // Construction: each test builds a page and reads the values it holds.
 
     /**
      * Asserts that a {@code null} card list becomes an empty list, and that the page still carries
-     * the flag and the page number it was handed.
+     * the flag and the cursor it was handed.
      */
     @Test
     void aNullCardListBecomesAnEmptyList() {
@@ -520,7 +496,7 @@ final class CardListResponseTest {
         assertNotNull(page.cards(), "A null card list must become an empty list, not stay null.");
         assertTrue(page.cards().isEmpty(), "A null card list must become an empty list.");
         assertFalse(page.nextPageExists(), "The next-page flag must carry the value supplied.");
-        assertNull(page.nextPageNumber(), "The page number must carry the value supplied.");
+        assertNull(page.nextCursor(), "The cursor must carry the value supplied.");
     }
 
     /**
@@ -538,24 +514,20 @@ final class CardListResponseTest {
             rows.add(row(MASKED_CARD_NUMBER_PREFIX + ordinal));
         }
 
-        CardListResponse page = new CardListResponse(rows, true, SECOND_PAGE_NUMBER);
+        CardListResponse page = new CardListResponse(rows, true, NEXT_CURSOR);
 
         assertEquals(EXPECTED_PAGE_SIZE, page.cards().size(),
                 "A page must carry every row it was handed.");
         for (int ordinal = 0; ordinal < EXPECTED_PAGE_SIZE; ordinal++) {
             assertEquals(MASKED_CARD_NUMBER_PREFIX + ordinal,
-                    page.cards().get(ordinal).cardNumber().value(),
+                    page.cards().get(ordinal).cardNumber(),
                     "Row " + ordinal + " must keep its position.");
         }
         assertTrue(page.nextPageExists(), "The next-page flag must carry the value supplied.");
-        assertEquals(SECOND_PAGE_NUMBER, page.nextPageNumber(),
-                "The page number must carry the value supplied.");
+        assertEquals(NEXT_CURSOR, page.nextCursor(),
+                "The cursor must carry the value supplied.");
     }
 
-    /**
-     * Asserts that changing the source list after construction leaves the page unchanged, so the
-     * constructor copied the rows rather than keeping the caller's list.
-     */
     @Test
     void changingTheSourceListAfterConstructionLeavesThePageUnchanged() {
         List<CardSummary> source = new ArrayList<>();
@@ -568,14 +540,10 @@ final class CardListResponseTest {
 
         assertEquals(1, page.cards().size(),
                 "A page must not follow a change to the list it was handed.");
-        assertEquals(MASKED_CARD_NUMBER_PREFIX + 0, page.cards().get(0).cardNumber().value(),
+        assertEquals(MASKED_CARD_NUMBER_PREFIX + 0, page.cards().get(0).cardNumber(),
                 "A page must keep the row it copied.");
     }
 
-    /**
-     * Asserts that the returned card list refuses every change, so a caller cannot add, remove or
-     * replace a row after construction.
-     */
     @Test
     void theReturnedCardListRefusesEveryChange() {
         CardListResponse page =
@@ -593,10 +561,6 @@ final class CardListResponseTest {
                 "The returned card list must refuse a clear.");
     }
 
-    /**
-     * Asserts that a {@code null} row raises {@link NullPointerException}, whichever position it
-     * occupies.
-     */
     @Test
     void aNullRowIsRefused() {
         List<CardSummary> leadingNull = new ArrayList<>();
@@ -617,24 +581,23 @@ final class CardListResponseTest {
 
     /**
      * Asserts that two pages built from equal values are equal, and that a page built from
-     * different values is not. The flag and the page number agree in every page below, because
-     * the constructor refuses a page whose flag and page number disagree.
+     * different values is not. The flag and the cursor agree in every page below, since the
+     * constructor refuses a page whose flag and cursor disagree.
      */
     @Test
     void twoPagesBuiltFromEqualValuesAreEqual() {
         List<CardSummary> rows = List.of(row(MASKED_CARD_NUMBER_PREFIX + 0));
 
-        CardListResponse first = new CardListResponse(rows, true, SECOND_PAGE_NUMBER);
-        CardListResponse second =
-                new CardListResponse(new ArrayList<>(rows), true, SECOND_PAGE_NUMBER);
+        CardListResponse first = new CardListResponse(rows, true, NEXT_CURSOR);
+        CardListResponse second = new CardListResponse(new ArrayList<>(rows), true, NEXT_CURSOR);
 
         assertEquals(first, second, "Two pages built from equal values must be equal.");
         assertEquals(first.hashCode(), second.hashCode(),
                 "Two equal pages must carry one hash code.");
         assertNotEquals(first, new CardListResponse(rows, false, null),
                 "A final page must not equal a page that has a successor.");
-        assertNotEquals(first, new CardListResponse(rows, true, SECOND_PAGE_NUMBER + 1),
-                "A page with a different next page number must not be equal.");
+        assertNotEquals(first, new CardListResponse(rows, true, OTHER_CURSOR),
+                "A page with a different cursor must not be equal.");
     }
 
     /**
@@ -649,8 +612,7 @@ final class CardListResponseTest {
      * @return the row
      */
     private static CardSummary row(String maskedCardNumber) {
-        return new CardSummary(MaskedCardNumber.of(maskedCardNumber), FIXTURE_ACCOUNT_ID,
-                FIXTURE_ACTIVE_STATUS);
+        return new CardSummary(maskedCardNumber, FIXTURE_ACCOUNT_ID, FIXTURE_ACTIVE_STATUS);
     }
 
     /**

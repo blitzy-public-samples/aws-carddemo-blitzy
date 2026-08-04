@@ -18,9 +18,9 @@ import java.util.Objects;
  * {@link PicClause#CARD_XREF_RECORD_LENGTH} the dataset definition declares. Any other width
  * raises {@link IllegalArgumentException}.</p>
  *
- * <p>No rendering and no failure message here carries a field value. Every nested type whose
- * components identify a card, an account, a customer, or a money amount renders that component as
- * {@link #REDACTED}, and a failed read names the layout, the field, the width, and the character
+ * <p>No rendering and no failure message here carries a field value. A nested type renders a
+ * component as {@link #REDACTED} when that component identifies a card, an account, a customer or a
+ * money amount. A failed read names the layout, the field, the width and the character
  * position.</p>
  *
  * <p>Signed numeric fields carry the sign as an overpunch on the trailing digit, which
@@ -28,12 +28,13 @@ import java.util.Objects;
  * overpunched positions, and all twenty overpunch characters appear in the amount column of
  * {@code app/data/ASCII/dailytran.txt}.</p>
  *
- * <p>Three readings here are ADDITIVE, with no ancestor in the COBOL source. They are the
- * overpunch decode at {@link #signedDecimal}, tolerance of a short record, and the hundredths
- * truncation at {@link #truncateProcessingTimestampToHundredths}.</p>
+ * <p>Three readings here are ADDITIVE, with no ancestor in the COBOL source: the overpunch decode
+ * at {@link #signedDecimal}, tolerance of a short record, and the hundredths truncation at
+ * {@link #truncateProcessingTimestampToHundredths}. All three are recorded in
+ * {@code card-platform/docs/decision-log.md} (planned).</p>
  *
- * <p>Six nested types override {@link Object#toString()} so that no rendered record can carry a
- * full Primary Account Number (PAN), a card verification value, a social security number, a
+ * <p>Six nested types override {@link Object#toString()}. No rendered record carries a full
+ * Primary Account Number (PAN), a card verification value, a social security number, a
  * government-issued identifier or an electronic funds transfer account identifier.
  * {@link CardRecord}, {@link CardCrossReferenceRecord}, {@link PostedTransactionRecord} and
  * {@link DailyTransactionRecord} publish a masked card number. {@link CardRecord} redacts its
@@ -64,15 +65,15 @@ public final class CopybookRecordParser {
 
     /**
      * Text a diagnostic rendering carries in place of a component value. ADDITIVE, with no COBOL
-     * ancestor. Every record below whose components identify a card, an account, a customer, or a
-     * money amount renders that component as this text.
+     * ancestor, and recorded in {@code card-platform/docs/decision-log.md} (planned). Every record
+     * below whose components identify a card, an account, a customer, or a money amount renders
+     * that component as this text.
      */
     public static final String REDACTED = "<redacted>";
 
     /** Ordinal of the first character of a record, used when a read reports a position. */
     private static final int FIRST_POSITION = 1;
 
-    /** Holds no instance state. The class exposes static operations only. */
     private CopybookRecordParser() {
         throw new AssertionError(CopybookRecordParser.class.getName() + " holds static operations only");
     }
@@ -153,18 +154,23 @@ public final class CopybookRecordParser {
             String activeStatus) {
 
         /**
-         * Renders this record with its card number masked and its verification value redacted.
+         * Renders this record with its card number masked and its cardholder values redacted.
+         *
+         * <p>The embossed name is the cardholder's own name and the expiry date is one of the two
+         * values a card-not-present authorization asks for alongside the number, so neither
+         * belongs in a log line beside a masked number that already carries four real digits.
          *
          * @return the six components, the card number as twelve mask characters and its last four
-         *         digits, and the verification value as mask characters at its own width
+         *         digits, and the verification value, embossed name and expiry date each as mask
+         *         characters at their own width
          */
         @Override
         public String toString() {
             return "CardRecord[cardNumber=" + PanMasker.maskCardNumber(cardNumber)
                     + ", accountId=" + accountId
                     + ", cardVerificationValue=" + redacted(cardVerificationValue)
-                    + ", embossedName=" + embossedName
-                    + ", expirationDate=" + expirationDate
+                    + ", embossedName=" + redacted(embossedName)
+                    + ", expirationDate=" + redacted(expirationDate)
                     + ", activeStatus=" + activeStatus + "]";
         }
     }
@@ -242,32 +248,41 @@ public final class CopybookRecordParser {
             int ficoCreditScore) {
 
         /**
-         * Renders this record with its three identifiers redacted.
+         * Renders this record with every identifying component redacted.
          *
-         * @return the eighteen components, with {@code CUST-SSN},
-         *         {@code CUST-GOVT-ISSUED-ID} and {@code CUST-EFT-ACCOUNT-ID} each replaced by
-         *         mask characters at their own width
+         * <p>Masking only the three obvious identifiers left a name, a home address, a postal
+         * code, two telephone numbers, a date of birth and a credit score in plain view, and
+         * those together identify a person as surely as a Social Security Number does. Each is
+         * replaced by mask characters at its own width, which for a fixed width copybook field is
+         * a constant the layout already declares and therefore discloses nothing.
+         *
+         * <p>{@code CUST-ID}, the state and country codes and the cardholder indicator are kept,
+         * because a failing equivalence assertion has to name which record diverged and none of
+         * the four narrows a record to a person.
+         *
+         * @return the eighteen components, with every identifying value replaced by mask
+         *         characters at its own width
          */
         @Override
         public String toString() {
             return "CustomerRecord[customerId=" + customerId
-                    + ", firstName=" + firstName
-                    + ", middleName=" + middleName
-                    + ", lastName=" + lastName
-                    + ", addressLine1=" + addressLine1
-                    + ", addressLine2=" + addressLine2
-                    + ", addressLine3=" + addressLine3
+                    + ", firstName=" + redacted(firstName)
+                    + ", middleName=" + redacted(middleName)
+                    + ", lastName=" + redacted(lastName)
+                    + ", addressLine1=" + redacted(addressLine1)
+                    + ", addressLine2=" + redacted(addressLine2)
+                    + ", addressLine3=" + redacted(addressLine3)
                     + ", stateCode=" + stateCode
                     + ", countryCode=" + countryCode
-                    + ", addressZip=" + addressZip
-                    + ", phoneNumber1=" + phoneNumber1
-                    + ", phoneNumber2=" + phoneNumber2
+                    + ", addressZip=" + redacted(addressZip)
+                    + ", phoneNumber1=" + redacted(phoneNumber1)
+                    + ", phoneNumber2=" + redacted(phoneNumber2)
                     + ", socialSecurityNumber=" + redacted(socialSecurityNumber)
                     + ", governmentIssuedId=" + redacted(governmentIssuedId)
-                    + ", dateOfBirth=" + dateOfBirth
+                    + ", dateOfBirth=" + redacted(dateOfBirth)
                     + ", eftAccountId=" + redacted(eftAccountId)
                     + ", primaryCardHolderIndicator=" + primaryCardHolderIndicator
-                    + ", ficoCreditScore=" + ficoCreditScore + "]";
+                    + ", ficoCreditScore=" + redacted(String.valueOf(ficoCreditScore)) + "]";
         }
     }
 
@@ -296,10 +311,8 @@ public final class CopybookRecordParser {
         /**
          * Renders the two reference codes, and neither the account identifier nor the balance.
          *
-         * <p>The type code and the category code are reference values shared by every account, so
-         * they identify nothing. The account identifier and the balance are protected, and a
-         * generated record rendering would carry both into any assertion message that named the
-         * record.</p>
+         * <p>The type code and the category code are reference values shared by every account.
+         * The account identifier and the balance are protected and are omitted here.</p>
          *
          * @return a description carrying the two reference codes alone
          */
@@ -401,10 +414,17 @@ public final class CopybookRecordParser {
             String originTimestamp,
             String processingTimestamp) {
         /**
-         * Renders this record with its card number masked.
+         * Renders this record with its card number masked and its spending detail redacted.
+         *
+         * <p>A masked number plus an amount, a description and a merchant name and city is a
+         * statement line, and a statement line placed beside the same cardholder's other lines
+         * reconstructs where a person was and what they bought. The merchant identifier is kept
+         * because it is a number the merchant table resolves and a diverging record has to be
+         * identifiable; the merchant name, city and postal code are not.
          *
          * @return the thirteen components, the card number as twelve mask characters and its last
-         *         four digits
+         *         four digits, and the amount, description and merchant name, city and postal code
+         *         each as mask characters at their own width
          */
         @Override
         public String toString() {
@@ -412,12 +432,12 @@ public final class CopybookRecordParser {
                     + ", typeCode=" + typeCode
                     + ", categoryCode=" + categoryCode
                     + ", source=" + source
-                    + ", description=" + description
-                    + ", amount=" + amount
+                    + ", description=" + redacted(description)
+                    + ", amount=" + redacted(String.valueOf(amount))
                     + ", merchantId=" + merchantId
-                    + ", merchantName=" + merchantName
-                    + ", merchantCity=" + merchantCity
-                    + ", merchantZip=" + merchantZip
+                    + ", merchantName=" + redacted(merchantName)
+                    + ", merchantCity=" + redacted(merchantCity)
+                    + ", merchantZip=" + redacted(merchantZip)
                     + ", cardNumber=" + PanMasker.maskCardNumber(cardNumber)
                     + ", originTimestamp=" + originTimestamp
                     + ", processingTimestamp=" + processingTimestamp + "]";
@@ -465,10 +485,14 @@ public final class CopybookRecordParser {
             String originTimestamp,
             String processingTimestamp) {
         /**
-         * Renders this record with its card number masked.
+         * Renders this record with its card number masked and its spending detail redacted.
+         *
+         * <p>The layout is the posted layout byte for byte, so the reasoning at
+         * {@link PostedTransactionRecord#toString()} applies here without change.
          *
          * @return the thirteen components, the card number as twelve mask characters and its last
-         *         four digits
+         *         four digits, and the amount, description and merchant name, city and postal code
+         *         each as mask characters at their own width
          */
         @Override
         public String toString() {
@@ -476,12 +500,12 @@ public final class CopybookRecordParser {
                     + ", typeCode=" + typeCode
                     + ", categoryCode=" + categoryCode
                     + ", source=" + source
-                    + ", description=" + description
-                    + ", amount=" + amount
+                    + ", description=" + redacted(description)
+                    + ", amount=" + redacted(String.valueOf(amount))
                     + ", merchantId=" + merchantId
-                    + ", merchantName=" + merchantName
-                    + ", merchantCity=" + merchantCity
-                    + ", merchantZip=" + merchantZip
+                    + ", merchantName=" + redacted(merchantName)
+                    + ", merchantCity=" + redacted(merchantCity)
+                    + ", merchantZip=" + redacted(merchantZip)
                     + ", cardNumber=" + PanMasker.maskCardNumber(cardNumber)
                     + ", originTimestamp=" + originTimestamp
                     + ", processingTimestamp=" + processingTimestamp + "]";
@@ -495,13 +519,13 @@ public final class CopybookRecordParser {
      * <p>{@code app/jcl/POSTTRAN.jcl:L36} allocates the reject dataset at the same length, as
      * {@code DCB=(RECFM=F,LRECL=430,BLKSIZE=0)}.</p>
      *
+     * @param transactionData       {@code REJECT-TRAN-DATA}, {@code PIC X(350)} at
+     *                              {@code app/cbl/CBTRN02C.cbl:L177}, holding the whole daily
+     *                              transaction record unchanged for {@link #parseDailyTransaction}
      * @param failReason            {@code WS-VALIDATION-FAIL-REASON}, {@code PIC 9(04)} at
      *                              {@code app/cbl/CBTRN02C.cbl:L181}
      * @param failReasonDescription {@code WS-VALIDATION-FAIL-REASON-DESC}, {@code PIC X(76)} at
      *                              {@code app/cbl/CBTRN02C.cbl:L182}
-     * @param transactionData       {@code REJECT-TRAN-DATA}, {@code PIC X(350)} at
-     *                              {@code app/cbl/CBTRN02C.cbl:L177}, holding the whole daily
-     *                              transaction record unchanged for {@link #parseDailyTransaction}
      */
     public static record RejectedTransactionRecord(
             String transactionData,
@@ -887,10 +911,14 @@ public final class CopybookRecordParser {
      * @param scale  digits after the decimal point, taken from {@link PicClause}
      * @param field  COBOL field name, reported when the decode fails
      * @return the signed value of the field
-     * @throws IllegalArgumentException when the field runs past the end of {@code record}, when a
-     *         leading character is not a digit, or when the trailing character is neither a digit
-     *         nor a sign overpunch. The failure names the field, the position inside it and its
-     *         width, and never the text of the field
+     * @throws IllegalArgumentException when any of these holds:
+     *         <ul>
+     *           <li>the field runs past the end of {@code record}</li>
+     *           <li>a leading character is not a digit</li>
+     *           <li>the trailing character is neither a digit nor a sign overpunch</li>
+     *         </ul>
+     *         The failure names the field, the position inside it and its width, and never the text
+     *         of the field
      */
     public static BigDecimal signedDecimal(String record, int offset, int width, int scale, String field) {
         String encoded = slice(record, offset, width, field);
@@ -968,8 +996,6 @@ public final class CopybookRecordParser {
         }
     }
 
-    // Internals.
-
     /**
      * Returns {@code width} characters of {@code record} starting at {@code offset}.
      *
@@ -1030,7 +1056,6 @@ public final class CopybookRecordParser {
         }
     }
 
-    /** Removes the trailing {@link #COBOL_TEXT_PAD} characters of a field. */
     private static String stripTrailingPadding(String value) {
         int end = value.length();
         while (end > 0 && value.charAt(end - 1) == COBOL_TEXT_PAD) {
@@ -1039,7 +1064,6 @@ public final class CopybookRecordParser {
         return value.substring(0, end);
     }
 
-    /** Reports whether every character of {@code value} is a {@link #COBOL_TEXT_PAD}. */
     private static boolean isAllPadding(String value) {
         for (int index = 0; index < value.length(); index++) {
             if (value.charAt(index) != COBOL_TEXT_PAD) {
@@ -1052,9 +1076,8 @@ public final class CopybookRecordParser {
     /**
      * Replaces every character of a value with {@link PanMasker#MASK_CHARACTER}, keeping the width.
      *
-     * <p>The width survives because it is what a reader needs to spot an offset drift, and it
-     * discloses nothing. A null value renders as the four characters {@code null}, which is what
-     * the record's generated rendering would have produced.</p>
+     * <p>The width survives, and carries no character of the value. A null value renders as the
+     * four characters {@code null}.</p>
      *
      * @param value the value to redact; may be null
      * @return mask characters at the width of {@code value}
@@ -1066,7 +1089,6 @@ public final class CopybookRecordParser {
         return String.valueOf(PanMasker.MASK_CHARACTER).repeat(value.length());
     }
 
-    /** Reports whether {@code candidate} is one of the ten ASCII digit characters. */
     private static boolean isAsciiDigit(char candidate) {
         return candidate >= '0' && candidate <= '9';
     }

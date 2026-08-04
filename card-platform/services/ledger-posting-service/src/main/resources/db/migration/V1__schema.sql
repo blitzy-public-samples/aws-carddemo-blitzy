@@ -8,12 +8,6 @@
 -- Key widths come from the dataset definitions in the Job Control Language (JCL)
 -- members cited beside them, written for the z/OS utility IDCAMS.
 
--- Rationale for this schema: card-platform/docs/decision-log.md.
--- Flagged source rules: card-platform/docs/business-rule-flags.md.
--- Field-by-field source mapping and every omitted field:
--- card-platform/docs/traceability-matrix.md.
-
-
 -- Posted transaction, from TRAN-RECORD at app/cpy/CVTRA05Y.cpy:L4-L17, RECLN = 350.
 -- Primary key width from KEYS(16 0) at app/jcl/TRANFILE.jcl:L53, record width from
 -- RECORDSIZE(350 350) at :L54.
@@ -41,7 +35,6 @@ CREATE TABLE transaction (
     CONSTRAINT pk_transaction PRIMARY KEY (transaction_id)
 );
 
-
 -- Transaction category balance, from TRAN-CAT-BAL-RECORD at app/cpy/CVTRA01Y.cpy:L4-L9,
 -- RECLN = 50.
 -- The three key columns are the TRAN-CAT-KEY group at app/cpy/CVTRA01Y.cpy:L5-L8, whose
@@ -56,7 +49,6 @@ CREATE TABLE transaction_category_balance (
     CONSTRAINT pk_transaction_category_balance
         PRIMARY KEY (account_id, type_code, category_code)
 );
-
 
 -- Account balance projection: the four ACCOUNT-RECORD fields this service reads and
 -- writes, from app/cpy/CVACT01Y.cpy, RECLN 300.
@@ -74,7 +66,6 @@ CREATE TABLE account_balance_projection (
     CONSTRAINT pk_account_balance_projection PRIMARY KEY (account_id)
 );
 
-
 -- Transaction type lookup, from TRAN-TYPE-RECORD at app/cpy/CVTRA03Y.cpy:L4-L6,
 -- RECLN = 60.
 -- Primary key width from KEYS(2 0) at app/jcl/TRANTYPE.jcl:L40, record width from
@@ -87,7 +78,6 @@ CREATE TABLE transaction_type (
     type_description VARCHAR(50) NOT NULL,  -- TRAN-TYPE-DESC PIC X(50)
     CONSTRAINT pk_transaction_type PRIMARY KEY (type_code)
 );
-
 
 -- Transaction category lookup, from TRAN-CAT-RECORD at app/cpy/CVTRA04Y.cpy:L4-L8,
 -- RECLN = 60.
@@ -103,13 +93,33 @@ CREATE TABLE transaction_category (
     CONSTRAINT pk_transaction_category PRIMARY KEY (type_code, category_code)
 );
 
-
 -- Rejected transaction, from REJECT-RECORD at app/cbl/CBTRN02C.cbl:L176-L178: a
 -- 350-byte record plus an 80-byte trailer, 430 bytes in all. The same total appears as
 -- DCB=(RECFM=F,LRECL=430,BLKSIZE=0) at app/jcl/POSTTRAN.jcl:L36.
--- rejected_transaction_data holds those 350 bytes whole and undecomposed.
 -- The DALYREJS dataset at app/jcl/POSTTRAN.jcl:L34-L38 is sequential and carries no
 -- KEYS parameter. The application supplies id.
+--
+-- DEVIATION from the source record, deliberate: this table does NOT keep the 350 bytes
+-- whole. REJECT-TRAN-DATA PIC X(350) at app/cbl/CBTRN02C.cbl:L177 is a copy of the
+-- daily transaction record, and byte 264 of that layout is DALYTRAN-CARD-NUM PIC X(16)
+-- at app/cpy/CVTRA06Y.cpy:L15, a full Primary Account Number. Keeping the block whole
+-- would retain one unmasked card number per refused transaction, in a table that
+-- accumulates and that nothing reads on the authorization path. The 350 bytes are
+-- therefore replaced by the fields a reader needs to diagnose or replay a refusal, with
+-- the card number masked:
+--   masked_card_number        replaces DALYTRAN-CARD-NUM, twelve asterisks then the last
+--                             four digits, the same shape the notification read model
+--                             uses. ck_rejected_transaction_masked_card_number makes the
+--                             unmasked form impossible to store: a value of sixteen
+--                             digits fails the constraint.
+--   transaction_amount        DALYTRAN-AMT, which is what reason 0102 turned on
+--   transaction_type_code     DALYTRAN-TYPE-CD, the categorisation key
+--   transaction_category_code DALYTRAN-CAT-CD, the second half of that key
+--   merchant_id               DALYTRAN-MERCHANT-ID, enough to spot a merchant pattern
+--   origin_timestamp          DALYTRAN-ORIG-TS, which is what reason 0103 compared
+-- The four free-text merchant and description fields of the source record are dropped:
+-- reject_reason_description already names the failure, and unbounded text is where an
+-- unmasked card number would reappear.
 CREATE TABLE rejected_transaction (
     id                        UUID         NOT NULL,
     -- DALYTRAN-ID PIC X(16) at app/cpy/CVTRA06Y.cpy:L5
@@ -118,35 +128,121 @@ CREATE TABLE rejected_transaction (
     reject_reason_code        VARCHAR(4)   NOT NULL,
     -- WS-VALIDATION-FAIL-REASON-DESC PIC X(76) at app/cbl/CBTRN02C.cbl:L182
     reject_reason_description VARCHAR(76)  NOT NULL,
-    -- REJECT-TRAN-DATA PIC X(350) at app/cbl/CBTRN02C.cbl:L177
-    rejected_transaction_data CHAR(350)    NOT NULL,
+    -- Masked form of DALYTRAN-CARD-NUM PIC X(16) at app/cpy/CVTRA06Y.cpy:L15
+    masked_card_number        CHAR(16)     NOT NULL,
+    -- DALYTRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA06Y.cpy:L10
+    transaction_amount        NUMERIC(11,2) NOT NULL,
+    -- DALYTRAN-TYPE-CD PIC X(02) at app/cpy/CVTRA06Y.cpy:L6
+    transaction_type_code     CHAR(2)      NOT NULL,
+    -- DALYTRAN-CAT-CD PIC 9(04) at app/cpy/CVTRA06Y.cpy:L7, text for the reason
+    -- V1__schema.sql gives for transaction.category_code
+    transaction_category_code CHAR(4)      NOT NULL,
+    -- DALYTRAN-MERCHANT-ID PIC 9(09) at app/cpy/CVTRA06Y.cpy:L11
+    merchant_id               CHAR(9)      NOT NULL,
+    -- DALYTRAN-ORIG-TS PIC X(26) at app/cpy/CVTRA06Y.cpy:L16
+    origin_timestamp          CHAR(26)     NOT NULL,
     rejected_at               TIMESTAMP(6) WITH TIME ZONE NOT NULL,
-    CONSTRAINT pk_rejected_transaction PRIMARY KEY (id)
+    CONSTRAINT pk_rejected_transaction PRIMARY KEY (id),
+    -- Twelve asterisks then either the last four digits or four more asterisks. The
+    -- second form is what com.carddemo.cobol.PanMasker returns for a card number it
+    -- cannot read, and a refusal is exactly where such a value turns up. Either way the
+    -- first twelve positions hold no digit, so no unmasked card number fits the column.
+    CONSTRAINT ck_rejected_transaction_masked_card_number
+        CHECK (masked_card_number ~ '^\*{12}([0-9]{4}|\*{4})$'),
+    CONSTRAINT ck_rejected_transaction_category_digits
+        CHECK (transaction_category_code ~ '^[0-9]{4}$'),
+    CONSTRAINT ck_rejected_transaction_merchant_digits
+        CHECK (merchant_id ~ '^[0-9]{9}$')
 );
-
 
 -- Transactional outbox. Additive: no COBOL program carries an equivalent record.
 -- payload holds one event document, its schema version included.
 -- aggregate_id is the account identifier and the Kafka message key.
+-- payload is bounded at 8192 octets, the ceiling
+-- libs/event-contracts/.../serde/EventWireBounds.java applies on the wire, so the stored
+-- bound and the published bound are one bound. The seven relay-state columns are ADDITIVE
+-- with no COBOL ancestor: without a claim, two relay instances read the same unpublished
+-- row and publish it twice, and without an attempt count and a next-attempt time one
+-- undeliverable row is retried forever and blocks the rows behind it.
 CREATE TABLE outbox_event (
     event_id     UUID          NOT NULL,
     event_type   VARCHAR(50)   NOT NULL,
-    aggregate_id VARCHAR(11)   NOT NULL,
-    payload      VARCHAR(4000) NOT NULL,
+    -- Account identifier, eleven characters, and the Kafka message key. Fixed-width
+    -- character storage keeps a leading zero, which XREF-ACCT-ID PIC 9(11) at
+    -- app/cpy/CVACT03Y.cpy:L7 carries in 50 of the 50 rows of
+    -- app/data/ASCII/cardxref.txt.
+    aggregate_id CHAR(11)                    NOT NULL,
+    -- One event payload as JavaScript Object Notation (JSON) text, envelope fields
+    -- and payload fields at the same level. ck_outbox_event_payload_bytes below holds
+    -- it to the same 8192-octet ceiling the wire applies, so the stored bound and the
+    -- published bound are one bound.
+    payload      TEXT                        NOT NULL,
     published    BOOLEAN       NOT NULL DEFAULT FALSE,
     created_at   TIMESTAMP(6) WITH TIME ZONE NOT NULL,
-    CONSTRAINT pk_outbox_event PRIMARY KEY (event_id)
+    -- PENDING, CLAIMED, PUBLISHED or ABANDONED. Terminal states are the last two.
+    relay_state     VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    -- How many publish attempts this row has taken. The relay abandons a row at its own
+    -- ceiling rather than at a constraint, so exceeding the ceiling is a decision and not
+    -- a failed statement.
+    attempt_count   INTEGER     NOT NULL DEFAULT 0,
+    -- When the relay may next attempt this row. A new row is due as soon as it is written.
+    next_attempt_at TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+    last_attempt_at TIMESTAMP(6) WITH TIME ZONE,
+    -- A short, redacted reason. Never the payload and never an event value: the column is
+    -- bounded so that a stack trace cannot be stored here by accident.
+    last_error      VARCHAR(500),
+    -- Which relay instance holds the claim, and since when. Both or neither.
+    claimed_by      VARCHAR(64),
+    claimed_at      TIMESTAMP(6) WITH TIME ZONE,
+    published_at    TIMESTAMP(6) WITH TIME ZONE,
+    CONSTRAINT pk_outbox_event PRIMARY KEY (event_id),
+    CONSTRAINT ck_outbox_event_payload_bytes CHECK (octet_length(payload) <= 8192),
+    -- The flag and the timestamp move together. A row is either unpublished with no
+    -- timestamp or published with one, and no third state reaches the table.
+    CONSTRAINT ck_outbox_event_publication CHECK (
+        (published = FALSE AND published_at IS NULL)
+        OR (published = TRUE AND published_at IS NOT NULL)),
+    CONSTRAINT ck_outbox_event_relay_state
+        CHECK (relay_state IN ('PENDING', 'CLAIMED', 'PUBLISHED', 'ABANDONED')),
+    CONSTRAINT ck_outbox_event_attempt_count CHECK (attempt_count >= 0),
+    -- A claim has both halves or neither, so a half-written claim cannot strand a row.
+    CONSTRAINT ck_outbox_event_claim_pairing
+        CHECK ((claimed_by IS NULL) = (claimed_at IS NULL)),
+    -- The boolean and the state cannot drift apart, whichever one a reader trusts.
+    CONSTRAINT ck_outbox_event_published_agrees
+        CHECK (published = (relay_state = 'PUBLISHED')),
+    CONSTRAINT ck_outbox_event_published_at
+        CHECK ((published_at IS NOT NULL) = (relay_state = 'PUBLISHED'))
 );
 
+-- Partial index over pending rows alone. The relay claims only unpublished rows, so a
+-- published row carries no index entry and the index stays the size of the backlog
+-- rather than the size of the table. The two key columns are the relay's ordering:
+-- created_at first, then event_id to break a tie, so two relay instances agree on
+-- which row comes next.
+CREATE INDEX ix_outbox_event_pending
+    ON outbox_event (created_at, event_id) WHERE published = FALSE;
 
 -- Processed event marker. Additive: no COBOL program detects a duplicate delivery.
 -- One row records one consumed event identifier, written with the side effects of that
 -- event. The primary key is the only access path.
+-- The primary key is the guard as well as the key: an insert that collides is how a consumer
+-- learns the event was already handled, so the guard cannot be checked and then raced past.
+-- The consumer inserts this row in the same local transaction as its side effects and
+-- acknowledges the message only after that transaction commits, which is why a crash between
+-- the two leaves no half-processed event.
 CREATE TABLE processed_event (
-    event_id     UUID NOT NULL,
+    event_id     UUID                        NOT NULL,
     processed_at TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+    -- Which topic the delivery arrived on. NULL for a marker written before this column
+    -- existed; every marker written since carries one.
+    consumed_topic VARCHAR(128),
     CONSTRAINT pk_processed_event PRIMARY KEY (event_id)
 );
+
+-- Retention. A marker matters only while a redelivery of its event is still possible.
+-- This index serves the purge that deletes markers past the retention horizon.
+CREATE INDEX ix_processed_event_processed_at ON processed_event (processed_at);
 
 
 -- Three secondary indexes follow, and none of them is unique.
@@ -163,6 +259,79 @@ CREATE INDEX idx_transaction_processed_timestamp
 CREATE INDEX idx_rejected_transaction_transaction_id
     ON rejected_transaction (transaction_id);
 
--- The access path the outbox relay polls for unpublished rows in age order.
-CREATE INDEX idx_outbox_event_unpublished
-    ON outbox_event (published, created_at);
+-- The claim query filters on relay_state and orders by next_attempt_at, so both columns
+-- are covered. This index is also the purge path for rows in a terminal state.
+CREATE INDEX ix_outbox_event_claimable
+    ON outbox_event (relay_state, next_attempt_at);
+
+-- Retention. A published row has done its work and stays only for diagnosis. This index
+-- serves the purge that deletes published rows past the retention horizon.
+CREATE INDEX ix_outbox_event_published_at
+    ON outbox_event (published_at) WHERE published = TRUE;
+
+
+-- ============================================================================
+-- Retention and erasure
+-- ============================================================================
+-- No source dataset carries a retention rule. app/csd/CARDDEMO.CSD defines eight files
+-- with RECOVERY(NONE) and JOURNAL(NO) and no expiry, the Job Control Language members
+-- under app/jcl/ define datasets without an EXPDT or RETPD parameter, and no program
+-- under app/cbl/ deletes a record: the only DELETE in the repository is IDCAMS deleting
+-- a whole dataset before it is redefined. A table that only ever grows is a table whose
+-- oldest row is as exposed as its newest, so this platform states a rule for every table
+-- it owns.
+--
+-- Each COMMENT below reads as four fields followed by a sentence, so an operator can
+-- read the policy out of the catalogue rather than out of a document:
+--   retention=<window>      how long a row may stay, or the word relationship for a business
+--                           record whose life is the customer relationship
+--   purge_key=<column>      the column a purge job ranges over, or 'none'
+--   personal_data=<yes|no>  whether the row describes an identifiable person
+-- Read them back with:
+--   SELECT relname, obj_description(oid, 'pg_class') FROM pg_class
+--    WHERE relkind = 'r' ORDER BY relname;
+--
+-- The windows below are the demo baseline this platform ships with. No requirement in
+-- scope fixes a legal retention period, and card-platform/docs/suggested-next-tasks.md (planned)
+-- carries the task of replacing them with the periods a deployment's jurisdiction
+-- requires. The purge job itself is out of scope for the same reason: nothing in the
+-- Agent Action Plan schedules one, and a job that deletes financial records is not
+-- something to add without an owner. The columns and indexes it needs are here.
+
+-- The range a purge job scans.
+CREATE INDEX ix_rejected_transaction_rejected_at ON rejected_transaction (rejected_at);
+
+COMMENT ON TABLE transaction IS
+    'retention=relationship; purge_key=none; personal_data=no. Posted transaction, the ledger
+     record itself. app/cbl/CBTRN02C.cbl:L562-L577 writes one per posted transaction and no
+     program deletes one. A financial record is not purged on a timer.';
+
+COMMENT ON TABLE transaction_category_balance IS
+    'retention=relationship; purge_key=none; personal_data=no. Per-account category balance.
+     Derived from transaction rows and as durable as they are.';
+
+COMMENT ON TABLE account_balance_projection IS
+    'retention=relationship; purge_key=none; personal_data=no. Balance projection this
+     service maintains per event.';
+
+COMMENT ON TABLE transaction_type IS
+    'retention=reference; purge_key=none; personal_data=no. Seeded lookup from
+     app/data/ASCII/trantype.txt, 7 rows. No retention rule applies to reference data.';
+
+COMMENT ON TABLE transaction_category IS
+    'retention=reference; purge_key=none; personal_data=no. Seeded lookup from
+     app/data/ASCII/trancatg.txt, 18 rows.';
+
+COMMENT ON TABLE rejected_transaction IS
+    'retention=90 days; purge_key=rejected_at; personal_data=no. Diagnostic record of one
+     refusal, card number masked. It exists to explain a refusal, not to be a financial
+     record, so it expires: purge rows whose rejected_at is older than 90 days.';
+
+COMMENT ON TABLE outbox_event IS
+    'retention=7 days after published; purge_key=created_at; personal_data=no. One posted
+     event awaiting publication. Purge rows where published is true and created_at is older
+     than 7 days.';
+
+COMMENT ON TABLE processed_event IS
+    'retention=30 days; purge_key=processed_at; personal_data=no. Duplicate-delivery marker,
+     kept longer than broker topic retention so a replay still finds it.';

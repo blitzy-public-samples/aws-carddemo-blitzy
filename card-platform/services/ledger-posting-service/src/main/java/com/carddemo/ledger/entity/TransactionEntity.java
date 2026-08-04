@@ -1,10 +1,12 @@
 package com.carddemo.ledger.entity;
 
+import com.carddemo.events.EventEnvelope;
 import static com.carddemo.cobol.PicClause.TRAN_AMT_PRECISION;
 import static com.carddemo.cobol.PicClause.TRAN_AMT_SCALE;
 import static com.carddemo.cobol.PicClause.TRAN_CARD_NUM_WIDTH;
 import static com.carddemo.cobol.PicClause.TRAN_CAT_CD_WIDTH;
 import static com.carddemo.cobol.PicClause.TRAN_DESC_WIDTH;
+import static com.carddemo.cobol.PicClause.TRAN_ID_WIDTH;
 import static com.carddemo.cobol.PicClause.TRAN_MERCHANT_CITY_WIDTH;
 import static com.carddemo.cobol.PicClause.TRAN_MERCHANT_ID_WIDTH;
 import static com.carddemo.cobol.PicClause.TRAN_MERCHANT_NAME_WIDTH;
@@ -60,8 +62,7 @@ import java.util.regex.Pattern;
  * <p>{@code type_code}, {@code origin_timestamp} and {@code processed_timestamp} are blank-padded
  * fixed-width character columns. Nine columns hold variable-width text, and {@code amount} holds a
  * fixed-point decimal. Every field is required, and every accessor is read-only. The trailing
- * {@code FILLER PIC X(20)} at {@code app/cpy/CVTRA05Y.cpy:L18} carries no column. Rationale for
- * every choice above: {@code card-platform/docs/decision-log.md}.</p>
+ * {@code FILLER PIC X(20)} at {@code app/cpy/CVTRA05Y.cpy:L18} carries no column.</p>
  */
 @Entity
 @Table(
@@ -80,7 +81,21 @@ public class TransactionEntity {
     /** Compiled form of {@link #MASKED_CARD_NUMBER_PATTERN}. */
     private static final Pattern MASKED_CARD_NUMBER = Pattern.compile(MASKED_CARD_NUMBER_PATTERN);
 
+    /**
+     * Primary key. {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5}.
+     *
+     * <p>Column {@code transaction_id VARCHAR(16) NOT NULL}. The mapping states the width and the
+     * nullability rather than leaving the provider to describe them, so a drift between this field
+     * and the migration fails the start-up check that {@code ddl-auto: validate} runs.
+     *
+     * <p>The Picture clause is alphanumeric, so any character may occupy any of the sixteen
+     * positions, and the constructor tests the width alone. A caller supplies the value: the
+     * authorization service allocates it from {@code transaction_id_seq}, replacing the
+     * browse-backwards-and-add-one mechanism at {@code app/cbl/COTRN02C.cbl:L444-L451}, which is
+     * register item 15 in {@code card-platform/docs/business-rule-flags.md} (planned).
+     */
     @Id
+    @Column(name = "transaction_id", nullable = false, length = TRAN_ID_WIDTH)
     private String transactionId;
 
     @Column(name = "type_code", columnDefinition = "bpchar(" + TRAN_TYPE_CD_WIDTH + ")",
@@ -123,7 +138,6 @@ public class TransactionEntity {
             nullable = false)
     private String processedTimestamp;
 
-    /** Constructor the persistence provider calls. Application code calls the other one. */
     protected TransactionEntity() {
     }
 
@@ -147,14 +161,17 @@ public class TransactionEntity {
      * @param originTimestamp    {@code TRAN-ORIG-TS} at {@code app/cpy/CVTRA05Y.cpy:L16}
      * @param processedTimestamp {@code TRAN-PROC-TS} at {@code app/cpy/CVTRA05Y.cpy:L17}
      * @throws NullPointerException     when any argument is {@code null}
-     * @throws IllegalArgumentException when {@code amount} carries any other number of decimal
-     *                                  places, or when {@code cardNumber} is unmasked
+     * @throws IllegalArgumentException when {@code transactionId} is not exactly
+     *                                  {@value com.carddemo.cobol.PicClause#TRAN_ID_WIDTH}
+     *                                  characters wide, when {@code amount} carries any other
+     *                                  number of decimal places, or when {@code cardNumber} is
+     *                                  unmasked
      */
     public TransactionEntity(String transactionId, String typeCode, String categoryCode,
             String source, String description, BigDecimal amount, String merchantId,
             String merchantName, String merchantCity, String merchantZip, String cardNumber,
             String originTimestamp, String processedTimestamp) {
-        this.transactionId = Objects.requireNonNull(transactionId, "transactionId is required");
+        this.transactionId = requireTransactionIdWidth(transactionId);
         this.typeCode = Objects.requireNonNull(typeCode, "typeCode is required");
         this.categoryCode = Objects.requireNonNull(categoryCode, "categoryCode is required");
         this.source = Objects.requireNonNull(source, "source is required");
@@ -190,13 +207,35 @@ public class TransactionEntity {
     }
 
     /**
-     * Checks that a card number arrives masked.
+     * Checks that a transaction identifier carries exactly the width the source record declares.
      *
-     * @param cardNumber the value to check
-     * @return the same value
+     * <p>{@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5} is a fixed sixteen-character
+     * field, and the column holds the same width. A shorter or longer value fails here rather than
+     * reaching the row, where it would either be rejected by the database or silently pad the key.
+     *
+     * @param transactionId the value to check
+     * @return the same value when it carries the declared width
+     * @throws NullPointerException     when {@code transactionId} is {@code null}
+     * @throws IllegalArgumentException when {@code transactionId} is not exactly
+     *                                  {@value com.carddemo.cobol.PicClause#TRAN_ID_WIDTH}
+     *                                  characters wide
+     */
+    private static String requireTransactionIdWidth(String transactionId) {
+        Objects.requireNonNull(transactionId, "transactionId is required");
+        if (transactionId.length() != TRAN_ID_WIDTH) {
+            throw new IllegalArgumentException("transactionId must be exactly " + TRAN_ID_WIDTH
+                    + " characters wide, found width " + transactionId.length());
+        }
+        return transactionId;
+    }
+
+    /**
+     * Rejects a card number that is not already masked.
+     *
+     * @param cardNumber the card number to check
+     * @return the same value when it carries the masked form
      * @throws NullPointerException     when {@code cardNumber} is {@code null}
-     * @throws IllegalArgumentException when {@code cardNumber} does not match
-     *                                  {@link #MASKED_CARD_NUMBER_PATTERN}
+     * @throws IllegalArgumentException when {@code cardNumber} is unmasked
      */
     private static String requireMasked(String cardNumber) {
         Objects.requireNonNull(cardNumber, "cardNumber is required");
@@ -207,120 +246,54 @@ public class TransactionEntity {
         return cardNumber;
     }
 
-    /**
-     * Returns the transaction identifier, the primary key of this row.
-     *
-     * @return the sixteen-character transaction identifier
-     */
     public String getTransactionId() {
         return transactionId;
     }
 
-    /**
-     * Returns the transaction type code.
-     *
-     * @return two characters, blank-padded
-     */
     public String getTypeCode() {
         return typeCode;
     }
 
-    /**
-     * Returns the transaction category code.
-     *
-     * @return four digits, leading zeros kept
-     */
     public String getCategoryCode() {
         return categoryCode;
     }
 
-    /**
-     * Returns the channel that captured the transaction.
-     *
-     * @return the capture channel
-     */
     public String getSource() {
         return source;
     }
 
-    /**
-     * Returns the transaction description.
-     *
-     * @return the description, up to one hundred characters
-     */
     public String getDescription() {
         return description;
     }
 
-    /**
-     * Returns the transaction amount, negative on a refund.
-     *
-     * @return the amount, always scaled to two decimal places
-     */
     public BigDecimal getAmount() {
         return amount;
     }
 
-    /**
-     * Returns the merchant identifier.
-     *
-     * @return nine digits, leading zeros kept
-     */
     public String getMerchantId() {
         return merchantId;
     }
 
-    /**
-     * Returns the merchant name.
-     *
-     * @return the merchant name
-     */
     public String getMerchantName() {
         return merchantName;
     }
 
-    /**
-     * Returns the merchant city.
-     *
-     * @return the merchant city
-     */
     public String getMerchantCity() {
         return merchantCity;
     }
 
-    /**
-     * Returns the merchant postal code.
-     *
-     * @return the merchant postal code
-     */
     public String getMerchantZip() {
         return merchantZip;
     }
 
-    /**
-     * Returns the masked card number, so no caller reads a full Primary Account Number
-     * from this row.
-     *
-     * @return sixteen characters matching {@link #MASKED_CARD_NUMBER_PATTERN}
-     */
     public String getCardNumber() {
         return cardNumber;
     }
 
-    /**
-     * Returns the timestamp the authorization carried.
-     *
-     * @return twenty-six characters shaped {@code YYYY-MM-DD hh:mm:ss.ffffff}
-     */
     public String getOriginTimestamp() {
         return originTimestamp;
     }
 
-    /**
-     * Returns the timestamp this service stamped on the posting.
-     *
-     * @return twenty-six characters shaped {@code YYYY-MM-DD-hh.mm.ss.ff0000}
-     */
     public String getProcessedTimestamp() {
         return processedTimestamp;
     }
@@ -353,19 +326,24 @@ public class TransactionEntity {
     }
 
     /**
-     * Renders the identifying fields. The card number, the description and the merchant fields
-     * stay out of the text.
+     * Renders the transaction identifier and withholds every other value.
      *
-     * @return a single-line description of this row
+     * <p>The transaction identifier stays, because it correlates this row with the event that
+     * produced it and with a log line in another service. The amount, the type code, the category
+     * code and both timestamps appear as {@link EventEnvelope#WITHHELD}, the platform-wide
+     * redaction marker. The card number, the description and the merchant fields reach the text in
+     * no form.
+     *
+     * @return a single-line description of this row that discloses only the transaction identifier
      */
     @Override
     public String toString() {
         return "TransactionEntity[transactionId=" + transactionId
-                + ", typeCode=" + typeCode
-                + ", categoryCode=" + categoryCode
-                + ", amount=" + amount
-                + ", originTimestamp=" + originTimestamp
-                + ", processedTimestamp=" + processedTimestamp
+                + ", typeCode=" + EventEnvelope.WITHHELD
+                + ", categoryCode=" + EventEnvelope.WITHHELD
+                + ", amount=" + EventEnvelope.WITHHELD
+                + ", originTimestamp=" + EventEnvelope.WITHHELD
+                + ", processedTimestamp=" + EventEnvelope.WITHHELD
                 + "]";
     }
 }

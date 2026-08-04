@@ -1,6 +1,7 @@
 package com.carddemo.account.domain.validation;
 
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
@@ -28,8 +29,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>app/cbl/COACTUPC.cbl:L2494 fills the host field with a plain {@code MOVE} and applies no
  * {@code FUNCTION TRIM} to the submitted value. The phone edit at app/cbl/COACTUPC.cbl:L2296-L2297
- * does apply one. The methods below assert the consequence: a value carrying a leading space
- * reaches the comparison with that space in place, and it matches no literal.</p>
+ * does apply one. A value carrying a leading space therefore reaches the comparison with that
+ * space in place, and it matches no literal.</p>
  *
  * <p>The paragraph only ever condemns. app/cbl/COACTUPC.cbl:L2496 answers a match with a bare
  * {@code CONTINUE} and sets no flag. app/cbl/COACTUPC.cbl:L2499 sets a failure flag on the one path
@@ -37,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code FUNCTION TRIM}, then {@code ': is not a valid state code'}. That literal carries no
  * trailing period.</p>
  *
- * <p>Every value below is built in the test method that uses it. The gate at
+ * <p>Every value below is a literal declared in this class. The gate at
  * app/cbl/COACTUPC.cbl:L1599 guarding the call at app/cbl/COACTUPC.cbl:L1600 is orchestration and
  * sits outside this class, as does the seeded reference table.</p>
  *
@@ -93,6 +94,20 @@ class UsStateCodeValidatorTest {
     /** Highest letter the exhaustive pair sweep ends on. */
     private static final char LAST_LETTER = 'Z';
 
+    /**
+     * The 56 literals app/cpy/CSLKPCDY.cpy:L1014 through L1069 declare under
+     * {@code VALID-US-STATE-CODE}, in copybook declaration order. That order is not alphabetical:
+     * it opens {@code AL AK AZ AR CA} and closes on the territory run {@code DC AS GU MP PR VI}.
+     */
+    private static final List<String> DECLARED_STATE_CODES = List.of(
+            "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE",
+            "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS",
+            "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS",
+            "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY",
+            "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+            "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV",
+            "WI", "WY", "DC", "AS", "GU", "MP", "PR", "VI");
+
     @ParameterizedTest(name = "state code {0} passes the edit")
     @ValueSource(strings = {
             // Opening run, app/cpy/CSLKPCDY.cpy:L1014, L1015 and L1018.
@@ -113,7 +128,7 @@ class UsStateCodeValidatorTest {
     @Test
     @DisplayName("All 56 declared codes pass, and each is two characters wide")
     void allDeclaredCodesPass() {
-        Set<String> band = CslkpcdyCopybookOracle.stateCodes();
+        List<String> band = DECLARED_STATE_CODES;
 
         assertThat(band).hasSize(DECLARED_CODE_COUNT);
         for (String stateCode : band) {
@@ -130,7 +145,7 @@ class UsStateCodeValidatorTest {
     void theProductionBandEqualsTheBandTheCopybookLists() {
         assertThat(UsStateCodes.stateAndTerritoryCodes())
                 .as("VALID-US-STATE-CODE at app/cpy/CSLKPCDY.cpy:L1013")
-                .containsExactlyElementsOf(CslkpcdyCopybookOracle.stateCodes());
+                .containsExactlyElementsOf(DECLARED_STATE_CODES);
     }
 
     @ParameterizedTest(name = "state code {0} fails the edit")
@@ -331,13 +346,13 @@ class UsStateCodeValidatorTest {
                 .containsExactly(STATE_LABEL + SOURCE_FAILURE_LITERAL);
         assertThat(passingPairs)
                 .hasSize(DECLARED_CODE_COUNT)
-                .containsExactlyInAnyOrderElementsOf(CslkpcdyCopybookOracle.stateCodes());
+                .containsExactlyInAnyOrderElementsOf(DECLARED_STATE_CODES);
     }
 
     @Test
     @DisplayName("The band holds 56 codes, opening at AL and closing at VI in copybook declaration order")
     void bandHoldsFiftySixCodesInDeclarationOrder() {
-        Set<String> band = CslkpcdyCopybookOracle.stateCodes();
+        List<String> band = DECLARED_STATE_CODES;
 
         assertThat(band).hasSize(DECLARED_CODE_COUNT);
 

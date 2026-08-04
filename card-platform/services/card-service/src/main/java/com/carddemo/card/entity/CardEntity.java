@@ -1,12 +1,13 @@
 package com.carddemo.card.entity;
 
 import com.carddemo.cobol.PicClause;
+import com.carddemo.events.EventEnvelope;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Objects;
 
@@ -84,21 +85,11 @@ import java.util.Objects;
  * card-number rule in the source, and its text names sixteen digits. This class also adds no rule
  * around {@code active_status}: {@code app/jcl/POSTTRAN.jcl} allocates six datasets for the posting
  * program and no card dataset, so posting reads no card status.
- *
- * <p>Design decisions and every deviation above: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "card",
         indexes = @Index(name = "idx_card_account_id", columnList = "account_id"))
 public class CardEntity {
-
-    /**
-     * Digits after the decimal point in both {@code NUMERIC} columns.
-     * {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6} and
-     * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7} are unsigned integer
-     * display numerics, and {@link PicClause} declares no scale constant for either one.
-     */
-    private static final int IDENTIFIER_SCALE = 0;
 
     /**
      * The affirmative value of {@code active_status}, from
@@ -119,7 +110,9 @@ public class CardEntity {
      * {@code app/jcl/CARDFILE.jcl:L54}. A caller supplies the value; no sequence and no generator
      * assigns one. The Picture clause is alphanumeric, so any character may occupy any of the
      * sixteen positions. All fifty rows of {@code app/data/ASCII/carddata.txt} carry sixteen
-     * numeric characters here, row one holding {@code 0500024453765740}.
+     * numeric characters here, row one holding a value this comment states masked as
+     * {@code ************5740}. The fixture holds it in full, and a comment repeating it would
+     * be a card number a reader copies out of documentation.
      *
      * <p>PostgreSQL reports a {@code CHAR} column as {@code bpchar} through Java Database
      * Connectivity (JDBC) metadata, and {@link Column#columnDefinition()} names that type
@@ -134,37 +127,64 @@ public class CardEntity {
     /**
      * Account identifier, {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6}.
      *
-     * <p>Column {@code account_id NUMERIC(11,0) NOT NULL}, indexed and not unique by
+     * <p>Column {@code account_id CHAR(11) NOT NULL}, indexed and not unique by
      * {@code idx_card_account_id}. One account holds many cards, and
      * {@code app/cbl/COCRDLIC.cbl} pages through them. Columns 17 through 27 of every row of
      * {@code app/data/ASCII/carddata.txt} carry eleven numeric characters, row one holding
      * {@code 00000000050}.
+     *
+     * <p>The field is a {@link String} and not a number. {@code PIC 9(11)} is a display field
+     * eleven characters wide, and a numeric column stores {@code 00000000050} as fifty and
+     * returns {@code 50}, which no longer matches the eleven-byte alternate-index key at
+     * {@code KEYS(11 16)} in {@code app/jcl/CARDFILE.jcl:L85}, the account identifier in
+     * {@code card_xref}, or the aggregate identifier an event carries. The column check
+     * constraint {@code ck_card_account_id_digits} holds the width and the digit class.
      */
     @Column(name = "account_id", nullable = false,
-            precision = PicClause.CARD_ACCT_ID_WIDTH, scale = IDENTIFIER_SCALE)
-    private BigDecimal accountId;
+            length = PicClause.CARD_ACCT_ID_WIDTH,
+            columnDefinition = "bpchar(" + PicClause.CARD_ACCT_ID_WIDTH + ")")
+    private String accountId;
 
     /**
      * Card verification value, {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}.
      *
-     * <p>Column {@code card_verification_value NUMERIC(3,0) NOT NULL}. The source stores this
-     * field in the clear and the column keeps it. No event payload, no log line and no API
-     * response carries the value. Columns 28 through 30 of every row of
-     * {@code app/data/ASCII/carddata.txt} carry three numeric characters, row one holding
-     * {@code 747}.
+     * <p>Column {@code card_verification_value CHAR(3) NOT NULL}. The source stores this field in
+     * the clear and the column keeps it: {@code app/cpy/CVACT02Y.cpy:L7} declares the field, AAP
+     * section 0.4.1 records that this platform stores it and never serializes it into any event or
+     * log, section 0.6.4 repeats that rule, and section 0.2.2 places payment-card industry
+     * controls beyond the one documented masking deviation out of scope. Columns 28 through 30 of
+     * every row of {@code app/data/ASCII/carddata.txt} carry three numeric characters, and this
+     * comment states none of them: a verification value repeated here is one a reader copies out
+     * of documentation.
+     *
+     * <p>Four properties keep the value inside this class, and
+     * {@code CardholderDataExposureTest} asserts each one. This class declares no accessor that
+     * returns it, so no caller can read it out. {@link JsonIgnore} keeps it out of every Jackson
+     * rendering, including one produced by a configuration that makes private fields visible.
+     * {@link #toString()} prints {@value com.carddemo.events.EventEnvelope#WITHHELD} in its
+     * place. {@link #applyUpdate} never changes it, matching {@code app/bms/COCRDUP.bms}, whose
+     * card update map declares no field for it.
+     *
+     * <p>The type is {@link String} and not a number for the same reason
+     * {@link #accountId} is: {@code PIC 9(03)} is a three-character display field, and a numeric
+     * column returns {@code 7} for a stored {@code 007}, which is a different card verification
+     * value. The column check constraint {@code ck_card_verification_value_digits} holds the
+     * width and the digit class.
      */
+    @JsonIgnore
     @Column(name = "card_verification_value", nullable = false,
-            precision = PicClause.CARD_CVV_CD_WIDTH, scale = IDENTIFIER_SCALE)
-    private BigDecimal cardVerificationValue;
+            length = PicClause.CARD_CVV_CD_WIDTH,
+            columnDefinition = "bpchar(" + PicClause.CARD_CVV_CD_WIDTH + ")")
+    private String cardVerificationValue;
 
     /**
      * Embossed cardholder name, {@code CARD-EMBOSSED-NAME PIC X(50)} at
      * {@code app/cpy/CVACT02Y.cpy:L8}.
      *
      * <p>Column {@code embossed_name CHAR(50) NOT NULL}, fixed width and space padded. Columns 31
-     * through 80 of row one of {@code app/data/ASCII/carddata.txt} carry {@code Aniya Von} padded
-     * with spaces to the full fifty bytes. {@code app/cbl/COCRDUPC.cbl:L1499-L1501} folds the
-     * field to upper case before it compares.
+     * through 80 of every row of {@code app/data/ASCII/carddata.txt} carry a cardholder name padded
+     * with spaces to the full fifty bytes. No fixture name is reproduced here.
+     * {@code app/cbl/COCRDUPC.cbl:L1499-L1501} folds the field to upper case before it compares.
      */
     @Column(name = "embossed_name", nullable = false,
             length = PicClause.CARD_EMBOSSED_NAME_WIDTH,
@@ -184,9 +204,9 @@ public class CardEntity {
      * {@code (6:2)} and {@code (9:2)}.
      *
      * <p>Columns 81 through 90 match {@code YYYY-MM-DD} on all fifty rows of
-     * {@code app/data/ASCII/carddata.txt} with no malformed value, row one holding
-     * {@code 2023-03-09}. The years present are 2023 on eleven rows, 2024 on fourteen and 2025 on
-     * twenty-five.
+     * {@code app/data/ASCII/carddata.txt} with no malformed value, and no row's date is reproduced
+     * here. The years present are 2023 on eleven rows, 2024 on fourteen and 2025 on twenty-five, so
+     * every seeded card carries a source-era expiration rather than a current one.
      */
     @Column(name = "expiration_date", nullable = false)
     private LocalDate expirationDate;
@@ -211,7 +231,7 @@ public class CardEntity {
      *
      * <p>Hibernate calls this constructor to materialise a row, then populates the six fields
      * directly. A row already in the database reaches no guard below. Application code calls
-     * {@link #CardEntity(String, BigDecimal, BigDecimal, String, LocalDate, String)}.
+     * {@link #CardEntity(String, String, String, String, LocalDate, String)}.
      */
     protected CardEntity() {
     }
@@ -221,23 +241,31 @@ public class CardEntity {
      *
      * @param cardNumber            the full card number, exactly
      *                              {@value PicClause#CARD_NUM_WIDTH} characters wide
-     * @param accountId             the account identifier, an integer with no negative sign
-     * @param cardVerificationValue the card verification value, an integer with no negative sign
+     * @param accountId             the account identifier, exactly
+     *                              {@value PicClause#CARD_ACCT_ID_WIDTH} digits
+     * @param cardVerificationValue the card verification value, exactly
+     *                              {@value PicClause#CARD_CVV_CD_WIDTH} digits
      * @param embossedName          the embossed cardholder name, at most
      *                              {@value PicClause#CARD_EMBOSSED_NAME_WIDTH} characters wide
      * @param expirationDate        the expiration date
      * @param activeStatus          the active status flag, {@value #ACTIVE_STATUS_YES} or
      *                              {@value #ACTIVE_STATUS_NO}
      * @throws NullPointerException     if any argument is {@code null}
-     * @throws IllegalArgumentException if the card number is not
-     *                                  {@value PicClause#CARD_NUM_WIDTH} characters wide, if the
-     *                                  embossed name exceeds
-     *                                  {@value PicClause#CARD_EMBOSSED_NAME_WIDTH} characters, if
-     *                                  the active status is neither {@value #ACTIVE_STATUS_YES}
-     *                                  nor {@value #ACTIVE_STATUS_NO}, or if either identifier
-     *                                  carries a fractional part or a negative sign
+     * @throws IllegalArgumentException if any one of these checks fails.
+     *                                  <ul>
+     *                                  <li>The card number is
+     *                                  {@value PicClause#CARD_NUM_WIDTH} characters wide.</li>
+     *                                  <li>The embossed name is no longer than
+     *                                  {@value PicClause#CARD_EMBOSSED_NAME_WIDTH}
+     *                                  characters.</li>
+     *                                  <li>The active status is {@value #ACTIVE_STATUS_YES} or
+     *                                  {@value #ACTIVE_STATUS_NO}.</li>
+     *                                  <li>The account identifier and the card verification value
+     *                                  each carry their declared width and no character outside
+     *                                  {@code 0} through {@code 9}.</li>
+     *                                  </ul>
      */
-    public CardEntity(String cardNumber, BigDecimal accountId, BigDecimal cardVerificationValue,
+    public CardEntity(String cardNumber, String accountId, String cardVerificationValue,
             String embossedName, LocalDate expirationDate, String activeStatus) {
         Objects.requireNonNull(cardNumber, "cardNumber must not be null");
         Objects.requireNonNull(accountId, "accountId must not be null");
@@ -247,8 +275,9 @@ public class CardEntity {
         Objects.requireNonNull(activeStatus, "activeStatus must not be null");
 
         requireCardNumberWidth(cardNumber);
-        requireUnsignedInteger("accountId", accountId);
-        requireUnsignedInteger("cardVerificationValue", cardVerificationValue);
+        requireDigits("accountId", accountId, PicClause.CARD_ACCT_ID_WIDTH);
+        requireDigits("cardVerificationValue", cardVerificationValue,
+                PicClause.CARD_CVV_CD_WIDTH);
         requireEmbossedNameWidth(embossedName);
         requireActiveStatusFlag(activeStatus);
 
@@ -320,25 +349,33 @@ public class CardEntity {
     }
 
     /**
-     * Rejects an identifier that carries a fractional part or a negative sign.
+     * Rejects a digit field that is the wrong width or carries a character outside {@code 0}
+     * through {@code 9}.
      *
-     * <p>The method reads {@link BigDecimal#scale()} and {@link BigDecimal#signum()} and computes
-     * nothing. {@code com.carddemo.cobol.CobolDecimal} owns every scale change on this platform,
-     * and no method of this class performs one. A Picture clause of {@code 9} with no leading
-     * {@code S} holds no sign. Neither failure message carries the rejected value, which keeps a
-     * card verification value out of any message this class produces.
+     * <p>A {@code PIC 9(n)} display field is exactly n characters wide and holds only digits, so
+     * both halves of that contract are checked here and the column check constraint repeats them
+     * in the database. Neither failure message carries a character of the rejected value: the
+     * width message reports a length and the digit message reports a position. That keeps a card
+     * verification value out of every message this class produces, including the message a caller
+     * logs after a rejected update.
      *
      * @param fieldName the field under check, named in any failure message
-     * @param value     the identifier to check
-     * @throws IllegalArgumentException if the value carries a fractional part or a negative sign
+     * @param value     the value to check
+     * @param width     the exact number of digits the Picture clause declares
+     * @throws IllegalArgumentException if the width is wrong or a character is not a digit
      */
-    private static void requireUnsignedInteger(String fieldName, BigDecimal value) {
-        if (value.scale() != IDENTIFIER_SCALE) {
-            throw new IllegalArgumentException(fieldName + " must be an integer with scale "
-                    + IDENTIFIER_SCALE + ", found scale " + value.scale());
+    private static void requireDigits(String fieldName, String value, int width) {
+        if (value.length() != width) {
+            throw new IllegalArgumentException(fieldName + " must be exactly " + width
+                    + " digits wide, found width " + value.length());
         }
-        if (value.signum() < 0) {
-            throw new IllegalArgumentException(fieldName + " must not be negative");
+        for (int position = 0; position < width; position++) {
+            char character = value.charAt(position);
+            if (character < '0' || character > '9') {
+                throw new IllegalArgumentException(fieldName
+                        + " must hold digits only, found a character outside 0 through 9 at "
+                        + "position " + (position + 1));
+            }
         }
     }
 
@@ -381,13 +418,6 @@ public class CardEntity {
         this.activeStatus = activeStatus;
     }
 
-    /**
-     * Returns the full card number, all {@value PicClause#CARD_NUM_WIDTH} characters of it.
-     *
-     * <p>The returned value is unmasked.
-     *
-     * @return the value of column {@code card_number}
-     */
     public String getCardNumber() {
         return cardNumber;
     }
@@ -395,46 +425,29 @@ public class CardEntity {
     /**
      * Returns the account identifier this card belongs to.
      *
-     * @return the value of column {@code account_id}
+     * @return the value of column {@code account_id}, exactly
+     *         {@value PicClause#CARD_ACCT_ID_WIDTH} digits with leading zeros
      */
-    public BigDecimal getAccountId() {
+    public String getAccountId() {
         return accountId;
     }
 
-    /**
-     * Returns the card verification value.
-     *
-     * <p>The value reaches no event payload, no log line and no API response.
-     *
-     * @return the value of column {@code card_verification_value}
-     */
-    public BigDecimal getCardVerificationValue() {
-        return cardVerificationValue;
-    }
+    // No accessor returns card_verification_value. The column keeps the value because
+    // app/cpy/CVACT02Y.cpy:L7 declares the field and AAP section 0.4.1 requires that this
+    // platform store it, and the same section requires that it never leave the service. An
+    // accessor is the shortest path out, so this class declares none: a caller that needs to
+    // verify a card verification value belongs behind a purpose-built comparison method that
+    // returns a verdict rather than the value, which no requirement in scope asks for.
+    // CardholderDataExposureTest fails if an accessor for the field appears.
 
-    /**
-     * Returns the embossed cardholder name.
-     *
-     * @return the value of column {@code embossed_name}
-     */
     public String getEmbossedName() {
         return embossedName;
     }
 
-    /**
-     * Returns the expiration date.
-     *
-     * @return the value of column {@code expiration_date}
-     */
     public LocalDate getExpirationDate() {
         return expirationDate;
     }
 
-    /**
-     * Returns the active status flag, {@value #ACTIVE_STATUS_YES} or {@value #ACTIVE_STATUS_NO}.
-     *
-     * @return the value of column {@code active_status}
-     */
     public String getActiveStatus() {
         return activeStatus;
     }
@@ -469,5 +482,32 @@ public class CardEntity {
     @Override
     public int hashCode() {
         return Objects.hashCode(cardNumber);
+    }
+
+    /**
+     * Renders the account identifier and the active status, and withholds every other field.
+     *
+     * <p>A rendering of an entity reaches a log line as soon as any code concatenates the object
+     * into a message, so this one carries no cardholder data at all. The card number is a Primary
+     * Account Number and the card verification value is authentication data, neither of which
+     * belongs in a log; the embossed name is the cardholder's name and the expiration date
+     * completes a card record, so both are withheld too. The account identifier names the row a
+     * reader needs, and the active status is the field an update changes.
+     *
+     * <p>The card number is withheld rather than masked here on purpose. A caller that needs to
+     * name a card in a log line passes it through {@code com.carddemo.cobol.PanMasker} at the
+     * point of use, which states the intent at the call site.
+     *
+     * @return a single-line rendering carrying no cardholder data
+     */
+    @Override
+    public String toString() {
+        return "CardEntity[cardNumber=" + EventEnvelope.WITHHELD
+                + ", accountId=" + accountId
+                + ", cardVerificationValue=" + EventEnvelope.WITHHELD
+                + ", embossedName=" + EventEnvelope.WITHHELD
+                + ", expirationDate=" + EventEnvelope.WITHHELD
+                + ", activeStatus=" + activeStatus
+                + "]";
     }
 }

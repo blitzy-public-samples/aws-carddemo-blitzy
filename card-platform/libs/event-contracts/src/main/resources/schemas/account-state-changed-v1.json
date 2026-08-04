@@ -2,88 +2,89 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://carddemo.example.com/schemas/account-state-changed-v1.json",
   "title": "AccountStateChanged",
-  "description": "The account service publishes one AccountStateChanged event whenever account state changes, and publishes nothing on a read. Nine payload fields carry the account after the change, with widths from the 300-byte account record at app/cpy/CVACT01Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. The authorization service keeps its account_credit_snapshot projection current from the credit limit, the two cycle accumulators and the expiry date this event carries. Evolution is additive only: additionalProperties stays true, so a consumer validating against this version accepts an event that carries a field added by a later version. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
+  "description": "The account service publishes one AccountStateChanged event whenever account state changes, and publishes nothing on a read. Nine payload fields carry the account after the change, with widths from the 300-byte account record at app/cpy/CVACT01Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. The authorization service keeps its account_credit_snapshot projection current from the credit limit, the two cycle accumulators and the expiry date this event carries. Evolution is additive only, and it is bounded. additionalProperties is false and maxProperties is declared, so an unknown top-level property is refused and a producer cannot hide a Primary Account Number, a card verification value or any other undeclared field inside a known event type. Additive evolution inside this version travels in the optional extensions object, whose property names, property count and value lengths are all bounded, so a consumer validating against this version still accepts an event a later version enriched. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
   "$comment": "The 178-byte trailing FILLER at app/cpy/CVACT01Y.cpy:L17 carries no data and no field here maps to it. The source spells two fields ACCT-EXPIRAION-DATE at app/cpy/CVACT01Y.cpy:L11 and CARD-EXPIRAION-DATE at app/cpy/CVACT02Y.cpy:L9; the target corrects the spelling.",
   "type": "object",
   "properties": {
     "eventId": {
       "type": "string",
       "format": "uuid",
-      "description": "The idempotency key. Each consumer records this identifier before it applies side effects. Additive. No source field exists.",
-      "examples": ["8c4b1e07-5d2a-42f6-9b18-6e05c3a7d914"]
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The idempotency key. A consumer checks this identifier against its own processed_event table before it acts. It then writes its side effects and the marker row in one local transaction, and acknowledges the message only after that transaction commits. Additive. No source field exists.",
+      "examples": [
+        "8c4b1e07-5d2a-42f6-9b18-6e05c3a7d914"
+      ]
     },
     "eventType": {
       "type": "string",
       "const": "AccountStateChanged",
       "description": "The routing discriminator. A consumer reads this field to learn which payload arrived. Additive. No source field exists.",
-      "examples": ["AccountStateChanged"]
+      "examples": [
+        "AccountStateChanged"
+      ]
     },
     "schemaVersion": {
       "type": "integer",
       "const": 1,
       "description": "The contract version. The number matches the -v1 suffix in this file name, and a later version only adds fields. Additive. No source field exists.",
-      "examples": [1]
+      "examples": [
+        1
+      ]
     },
     "occurredAt": {
       "type": "string",
       "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
       "description": "The publish timestamp, in Coordinated Universal Time. The account service stamps it when it writes the event to its outbox. Additive. No source field exists.",
-      "examples": ["2022-06-10T19:27:53.412Z"]
+      "examples": [
+        "2022-06-10T19:27:53.412Z"
+      ]
     },
     "aggregateId": {
       "type": "string",
       "pattern": "^[0-9]{11}$",
       "description": "The account identifier, and always the Kafka message key. Width from ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5. The Kafka message key, this field and the payload field accountId all carry one value, so account identity has a single source. A publisher compares the key against this field and against accountId, and rejects the message on any difference.",
-      "examples": ["00000000007"]
+      "examples": [
+        "00000000007"
+      ]
     },
     "accountId": {
       "type": "string",
       "pattern": "^[0-9]{11}$",
       "description": "The account identifier, eleven digits. From ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5, the key the account dataset is defined on at app/jcl/ACCTFILE.jcl. A text field keeps a leading zero.",
-      "examples": ["00000000007"]
-    },
-    "changeType": {
-      "type": "string",
-      "enum": ["ACCOUNT_UPDATED", "BILLING_CYCLE_CLOSED"],
-      "description": "What changed. ACCOUNT_UPDATED covers the field update the online path performs at app/cbl/COACTUPC.cbl:L4066. BILLING_CYCLE_CLOSED covers the cycle close that zeroes both accumulators, which the interest program does at app/cbl/CBACT04C.cbl:L353-L354. Additive: the source publishes nothing and records no change type.",
-      "examples": ["ACCOUNT_UPDATED", "BILLING_CYCLE_CLOSED"]
-    },
-    "activeStatus": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 1,
-      "description": "The one-character active status, carried through with no interpretation. From ACCT-ACTIVE-STATUS PIC X(01) at app/cpy/CVACT01Y.cpy:L6. No program in app/cbl/ tests this field before posting a transaction, so no consumer may decline on it.",
-      "examples": ["Y", "N"]
-    },
-    "currentBalance": {
-      "type": "string",
-      "pattern": "^-?\\d{1,10}\\.\\d{2}$",
-      "description": "The account balance, as a decimal string with two fractional digits. From ACCT-CURR-BAL PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L7, so ten digits sit before the point. A leading minus is valid. A decimal string keeps a parser from reading the value as a binary floating-point number.",
-      "examples": ["1234.56", "-45.00"]
+      "examples": [
+        "00000000007"
+      ]
     },
     "creditLimit": {
       "type": "string",
       "pattern": "^-?\\d{1,10}\\.\\d{2}$",
       "description": "The credit limit, as a decimal string with two fractional digits. From ACCT-CREDIT-LIMIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L8. The authorization credit-limit rule compares this value against the cycle balance at app/cbl/CBTRN02C.cbl:L403-L413.",
-      "examples": ["5000.00"]
-    },
-    "cashCreditLimit": {
-      "type": "string",
-      "pattern": "^-?\\d{1,10}\\.\\d{2}$",
-      "description": "The cash credit limit, as a decimal string with two fractional digits. From ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L9.",
-      "examples": ["1000.00"]
+      "examples": [
+        "5000.00"
+      ]
     },
     "currentCycleCredit": {
       "type": "string",
       "pattern": "^-?\\d{1,10}\\.\\d{2}$",
       "description": "The cycle credit accumulator, as a decimal string with two fractional digits. From ACCT-CURR-CYC-CREDIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L12. app/cbl/CBTRN02C.cbl:L548-L549 adds a non-negative transaction amount here, and app/cbl/CBACT04C.cbl:L353 zeroes it at cycle close.",
-      "examples": ["250.00", "0.00"]
+      "examples": [
+        "250.00",
+        "0.00"
+      ]
     },
     "currentCycleDebit": {
       "type": "string",
       "pattern": "^-?\\d{1,10}\\.\\d{2}$",
       "description": "The cycle debit accumulator, as a decimal string with two fractional digits. From ACCT-CURR-CYC-DEBIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L13. app/cbl/CBTRN02C.cbl:L550-L551 adds a negative transaction amount here, and app/cbl/CBACT04C.cbl:L354 zeroes it at cycle close.",
-      "examples": ["-125.00", "0.00"]
+      "examples": [
+        "-125.00",
+        "0.00"
+      ]
     },
     "expirationDate": {
       "type": "string",
@@ -91,6 +92,31 @@
       "maxLength": 10,
       "description": "The account expiry date, ten characters. From ACCT-EXPIRAION-DATE PIC X(10) at app/cpy/CVACT01Y.cpy:L11, which the source spells with the transposed word. The value travels as text and not as a date: app/cbl/CBTRN02C.cbl:L414-L420 compares it character by character against the first ten characters of the transaction origin timestamp to set decline reason 103.",
       "examples": ["2024-12-31"]
+    },
+    "changeKind": {
+      "type": "string",
+      "enum": [
+        "ACCOUNT_UPDATED",
+        "BILLING_CYCLE_CLOSED"
+      ],
+      "description": "What changed. ACCOUNT_UPDATED covers the field update the online path performs at app/cbl/COACTUPC.cbl:L4066. BILLING_CYCLE_CLOSED covers the cycle close that zeroes both accumulators, which the interest program does at app/cbl/CBACT04C.cbl:L353-L354. Additive: the source publishes nothing and records no change type.",
+      "examples": [
+        "ACCOUNT_UPDATED",
+        "BILLING_CYCLE_CLOSED"
+      ]
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction: at most 16 members, each name a short identifier, each value a string of at most 256 characters, and no nested object or array. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "examples": [{"replayOf": "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"}]
     }
   },
   "required": [
@@ -100,14 +126,12 @@
     "occurredAt",
     "aggregateId",
     "accountId",
-    "changeType",
-    "activeStatus",
-    "currentBalance",
     "creditLimit",
-    "cashCreditLimit",
     "currentCycleCredit",
     "currentCycleDebit",
-    "expirationDate"
+    "expirationDate",
+    "changeKind"
   ],
-  "additionalProperties": true
+  "maxProperties": 12,
+  "additionalProperties": false
 }

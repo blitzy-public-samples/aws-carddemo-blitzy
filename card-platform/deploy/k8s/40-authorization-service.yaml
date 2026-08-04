@@ -2,8 +2,8 @@
 # client calls. The service writes the authorization decision, and no other
 # service writes it. No listener runs here, and no consumer group appears.
 #
-# Architecture before and after: card-platform/docs/architecture-before-after.md
-# Rationale for every choice in this folder: card-platform/docs/decision-log.md
+# The synchronous endpoint and the outbox relay this manifest configures are
+# planned and unauthored, so the container starts and answers /actuator only.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -23,9 +23,12 @@ spec:
   template:
     metadata:
       labels:
+        # The name below is what the ingress policies in 10-kafka.yaml and 20-postgres.yaml
+        # admit. Both name the six services individually rather than matching the part-of
+        # label, so a Pod that merely belongs to this platform reaches neither the broker
+        # nor the database.
         app.kubernetes.io/name: authorization-service
         app.kubernetes.io/component: authorization
-        # The NetworkPolicy in 10-kafka.yaml keys on the label below.
         app.kubernetes.io/part-of: card-platform
     spec:
       automountServiceAccountToken: false
@@ -34,36 +37,96 @@ spec:
         runAsNonRoot: true
         runAsUser: 10001
         runAsGroup: 10001
+        # The mounted keystore, truststore and certificate authority arrive owned by root.
+        # fsGroup gives group 10001 read access to them, which is how the runtime opens a
+        # file it may not write.
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: authorization-service
-          # Built from services/authorization-service/Dockerfile.
-          image: carddemo/authorization-service:1.0.0
+          # Built from services/authorization-service/Dockerfile, and pinned by digest.
+          #
+          # A tag is a moving name. Two nodes pulling carddemo/authorization-service:1.0.0
+          # a week apart can run different content, and nothing in the cluster notices; a
+          # digest names one image and cannot be repointed. Every other image in this folder
+          # is already pinned this way, and this one is the platform's own build rather than
+          # an upstream one, which makes it the easiest of the three to repoint by accident.
+          #
+          # The value below is a placeholder, so applying this file unedited fails the pull
+          # with InvalidImageName rather than starting something unidentified. Digest pinning
+          # needs a registry, because a locally built image has no manifest digest until it
+          # is pushed. With a local registry:
+          #
+          #   docker run -d -p 5000:5000 --name registry registry:2
+          #   docker build -f services/authorization-service/Dockerfile \
+          #     -t localhost:5000/carddemo/authorization-service:1.0.0 card-platform
+          #   docker push localhost:5000/carddemo/authorization-service:1.0.0
+          #   digest=$(docker inspect --format '{{index .RepoDigests 0}}' \
+          #     localhost:5000/carddemo/authorization-service:1.0.0)
+          #   sed -i "s| image: carddemo/authorization-service.*| image: ${digest}|" \
+          #     card-platform/deploy/k8s/40-authorization-service.yaml
+          #
+          # Replacing the placeholder with a bare tag instead will run, and reintroduces
+          # exactly the mutability the pin removes. Say so in a review rather than in a
+          # comment nobody reads.
+          image: carddemo/authorization-service:1.0.0@sha256:REPLACE-WITH-THE-64-HEX-CHARACTER-DIGEST-OF-THE-IMAGE-YOU-PUSHED
+          # A digest reference names immutable content, so a present image is the right
+          # image and pulling it again buys nothing.
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
+            # The image writes nothing under / after start: /app holds the extracted
+            # application layers and nothing else, and the Dockerfile pins TMPDIR and
+            # java.io.tmpdir to /tmp so the runtime and the servlet container write their
+            # work directories there. The one writable path is therefore the volume below.
+            # A writable root filesystem is what lets an attacker who reaches this container
+            # leave something behind that survives, or replace a class file that does not.
+            readOnlyRootFilesystem: true
           ports:
             # 8080 carries the Representational State Transfer (REST) surface,
             # and the Service below targets it. 9080 carries /actuator and
-            # matches MANAGEMENT_PORT in 30-configmap.yaml.
+            # matches MANAGEMENT_PORT in 30-configmap.yaml. No Service exposes
+            # 9080, and the NetworkPolicy below admits it from monitoring pods
+            # alone, so a container port here is reach for the kubelet and for a
+            # monitoring collector rather than for the cluster. Both are encrypted,
+            # because 30-configmap.yaml sets SERVER_SSL_ENABLED and MANAGEMENT_SSL_ENABLED.
             - name: http
               containerPort: 8080
             - name: management
               containerPort: 9080
           envFrom:
-            # Broker address, topic names, service addresses and log levels.
+            # Broker address, topic names, service addresses, log levels, the three
+            # request-identity usernames, and the transport settings. No credential appears
+            # there.
             - configMapRef:
                 name: carddemo-config
-            # Datasource username and password. Neither value appears here.
+            # This service's own two credentials: the password of its database login and
+            # the password of its broker identity. Two keys, and no other service reads this
+            # Secret. One shared login used to serve all six services, which meant a
+            # compromise of any one of them could read and alter every other service's card,
+            # customer, balance, fraud and event data.
             - secretRef:
-                name: carddemo-secret
-          # The schema this service owns. 30-configmap.yaml holds the value.
+                name: carddemo-authorization-secret
+            # The three request-identity password hashes, shared by all six services.
+            # app/csd/CARDDEMO.CSD defines one USRSEC dataset the whole region reads, so a
+            # platform-wide identity store is the faithful shape; a database login is not.
+            - secretRef:
+                name: carddemo-identity-secret
           env:
+            # The schema and the login this service owns. 30-configmap.yaml holds both
+            # values, and binding them here by name is what keeps one service from reading
+            # another's: envFrom above pulls the whole ConfigMap, so the six names have to be
+            # distinct keys and each Deployment picks its own.
             - name: SPRING_FLYWAY_SCHEMAS
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: AUTHORIZATION_DB_SCHEMA
+            - name: SPRING_FLYWAY_DEFAULT_SCHEMA
               valueFrom:
                 configMapKeyRef:
                   name: carddemo-config
@@ -73,21 +136,96 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: AUTHORIZATION_DB_SCHEMA
-          # Both probes read /actuator/health on the management port. Port
-          # 8080 answers no management request. Readiness allows time for
-          # the Flyway migration this service runs at startup.
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: AUTHORIZATION_DB_USER
+            # The datasource URL this service owns, assembled here rather than shared. The four
+            # values below are declared in this env list and not merely pulled in by envFrom,
+            # because $(VAR) expansion reads this list alone. 30-configmap.yaml carries a
+            # SPRING_DATASOURCE_OPTIONS suffix and no database name, so each of the six
+            # Deployments names the one database it owns and no Deployment can reach another's.
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: POSTGRES_HOST
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: POSTGRES_PORT
+            - name: AUTHORIZATION_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: AUTHORIZATION_DB_NAME
+            - name: AUTHORIZATION_DB_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: AUTHORIZATION_DB_SCHEMA
+            - name: SPRING_DATASOURCE_OPTIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: SPRING_DATASOURCE_OPTIONS
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://$(POSTGRES_HOST):$(POSTGRES_PORT)/$(AUTHORIZATION_DB_NAME)?currentSchema=$(AUTHORIZATION_DB_SCHEMA)&$(SPRING_DATASOURCE_OPTIONS)"
+            # Two Flyway locations. db/migration reproduces app/data/ASCII/acctdata.txt value for
+            # value, and all 50 of its account expiries fall in 2025, so reason code 103 at
+            # app/cbl/CBTRN02C.cbl:L414-L420 declines a request carrying today's date. db/demo
+            # extends those expiries to 2099-12-31 and touches nothing else.
+            - name: SPRING_FLYWAY_LOCATIONS
+              value: "classpath:db/migration,classpath:db/demo"
+            - name: KAFKA_SASL_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: AUTHORIZATION_KAFKA_USER
+            # The two passwords that open the mounted transport material. Both live in
+            # carddemo-tls-secret beside the files themselves, and both are named here rather
+            # than pulled with envFrom, because that Secret also carries keys whose names are
+            # file names and are not valid environment variable names.
+            - name: SERVER_SSL_KEYSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-tls-secret
+                  key: SERVER_SSL_KEYSTORE_PASSWORD
+            - name: SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-tls-secret
+                  key: KAFKA_SSL_TRUSTSTORE_PASSWORD
+          # Both probes read /actuator/health on the management port over HTTPS, because
+          # 30-configmap.yaml encrypts that port too. Port 8080 answers no management
+          # request. Readiness allows time for the Flyway migration this service runs at
+          # startup.
+          #
+          # The kubelet does not verify the certificate it is presented on a probe, which is
+          # the one place on this platform where a certificate is not checked. It is also the
+          # one caller that cannot be given a truststore.
           readinessProbe:
             httpGet:
-              path: /actuator/health
+              path: /actuator/health/readiness
               port: management
+              scheme: HTTPS
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 12
+            failureThreshold: 3
+          # Liveness asks only whether the Java virtual machine is still working.
+          # The liveness group reports process state and deliberately excludes
+          # every external dependency, so a database outage takes this Pod out of
+          # its Service and does not restart a process that is running correctly.
+          # Restarting on a dependency failure is the defect this split removes:
+          # it discards a warm process, replays its start-up, and cures nothing.
           livenessProbe:
             httpGet:
-              path: /actuator/health
+              path: /actuator/health/liveness
               port: management
+              scheme: HTTPS
             initialDelaySeconds: 90
             periodSeconds: 20
             timeoutSeconds: 5
@@ -100,9 +238,38 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
+          volumeMounts:
+            # The one writable path, capped so a runaway write fills 64 mebibytes of memory
+            # rather than a node's disk. card-platform/docker-compose.yml mounts a tmpfs of
+            # the same size at the same place.
+            - name: tmp
+              mountPath: /tmp
+            # Keystore, truststore and certificate authority, read-only. The keystore is
+            # what this service presents on both ports, the truststore is what it verifies
+            # the broker against, and the authority is what the database driver verifies the
+            # server against under sslmode=verify-full.
+            - name: transport-security
+              mountPath: /etc/carddemo/tls
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: transport-security
+          secret:
+            secretName: carddemo-tls-secret
+            defaultMode: 0640
+            items:
+              - key: keystore.p12
+                path: keystore.p12
+              - key: truststore.p12
+                path: truststore.p12
+              - key: ca.crt
+                path: ca.crt
 ---
 # Pods reach the service at authorization-service:8080, a short name the
-# Domain Name System (DNS) resolves. /actuator answers on 9080 alone.
+# Domain Name System (DNS) resolves. /actuator answers on the same port.
 #
 # External reach. Host port 8081 matches AUTHORIZATION_PORT in
 # card-platform/.env.example:
@@ -122,7 +289,71 @@ spec:
     app.kubernetes.io/name: authorization-service
     app.kubernetes.io/part-of: card-platform
   ports:
+    # 8080 alone. The management port is deliberately absent: a Service address
+    # is what every pod in the cluster resolves, and /actuator answers on 9080.
+    # A monitoring collector reaches 9080 by pod address, which the NetworkPolicy
+    # below admits from monitoring pods only.
     - name: http
       port: 8080
       targetPort: 8080
       protocol: TCP
+---
+# Ingress policy for the authorization pod. Two ports, two different callers.
+#
+# The management surface is already authenticated: config/SecurityConfig leaves
+# /actuator/health open for probes and requires ROLE_MONITORING for metrics and
+# the Prometheus scrape, so an anonymous caller receives 401 and an identity
+# holding a business role receives 403. This policy closes the same gap a second
+# time, at the network layer, so a pod that holds no monitoring credential cannot
+# even open the port.
+#
+# On probes. A kubelet probe originates from the node rather than from a pod, so
+# it matches neither podSelector below. The Container Network Interface plugins
+# this demo targets pass node-to-pod traffic without consulting pod ingress rules,
+# which is why no rule for the kubelet appears here. A plugin that does subject
+# probes to policy needs one more entry under ingress, naming the node network:
+#
+#   - from:
+#       - ipBlock:
+#           cidr: <the node CIDR of the cluster>
+#     ports:
+#       - port: 9080
+#         protocol: TCP
+#
+# Without it the readiness probe fails and the pod never reports ready, which is
+# the symptom to look for rather than a broken service.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: authorization-service-ingress
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: authorization-service
+    app.kubernetes.io/component: authorization
+    app.kubernetes.io/part-of: card-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: authorization-service
+      app.kubernetes.io/part-of: card-platform
+  policyTypes:
+    - Ingress
+  ingress:
+    # The Representational State Transfer surface. Any pod of this platform may
+    # call it, and Spring Security authenticates every request that arrives.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 8080
+          protocol: TCP
+    # The management surface. A monitoring collector carries the label below and
+    # nothing else in this namespace does, so no business pod reaches this port.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: monitoring
+      ports:
+        - port: 9080
+          protocol: TCP

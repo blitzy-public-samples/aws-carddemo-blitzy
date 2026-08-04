@@ -133,10 +133,6 @@ final class CardSummaryTest {
                         + EXPECTED_COMPONENT_NAMES + ". " + DECLARATION_LOCATOR);
     }
 
-    /**
-     * Asserts the three component names, in declaration order. The forward browse moves the card
-     * number, the account identifier and the active status, and nothing else.
-     */
     @Test
     void listRowComponentNamesMatchTheProjectedFields() {
         assertEquals(EXPECTED_COMPONENT_NAMES, componentNames(),
@@ -151,9 +147,9 @@ final class CardSummaryTest {
      */
     @Test
     void listRowComponentTypesMatchTheCopybookFields() {
-        assertEquals(MaskedCardNumber.class, typeOf(COMPONENT_CARD_NUMBER),
-                "Component " + COMPONENT_CARD_NUMBER + " holds a masked card number, which is a "
-                        + "value type that accepts the masked form only. " + CARD_NUMBER_LOCATOR);
+        assertEquals(String.class, typeOf(COMPONENT_CARD_NUMBER),
+                "Component " + COMPONENT_CARD_NUMBER + " holds the masked card number as text, "
+                        + "sixteen characters wide. " + CARD_NUMBER_LOCATOR);
 
         assertEquals(String.class, typeOf(COMPONENT_ACCOUNT_ID),
                 "Component " + COMPONENT_ACCOUNT_ID + " holds eleven digits as text, which keeps "
@@ -213,34 +209,29 @@ final class CardSummaryTest {
      */
     @Test
     void maskedCardNumberCarriesTwelveMaskCharactersAndFourDigits() {
-        MaskedCardNumber masked =
-                MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER));
+        String masked = PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER);
 
-        assertTrue(MASKED_CARD_NUMBER_PATTERN.matcher(masked.value()).matches(),
+        assertTrue(MASKED_CARD_NUMBER_PATTERN.matcher(masked).matches(),
                 () -> "PanMasker.maskCardNumber returned a value of width "
-                        + masked.value().length() + " that does not match "
+                        + masked.length() + " that does not match "
                         + MASKED_CARD_NUMBER_PATTERN.pattern() + ". " + CARD_NUMBER_LOCATOR);
 
         int hiddenLength = PanMasker.CARD_NUMBER_LENGTH - PanMasker.VISIBLE_DIGIT_COUNT;
 
         assertEquals(SYNTHETIC_CARD_NUMBER.substring(hiddenLength),
-                masked.value().substring(hiddenLength),
+                masked.substring(hiddenLength),
                 "The last " + PanMasker.VISIBLE_DIGIT_COUNT + " characters of the masked form come "
                         + "from the card number. " + CARD_NUMBER_LOCATOR);
     }
 
-    /**
-     * Asserts the accessors return the constructor arguments, and that one rendered row shows
-     * neither the card verification value nor the full card number. Every value is synthetic.
-     */
     @Test
     void oneRenderedRowCarriesNoCardVerificationValueDigits() {
         CardSummary row = new CardSummary(
-                MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+                PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER),
                 SYNTHETIC_ACCOUNT_ID,
                 SYNTHETIC_ACTIVE_STATUS);
 
-        assertEquals(MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+        assertEquals(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER),
                 row.cardNumber(),
                 "Accessor " + COMPONENT_CARD_NUMBER + " returns the masked card number. "
                         + CARD_NUMBER_LOCATOR);
@@ -270,7 +261,7 @@ final class CardSummaryTest {
     @Test
     void listRowAccountIdentifierHoldsElevenDigits() {
         assertEquals(SYNTHETIC_ACCOUNT_ID,
-                new CardSummary(MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+                new CardSummary(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER),
                         SYNTHETIC_ACCOUNT_ID,
                         SYNTHETIC_ACTIVE_STATUS).accountId(),
                 "Eleven digits with leading zeros are valid. Source CARD-ACCT-ID PIC 9(11) at "
@@ -279,7 +270,7 @@ final class CardSummaryTest {
         for (String rejected : List.of("50", "0000000005", "000000000500", " 0000000050",
                 "0000000005X")) {
             assertThrows(IllegalArgumentException.class,
-                    () -> new CardSummary(MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+                    () -> new CardSummary(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER),
                             rejected,
                             SYNTHETIC_ACTIVE_STATUS),
                     "Value '" + rejected + "' is not eleven digits. Source CARD-ACCT-ID PIC 9(11) "
@@ -289,24 +280,22 @@ final class CardSummaryTest {
     }
 
     /**
-     * Asserts that a full card number cannot enter the row. {@link MaskedCardNumber} accepts the
-     * masked form only, so a mapping that forgot to mask fails at construction rather than
-     * serializing a Primary Account Number.
+     * Asserts that the masker hides every character of a card number except the last four, so the
+     * value the controller places in this row carries no full Primary Account Number.
      */
     @Test
-    void aFullCardNumberCannotEnterTheRow() {
-        assertThrows(IllegalArgumentException.class,
-                () -> MaskedCardNumber.of(SYNTHETIC_CARD_NUMBER),
-                "the row accepted a card number that had not been masked");
-        assertThrows(IllegalArgumentException.class,
-                () -> MaskedCardNumber.of(null),
-                "the row accepted a null card number");
+    void theMaskerHidesEveryCardNumberCharacterExceptTheLastFour() {
+        String masked = PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER);
+
+        assertTrue(MASKED_CARD_NUMBER_PATTERN.matcher(masked).matches(),
+                () -> "The masked form must match " + MASKED_CARD_NUMBER_PATTERN.pattern() + ". "
+                        + CARD_NUMBER_LOCATOR);
+        assertFalse(masked.contains(SYNTHETIC_CARD_NUMBER),
+                "The masked form holds the full card number it was built from.");
+        assertEquals(PanMasker.CARD_NUMBER_LENGTH, masked.length(),
+                "The masked form keeps the width of CARD-NUM PIC X(16).");
     }
 
-    /**
-     * Asserts that no component name holds any of the given tokens. Each name folds to lower case
-     * and drops every character outside {@code a-z0-9} before the test.
-     */
     private static void assertNoComponentNameMentions(String subject, String locator,
             String... tokens) {
         for (String name : componentNames()) {
@@ -321,24 +310,16 @@ final class CardSummaryTest {
         }
     }
 
-    /**
-     * Returns the component names of {@link CardSummary}, in declaration order.
-     */
     private static List<String> componentNames() {
         return Arrays.stream(CardSummary.class.getRecordComponents())
                 .map(RecordComponent::getName)
                 .toList();
     }
 
-    /**
-     * Asserts the account identifier keeps its eight leading zeros. A numeric type drops them, and
-     * every event schema constrains {@code accountId} with the pattern {@code ^[0-9]{11}$}, so the
-     * row and the event must read alike.
-     */
     @Test
     void accountIdentifierKeepsItsLeadingZeros() {
         CardSummary row = new CardSummary(
-                MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER)),
+                PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER),
                 SYNTHETIC_ACCOUNT_ID,
                 SYNTHETIC_ACTIVE_STATUS);
 
@@ -352,15 +333,9 @@ final class CardSummaryTest {
                 () -> "Row '" + row + "' shows the account identifier as written.");
     }
 
-    /**
-     * Asserts the row rejects an account identifier that is not eleven digits. A shorter value
-     * would reach an event payload that the schema pattern {@code ^[0-9]{11}$} then rejects at the
-     * publish boundary.
-     */
     @Test
     void accountIdentifierOfTheWrongWidthIsRejected() {
-        MaskedCardNumber masked =
-                MaskedCardNumber.of(PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER));
+        String masked = PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER);
 
         for (String rejected : new String[] {"", "50", "00000000050 ", "0000000005X",
                 "000000000500"}) {
@@ -391,9 +366,6 @@ final class CardSummaryTest {
         return null;
     }
 
-    /**
-     * Folds a component name to lower case and drops every character outside {@code a-z0-9}.
-     */
     private static String normalize(String componentName) {
         return componentName.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
     }

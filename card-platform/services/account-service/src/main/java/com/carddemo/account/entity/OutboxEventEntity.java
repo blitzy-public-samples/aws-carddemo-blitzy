@@ -1,12 +1,18 @@
 package com.carddemo.account.entity;
 
 import com.carddemo.cobol.PicClause;
+import com.carddemo.events.EventEnvelope;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
-import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.UUID;
+import java.util.regex.Pattern;
+import java.util.Objects;
 
 /**
  * One event row in the {@code outbox_event} table.
@@ -22,106 +28,108 @@ import java.time.Instant;
  * reaches {@code SYNCPOINT ROLLBACK} at {@code app/cbl/COACTUPC.cbl:L4100}.
  * {@code app/cbl/CBTRN02C.cbl:L440-L442} runs three writes with no rollback.
  *
- * <p>{@code card-platform/docs/decision-log.md} records this addition.
+ * <p>The planned outbox writer is to insert one row in the same local transaction as the domain
+ * write. The planned relay is to publish the row, then mark it sent in a separate transaction. An
+ * account update is to write one row, and a cycle-close one row. A read writes none, and no
+ * account-read event exists. Neither component is authored yet, so the table is empty.
  *
- * <p>{@code outbox/OutboxWriter} inserts one row in the same local transaction as the domain
- * write. {@code outbox/OutboxRelay} publishes the row, then marks it sent in a separate
- * transaction. An account update writes one row, and a cycle-close writes one row. A read writes
- * none, and no account-read event exists. {@code card-platform/docs/event-flow.md} draws the path.
+ * <p>{@code outbox/OutboxWriter} inserts one row in the same local transaction as the domain write.
+ * {@code outbox/OutboxRelay} publishes the row, then marks it sent in a separate transaction. An
+ * account update writes one row, and a cycle-close writes one row. A read writes none, and no
+ * account-read event exists. {@code card-platform/docs/event-flow.md} (planned) draws the path.
  *
- * <p>The relay reads unpublished rows ordered by {@code occurred_at} ascending, then
+ * <p>The relay claims unpublished rows ordered by {@code created_at} ascending, then
  * {@code event_id} ascending. Two rows can hold one timestamp, and the primary key completes the
- * order. {@code V1__schema.sql} declares the index on {@code (published, occurred_at, event_id)}
- * that serves this read. Flyway owns every Data Definition Language (DDL) statement for the table,
- * and this class declares no index.
+ * order. {@code V1__schema.sql} declares the partial index {@code ix_outbox_event_pending} on
+ * {@code (created_at, event_id)} over pending rows alone, which serves that claim. Flyway owns
+ * every Data Definition Language (DDL) statement for the table, and this class declares no index.
  *
  * <p>Configuration supplies the sweep delay of 500 milliseconds, the batch size of 100 rows, the
  * schema, and the topic name. {@link #getAggregateId()} holds the account identifier, which is
  * also the message key.
  */
 @Entity
-@Table(name = "outbox_event")
+@Table(name = "outbox_event",
+        indexes = {
+                @Index(name = "ix_outbox_event_pending",
+                        columnList = "created_at, event_id"),
+                @Index(name = "ix_outbox_event_claimable",
+                        columnList = "relay_state, next_attempt_at"),
+                @Index(name = "ix_outbox_event_published_at", columnList = "published_at")})
 public class OutboxEventEntity {
 
     /**
-     * Width of {@code event_id}, matching {@code VARCHAR(36)} in {@code V1__schema.sql}. A
-     * universally unique identifier in canonical text form occupies 36 characters.
+     * Widest {@code event_type} this row holds, matching {@code VARCHAR(50)} in
+     * {@code V1__schema.sql} and the width every service of this platform declares.
      */
-    public static final int EVENT_ID_LENGTH = 36;
+    public static final int EVENT_TYPE_MAX_LENGTH = 50;
 
     /**
-     * Widest {@code event_type} this row holds, matching {@code VARCHAR(64)} in
-     * {@code V1__schema.sql}.
-     */
-    public static final int EVENT_TYPE_MAX_LENGTH = 64;
-
-    /**
-     * Total digits in {@code aggregate_id}. The value is an account identifier,
+     * Characters in {@code aggregate_id}. The value is an account identifier, from
      * {@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5}, whose key width is
      * {@code KEYS(11 0)} at {@code app/jcl/ACCTFILE.jcl:L40}.
+     *
+     * <p>The column is {@code CHAR(11)} and holds text, so a leading zero survives. All fifty
+     * account identifiers in {@code app/data/ASCII/acctdata.txt} open with a zero.
      */
-    public static final int AGGREGATE_ID_PRECISION = PicClause.ACCT_ID_WIDTH;
+    public static final int AGGREGATE_ID_LENGTH = PicClause.ACCT_ID_WIDTH;
+
+    /** The form {@code aggregate_id} takes: exactly {@value #AGGREGATE_ID_LENGTH} decimal digits. */
+    private static final Pattern AGGREGATE_ID_PATTERN = Pattern.compile("^[0-9]{11}$");
 
     /**
-     * Digits after the decimal point in {@code aggregate_id}. An account identifier holds none. The
-     * column is {@code NUMERIC(11,0)} and keeps the padded digits of the source key.
-     */
-    public static final int AGGREGATE_ID_SCALE = 0;
-
-    /**
-     * Identifier of this event, supplied by {@code outbox/OutboxWriter}. The same value travels in
-     * the {@code EventEnvelope.eventId} field of the payload, and every consumer records it in its
-     * own processed-event marker.
+     * Identifier of this event, supplied by the writer. The same value travels in the
+     * {@code EventEnvelope.eventId} field of the payload, and a consumer is to record it in its own
+     * processed-event marker.
      */
     @Id
-    @Column(name = "event_id", nullable = false, length = EVENT_ID_LENGTH)
-    private String eventId;
+    @Column(name = "event_id", nullable = false, updatable = false)
+    private UUID eventId;
 
     /**
-     * Name of this event, mirroring the {@code EventEnvelope.eventType} field. The relay routes on
-     * this value and reads no part of the payload.
+     * Name of this event, mirroring the {@code EventEnvelope.eventType} field. The relay is to
+     * route on this value and to read no part of the payload.
      */
     @Column(name = "event_type", nullable = false, length = EVENT_TYPE_MAX_LENGTH)
     private String eventType;
 
     /**
      * One complete event, serialized as JavaScript Object Notation (JSON) before it reaches this
-     * row, envelope included. {@code outbox/OutboxWriter} serializes and validates the document
-     * against its schema, and this row stores the text it receives. Every monetary amount inside
-     * the document is a decimal string.
+     * row, envelope included. The writer is to serialize and validate the document against its
+     * schema, and this row stores the text it receives. Every monetary amount inside the document
+     * is a decimal string.
      */
     @Column(name = "payload", nullable = false, columnDefinition = "text")
     private String payload;
 
     /**
-     * Account this event belongs to, and the key the relay publishes the message under. Every
-     * event for one account lands on one partition and stays in order.
+     * Account this event belongs to, and the Kafka message key. Every event for one account lands
+     * on one partition and stays in order.
      */
-    @Column(name = "aggregate_id", nullable = false,
-            precision = AGGREGATE_ID_PRECISION, scale = AGGREGATE_ID_SCALE)
-    private BigDecimal aggregateId;
+    @Column(name = "aggregate_id", nullable = false, length = AGGREGATE_ID_LENGTH,
+            columnDefinition = "bpchar(11)")
+    private String aggregateId;
 
     /**
-     * Whether the relay has published this row. The value is {@code false} on insert and
-     * {@code true} after a successful publish.
+     * Whether this row is published. The value is {@code false} on insert and {@code true} after a
+     * successful publish.
      */
     @Column(name = "published", nullable = false)
     private boolean published;
 
     /**
-     * Instant this event happened, mirroring the {@code EventEnvelope.occurredAt} field. The relay
-     * orders its batch on this column first.
+     * Instant this event was written, mirroring the {@code EventEnvelope.occurredAt} field. The
+     * relay orders its batch on this column first.
      */
-    @Column(name = "occurred_at", nullable = false)
-    private Instant occurredAt;
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
 
     /**
-     * Instant the relay published this row, and {@code null} until then.
+     * Instant this row was published, and {@code null} until then.
      */
     @Column(name = "published_at")
     private Instant publishedAt;
 
-    /** Creates an empty row for Jakarta Persistence. */
     public OutboxEventEntity() {
     }
 
@@ -129,45 +137,63 @@ public class OutboxEventEntity {
      * Creates one unpublished row.
      *
      * <p>This constructor sets {@code published} to {@code false} and leaves {@code publishedAt}
-     * empty. Every new row describes work the relay still owes, and
-     * {@link #markPublished(Instant)} moves both values together once the publish succeeds.</p>
+     * empty. {@link #markPublished(Instant)} moves both values together once a publish
+     * succeeds.</p>
      *
      * <p>No exception message carries an argument value. A payload, an account identifier and a
      * card number stay out of any log a caller writes from a failure.</p>
      *
-     * @param eventId     identifier of this event, at most {@value #EVENT_ID_LENGTH} characters
+     * @param eventId     identifier of this event, and the value every consumer deduplicates on
      * @param eventType   name of this event, at most {@value #EVENT_TYPE_MAX_LENGTH} characters
      * @param payload     the serialized event document
-     * @param aggregateId the account identifier, a whole number of at most
-     *                    {@value #AGGREGATE_ID_PRECISION} digits
-     * @param occurredAt  the instant this event happened
+     * @param aggregateId the account identifier, exactly {@value #AGGREGATE_ID_LENGTH} decimal
+     *                    digits with a leading zero kept
+     * @param createdAt   the instant this event was written
      * @throws IllegalArgumentException when an argument is absent, when text exceeds its column
-     *                                 width, or when {@code aggregateId} is negative, carries a
-     *                                 fraction, or holds too many digits
+     *                                 width, or when {@code aggregateId} is the wrong width or
+     *                                 holds a character that is not a digit
      */
-    public OutboxEventEntity(String eventId, String eventType, String payload,
-            BigDecimal aggregateId, Instant occurredAt) {
-        this.eventId = requireWithin(eventId, "eventId", EVENT_ID_LENGTH);
+    public OutboxEventEntity(UUID eventId, String eventType, String payload,
+            String aggregateId, Instant createdAt) {
+        this.eventId = requireEventId(eventId);
         this.eventType = requireWithin(eventType, "eventType", EVENT_TYPE_MAX_LENGTH);
         this.payload = requirePresent(payload, "payload");
         this.aggregateId = requireAccountIdentifier(aggregateId);
-        this.occurredAt = requireInstant(occurredAt, "occurredAt");
+        this.createdAt = requireInstant(createdAt, "createdAt");
         this.published = false;
         this.publishedAt = null;
+        this.nextAttemptAt = createdAt;
     }
 
     /**
-     * Records a successful publish.
+     * Records that the relay published this row, moving it to its terminal successful state.
      *
-     * <p>This method sets {@code published} to {@code true} and {@code publishedAt} to the supplied
-     * instant in one call. The flag and the timestamp always agree.</p>
+     * <p>Three values move together, and they have to: {@code published}, {@code relay_state} and
+     * {@code published_at}. Two check constraints in
+     * {@code src/main/resources/db/migration/V1__schema.sql} tie them, so a flush that set only the
+     * boolean would be refused by the database rather than quietly leave a published row looking
+     * pending. The claim is released, because a published row needs none.
      *
-     * @param publishedAt the instant the publish completed
-     * @throws IllegalArgumentException when {@code publishedAt} is absent
+     * <p>A second call on an already published row is ignored, so a relay that publishes and then
+     * fails before its own transaction commits does not corrupt the row on the retry that follows.
+     *
+     * @param publishedAt when the publish succeeded
+     * @throws NullPointerException  if {@code publishedAt} is null
+     * @throws IllegalStateException if this row was abandoned, which is the other terminal state
      */
     public void markPublished(Instant publishedAt) {
-        this.publishedAt = requireInstant(publishedAt, "publishedAt");
+        requireInstant(publishedAt, "publishedAt");
+        if (this.relayState == RelayState.ABANDONED) {
+            throw new IllegalStateException("an ABANDONED row cannot be marked published");
+        }
+        if (this.published) {
+            return;
+        }
         this.published = true;
+        this.relayState = RelayState.PUBLISHED;
+        this.publishedAt = publishedAt;
+        this.claimedBy = null;
+        this.claimedAt = null;
     }
 
     /**
@@ -175,25 +201,20 @@ public class OutboxEventEntity {
      *
      * @return the value of {@code event_id}
      */
-    public String getEventId() {
+    public UUID getEventId() {
         return eventId;
     }
 
     /**
      * Sets the identifier of this event.
      *
-     * @param eventId identifier of this event, at most {@value #EVENT_ID_LENGTH} characters
+     * @param eventId identifier of this event, and the value every consumer deduplicates on
      * @throws IllegalArgumentException when the argument is absent or exceeds the column width
      */
-    public void setEventId(String eventId) {
-        this.eventId = requireWithin(eventId, "eventId", EVENT_ID_LENGTH);
+    public void setEventId(UUID eventId) {
+        this.eventId = requireEventId(eventId);
     }
 
-    /**
-     * Returns the name of this event.
-     *
-     * @return the value of {@code event_type}
-     */
     public String getEventType() {
         return eventType;
     }
@@ -208,11 +229,6 @@ public class OutboxEventEntity {
         this.eventType = requireWithin(eventType, "eventType", EVENT_TYPE_MAX_LENGTH);
     }
 
-    /**
-     * Returns the serialized event document.
-     *
-     * @return the value of {@code payload}
-     */
     public String getPayload() {
         return payload;
     }
@@ -232,75 +248,47 @@ public class OutboxEventEntity {
      *
      * @return the value of {@code aggregate_id}
      */
-    public BigDecimal getAggregateId() {
+    public String getAggregateId() {
         return aggregateId;
     }
 
     /**
      * Sets the account this event belongs to.
      *
-     * @param aggregateId the account identifier, a whole number of at most
-     *                    {@value #AGGREGATE_ID_PRECISION} digits
-     * @throws IllegalArgumentException when the argument is absent, negative, carries a fraction,
-     *                                 or holds too many digits
+     * @param aggregateId the account identifier, exactly {@value #AGGREGATE_ID_LENGTH} decimal
+     *                    digits with a leading zero kept
+     * @throws IllegalArgumentException when the argument is absent or is not
+     *                                 {@value #AGGREGATE_ID_LENGTH} decimal digits
      */
-    public void setAggregateId(BigDecimal aggregateId) {
+    public void setAggregateId(String aggregateId) {
         this.aggregateId = requireAccountIdentifier(aggregateId);
     }
 
-    /**
-     * Returns whether the relay has published this row.
-     *
-     * @return the value of {@code published}
-     */
     public boolean isPublished() {
         return published;
     }
 
     /**
-     * Sets whether the relay has published this row.
+     * Returns the instant this event was written.
      *
-     * @param published {@code true} once the publish succeeds
+     * @return the value of {@code created_at}
      */
-    public void setPublished(boolean published) {
-        this.published = published;
+    public Instant getCreatedAt() {
+        return createdAt;
     }
 
     /**
-     * Returns the instant this event happened.
+     * Sets the instant this event was written.
      *
-     * @return the value of {@code occurred_at}
-     */
-    public Instant getOccurredAt() {
-        return occurredAt;
-    }
-
-    /**
-     * Sets the instant this event happened.
-     *
-     * @param occurredAt the instant this event happened
+     * @param createdAt the instant this event was written
      * @throws IllegalArgumentException when the argument is absent
      */
-    public void setOccurredAt(Instant occurredAt) {
-        this.occurredAt = requireInstant(occurredAt, "occurredAt");
+    public void setCreatedAt(Instant createdAt) {
+        this.createdAt = requireInstant(createdAt, "createdAt");
     }
 
-    /**
-     * Returns the instant the relay published this row.
-     *
-     * @return the value of {@code published_at}, or {@code null} while the row waits
-     */
     public Instant getPublishedAt() {
         return publishedAt;
-    }
-
-    /**
-     * Sets the instant the relay published this row.
-     *
-     * @param publishedAt the instant the publish completed, or {@code null} while the row waits
-     */
-    public void setPublishedAt(Instant publishedAt) {
-        this.publishedAt = publishedAt;
     }
 
     /**
@@ -335,22 +323,27 @@ public class OutboxEventEntity {
     }
 
     /**
-     * Describes this row for a log line.
+     * Describes this row by its routing and state columns.
      *
-     * <p>The payload stays out of the result. No masked card number, monetary amount or other
-     * document field reaches the log.</p>
+     * <p>A rendering reaches a log line, an exception message or a debugger view without a caller
+     * intending it. The payload, the account identifier and both timestamps therefore stay out of
+     * the text. The event identifier locates the row, and it names no account and no person.</p>
      *
-     * @return the routing and state columns of this row
+     * <p>The aggregate identifier is an account identifier, so it appears as
+     * {@link EventEnvelope#WITHHELD} rather than as its value. That marker is the platform-wide
+     * redaction marker. The event identifier, the event type and the two publication columns stay,
+     * because a reader tracing one row through the relay needs them.</p>
+     *
+     * @return the routing and state columns of this row, with the aggregate identifier withheld
      */
     @Override
     public String toString() {
         return "OutboxEventEntity{eventId=" + eventId
                 + ", eventType=" + eventType
-                + ", aggregateId=" + aggregateId
+                + ", aggregateId=" + EventEnvelope.WITHHELD
                 + ", published=" + published
-                + ", occurredAt=" + occurredAt
-                + ", publishedAt=" + publishedAt
-                + "}";
+                + ", createdAt=" + createdAt
+                + ", publishedAt=" + publishedAt + "}";
     }
 
     /**
@@ -387,27 +380,37 @@ public class OutboxEventEntity {
     }
 
     /**
-     * Returns an account identifier that fits {@code NUMERIC(11,0)}.
+     * Returns an event identifier that is present.
      *
      * @param value the identifier to check
      * @return the supplied identifier
-     * @throws IllegalArgumentException when the identifier is absent, negative, carries a
-     *                                 fraction, or holds too many digits
+     * @throws IllegalArgumentException when the identifier is absent
      */
-    private static BigDecimal requireAccountIdentifier(BigDecimal value) {
+    private static UUID requireEventId(UUID value) {
+        if (value == null) {
+            throw new IllegalArgumentException("eventId is required");
+        }
+        return value;
+    }
+
+    /**
+     * Returns an account identifier that fits {@code CHAR(11)}.
+     *
+     * <p>The check is the pattern rather than a numeric range, because the column stores text and
+     * a leading zero belongs to the value.
+     *
+     * @param value the identifier to check
+     * @return the supplied identifier
+     * @throws IllegalArgumentException when the identifier is absent or is not
+     *                                 {@value #AGGREGATE_ID_LENGTH} decimal digits
+     */
+    private static String requireAccountIdentifier(String value) {
         if (value == null) {
             throw new IllegalArgumentException("aggregateId is required");
         }
-        if (value.scale() != AGGREGATE_ID_SCALE) {
-            throw new IllegalArgumentException("aggregateId holds scale " + AGGREGATE_ID_SCALE
-                    + ", received scale " + value.scale());
-        }
-        if (value.signum() < 0) {
-            throw new IllegalArgumentException("aggregateId holds no negative value");
-        }
-        if (value.precision() > AGGREGATE_ID_PRECISION) {
-            throw new IllegalArgumentException("aggregateId holds at most " + AGGREGATE_ID_PRECISION
-                    + " digits, received " + value.precision());
+        if (!AGGREGATE_ID_PATTERN.matcher(value).matches()) {
+            throw new IllegalArgumentException("aggregateId holds " + AGGREGATE_ID_LENGTH
+                    + " decimal digits, received a value of " + value.length() + " characters");
         }
         return value;
     }
@@ -425,5 +428,238 @@ public class OutboxEventEntity {
             throw new IllegalArgumentException(field + " is required");
         }
         return value;
+    }
+
+    // ------------------------------------------------------------------------------------
+    // Relay state. ADDITIVE: the CardDemo source has no relay and therefore no lease. Its one
+    // asynchronous handoff, the transient data queue write at app/cbl/CORPT00C.cbl:L517, is
+    // picked up by a single scheduled job, so nothing there can claim a row twice or give up on
+    // one. The enum, the four constants, the seven columns and the three operations below are
+    // one concern and are kept together rather than scattered through the class.
+    //
+    // Two failures are what these columns exist to prevent. Without a claim, two relay instances
+    // read the same unpublished row and publish the same event twice, which a consumer then has
+    // to deduplicate. Without an attempt count and a next-attempt time, one undeliverable row is
+    // retried forever and every row behind it waits.
+    // ------------------------------------------------------------------------------------
+
+    /**
+     * How one row stands with the relay.
+     *
+     * <p>{@link #PENDING} is awaiting a first or a further attempt, {@link #CLAIMED} is held by
+     * one relay instance, and {@link #PUBLISHED} and {@link #ABANDONED} are terminal. The names
+     * are stored as text in {@code relay_state VARCHAR(16)}, which a check constraint in
+     * {@code src/main/resources/db/migration/V1__schema.sql} restricts to exactly these four.
+     */
+    public enum RelayState {
+
+        /** Written and awaiting an attempt. Every new row starts here. */
+        PENDING,
+
+        /** Held by the relay instance named in {@code claimed_by}. */
+        CLAIMED,
+
+        /** Published. Terminal, and the only state in which {@code published} is true. */
+        PUBLISHED,
+
+        /** Given up on after {@value #MAX_DELIVERY_ATTEMPTS} attempts. Terminal. */
+        ABANDONED
+    }
+
+    /**
+     * How many attempts a row takes before the relay abandons it.
+     *
+     * <p>The ceiling lives here and not in a check constraint on purpose: abandoning a row is a
+     * decision the relay records, and a constraint would instead turn the attempt that crosses
+     * the ceiling into a failed statement.
+     */
+    public static final int MAX_DELIVERY_ATTEMPTS = 10;
+
+    /**
+     * Widest value {@code last_error} holds, from {@code last_error VARCHAR(500)} in
+     * {@code src/main/resources/db/migration/V1__schema.sql}. The column is bounded so that a
+     * stack trace cannot be stored in it by accident, and a longer reason is truncated rather
+     * than refused: losing the tail of a diagnostic is better than losing the row.
+     */
+    public static final int LAST_ERROR_MAX_LENGTH = 500;
+
+    /** Widest value {@code claimed_by} holds, from {@code claimed_by VARCHAR(64)}. */
+    public static final int CLAIMED_BY_MAX_LENGTH = 64;
+
+    /** Widest value {@code relay_state} holds, from {@code relay_state VARCHAR(16)}. */
+    public static final int RELAY_STATE_MAX_LENGTH = 16;
+
+    /** Where this row stands with the relay. Never null. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "relay_state", nullable = false, length = RELAY_STATE_MAX_LENGTH)
+    private RelayState relayState = RelayState.PENDING;
+
+    /** How many publish attempts this row has taken. Zero until the first attempt. */
+    @Column(name = "attempt_count", nullable = false)
+    private int attemptCount;
+
+    /** When the relay may next attempt this row. Equal to the creation time for a new row. */
+    @Column(name = "next_attempt_at", nullable = false)
+    private Instant nextAttemptAt;
+
+    /** When the last attempt ran, or null before the first. */
+    @Column(name = "last_attempt_at")
+    private Instant lastAttemptAt;
+
+    /** A short, redacted reason for the last failure. Never a payload and never an event value. */
+    @Column(name = "last_error", length = LAST_ERROR_MAX_LENGTH)
+    private String lastError;
+
+    /** Which relay instance holds the claim, or null when none does. */
+    @Column(name = "claimed_by", length = CLAIMED_BY_MAX_LENGTH)
+    private String claimedBy;
+
+    /** When the claim was taken, or null when no claim is held. */
+    @Column(name = "claimed_at")
+    private Instant claimedAt;
+
+    /**
+     * Returns where this row stands with the relay.
+     *
+     * @return the relay state, never null
+     */
+    public RelayState getRelayState() {
+        return relayState;
+    }
+
+    /**
+     * Returns how many publish attempts this row has taken.
+     *
+     * @return the attempt count, zero before the first attempt
+     */
+    public int getAttemptCount() {
+        return attemptCount;
+    }
+
+    /**
+     * Returns when the relay may next attempt this row.
+     *
+     * @return the due time, never null
+     */
+    public Instant getNextAttemptAt() {
+        return nextAttemptAt;
+    }
+
+    /**
+     * Returns when the last attempt ran.
+     *
+     * @return the time of the last attempt, or null before the first
+     */
+    public Instant getLastAttemptAt() {
+        return lastAttemptAt;
+    }
+
+    /**
+     * Returns the short reason the last attempt failed.
+     *
+     * @return a redacted reason, or null when no attempt has failed
+     */
+    public String getLastError() {
+        return lastError;
+    }
+
+    /**
+     * Returns which relay instance holds the claim.
+     *
+     * @return the claiming instance, or null when no claim is held
+     */
+    public String getClaimedBy() {
+        return claimedBy;
+    }
+
+    /**
+     * Returns when the claim was taken.
+     *
+     * @return the claim time, or null when no claim is held
+     */
+    public Instant getClaimedAt() {
+        return claimedAt;
+    }
+
+    /**
+     * Reports whether this row is in a terminal state.
+     *
+     * @return true once the row is published or abandoned, after which the relay leaves it alone
+     */
+    public boolean isTerminal() {
+        return relayState == RelayState.PUBLISHED || relayState == RelayState.ABANDONED;
+    }
+
+    /**
+     * Takes the claim for one relay instance.
+     *
+     * <p>Selecting the row is what excludes a competing instance, through
+     * {@code FOR UPDATE SKIP LOCKED} in the repository's claim query; this method records who won.
+     * A row already in a terminal state is refused rather than silently re-claimed, because a
+     * second publish of a published row is the duplicate this machinery exists to prevent.
+     *
+     * @param relayId the claiming instance, not blank and at most
+     *                {@value #CLAIMED_BY_MAX_LENGTH} characters
+     * @param at      when the claim was taken
+     * @throws NullPointerException     if either argument is null
+     * @throws IllegalArgumentException if {@code relayId} is blank or too long
+     * @throws IllegalStateException    if this row is already in a terminal state
+     */
+    public void claim(String relayId, Instant at) {
+        Objects.requireNonNull(relayId, "relayId");
+        Objects.requireNonNull(at, "at");
+        if (relayId.isBlank()) {
+            throw new IllegalArgumentException("relayId is blank");
+        }
+        if (relayId.length() > CLAIMED_BY_MAX_LENGTH) {
+            throw new IllegalArgumentException("relayId is " + relayId.length()
+                    + " characters, over the " + CLAIMED_BY_MAX_LENGTH + " its column holds");
+        }
+        if (isTerminal()) {
+            throw new IllegalStateException("a " + relayState + " row cannot be claimed");
+        }
+        this.claimedBy = relayId;
+        this.claimedAt = at;
+        this.relayState = RelayState.CLAIMED;
+    }
+
+    /**
+     * Records one failed attempt and either schedules a retry or abandons the row.
+     *
+     * <p>The attempt count rises by one. Below {@value #MAX_DELIVERY_ATTEMPTS} the row returns to
+     * {@link RelayState#PENDING} and becomes due again at {@code retryAt}; at the ceiling it moves
+     * to {@link RelayState#ABANDONED} and the relay leaves it alone. Either way the claim is
+     * released, so a relay instance that dies mid-attempt does not strand the row.
+     *
+     * <p>A reason longer than {@value #LAST_ERROR_MAX_LENGTH} characters is truncated rather than
+     * refused. The caller is responsible for passing a reason that names a failure and quotes no
+     * event value, which is why this method neither reads nor writes the payload.
+     *
+     * @param reason  a short, redacted reason, or null when none is available
+     * @param at      when the attempt ran
+     * @param retryAt when the row becomes due again, ignored once the row is abandoned
+     * @throws NullPointerException  if {@code at} or {@code retryAt} is null
+     * @throws IllegalStateException if this row is already in a terminal state
+     */
+    public void recordFailure(String reason, Instant at, Instant retryAt) {
+        Objects.requireNonNull(at, "at");
+        Objects.requireNonNull(retryAt, "retryAt");
+        if (isTerminal()) {
+            throw new IllegalStateException("a " + relayState + " row takes no further attempt");
+        }
+        this.attemptCount = this.attemptCount + 1;
+        this.lastAttemptAt = at;
+        this.lastError = reason == null || reason.length() <= LAST_ERROR_MAX_LENGTH
+                ? reason
+                : reason.substring(0, LAST_ERROR_MAX_LENGTH);
+        this.claimedBy = null;
+        this.claimedAt = null;
+        if (this.attemptCount >= MAX_DELIVERY_ATTEMPTS) {
+            this.relayState = RelayState.ABANDONED;
+            this.nextAttemptAt = at;
+        } else {
+            this.relayState = RelayState.PENDING;
+            this.nextAttemptAt = retryAt;
+        }
     }
 }

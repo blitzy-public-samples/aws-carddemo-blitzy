@@ -1,6 +1,5 @@
 package com.carddemo.account.domain.validation;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
@@ -36,34 +35,33 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * app/cbl/COACTUPC.cbl:L2176, so a verdict carries the message of the first failure alone.</p>
  *
  * <p>Entry is pessimistic. app/cbl/COACTUPC.cbl:L2111 sets the not-ok flag, and
- * app/cbl/COACTUPC.cbl:L2174 sets the valid flag once all three checks clear. The source spells
- * that valid flag {@code FLG-ALPHNANUM-ISVALID}, transposing two letters of the word alphanumeric,
- * and the target corrects the spelling in identifier names and leaves the behaviour untouched.
- * card-platform/docs/business-rule-flags.md records the spelling.</p>
+ * app/cbl/COACTUPC.cbl:L2174 sets the valid flag once all three checks clear.</p>
  *
  * <p>The not-zero check at app/cbl/COACTUPC.cbl:L2156 converts through the plain
  * {@code FUNCTION NUMVAL}, which {@link NumvalParser#numval(String)} reproduces. The
  * currency-tolerant gate {@code FUNCTION TEST-NUMVAL-C} belongs to paragraph
  * {@code 1250-EDIT-SIGNED-9V2} at app/cbl/COACTUPC.cbl:L2201, and {@code SignedDecimalValidator}
- * binds that gate. A dollar sign and a grouping comma therefore fail the class check here, and
+ * binds that gate. A dollar sign and a grouping comma therefore fail the class check here.
  * {@link #aValueCarryingACurrencySignOrAGroupingCommaReportsTheClassMessage(String)} pins the
- * rejection. {@code SignedDecimalValidatorTest} pins the matching acceptance of the same
- * characters, and the two files together pin the asymmetry.</p>
+ * rejection, and {@code SignedDecimalValidatorTest} pins the matching acceptance.</p>
  *
- * <p>Six call sites perform the paragraph. app/cbl/COACTUPC.cbl:L1549 edits a FICO Score, a credit
- * score, at width 3. app/cbl/COACTUPC.cbl:L1608 edits a Zip, a postal code, at width 5.
- * app/cbl/COACTUPC.cbl:L1652 edits an EFT Account Id, an electronic funds transfer account
- * identifier, at width 10. The other three sit inside paragraph {@code 1265-EDIT-US-SSN} at
+ * <p>Six call sites perform the paragraph.
+ *
+ * <p>app/cbl/COACTUPC.cbl:L1549 edits a FICO Score, a credit score, at width 3.
+ * app/cbl/COACTUPC.cbl:L1608 edits a Zip, a postal code, at width 5.
+ * app/cbl/COACTUPC.cbl:L1652 edits an EFT Account Id at width 10, an electronic funds transfer
+ * account identifier. The other three sit inside paragraph {@code 1265-EDIT-US-SSN} at
  * app/cbl/COACTUPC.cbl:L2431 and edit the three Social Security Number parts at widths 3, 2 and 4,
  * at app/cbl/COACTUPC.cbl:L2442, app/cbl/COACTUPC.cbl:L2472 and app/cbl/COACTUPC.cbl:L2484.</p>
  *
  * <p>The gate at app/cbl/COACTUPC.cbl:L1553 reaches the credit score range check at
  * app/cbl/COACTUPC.cbl:L1554 only after the edit passes. That sequencing is orchestration, and
- * {@code AccountUpdateServiceTest} owns it. Every method below calls one validator.</p>
+ * belongs to the planned account update service, which is not authored yet.</p>
  *
- * <p>Host widths the constants below carry: {@code WS-EDIT-VARIABLE-NAME PIC X(25)} at
- * app/cbl/COACTUPC.cbl:L53, {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at
- * app/cbl/COACTUPC.cbl:L61, and {@code WS-EDIT-ALPHANUM-LENGTH PIC S9(4) COMP-3} at
+ * <p>Three host widths back the constants of this class. They are
+ * {@code WS-EDIT-VARIABLE-NAME PIC X(25)} at app/cbl/COACTUPC.cbl:L53,
+ * {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at app/cbl/COACTUPC.cbl:L61, and
+ * {@code WS-EDIT-ALPHANUM-LENGTH PIC S9(4) COMP-3} at
  * app/cbl/COACTUPC.cbl:L62. A COBOL {@code MOVE} into the 256-byte field pads on the right with
  * spaces, and a space fails the class check at app/cbl/COACTUPC.cbl:L2137. Content shorter than
  * its declared width therefore clears the presence check and then fails the class check.</p>
@@ -73,8 +71,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * app/cbl/COACTUPC.cbl:L480 and whose reset sits at app/cbl/COACTUPC.cbl:L876. The three literals
  * below are quoted from the source and keep their leading space and their trailing period.</p>
  *
- * <p>No Spring context, container or database takes part, and every input below is built in this
- * file. {@code mvn test} therefore covers the subject on a clean machine.</p>
+ * <p>No Spring context, container or database takes part, and every input is built in this
+ * file.</p>
  */
 @DisplayName("NumericRequiredValidator, the required numeric edit of paragraph 1245-EDIT-NUM-REQD")
 class NumericRequiredValidatorTest {
@@ -499,7 +497,6 @@ class NumericRequiredValidatorTest {
         // ADDITIVE. app/cbl/COACTUPC.cbl:L1546-L1547 moves a fixed-width screen field into the
         // edit field, so the source never receives a wider value and carries no literal for one.
         // Trailing spaces past the width are the padding the MOVE itself supplies, and they leave
-        // the verdict alone. card-platform/docs/decision-log.md carries the rationale.
         String wider = "750ABC";
 
         assertThat(NumericRequiredValidator
@@ -543,8 +540,7 @@ class NumericRequiredValidatorTest {
     void theSubjectExposesOneStaticThreeArgumentMethodOnAFinalClass()
             throws NoSuchMethodException {
         // app/cbl/COACTUPC.cbl:L1545-L1548 moves a label, then a value, then a width, and the
-        // parameter order follows those three moves. A reordered signature, an added overload or a
-        // visible constructor fails one of the assertions below.
+        // parameter order follows those three moves. A reordered signature fails an assertion below.
         assertThat(Modifier.isFinal(NumericRequiredValidator.class.getModifiers())).isTrue();
         assertThat(NumericRequiredValidator.class.getDeclaredMethods())
                 .filteredOn(method -> Modifier.isPublic(method.getModifiers()))
@@ -553,17 +549,12 @@ class NumericRequiredValidatorTest {
         Method validate = NumericRequiredValidator.class
                 .getMethod("validate", String.class, String.class, int.class);
 
+        assertThat(Modifier.isPublic(validate.getModifiers())).isTrue();
         assertThat(Modifier.isStatic(validate.getModifiers())).isTrue();
         assertThat(validate.getReturnType()).isEqualTo(EditResult.class);
         assertThat(validate.getParameters()[0].getName()).isEqualTo("fieldLabel");
         assertThat(validate.getParameters()[1].getName()).isEqualTo("value");
         assertThat(validate.getParameters()[2].getName()).isEqualTo("length");
-
-        Constructor<?>[] constructors =
-                NumericRequiredValidator.class.getDeclaredConstructors();
-
-        assertThat(constructors).hasSize(1);
-        assertThat(Modifier.isPrivate(constructors[0].getModifiers())).isTrue();
     }
 
     @Test

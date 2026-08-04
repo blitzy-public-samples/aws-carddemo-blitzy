@@ -27,10 +27,8 @@ import java.util.regex.Pattern;
  * accepts {@link #EVENT_TYPE} and rejects every other value. The notification service reads that
  * topic in the {@code notification-fraud} consumer group.
  *
- * <p>The fraud detection service consumes the authorization event and publishes this one. That
- * service never sits in the authorization response path and calls no other consumer. For the path
- * this event travels from publish to consume, read {@code card-platform/docs/event-flow.md}; for
- * the reasoning behind the choices above, read {@code card-platform/docs/decision-log.md}.
+ * <p>The fraud detection service reads the authorization event and publishes this one. That
+ * service never sits in the authorization response path and calls no other consumer.
  *
  * @param eventId       the idempotency key, as {@link EventEnvelope} defines it
  * @param eventType     the routing discriminator, always {@link #EVENT_TYPE}
@@ -84,9 +82,11 @@ public record FraudCleared(UUID eventId, String eventType, int schemaVersion, In
      * <p>The five envelope components pass through the checks of {@link EventEnvelope}, so this
      * record repeats none of them. Beyond those, {@code eventType} must equal {@link #EVENT_TYPE},
      * {@code transactionId} must hold {@link #TRANSACTION_ID_LENGTH} characters, {@code accountId}
-     * must match {@link #ACCOUNT_ID_PATTERN}, and {@code assessedAt} must be present. Every
-     * failure message names the component that failed, and a message about an identifier reports
-     * its length rather than its value.
+     * must match {@link #ACCOUNT_ID_PATTERN} and must equal {@code aggregateId}, and
+     * {@code assessedAt} must be present. Holding the two account identifiers equal keeps the Kafka
+     * message key and the payload naming one account, as {@code TransactionDeclined} and
+     * {@code TransactionPosted} do. Every failure message names the component that failed, and a
+     * message about an identifier reports its length rather than its value.
      *
      * <p>This constructor changes no value it accepts. Every component therefore survives a
      * serialize and deserialize round trip unchanged, down to the fractional digits of the two
@@ -98,7 +98,8 @@ public record FraudCleared(UUID eventId, String eventType, int schemaVersion, In
      *                                  {@code schemaVersion} is not
      *                                  {@link EventEnvelope#SCHEMA_VERSION}, when
      *                                  {@code aggregateId} or {@code accountId} is not eleven
-     *                                  decimal digits, or when {@code transactionId} does not hold
+     *                                  decimal digits, when the two account identifiers differ, or
+     *                                  when {@code transactionId} does not hold
      *                                  {@link #TRANSACTION_ID_LENGTH} characters
      */
     public FraudCleared {
@@ -110,6 +111,10 @@ public record FraudCleared(UUID eventId, String eventType, int schemaVersion, In
         }
         requireTransactionId(transactionId);
         requireAccountId(accountId);
+        if (!accountId.equals(aggregateId)) {
+            throw new IllegalArgumentException("accountId must equal aggregateId, which is the "
+                    + "Kafka message key, and the two supplied values differ");
+        }
         Objects.requireNonNull(assessedAt, "assessedAt must be present");
     }
 
@@ -214,5 +219,22 @@ public record FraudCleared(UUID eventId, String eventType, int schemaVersion, In
                             : "holds " + accountId.length() + " characters"));
         }
         return accountId;
+    }
+    /**
+     * Renders the technical identifiers and withholds the account identifier.
+     *
+     * <p>This override replaces the representation the compiler generates for a record. That
+     * generated form prints the account identifier twice, once as {@code aggregateId} and once as
+     * {@code accountId}.
+     *
+     * @return the identifiers of this event with the account identifier withheld, never
+     *         {@code null}
+     */
+    @Override
+    public String toString() {
+        return "FraudCleared[eventId=" + eventId + ", eventType=" + eventType + ", schemaVersion="
+                + schemaVersion + ", occurredAt=" + occurredAt + ", aggregateId="
+                + EventEnvelope.WITHHELD + ", transactionId=" + transactionId + ", accountId="
+                + EventEnvelope.WITHHELD + ", assessedAt=" + assessedAt + "]";
     }
 }
