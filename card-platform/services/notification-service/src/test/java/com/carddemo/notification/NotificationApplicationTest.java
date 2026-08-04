@@ -7,6 +7,7 @@ import com.carddemo.notification.domain.NotificationRenderer;
 import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import com.carddemo.notification.domain.PlainTextRenderer;
 import com.carddemo.notification.repository.NotificationLogRepository;
+import com.carddemo.notification.repository.ProcessedEventRepository;
 import com.carddemo.notification.repository.StatementTransactionRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -28,6 +29,7 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.FilterType;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -95,9 +97,11 @@ class NotificationApplicationTest {
      * Starts a context over the production component scan with a meter registry in place of the
      * auto-configured one.
      *
-     * <p>No auto-configuration loads here, so Spring Data builds neither repository. Each one
-     * arrives as a mock instead: the read model behind {@code api/NotificationHistoryController},
-     * and the delivery-attempt table behind {@code domain/NotificationService}.</p>
+     * <p>No auto-configuration loads here, so Spring Data builds no repository and Spring Boot
+     * supplies no transaction runner. Each one arrives as a mock instead: the read model behind
+     * {@code api/NotificationHistoryController}, the delivery-attempt table behind
+     * {@code domain/NotificationService}, and the marker table and the transaction runner behind
+     * {@code messaging/TransactionPostedConsumer}.</p>
      */
     private static final ApplicationContextRunner RUNNER = new ApplicationContextRunner()
             .withInitializer(new ConfigDataApplicationContextInitializer())
@@ -107,6 +111,9 @@ class NotificationApplicationTest {
                     () -> Mockito.mock(StatementTransactionRepository.class))
             .withBean(NotificationLogRepository.class,
                     () -> Mockito.mock(NotificationLogRepository.class))
+            .withBean(ProcessedEventRepository.class,
+                    () -> Mockito.mock(ProcessedEventRepository.class))
+            .withBean(TransactionTemplate.class, () -> Mockito.mock(TransactionTemplate.class))
             .withUserConfiguration(ProductionComponentScan.class);
 
     /**

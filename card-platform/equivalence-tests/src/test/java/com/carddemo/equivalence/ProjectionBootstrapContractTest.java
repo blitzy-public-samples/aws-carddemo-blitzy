@@ -843,10 +843,13 @@ class ProjectionBootstrapContractTest {
          * <p>Ordering within an account is a property of the message key and the partition, and it
          * is asserted above through the key serializer and the idempotent producer. What each
          * listener adds is the guard: it reads {@code processed_event} before it applies any effect,
-         * it writes the marker beside those effects in the one method annotated
-         * {@code @Transactional}, and it acknowledges the delivery only after that method returns.
-         * A redelivery then finds the marker and writes nothing, and a delivery that fails leaves
-         * the offset uncommitted.</p>
+         * it writes the marker beside those effects in one transactional unit, and it acknowledges
+         * the delivery only after that unit returns. A redelivery then finds the marker and writes
+         * nothing, and a delivery that fails leaves the offset uncommitted.</p>
+         *
+         * <p>A listener declares that unit one of two ways, and both are read here: one method
+         * annotated {@code @Transactional}, or one method a {@code TransactionTemplate} runs. A
+         * listener that declares neither fails this test.</p>
          *
          * <p>Each property is read from the listener source itself, in the same way every other
          * assertion in this class reads shipped text, so no broker, no database and no test ordering
@@ -868,7 +871,7 @@ class ProjectionBootstrapContractTest {
                 String transactionalBody = transactionalBodyOf(code);
 
                 if (transactionalBody.isEmpty()) {
-                    broken.add(name + " declares no transactional method");
+                    broken.add(name + " declares no transactional unit");
                     continue;
                 }
                 int guard = transactionalBody.indexOf("existsById");
@@ -915,18 +918,64 @@ class ProjectionBootstrapContractTest {
         }
 
         /**
-         * Returns the body of the one method annotated {@code @Transactional}.
+         * Returns the body of the one transactional unit a listener declares.
+         *
+         * <p>The method annotated {@code @Transactional} is read first. A listener that annotates
+         * no method opens its transaction through a {@code TransactionTemplate}, and
+         * {@link #transactionTemplateBodyOf(String)} reads the body of the method that template
+         * runs.</p>
          *
          * @param code the listener code, comments removed and literals emptied
          * @return the body from its opening brace to its matching closing brace, or the empty string
-         *         when the annotation or the body is absent
+         *         when the listener declares no such unit
          */
         private String transactionalBodyOf(String code) {
             int annotation = code.indexOf("@Transactional");
-            if (annotation < 0) {
+            if (annotation >= 0) {
+                return bodyFrom(code, code.indexOf('{', annotation));
+            }
+            return transactionTemplateBodyOf(code);
+        }
+
+        /**
+         * Returns the body of the method a {@code TransactionTemplate} runs.
+         *
+         * <p>The call takes the shape {@code transactionTemplate.executeWithoutResult(status ->
+         * applyOneEvent(...))}, so the name inside the lambda names the unit. The declaration of
+         * that name is the one occurrence followed by an opening brace, which the call site is
+         * not.</p>
+         *
+         * @param code the listener code, comments removed and literals emptied
+         * @return the body of the method the template runs, or the empty string when the listener
+         *         runs no template or declares no such method
+         */
+        private String transactionTemplateBodyOf(String code) {
+            Matcher call = Pattern
+                    .compile("transactionTemplate\\s*\\.\\s*execute\\w*\\(\\s*\\w+\\s*->\\s*(\\w+)"
+                            + "\\s*\\(")
+                    .matcher(code);
+            if (!call.find()) {
                 return "";
             }
-            int opening = code.indexOf('{', annotation);
+
+            Matcher declaration = Pattern
+                    .compile("\\b" + Pattern.quote(call.group(1)) + "\\s*\\([^)]*\\)\\s*\\{")
+                    .matcher(code);
+            if (!declaration.find()) {
+                return "";
+            }
+            return bodyFrom(code, code.indexOf('{', declaration.start()));
+        }
+
+        /**
+         * Returns one brace-balanced body.
+         *
+         * @param code    the listener code, comments removed and literals emptied
+         * @param opening the index of the opening brace, or a negative value when there is none
+         * @return the text from that brace to its matching closing brace, or the empty string when
+         *         either brace is absent
+         */
+        private String bodyFrom(String code, int opening) {
             if (opening < 0) {
                 return "";
             }
