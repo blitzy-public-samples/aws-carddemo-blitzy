@@ -109,10 +109,18 @@ spring:
     # serializer takes the account identifier as text, and XREF-ACCT-ID
     # PIC 9(11) at app/cpy/CVACT03Y.cpy:L7 carries eleven digits with leading
     # zeros.
+    #
+    # The value serializer takes text too. The payload column of outbox_event holds a
+    # written event as JSON text, so a relay publishing a row hands the template a
+    # String. com.carddemo.events.serde.JsonSchemaValidatingSerializer writes one of the
+    # registered event records and refuses every other value, so naming it here would
+    # fail every publish with a SerializationException while the service still reported
+    # itself healthy. The schema gate belongs at write time, where a rejected event can
+    # still roll back its own transaction.
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: com.carddemo.events.serde.JsonSchemaValidatingSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
       properties:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5

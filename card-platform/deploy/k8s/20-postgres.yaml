@@ -78,6 +78,17 @@ spec:
           # Transport Layer Security, on. The entry point passes everything after the
           # program name to the server, so these three settings reach postgresql.conf
           # without a configuration file of our own.
+          #
+          # If 31-secret.example.yaml was applied unedited, the server stops here with
+          #
+          #   FATAL: could not load server certificate file "/etc/carddemo/tls/server.crt":
+          #   no start line
+          #
+          # and that message is the placeholder rather than a broken image or a bad mount.
+          # The certificate is read before initdb runs, so it precedes the purpose-written
+          # refusal in the provisioning program below, and an operator sees OpenSSL's
+          # wording instead of ours. Generate the material 31-secret.example.yaml
+          # templates, then apply the Secret again.
           args:
             - postgres
             - -c
@@ -249,25 +260,78 @@ spec:
                 secretKeyRef:
                   name: carddemo-postgres-secret
                   key: CARD_DB_PASSWORD
-          # Both probes run pg_isready, the command
-          # card-platform/docker-compose.yml also runs. pg_isready reports
-          # whether the server accepts connections, and reads the user and the
-          # database from the environment above.
+          # Readiness answers one question: may a service connect and find the six
+          # databases the provisioning program below creates? It asks that question of
+          # the server itself, and of no file.
+          #
+          # Two steps, and each rules out a different way this Pod can look ready while
+          # a service cannot use it.
+          #
+          # The first names the host. pg_isready with no --host reads the local socket,
+          # and the entry point serves that socket from a TEMPORARY server while it runs
+          # the programs in /docker-entrypoint-initdb.d, before the real server binds any
+          # network address. A socket probe therefore passes during provisioning, the
+          # Service publishes an endpoint, and the six services meet
+          # "Connection to postgres:5432 refused" on a Pod that reported itself ready.
+          # --host 127.0.0.1 reaches the network listener alone, so this branch stays
+          # false until the real server is up.
+          #
+          # The second counts the six databases by name, which is the readable form of
+          # "provisioning finished". It reads the catalogue rather than a marker file,
+          # and the reason is that a marker cannot answer this question twice here: the
+          # entry point runs the provisioning program only on an empty data directory, so
+          # a Pod replaced with the claim already populated starts a correctly
+          # provisioned server whose container filesystem is new and carries no marker.
+          # A catalogue read is true on the first start and on every start after it.
+          #
+          # card-platform/docker-compose.yml does use a marker, and the difference is not
+          # inconsistency: it wraps the entry point and runs its provisioning program on
+          # every start, so the file is rewritten every time and the healthcheck can read
+          # it. This path provisions from /docker-entrypoint-initdb.d instead, which the
+          # entry point runs once, so the same file would be written once and missed
+          # forever afterwards.
+          #
+          # It costs one psql connection every period. psql starts no Java virtual
+          # machine, reaches no address outside this Pod, and reads one row.
+          # POSTGRES_INITDB_ARGS asks initdb for scram-sha-256 on the local family too,
+          # so the superuser password is supplied the same way the provisioning program
+          # supplies it.
+          #
+          # The statement arrives on standard input from printf rather than through
+          # --command, which is the same idiom the provisioning program below uses and for
+          # the same reason: psql substitutes :'names' only in input it reads, never in a
+          # --command string, so --command would send the colon to the server and the
+          # probe would fail on a syntax error. Substitution matters because it quotes:
+          # the six names reach the server as one literal rather than as statement text.
+          #
+          # Each branch names what is missing, so kubectl describe pod reports a slow
+          # start and a failed provisioning run differently.
           readinessProbe:
             exec:
               command:
                 - /bin/sh
                 - -c
-                - >-
-                  pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
-                  && test -f /tmp/service-databases-ready
+                - |
+                  pg_isready --host 127.0.0.1 --port 5432 \
+                    --username "${POSTGRES_USER}" --dbname "${POSTGRES_DB}" >/dev/null \
+                    || { echo "the server is not accepting network connections yet"; exit 1; }
+                  found=$(printf %s "
+                      SELECT count(*) FROM pg_database
+                       WHERE datname = ANY(string_to_array(:'names', ','));
+                    " | PGPASSWORD="${POSTGRES_PASSWORD}" psql --no-psqlrc --tuples-only \
+                        --no-align --username "${POSTGRES_USER}" --dbname "${POSTGRES_DB}" \
+                        --set names="${AUTHORIZATION_DB_NAME},${LEDGER_DB_NAME},${FRAUD_DB_NAME},${NOTIFICATION_DB_NAME},${ACCOUNT_DB_NAME},${CARD_DB_NAME}") \
+                    || { echo "the six service databases could not be counted"; exit 1; }
+                  [ "${found}" = 6 ] \
+                    || { echo "provisioning has created ${found} of the six service databases"; exit 1; }
             initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 24
-          # Liveness asks only whether the server still answers. It does not read
-          # the marker: a provisioning failure must withdraw this Pod from its
-          # Service, not restart a server that is running correctly.
+          # Liveness asks only whether the server still answers, over the local socket
+          # this time, and counts nothing: a provisioning failure must withdraw this Pod
+          # from its Service, not restart a server that is running correctly. The
+          # asymmetry with readiness above is the whole point of having two probes.
           livenessProbe:
             exec:
               command:

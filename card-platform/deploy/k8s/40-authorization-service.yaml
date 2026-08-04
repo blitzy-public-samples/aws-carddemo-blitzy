@@ -45,34 +45,45 @@ spec:
           type: RuntimeDefault
       containers:
         - name: authorization-service
-          # Built from services/authorization-service/Dockerfile, and pinned by digest.
+          # Built from card-platform/services/authorization-service/Dockerfile, and named by
+          # an explicit tag. The same reference and the same policy apply to all six service
+          # manifests in this folder.
           #
-          # A tag is a moving name. Two nodes pulling carddemo/authorization-service:1.0.0
-          # a week apart can run different content, and nothing in the cluster notices; a
-          # digest names one image and cannot be repointed. Every other image in this folder
-          # is already pinned this way, and this one is the platform's own build rather than
-          # an upstream one, which makes it the easiest of the three to repoint by accident.
+          # Two kinds of image live in this folder and they are named differently on purpose.
+          # The two upstream images, apache/kafka in 10-kafka.yaml and postgres in
+          # 20-postgres.yaml, are pinned by digest: they are pulled from a registry, so a
+          # digest exists and a rebuilt upstream tag cannot change what runs here. The six
+          # platform images are the platform's own build, produced locally by the command
+          # below and loaded into the cluster, and a locally built image carries no manifest
+          # digest at all — `docker inspect` reports an empty RepoDigests list until the image
+          # is pushed somewhere. A digest reference for these six would therefore name
+          # nothing the node can resolve, which is why an earlier form of this file left the
+          # pods in InvalidImageName rather than running.
           #
-          # The value below is a placeholder, so applying this file unedited fails the pull
-          # with InvalidImageName rather than starting something unidentified. Digest pinning
-          # needs a registry, because a locally built image has no manifest digest until it
-          # is pushed. With a local registry:
+          # Build and load the image before applying this file. The context is the MODULE
+          # directory, which is what the Dockerfile's own header states and what
+          # card-platform/docker-compose.yml builds from; the repository root context fails on
+          # `COPY target/*.jar`, because card-platform/.dockerignore excludes **/target/ from
+          # a root-context build:
           #
-          #   docker run -d -p 5000:5000 --name registry registry:2
-          #   docker build -f services/authorization-service/Dockerfile \
-          #     -t localhost:5000/carddemo/authorization-service:1.0.0 card-platform
-          #   docker push localhost:5000/carddemo/authorization-service:1.0.0
+          #   mvn -f card-platform/pom.xml -pl services/authorization-service -am package
+          #   docker build -f card-platform/services/authorization-service/Dockerfile \
+          #     -t carddemo/authorization-service:1.0.0 \
+          #     card-platform/services/authorization-service
+          #
+          # A cluster that pulls from a registry needs the image pushed there first and the
+          # reference below prefixed with that registry host. That is also where digest
+          # pinning belongs, as a release-time substitution against the registry that holds
+          # the image, performed by whatever publishes it:
+          #
+          #   docker push <registry>/carddemo/authorization-service:1.0.0
           #   digest=$(docker inspect --format '{{index .RepoDigests 0}}' \
-          #     localhost:5000/carddemo/authorization-service:1.0.0)
-          #   sed -i "s| image: carddemo/authorization-service.*| image: ${digest}|" \
+          #     <registry>/carddemo/authorization-service:1.0.0)
+          #   sed -i "s|          image: .*|          image: ${digest}|" \
           #     card-platform/deploy/k8s/40-authorization-service.yaml
-          #
-          # Replacing the placeholder with a bare tag instead will run, and reintroduces
-          # exactly the mutability the pin removes. Say so in a review rather than in a
-          # comment nobody reads.
-          image: carddemo/authorization-service:1.0.0@sha256:REPLACE-WITH-THE-64-HEX-CHARACTER-DIGEST-OF-THE-IMAGE-YOU-PUSHED
-          # A digest reference names immutable content, so a present image is the right
-          # image and pulling it again buys nothing.
+          image: carddemo/authorization-service:1.0.0
+          # The image is built and loaded onto the node rather than pulled, so a present
+          # image is the image to run and a pull attempt would only fail.
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

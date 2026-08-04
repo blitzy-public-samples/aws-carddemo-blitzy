@@ -117,10 +117,26 @@ spring:
         password="${KAFKA_SASL_PASSWORD}";
     # The key serializer below takes the account identifier as text, so
     # XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7 keeps its leading zero.
+    #
+    # The value serializer takes text as well, because text is what this service
+    # publishes. outbox/OutboxWriter.java writes the event as JSON and checks that text
+    # against the document its event type names before the row commits, the payload
+    # column stores that text, and messaging/KafkaEventPublisher.java checks it once
+    # more before the send. The value reaching the template is therefore a String, and
+    # a serializer that takes text carries no validation responsibility here.
+    #
+    # Naming com.carddemo.events.serde.JsonSchemaValidatingSerializer here would be
+    # wrong, and wrong in a way that fails silently to a reader of this file: that
+    # serializer writes one of the registered event records and refuses every other
+    # value, so every publish would raise SerializationException, the outbox would
+    # retry for ever and the service would look healthy throughout. The one
+    # publish-side schema gate of this platform runs at write time inside OutboxWriter,
+    # where a rejected event can still roll back its own transaction.
+    # account-service and card-service carry the same reasoning in their own files.
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: com.carddemo.events.serde.JsonSchemaValidatingSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
       properties:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5

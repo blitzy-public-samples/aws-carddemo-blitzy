@@ -55,9 +55,12 @@ spec:
       containers:
         - name: notification-service
           # Built from card-platform/services/notification-service/Dockerfile, and named
-          # by an explicit tag.
+          # by an explicit tag, as all six platform images in this folder are.
+          # 40-authorization-service.yaml states the whole policy once, including why the
+          # two upstream images are digest-pinned and these six are not.
           #
-          # Build and load the image before applying this file:
+          # Build and load the image before applying this file. The context is the module
+          # directory, the one the Dockerfile header names:
           #
           #   mvn -f card-platform/pom.xml -pl services/notification-service -am package
           #   docker build -f card-platform/services/notification-service/Dockerfile \

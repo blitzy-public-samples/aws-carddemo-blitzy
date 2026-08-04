@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Limit;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Publishes the rows {@link OutboxWriter} stored, in a transaction of its own.
@@ -80,7 +81,18 @@ public class OutboxRelay {
      * <p>A failed send leaves its row unpublished and stops the sweep, so a later event of the same
      * account cannot overtake an earlier one that has not yet reached the broker. The next tick
      * resumes at the row that failed.
+     *
+     * <p>The sweep is one transaction, and it has to be.
+     * {@link OutboxEventRepository#claimPendingBatch} takes a pessimistic write lock on every row it
+     * returns, which is how two relay instances divide the work instead of publishing the same event
+     * twice, and a lock lives only as long as the transaction that took it. Without a transaction here
+     * the claim cannot be made at all: Jakarta Persistence answers a locking query outside one with
+     * {@code TransactionRequiredException}, the scheduler logs it, and the sweep publishes nothing
+     * while looking like it ran. The cost is a database connection held for the length of a broker
+     * round trip, which is the price of the claim and is bounded by
+     * {@code carddemo.outbox.relay.batch-size} rows per sweep.
      */
+    @Transactional
     @Scheduled(fixedDelayString = "${carddemo.outbox.relay.fixed-delay-ms:500}")
     public void publishPendingEvents() {
         List<OutboxEventEntity> pending = outboxEvents.claimPendingBatch(Limit.of(batchSize));
@@ -107,9 +119,9 @@ public class OutboxRelay {
      * Publishes one row, then marks it published.
      *
      * <p>The mark is written only after the send returns, so a row is never marked for a message the
-     * broker did not acknowledge. The write is the repository's own transaction, and this method opens
-     * none of its own: a transaction spanning the send would hold a database connection for the length
-     * of a broker round trip.
+     * broker did not acknowledge. Both happen inside the sweep's transaction, which is the one that
+     * holds the row lock: releasing it before the mark is written would let a second relay instance
+     * claim a row this one has already sent.
      *
      * <p>A send that succeeds while the mark fails leaves the row unpublished, and the next sweep
      * sends it again. That is the duplicate every consumer's processed-event table absorbs, and it is

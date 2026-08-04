@@ -1,7 +1,31 @@
 # The other manifests in this folder declare their objects in this namespace.
-# Apply in filename order: kubectl apply -f card-platform/deploy/k8s/
-# Short-name Domain Name System (DNS) lookups for kafka and postgres
-# depend on a shared namespace.
+# Short-name Domain Name System (DNS) lookups for kafka and postgres depend on a
+# shared namespace.
+#
+# APPLY ORDER. Three steps, because two of them cannot be folded into one command.
+#
+#   1. This file, so the namespace the rest declare exists:
+#        kubectl apply -f card-platform/deploy/k8s/00-namespace.yaml
+#
+#   2. The ten credential Secrets, from a filled-in copy of 31-secret.example.yaml
+#      kept OUTSIDE this folder, or created with kubectl create secret. That file
+#      carries both routes in full:
+#        kubectl apply -f ~/carddemo-secrets.yaml
+#      This step comes before the workloads because 10-kafka.yaml and 20-postgres.yaml
+#      read Secrets on start-up. A Pod that starts first is not broken — the kubelet
+#      retries until the Secret appears — but it reports CreateContainerConfigError
+#      until then, which reads like a defect and is only an ordering artefact.
+#
+#   3. Everything else, in filename order, with the template excluded:
+#        ls card-platform/deploy/k8s/*.yaml \
+#          | grep -v '31-secret.example.yaml' \
+#          | xargs -n1 kubectl apply -f
+#
+# Why step 3 excludes it: kubectl apply -f card-platform/deploy/k8s/ applies every file
+# in the folder, this template among them, so it would overwrite the real Secrets from
+# step 2 with the placeholders the template publishes. Every workload then refuses to
+# start rather than running on a published credential, which is the guard working and an
+# hour lost to reading logs. The exclusion is one grep.
 ---
 apiVersion: v1
 kind: Namespace

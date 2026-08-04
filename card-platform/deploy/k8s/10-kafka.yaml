@@ -163,6 +163,35 @@ spec:
                 secretKeyRef:
                   name: carddemo-kafka-secret
                   key: KAFKA_SSL_KEYSTORE_PASSWORD
+            # What the broker itself trusts, and it needs this even though it asks no
+            # client for a certificate.
+            #
+            # Apache Kafka validates every encrypted listener as it configures it: it
+            # builds a server SSLEngine and a client SSLEngine from these same settings and
+            # handshakes one against the other. The client half needs a trust anchor for
+            # the certificate the server half presents. With no truststore named, that half
+            # falls back to the Java runtime's own authority list, which cannot contain the
+            # demo authority 31-secret.example.yaml tells the operator to generate, so the
+            # handshake fails and the broker exits during start-up with
+            # "PKIX path building failed" before it opens a port. Naming the truststore is
+            # what turns an encrypted listener from a fatal configuration into a working
+            # one; it grants no client anything, because KAFKA_SSL_CLIENT_AUTH above is
+            # none.
+            #
+            # The file is the same truststore.p12 every service reads, from
+            # carddemo-tls-secret, because one authority copied twice is one authority. It
+            # mounts at a second path rather than beside the keystore: two Secrets cannot
+            # supply one directory, and the keystore is the broker's own material while
+            # this is the platform's.
+            - name: KAFKA_SSL_TRUSTSTORE_LOCATION
+              value: /etc/carddemo/trust/truststore.p12
+            - name: KAFKA_SSL_TRUSTSTORE_TYPE
+              value: PKCS12
+            - name: KAFKA_SSL_TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-tls-secret
+                  key: KAFKA_SSL_TRUSTSTORE_PASSWORD
             # The seven identities. A username is not a credential and comes from the
             # ConfigMap; a password comes from the Secret. Both are declared before the
             # login entries below, because those entries expand these names.
@@ -556,6 +585,11 @@ spec:
             - name: broker-tls
               mountPath: /etc/carddemo/tls
               readOnly: true
+            # The authority the start-up validation above verifies the broker's own
+            # certificate against. Same file the six services read, same terms.
+            - name: broker-trust
+              mountPath: /etc/carddemo/trust
+              readOnly: true
       volumes:
         # Storage is an emptyDir volume. It survives a container restart inside
         # this Pod. Data is lost when the Pod is replaced or deleted.
@@ -568,6 +602,15 @@ spec:
             items:
               - key: KAFKA_SSL_KEYSTORE_P12
                 path: kafka.p12
+        # One key of the platform Secret, and only that key: this volume carries the
+        # authority and never the service keystore that sits beside it there.
+        - name: broker-trust
+          secret:
+            secretName: carddemo-tls-secret
+            defaultMode: 0640
+            items:
+              - key: truststore.p12
+                path: truststore.p12
 ---
 # Every Pod reaches the broker at kafka:9092, the address 30-configmap.yaml
 # supplies as SPRING_KAFKA_BOOTSTRAP_SERVERS. That name is also what a client verifies the

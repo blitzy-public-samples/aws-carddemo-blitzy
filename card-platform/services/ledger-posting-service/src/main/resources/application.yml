@@ -84,10 +84,18 @@ spring:
         password="${KAFKA_SASL_PASSWORD}";
 
     # Idempotent production with acknowledgement from every in-sync replica.
+    #
+    # Both serializers take text. outbox/OutboxWriter.java writes the event as JSON and
+    # the payload column of outbox_event stores that text, so a relay publishing a row
+    # hands the template a String. com.carddemo.events.serde.JsonSchemaValidatingSerializer
+    # writes one of the registered event records and refuses every other value, so naming
+    # it here would fail every publish with a SerializationException while the service
+    # still reported itself healthy. The schema gate runs at write time, inside
+    # OutboxWriter, where a rejected event can still roll back its own transaction.
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: com.carddemo.events.serde.JsonSchemaValidatingSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
       properties:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5

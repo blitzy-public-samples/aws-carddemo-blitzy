@@ -48,10 +48,19 @@ spec:
           type: RuntimeDefault
       containers:
         - name: fraud-detection-service
-          # Built from card-platform/services/fraud-detection-service/Dockerfile.
-          # card-platform/docker-compose.yml builds the same image from the same
-          # module directory and names no image, because compose builds and a
-          # cluster does not.
+          # Built from card-platform/services/fraud-detection-service/Dockerfile, and named
+          # by an explicit tag, as all six platform images in this folder are.
+          # 40-authorization-service.yaml states the whole policy once, including why the
+          # two upstream images are digest-pinned and these six are not.
+          #
+          # card-platform/docker-compose.yml builds the same image from the same module
+          # directory and names no image, because compose builds and a cluster does not.
+          # Build and load it before applying this file:
+          #
+          #   mvn -f card-platform/pom.xml -pl services/fraud-detection-service -am package
+          #   docker build -f card-platform/services/fraud-detection-service/Dockerfile \
+          #     -t carddemo/fraud-detection-service:1.0.0 \
+          #     card-platform/services/fraud-detection-service
           image: carddemo/fraud-detection-service:1.0.0
           # The kubelet pulls only when no image of this tag is on the node.
           imagePullPolicy: IfNotPresent
@@ -281,3 +290,58 @@ spec:
       port: 8080
       targetPort: 8080
       protocol: TCP
+---
+# Who may reach the fraud detection pod, at the network layer.
+#
+# This service must never sit in the authorization response path, and this policy is
+# where that is expressed at the network layer: nothing calls it to score a
+# transaction. It reads transaction.authorized and publishes fraud.assessed, so the
+# only inbound traffic it expects is the read-only assessment lookup on 8080 and a
+# metrics scrape on 9080.
+#
+# The request layer already answers both: config/SecurityConfig authenticates every
+# call to the lookup surface, and it leaves /actuator/health open for probes while
+# requiring ROLE_MONITORING for metrics and the Prometheus scrape, so an anonymous
+# caller receives 401 and an identity holding a business role receives 403. This
+# policy closes the same two gaps a second time, at the network rather than the
+# request layer. 40-authorization-service.yaml carries the same shape and the note on
+# kubelet probes, which originate from the node and match neither selector below.
+#
+# A cluster whose Container Network Interface plug-in does not implement
+# NetworkPolicy ignores this object. Confirm support before treating the service as
+# isolated.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fraud-detection-service-ingress
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: fraud-detection-service
+    app.kubernetes.io/component: fraud-detection
+    app.kubernetes.io/part-of: card-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: fraud-detection-service
+      app.kubernetes.io/part-of: card-platform
+  policyTypes:
+    - Ingress
+  ingress:
+    # The assessment lookup surface. Any pod of this platform may call it, and Spring
+    # Security authenticates every request that arrives.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 8080
+          protocol: TCP
+    # The management surface. A monitoring collector carries the label below and
+    # nothing else in this namespace does, so no business pod reaches this port.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: monitoring
+      ports:
+        - port: 9080
+          protocol: TCP

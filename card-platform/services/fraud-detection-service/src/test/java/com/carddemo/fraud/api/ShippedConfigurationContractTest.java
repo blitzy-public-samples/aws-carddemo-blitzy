@@ -120,8 +120,18 @@ final class ShippedConfigurationContractTest {
     /** Bootstrap server the shipped placeholder defaults to. */
     private static final String DEFAULT_BOOTSTRAP_SERVERS = "kafka:9092";
 
-    /** Serializer the shipped file names on the producer, which validates before publishing. */
-    private static final String VALIDATING_SERIALIZER =
+    /**
+     * Serializer that writes one of the registered event records and refuses every other value.
+     *
+     * <p>The shipped file must not name it as the producer value serializer. What this service
+     * publishes is the text its {@code outbox_event} payload column holds, so the value reaching the
+     * template is a {@code String}, and this serializer answers a {@code String} with a
+     * {@code SerializationException}. Naming it would fail every publish while the service still
+     * reported itself healthy, which is why {@link #producerRequiresEveryReplicaAndIdempotence()}
+     * asserts its absence rather than trusting a comment. The schema gate runs at write time,
+     * before the outbox row commits, where a rejected event can still roll back its transaction.
+     */
+    private static final String RECORD_ONLY_SERIALIZER =
             "com.carddemo.events.serde.JsonSchemaValidatingSerializer";
 
     /** Deserializer the error-handling wrapper delegates to, which validates on consume. */
@@ -537,12 +547,17 @@ final class ShippedConfigurationContractTest {
                 () -> assertEquals("5000",
                         textAt("spring", "kafka", "producer", "properties", "max.block.ms"),
                         "max.block.ms"),
-                () -> assertEquals("org.apache.kafka.common.serialization.StringSerializer",
+                () -> assertEquals(StringSerializer.class.getName(),
                         textAt("spring", "kafka", "producer", "key-serializer"),
                         "spring.kafka.producer.key-serializer"),
-                () -> assertEquals("com.carddemo.events.serde.JsonSchemaValidatingSerializer",
+                () -> assertEquals(StringSerializer.class.getName(),
                         textAt("spring", "kafka", "producer", "value-serializer"),
-                        "spring.kafka.producer.value-serializer"));
+                        "spring.kafka.producer.value-serializer"),
+                () -> assertNotEquals(RECORD_ONLY_SERIALIZER,
+                        textAt("spring", "kafka", "producer", "value-serializer"),
+                        "spring.kafka.producer.value-serializer must take the text the outbox "
+                                + "payload column holds. " + RECORD_ONLY_SERIALIZER
+                                + " refuses a String, so it fails every publish"));
     }
 
     /**
@@ -602,8 +617,8 @@ final class ShippedConfigurationContractTest {
                     () -> assertEquals(StringSerializer.class,
                             bound.getProducer().getKeySerializer(),
                             "effective producer key serializer"),
-                    () -> assertEquals(VALIDATING_SERIALIZER,
-                            bound.getProducer().getValueSerializer().getName(),
+                    () -> assertEquals(StringSerializer.class,
+                            bound.getProducer().getValueSerializer(),
                             "effective producer value serializer"),
                     () -> assertEquals(List.of(DEFAULT_BOOTSTRAP_SERVERS),
                             bound.getBootstrapServers(),
@@ -660,7 +675,10 @@ final class ShippedConfigurationContractTest {
                             ProducerConfig.MAX_BLOCK_MS_CONFIG),
                     () -> assertEquals(StringSerializer.class,
                             producer.get(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG),
-                            ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG));
+                            ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG),
+                    () -> assertEquals(StringSerializer.class,
+                            producer.get(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG),
+                            ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG));
         });
     }
 

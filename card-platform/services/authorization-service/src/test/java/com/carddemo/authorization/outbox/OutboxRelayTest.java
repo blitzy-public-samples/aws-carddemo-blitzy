@@ -201,6 +201,25 @@ final class OutboxRelayTest {
     }
 
     /**
+     * Proves the sweep runs in a transaction, which its locking claim cannot do without.
+     *
+     * <p>This is a declaration test rather than a behavioural one, and deliberately so: a mocked
+     * repository answers a locking query happily, so no test on this level can observe the absence of
+     * a transaction. A real datasource answers it with {@code TransactionRequiredException} on every
+     * tick, the scheduler logs the failure, and the relay publishes nothing while appearing to run.
+     * Asserting the annotation is what keeps that failure from returning silently.
+     *
+     * @throws NoSuchMethodException never, because the method asserted on is declared below
+     */
+    @Test
+    void theSweepDeclaresATransactionItsRowLockRequires() throws NoSuchMethodException {
+        assertTrue(OutboxRelay.class.getDeclaredMethod("publishPendingEvents")
+                        .isAnnotationPresent(org.springframework.transaction.annotation.Transactional.class),
+                "publishPendingEvents must be transactional: claimPendingBatch takes a pessimistic "
+                        + "write lock, and a lock outside a transaction cannot be taken at all");
+    }
+
+    /**
      * Builds a valid approval event.
      *
      * @return the event

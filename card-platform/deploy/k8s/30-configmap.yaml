@@ -1,9 +1,28 @@
-# Configuration the six card-platform services read. Each service Deployment
-# pulls the whole block through envFrom, so one key here reaches all six.
+# Configuration the six card-platform services read. Each service Deployment pulls the
+# whole block through envFrom, so one key here reaches all six.
 #
-# Every key name below also appears in card-platform/.env.example, apart from the
-# two SPRING_ bindings at the end, which this path alone sets. A name that exists
-# in one path and not the other is a defect. No credential appears here.
+# On envFrom rather than a key list per service. card-platform/docker-compose.yml hands each
+# service only the keys it reads, and this path is deliberately broader. No credential
+# appears in this file: every real credential is a key of a per-service Secret in
+# 31-secret.example.yaml, and a service can read no other service's Secret. What a service
+# receives here that it does not read is a topic name, a consumer group name, a database name
+# or a login name, none of which is a credential and none of which grants anything — the
+# broker's access control entries and the six separate database logins decide what an
+# identity can actually do. The alternative, one configMapKeyRef per key per Deployment, adds
+# roughly forty entries to each of the six manifests and makes a dropped key a silent
+# omission rather than a visible one, which is the hazard the start-up report described below
+# exists to catch. Least privilege is enforced where a privilege exists.
+#
+# THE PARITY INVARIANT, and it holds in both directions. Every key below also appears in
+# card-platform/.env.example, apart from FOUR SPRING_ bindings this path alone sets:
+# SPRING_DATASOURCE_OPTIONS, SPRING_KAFKA_BOOTSTRAP_SERVERS,
+# SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION and
+# SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_TYPE. Going the other way, .env.example carries
+# sixteen keys this file deliberately omits: the thirteen *_PORT keys and HEALTHCHECK_SCHEME,
+# which publish and probe host ports that no cluster path has, AUTHORIZATION_FLYWAY_LOCATIONS,
+# which 40-authorization-service.yaml sets directly as SPRING_FLYWAY_LOCATIONS, and
+# OUTBOX_RELAY_INSTANCE_ID, which is explained where it would otherwise sit below. Any other
+# name that exists in one path and not the other is a defect.
 #
 # The decision log this platform still owes is to record every value in this folder.
 ---
@@ -176,6 +195,31 @@ data:
   # sweep claims. These size the planned relay; no module runs one yet.
   OUTBOX_RELAY_INTERVAL_MS: "500"
   OUTBOX_RELAY_BATCH_SIZE: "100"
+  # How long a claim may be held before the row is treated as stranded and returned
+  # to PENDING, as an ISO-8601 duration. A relay that dies holding a claim would
+  # otherwise cost one event permanently: the row stays CLAIMED and the claim query
+  # reads PENDING rows only. card-platform/.env.example carries the same value.
+  OUTBOX_RELAY_CLAIM_TIMEOUT: "PT2M"
+  # OUTBOX_RELAY_INSTANCE_ID is deliberately NOT a key here, and this is the one
+  # exception to the parity invariant in the header worth explaining twice. It names
+  # the relay instance that won a row, so its value has to differ per replica. The
+  # application reads ${OUTBOX_RELAY_INSTANCE_ID:${HOSTNAME:...}}, and a Kubernetes
+  # container's HOSTNAME is its Pod name, which is already distinct per replica. A
+  # key here would be one shared value; worse, an EMPTY key here is still a defined
+  # variable, so it would win over the Pod name and leave every replica claiming rows
+  # under the same identity. card-platform/docker-compose.yml passes it to nothing for
+  # the same reason.
+
+  # Replica freshness
+  # How old an observation of card_xref or account_credit_snapshot may be and still
+  # count as fresh, as an ISO-8601 duration. Those two tables are copies kept current
+  # by state-change events, and a stale credit limit does not raise an error: it
+  # approves a transaction the current limit would have declined. A whole day rather
+  # than minutes because this demo runs without account or card mutation, so a short
+  # window would decline everything after a few minutes and read as a broken demo
+  # rather than as the control working. card-platform/.env.example carries the same
+  # value and the same reasoning.
+  REPLICA_MAX_STALENESS: "P1D"
 
   # Consumer resilience
   # Delivery attempts a consumer makes, then the milliseconds it waits between
@@ -228,7 +272,19 @@ data:
   # SCOPE_CARD_<masked card number>. Each identifier is written exactly as its
   # column holds it, leading zeros and mask characters included. Empty grants
   # nothing, so an ownership-scoped route answers 403 until a value appears here.
-  USER_SCOPES: ""
+  #
+  # The three values below are the same three card-platform/.env.example carries, and
+  # they are here so that a demo scripted on one path reproduces on the other: an
+  # empty list on this path alone would answer 403 to every ownership-scoped route
+  # that answered 200 under Docker Compose, and the divergence would look like a
+  # broken cluster rather than a configuration difference. They name record 1 of
+  # app/data/ASCII/acctdata.txt, its customer in custdata.txt and its card in
+  # carddata.txt with the number masked — all three seeded by the V2__seed.sql
+  # migration of the service that owns them. They are entitlements, not credentials:
+  # the USER identity still has to authenticate with the hash in
+  # carddemo-identity-secret before any of them applies. Re-point them at the records
+  # a real deployment owns, or empty the value to grant nothing.
+  USER_SCOPES: "SCOPE_ACCOUNT_00000000001,SCOPE_CUSTOMER_000000001,SCOPE_CARD_************5740"
 
   # Transport Layer Security for the two ports each service serves
   # On here and off in the compose stack, and the reason is the network rather than the
