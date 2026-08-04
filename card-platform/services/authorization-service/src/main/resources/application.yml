@@ -121,15 +121,18 @@ spring:
     #
     # The value serializer takes text as well, because text is what this service
     # publishes. outbox/OutboxWriter.java writes the event as JSON and checks that text
-    # against the document its event type names before the row commits, the payload
-    # column stores that text, and messaging/KafkaEventPublisher.java checks it once
-    # more before the send. The value reaching the template is therefore a String, and
-    # a serializer that takes text carries no validation responsibility here.
+    # against the document its event type names, through
+    # com.carddemo.events.serde.EventContracts, before the row commits; the payload
+    # column stores that text; and messaging/KafkaEventPublisher.java measures it against
+    # the same document once more before it reaches the broker. The value reaching the
+    # template is therefore a String, and a serializer that takes text carries no
+    # validation responsibility here. None is claimed for either serializer below.
     #
     # Naming com.carddemo.events.serde.JsonSchemaValidatingSerializer here would be
     # wrong, and wrong in a way that fails silently to a reader of this file: that
     # serializer writes one of the registered event records and refuses every other
-    # value, so every publish would raise SerializationException, the outbox would
+    # value, so a value serializer that took an event record would refuse this text
+    # outright, every publish would raise SerializationException, the outbox would
     # retry for ever and the service would look healthy throughout. The one
     # publish-side schema gate of this platform runs at write time inside OutboxWriter,
     # where a rejected event can still roll back its own transaction.

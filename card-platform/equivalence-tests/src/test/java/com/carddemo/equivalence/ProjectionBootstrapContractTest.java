@@ -57,10 +57,11 @@ import org.junit.jupiter.api.Test;
  * replica, a consumer that does not auto-commit and acknowledges by hand, and a
  * {@code processed_event} table keyed on the event identifier. Together those give per-account
  * ordering, because the account identifier is the message key, and they make a redelivery harmless.
- * Applying a stale or reordered event and observing what a replica then holds needs the consumer
- * classes, which land beyond this checkpoint;
- * {@code aStaleEventCannotBeAppliedUntilAConsumerExists} states that boundary rather than leaving it
- * unsaid.</p>
+ * {@code everyConsumerGuardsBeforeItAppliesAndMarksBeforeItAcknowledges} adds the listener side of
+ * that policy: every consumer reads its processed-event guard before it applies an effect, writes
+ * the marker beside those effects in one transactional method, and acknowledges only afterwards.
+ * Applying an event against a running broker and reading the rows back belongs to the module that
+ * owns the listener, where a broker and a database are available.</p>
  *
  * <p>No failure message here carries a seeded or fixture value. Every divergence is reported by
  * table, column and one-based row ordinal, so a mismatch in a card number, a verification value or a
@@ -836,18 +837,139 @@ class ProjectionBootstrapContractTest {
         }
 
         /**
-         * States the boundary of what this checkpoint can assert about a stale or reordered event.
+         * Pins the order every consumer applies one delivery in, which is what makes a stale or a
+         * reordered delivery harmless.
          *
-         * <p>Ordering within an account is a property of the message key and the partition, and it is
-         * asserted above through the key serializer and the idempotent producer. Applying an event
-         * that arrives late and observing what a replica then holds needs a listener to apply it. No
-         * service declares one yet, which this test measures rather than assumes, so the gap is a
-         * recorded fact and not a silence.</p>
+         * <p>Ordering within an account is a property of the message key and the partition, and it
+         * is asserted above through the key serializer and the idempotent producer. What each
+         * listener adds is the guard: it reads {@code processed_event} before it applies any effect,
+         * it writes the marker beside those effects in the one method annotated
+         * {@code @Transactional}, and it acknowledges the delivery only after that method returns.
+         * A redelivery then finds the marker and writes nothing, and a delivery that fails leaves
+         * the offset uncommitted.</p>
+         *
+         * <p>Each property is read from the listener source itself, in the same way every other
+         * assertion in this class reads shipped text, so no broker, no database and no test ordering
+         * is involved. The consumer's own module owns the runtime proof that applies an event and
+         * reads the rows back.</p>
          */
         @Test
-        @DisplayName("a stale event cannot be applied until a consumer exists")
-        void aStaleEventCannotBeAppliedUntilAConsumerExists() {
-            List<String> listeners = new ArrayList<>();
+        @DisplayName("every consumer guards, then applies, then marks, then acknowledges")
+        void everyConsumerGuardsBeforeItAppliesAndMarksBeforeItAcknowledges() {
+            Map<String, String> listeners = listenerSources();
+            assertFalse(listeners.isEmpty(),
+                    "no service declares a listener, so nothing consumes the events the "
+                            + "authorization service publishes");
+
+            List<String> broken = new ArrayList<>();
+            for (Map.Entry<String, String> listener : listeners.entrySet()) {
+                String name = listener.getKey();
+                String code = codeOf(listener.getValue());
+                String transactionalBody = transactionalBodyOf(code);
+
+                if (transactionalBody.isEmpty()) {
+                    broken.add(name + " declares no transactional method");
+                    continue;
+                }
+                int guard = transactionalBody.indexOf("existsById");
+                int firstEffect = transactionalBody.indexOf(".save(");
+                if (guard < 0) {
+                    broken.add(name + " reads no processed-event guard inside its transaction");
+                } else if (firstEffect < 0) {
+                    broken.add(name + " writes nothing inside its transaction");
+                } else if (guard > firstEffect) {
+                    broken.add(name + " applies an effect before it reads its guard");
+                }
+                if (transactionalBody.contains(".acknowledge(")) {
+                    broken.add(name + " acknowledges inside its transaction, before the commit");
+                }
+                if (occurrences(code, ".acknowledge(") != 1) {
+                    broken.add(name + " does not acknowledge exactly once, outside its transaction");
+                }
+                if (occurrences(code, "@KafkaListener") != 1) {
+                    broken.add(name + " declares more than one listener method");
+                }
+                if (code.contains("KafkaTemplate")) {
+                    broken.add(name + " publishes from the listener, bypassing its outbox");
+                }
+            }
+
+            assertEquals(List.of(), broken,
+                    "a listener breaks the order that makes a redelivery harmless: " + broken);
+        }
+
+        /**
+         * Strips what is not code, so a position in the result is a position in a statement.
+         *
+         * <p>Comments are removed, so a class comment naming {@code acknowledge()} is not read as a
+         * call. String literals are emptied, so a logging format holding braces cannot mislead the
+         * brace walk in {@link #transactionalBodyOf(String)}.</p>
+         *
+         * @param source the listener source as it is written
+         * @return the same text with comments removed and every string literal emptied
+         */
+        private String codeOf(String source) {
+            String withoutBlockComments = source.replaceAll("(?s)/\\*.*?\\*/", " ");
+            String withoutLineComments = withoutBlockComments.replaceAll("//[^\\n]*", " ");
+            return withoutLineComments.replaceAll("\"(\\\\.|[^\"\\\\])*\"", "\"\"");
+        }
+
+        /**
+         * Returns the body of the one method annotated {@code @Transactional}.
+         *
+         * @param code the listener code, comments removed and literals emptied
+         * @return the body from its opening brace to its matching closing brace, or the empty string
+         *         when the annotation or the body is absent
+         */
+        private String transactionalBodyOf(String code) {
+            int annotation = code.indexOf("@Transactional");
+            if (annotation < 0) {
+                return "";
+            }
+            int opening = code.indexOf('{', annotation);
+            if (opening < 0) {
+                return "";
+            }
+            int depth = 0;
+            for (int index = opening; index < code.length(); index++) {
+                char character = code.charAt(index);
+                if (character == '{') {
+                    depth++;
+                } else if (character == '}') {
+                    depth--;
+                    if (depth == 0) {
+                        return code.substring(opening, index + 1);
+                    }
+                }
+            }
+            return "";
+        }
+
+        /**
+         * Counts how often one fragment appears.
+         *
+         * @param text     the text to scan
+         * @param fragment the fragment to count
+         * @return the number of non-overlapping occurrences
+         */
+        private int occurrences(String text, String fragment) {
+            int found = 0;
+            int from = text.indexOf(fragment);
+            while (from >= 0) {
+                found++;
+                from = text.indexOf(fragment, from + fragment.length());
+            }
+            return found;
+        }
+
+        /**
+         * Reads the source of every listener class every service declares.
+         *
+         * @return the source text of each {@code *Consumer.java} under a service messaging package,
+         *         keyed by module name and file name
+         */
+        private Map<String, String> listenerSources() {
+            Map<String, String> sources = new LinkedHashMap<>();
             for (String module : ALL_MODULES) {
                 Path messaging = REPOSITORY_ROOT.get()
                         .resolve(SERVICES_DIRECTORY)
@@ -862,17 +984,14 @@ class ProjectionBootstrapContractTest {
                 }
                 try (var entries = Files.list(messaging)) {
                     entries.filter(path -> path.getFileName().toString().endsWith("Consumer.java"))
-                            .forEach(path -> listeners.add(module + " "
-                                    + path.getFileName().toString()));
+                            .sorted()
+                            .forEach(path -> sources.put(module + " " + path.getFileName(),
+                                    readText(path)));
                 } catch (IOException unreadable) {
                     throw new UncheckedIOException("cannot list " + messaging, unreadable);
                 }
             }
-
-            assertEquals(List.of(), listeners,
-                    "a listener now exists, so the stale-event and out-of-order paths are testable "
-                            + "and this contract has to grow assertions that apply an event and read "
-                            + "the replica back: " + listeners);
+            return sources;
         }
     }
 

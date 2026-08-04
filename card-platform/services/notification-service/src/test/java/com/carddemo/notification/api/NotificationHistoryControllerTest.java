@@ -12,9 +12,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.carddemo.notification.config.ObservabilityConfig;
+import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.entity.StatementTransactionEntity;
 import com.carddemo.notification.entity.StatementTransactionEntity.StatementTransactionId;
+import com.carddemo.notification.repository.NotificationLogRepository;
 import com.carddemo.notification.repository.StatementTransactionRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,8 +50,12 @@ final class NotificationHistoryControllerTest {
     @BeforeEach
     void buildEndpoint() {
         statementTransactions = mock(StatementTransactionRepository.class);
+        NotificationService notifications = new NotificationService(List.of(), statementTransactions,
+                mock(NotificationLogRepository.class),
+                new ObservabilityConfig().notificationMetrics(new SimpleMeterRegistry()));
         mockMvc = MockMvcBuilders
-                .standaloneSetup(new NotificationHistoryController(statementTransactions))
+                .standaloneSetup(
+                        new NotificationHistoryController(statementTransactions, notifications))
                 .setControllerAdvice(new NotificationApiExceptionHandler())
                 .build();
     }

@@ -1,5 +1,6 @@
 package com.carddemo.notification.api;
 
+import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.entity.StatementTransactionEntity;
 import com.carddemo.notification.repository.StatementTransactionRepository;
 import jakarta.validation.constraints.NotBlank;
@@ -58,18 +59,30 @@ public class NotificationHistoryController {
     private final StatementTransactionRepository statementTransactions;
 
     /**
-     * Takes the repository this controller reads.
+     * Totals one card's rows, reproducing {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at
+     * {@code app/cbl/CBSTM03A.CBL:L429}.
+     */
+    private final NotificationService notifications;
+
+    /**
+     * Takes the read model this controller reads and the service that totals its rows.
      *
      * @param statementTransactions the read model repository
+     * @param notifications the domain service owning the per-card total
      */
-    public NotificationHistoryController(StatementTransactionRepository statementTransactions) {
+    public NotificationHistoryController(StatementTransactionRepository statementTransactions,
+            NotificationService notifications) {
         this.statementTransactions = statementTransactions;
+        this.notifications = notifications;
     }
 
     /**
      * Returns one card's transactions, the count and the per-card total.
      *
      * <p>Rows arrive in ascending transaction-identifier order and are returned in that order.
+     * {@link NotificationService#totalOf(List)} totals them, and
+     * {@link NotificationHistoryResponse#fromCardRows(String, java.math.BigDecimal, List)} renders
+     * the response.
      *
      * @param maskedCardNumber the masked card number, which is the only form this route accepts
      * @return the card's history, empty when the read model holds no row for the card
@@ -82,6 +95,7 @@ public class NotificationHistoryController {
             String maskedCardNumber) {
         List<StatementTransactionEntity> rows = statementTransactions
                 .findByIdCardNumberOrderByIdTransactionIdAsc(maskedCardNumber);
-        return NotificationHistoryResponse.of(maskedCardNumber, rows);
+        return NotificationHistoryResponse.fromCardRows(maskedCardNumber,
+                notifications.totalOf(rows), rows);
     }
 }

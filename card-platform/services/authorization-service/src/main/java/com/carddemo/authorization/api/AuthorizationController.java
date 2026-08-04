@@ -1,7 +1,10 @@
 package com.carddemo.authorization.api;
 
 import com.carddemo.authorization.domain.AuthorizationService;
+import com.carddemo.cobol.PicClause;
+import com.carddemo.events.DeclineReason;
 import jakarta.validation.Valid;
+import java.math.BigDecimal;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -67,6 +70,48 @@ public class AuthorizationController {
     @PostMapping
     public ResponseEntity<AuthorizationResponse> authorize(
             @Valid @RequestBody AuthorizationRequest request) {
-        return ResponseEntity.status(HttpStatus.OK).body(authorizations.authorize(request));
+        AuthorizationService.Outcome outcome = authorizations.authorize(request);
+
+        return ResponseEntity.status(HttpStatus.OK).body(render(outcome));
+    }
+
+    /**
+     * Turns one decision into the response body this endpoint returns.
+     *
+     * @param outcome the decision the service took
+     * @return the response body carrying that decision
+     */
+    private static AuthorizationResponse render(AuthorizationService.Outcome outcome) {
+        String accountId = accountIdentifierText(outcome.accountId());
+        DeclineReason declineReason = outcome.declineReason().orElse(null);
+
+        if (declineReason == null) {
+            return AuthorizationResponse.approve(outcome.transactionId(), accountId);
+        }
+        if (accountId == null) {
+            return AuthorizationResponse.declineUnresolvedCard(outcome.transactionId());
+        }
+        return AuthorizationResponse.decline(outcome.transactionId(), accountId, declineReason);
+    }
+
+    /**
+     * Renders an account identifier at the width this response body holds.
+     *
+     * <p>Width {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}, which
+     * {@link AuthorizationResponse#ACCOUNT_ID_PATTERN} also pins. Account seven renders as eleven
+     * characters ending in seven, so a reader sees the identifier the cross-reference file holds.
+     *
+     * @param accountId the identifier the decision named, or {@code null} when it named none
+     * @return eleven decimal digits, or {@code null} when the decision named no account
+     */
+    private static String accountIdentifierText(BigDecimal accountId) {
+        if (accountId == null) {
+            return null;
+        }
+        String digits = accountId.toBigInteger().toString();
+        if (digits.length() >= PicClause.XREF_ACCT_ID_WIDTH) {
+            return digits;
+        }
+        return "0".repeat(PicClause.XREF_ACCT_ID_WIDTH - digits.length()) + digits;
     }
 }

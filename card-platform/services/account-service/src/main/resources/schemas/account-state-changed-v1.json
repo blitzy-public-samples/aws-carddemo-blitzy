@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carddemo.example.com/schemas/account-state-changed-v1.json",
+  "title": "AccountStateChanged",
+  "description": "The wire contract for the one event the account service publishes when account state changes. Five envelope properties and six payload properties sit at the top level, eleven in total, and every one is required. The five envelope properties are additive: no field of the 300-byte account record at app/cpy/CVACT01Y.cpy corresponds to them, while each payload property cites its source locator. Design rationale for this contract lives in card-platform/docs/decision-log.md. Publish and consume paths are documented in card-platform/docs/event-flow.md.",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "description": "The event identifier, and the key a consumer checks before it acts. Canonical Universally Unique Identifier form, thirty-six characters.",
+      "examples": [
+        "8c4b1e07-5d2a-42f6-9b18-6e05c3a7d914"
+      ]
+    },
+    "eventType": {
+      "type": "string",
+      "const": "AccountStateChanged",
+      "description": "The routing discriminator, and the simple name of the event type this document governs.",
+      "examples": [
+        "AccountStateChanged"
+      ]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "The contract version, an unquoted integer. The number matches the -v1 suffix of this file name.",
+      "examples": [
+        1
+      ]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The moment the account service wrote the event, in Coordinated Universal Time.",
+      "examples": [
+        "2022-06-10T19:27:53.412Z"
+      ]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier the event belongs to, and always the Kafka message key. Eleven digits, from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The value equals accountId.",
+      "examples": [
+        "00000000001"
+      ]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits, from ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5. A text form keeps a leading zero, and record 1 of app/data/ASCII/acctdata.txt holds 00000000001. The value equals aggregateId.",
+      "examples": [
+        "00000000001"
+      ]
+    },
+    "creditLimit": {
+      "type": "string",
+      "pattern": "^-?[0-9]{1,10}\\.[0-9]{2}$",
+      "description": "The credit limit after the change, a decimal string carrying two fractional digits. From ACCT-CREDIT-LIMIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L8. app/cbl/CBTRN02C.cbl:L407 compares this value against the cycle balance the two accumulators give.",
+      "examples": [
+        "2020.00"
+      ]
+    },
+    "currentCycleCredit": {
+      "type": "string",
+      "pattern": "^-?[0-9]{1,10}\\.[0-9]{2}$",
+      "description": "The cycle credit accumulator after the change, a decimal string carrying two fractional digits. From ACCT-CURR-CYC-CREDIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L13. app/cbl/CBTRN02C.cbl:L403 reads it, and app/cbl/CBACT04C.cbl:L353 zeroes it at cycle close.",
+      "examples": [
+        "0.00"
+      ]
+    },
+    "currentCycleDebit": {
+      "type": "string",
+      "pattern": "^-?[0-9]{1,10}\\.[0-9]{2}$",
+      "description": "The cycle debit accumulator after the change, a decimal string carrying two fractional digits. From ACCT-CURR-CYC-DEBIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L14. app/cbl/CBTRN02C.cbl:L404 subtracts it, and app/cbl/CBACT04C.cbl:L354 zeroes it at cycle close.",
+      "examples": [
+        "0.00"
+      ]
+    },
+    "expirationDate": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 10,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+      "description": "The account expiration date, held as ten characters of text. From ACCT-EXPIRAION-DATE PIC X(10) at app/cpy/CVACT01Y.cpy:L11, whose transposed spelling the target name corrects. app/cbl/CBTRN02C.cbl:L414 compares it as raw text against the first ten characters of a transaction timestamp. app/cbl/COACTUPC.cbl:L4131-L4133 slices it positionally as (1:4), (6:2) and (9:2). All 50 records of app/data/ASCII/acctdata.txt hold this ten-character digit form.",
+      "examples": [
+        "2025-05-20"
+      ]
+    },
+    "changeKind": {
+      "type": "string",
+      "enum": [
+        "ACCOUNT_UPDATED",
+        "BILLING_CYCLE_CLOSED"
+      ],
+      "description": "Which mutation produced the event. Additive: no field of the account record records a change kind. ACCOUNT_UPDATED names the account rewrite at app/cbl/COACTUPC.cbl:L4066. BILLING_CYCLE_CLOSED names the cycle close that zeroes both accumulators at app/cbl/CBACT04C.cbl:L353-L354.",
+      "examples": [
+        "ACCOUNT_UPDATED",
+        "BILLING_CYCLE_CLOSED"
+      ]
+    }
+  },
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "aggregateId",
+    "accountId",
+    "creditLimit",
+    "currentCycleCredit",
+    "currentCycleDebit",
+    "expirationDate",
+    "changeKind"
+  ],
+  "additionalProperties": false
+}

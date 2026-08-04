@@ -126,6 +126,24 @@
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!-- The Jakarta Persistence slice annotation @DataJpaTest, which Spring Boot 4 ships in
+         its own artifact: spring-boot-test-autoconfigure carries the json slice alone. It
+         pulls spring-boot-jpa-test and spring-boot-jdbc-test, so it also supplies
+         @AutoConfigureTestDatabase. The repository tests boot on it. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-data-jpa-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- @ServiceConnection, which hands a running container's host, port, database, login and
+         password to the datasource under test, plus the container bean lifecycle. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.springframework.kafka</groupId>
       <artifactId>spring-kafka-test</artifactId>

@@ -1,25 +1,37 @@
 package com.carddemo.notification.api;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 
+import com.carddemo.notification.config.ObservabilityConfig;
+import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.entity.StatementTransactionEntity;
 import com.carddemo.notification.entity.StatementTransactionEntity.StatementTransactionId;
+import com.carddemo.notification.repository.NotificationLogRepository;
+import com.carddemo.notification.repository.StatementTransactionRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Response tests for {@link NotificationHistoryResponse} and {@link NotificationTransactionItem}.
  *
- * <p>The per-card total reproduces the source's accumulation. {@code MOVE ZERO TO WS-TOTAL-AMT} at
- * {@code app/cbl/CBSTM03A.CBL:L325} resets it for each card and
+ * <p>{@link NotificationService#totalOf(List)} owns the per-card total, and this record renders it.
+ * {@code MOVE ZERO TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L325} resets it for each card and
  * {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429} adds one row at a time,
- * truncating toward zero.
+ * truncating toward zero. Every total below travels through that service, so the two agree.
  *
  * <p>The item mapping decodes fixed-width storage. A {@code CHAR} column returns space-padded, and
  * the two numeric identifiers return without their leading zeros.
@@ -29,13 +41,20 @@ final class NotificationHistoryResponseTest {
     /** A masked card number. */
     private static final String MASKED_CARD = "************7065";
 
+    /** A full card number, split so no sixteen-digit literal appears in one piece. */
+    private static final String FULL_CARD = "4859452612877" + "065";
+
     /** Shape the interface description declares for a monetary value. */
     private static final Pattern MONEY = Pattern.compile("^-?\\d{1,9}\\.\\d{2}$");
 
+    /** Totals rows the way the endpoint does. */
+    private static final NotificationService NOTIFICATIONS = new NotificationService(List.of(),
+            mock(StatementTransactionRepository.class), mock(NotificationLogRepository.class),
+            new ObservabilityConfig().notificationMetrics(new SimpleMeterRegistry()));
+
     @Test
     void aCardWithNoRowsCarriesAnEmptyArrayAndAZeroTotal() {
-        NotificationHistoryResponse response =
-                NotificationHistoryResponse.of(MASKED_CARD, List.of());
+        NotificationHistoryResponse response = response(List.of());
         assertEquals(MASKED_CARD, response.cardNumber(), "card number");
         assertEquals(0, response.transactionCount(), "count");
         assertEquals("0.00", response.totalAmount(), "total");
@@ -44,7 +63,7 @@ final class NotificationHistoryResponseTest {
 
     @Test
     void theCountMatchesTheRowsSupplied() {
-        NotificationHistoryResponse response = NotificationHistoryResponse.of(MASKED_CARD,
+        NotificationHistoryResponse response = response(
                 List.of(row("0000000000000001", "10.00"), row("0000000000000002", "5.50")));
         assertEquals(2, response.transactionCount(), "count");
         assertEquals(2, response.transactions().size(), "items");
@@ -52,7 +71,7 @@ final class NotificationHistoryResponseTest {
 
     @Test
     void theTotalAddsEveryAmountAtTwoFractionalDigits() {
-        NotificationHistoryResponse response = NotificationHistoryResponse.of(MASKED_CARD,
+        NotificationHistoryResponse response = response(
                 List.of(row("0000000000000001", "194.00"), row("0000000000000002", "310.77")));
         assertEquals("504.77", response.totalAmount(), "total");
         assertTrue(MONEY.matcher(response.totalAmount()).matches(), "shape");
@@ -60,7 +79,7 @@ final class NotificationHistoryResponseTest {
 
     @Test
     void aRefundLowersTheTotalAndKeepsItsSign() {
-        NotificationHistoryResponse response = NotificationHistoryResponse.of(MASKED_CARD,
+        NotificationHistoryResponse response = response(
                 List.of(row("0000000000000001", "10.00"), row("0000000000000002", "-25.50")));
         assertEquals("-15.50", response.totalAmount(), "a negative total keeps its minus");
         assertTrue(MONEY.matcher(response.totalAmount()).matches(), "shape");
@@ -78,7 +97,7 @@ final class NotificationHistoryResponseTest {
 
     @Test
     void theItemsKeepTheOrderTheRowsArrivedIn() {
-        NotificationHistoryResponse response = NotificationHistoryResponse.of(MASKED_CARD,
+        NotificationHistoryResponse response = response(
                 List.of(row("0000000000000001", "1.00"), row("0000000000000002", "2.00"),
                         row("0000000000000003", "3.00")));
         assertEquals(List.of("0000000000000001", "0000000000000002", "0000000000000003"),
@@ -90,10 +109,85 @@ final class NotificationHistoryResponseTest {
 
     @Test
     void theTransactionsArrayIsNotWritable() {
-        NotificationHistoryResponse response = NotificationHistoryResponse.of(MASKED_CARD,
-                List.of(row("0000000000000001", "1.00")));
+        NotificationHistoryResponse response = response(List.of(row("0000000000000001", "1.00")));
         assertThrows(UnsupportedOperationException.class, () -> response.transactions().clear(),
                 "the array a caller receives cannot be edited");
+    }
+
+    @Test
+    void theFactoryMasksTheCardNumberItIsGiven() {
+        NotificationHistoryResponse response = NotificationHistoryResponse.fromCardRows(FULL_CARD,
+                NOTIFICATIONS.totalOf(List.of()), List.of());
+        assertEquals(MASKED_CARD, response.cardNumber(), "the response carries the masked form");
+        assertFalse(response.cardNumber().contains(FULL_CARD.substring(0, 12)),
+                "no digit but the last four reaches the response");
+    }
+
+    @Test
+    void aMaskedCardNumberPassesThroughTheFactoryUnchanged() {
+        NotificationHistoryResponse response = NotificationHistoryResponse.fromCardRows(MASKED_CARD,
+                NOTIFICATIONS.totalOf(List.of()), List.of());
+        assertEquals(MASKED_CARD, response.cardNumber(), "masking the masked form changes nothing");
+    }
+
+    @Test
+    void aTotalAtAnotherScaleIsRefused() {
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD, new BigDecimal("1.5"),
+                        List.of()),
+                "a total at one fractional digit");
+        assertTrue(refused.getMessage().contains("scale"), "the message names the scale");
+    }
+
+    @Test
+    void aCardNumberThatIsNotMaskedIsRefusedByTheConstructor() {
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(FULL_CARD, 0, "0.00", List.of()),
+                "a full card number on the envelope");
+        assertFalse(refused.getMessage().contains(FULL_CARD),
+                "no message names a card number");
+    }
+
+    @Test
+    void aTotalOutsideTheDeclaredShapeIsRefusedByTheConstructor() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(MASKED_CARD, 0, "0", List.of()),
+                "a total without its two fractional digits");
+        assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(MASKED_CARD, 0, "1234567890.00", List.of()),
+                "a total at ten integer digits");
+    }
+
+    @Test
+    void aCountThatDisagreesWithTheItemsIsRefused() {
+        List<NotificationTransactionItem> one =
+                List.of(NotificationTransactionItem.from(row("0000000000000001", "1.00")));
+        assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(MASKED_CARD, 2, "1.00", one),
+                "a count above the items supplied");
+        assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(MASKED_CARD, -1, "0.00", List.of()),
+                "a negative count");
+    }
+
+    @Test
+    void theSerializedBodyCarriesExactlyFourPropertiesInTheSchemaOrder() {
+        NotificationHistoryResponse response = response(
+                List.of(row("0000000000000001", "194.00"), row("0000000000000002", "310.77")));
+        ObjectMapper mapper = JsonMapper.builder().build();
+
+        JsonNode body = mapper.readTree(mapper.writeValueAsString(response));
+        List<String> properties = new ArrayList<>();
+        for (Iterator<String> names = body.propertyNames().iterator(); names.hasNext();) {
+            properties.add(names.next());
+        }
+
+        assertEquals(List.of("cardNumber", "transactionCount", "totalAmount", "transactions"),
+                properties, "the four properties the schema declares, in that order");
+        assertEquals(4, body.size(), "additionalProperties is false, so there is no fifth");
+        assertTrue(body.get("totalAmount").isString(), "money travels as text, never as a number");
+        assertEquals(response, mapper.readValue(mapper.writeValueAsString(response),
+                NotificationHistoryResponse.class), "the body round trips field for field");
     }
 
     @Test
@@ -162,11 +256,33 @@ final class NotificationHistoryResponseTest {
 
     @Test
     void aNullArgumentToTheFactoryIsRefusedByName() {
-        NullPointerException refused = assertThrows(NullPointerException.class,
-                () -> NotificationHistoryResponse.of(null, List.of()), "a null card number");
-        assertTrue(refused.getMessage().contains("maskedCardNumber"), "named");
+        NullPointerException noCard = assertThrows(NullPointerException.class,
+                () -> NotificationHistoryResponse.fromCardRows(null,
+                        NOTIFICATIONS.totalOf(List.of()), List.of()),
+                "a null card number");
+        assertTrue(noCard.getMessage().contains("cardNumber"), "named");
+
+        NullPointerException noTotal = assertThrows(NullPointerException.class,
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD, null, List.of()),
+                "a null total");
+        assertTrue(noTotal.getMessage().contains("total"), "named");
+
         assertThrows(NullPointerException.class,
-                () -> NotificationHistoryResponse.of(MASKED_CARD, null), "null rows");
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD,
+                        NOTIFICATIONS.totalOf(List.of()), null),
+                "null rows");
+    }
+
+    /**
+     * Builds one response the way the endpoint does: the domain totals the rows, and the record
+     * renders them.
+     *
+     * @param rows the card's rows in ascending transaction-identifier order
+     * @return the response
+     */
+    private static NotificationHistoryResponse response(List<StatementTransactionEntity> rows) {
+        return NotificationHistoryResponse.fromCardRows(MASKED_CARD, NOTIFICATIONS.totalOf(rows),
+                rows);
     }
 
     /**

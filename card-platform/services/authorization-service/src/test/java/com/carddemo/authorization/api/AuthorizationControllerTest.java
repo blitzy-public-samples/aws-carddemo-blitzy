@@ -13,6 +13,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.carddemo.authorization.domain.AuthorizationService;
 import com.carddemo.events.DeclineReason;
+import java.math.BigDecimal;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,7 +28,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
  * capture program {@code app/cbl/COTRN02C.cbl} sends a mapset, receives it back and re-sends it on
  * every failure; this endpoint takes one body and returns one body.
  *
- * <p>Two outcomes share status {@code 200}, because a decline is a decision and not a failure.
+ * <p>Two outcomes share status {@code 200}. A decline is a decision and not a failure.
  * {@code app/cbl/CBTRN02C.cbl:L229-L230} treats a rejection the same way, ending a batch run with
  * return code 4. A request whose fields fail validation answers {@code 422} carrying the verbatim
  * texts {@code app/cbl/COTRN02C.cbl} emits.
@@ -77,7 +78,8 @@ final class AuthorizationControllerTest {
     @Test
     void anApprovalAnswersTwoHundredCarryingTheDecision() throws Exception {
         when(authorizations.authorize(any()))
-                .thenReturn(AuthorizationResponse.approve("0000001000000001", "00000000077"));
+                .thenReturn(AuthorizationService.Outcome.approved(new BigDecimal("00000000077"),
+                        "0000001000000001"));
 
         mockMvc.perform(post("/authorizations")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -94,8 +96,9 @@ final class AuthorizationControllerTest {
      */
     @Test
     void aDeclineAnswersTwoHundredCarryingTheRejectCode() throws Exception {
-        when(authorizations.authorize(any())).thenReturn(AuthorizationResponse
-                .decline("0000001000000002", "00000000077", DeclineReason.OVER_CREDIT_LIMIT));
+        when(authorizations.authorize(any())).thenReturn(AuthorizationService.Outcome.declined(
+                DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("00000000077"),
+                "0000001000000002"));
 
         mockMvc.perform(post("/authorizations")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -110,7 +113,8 @@ final class AuthorizationControllerTest {
     @Test
     void theDeclineNamingNoAccountAnswersTwoHundredWithNoAccountIdentifier() throws Exception {
         when(authorizations.authorize(any()))
-                .thenReturn(AuthorizationResponse.declineUnresolvedCard("0000001000000003"));
+                .thenReturn(AuthorizationService.Outcome.declined(
+                        DeclineReason.INVALID_CARD_NUMBER, null, "0000001000000003"));
 
         mockMvc.perform(post("/authorizations")
                         .contentType(MediaType.APPLICATION_JSON)
