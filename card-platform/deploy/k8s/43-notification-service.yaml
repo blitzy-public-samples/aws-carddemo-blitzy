@@ -1,0 +1,364 @@
+# Deployment, Service and NetworkPolicy for the notification service, the one
+# service on this platform that reads two topics.
+#
+# Consumes transaction.posted in consumer group notification-posted.
+# Consumes fraud.assessed in consumer group notification-fraud.
+# Two topics, two groups. The service publishes no event.
+#
+# Rendering and totalling come from app/cbl/CBSTM03A.CBL:L86-L159. The
+# card-keyed read model comes from app/cpy/COSTM01.CPY:L20-L36, and its key
+# comes from the sort step of app/jcl/CREASTMT.JCL.
+#
+# No listener is authored in the module yet, so the container starts, serves
+# GET /notifications/{maskedCardNumber} and answers /actuator.
+#
+# Rationale for every choice in this folder: card-platform/docs/decision-log.md (planned)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: notification
+    app.kubernetes.io/part-of: card-platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: notification-service
+      app.kubernetes.io/part-of: card-platform
+  template:
+    metadata:
+      labels:
+        # The name below is what the network policies in 10-kafka.yaml and 20-postgres.yaml
+        # admit. Both name the six services individually instead of matching the part-of
+        # label. A Pod that merely belongs to this platform reaches neither the broker nor
+        # the database.
+        app.kubernetes.io/name: notification-service
+        app.kubernetes.io/component: notification
+        app.kubernetes.io/part-of: card-platform
+    spec:
+      automountServiceAccountToken: false
+      # Account 10001 owns /app in the image. 00-namespace.yaml refuses root.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        # The mounted keystore, truststore and certificate authority arrive owned by root.
+        # fsGroup gives group 10001 read access to them, which is how the runtime opens a
+        # file it may not write.
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: notification-service
+          # Built from card-platform/services/notification-service/Dockerfile, and named
+          # by an explicit tag.
+          #
+          # Build and load the image before applying this file:
+          #
+          #   mvn -f card-platform/pom.xml -pl services/notification-service -am package
+          #   docker build -f card-platform/services/notification-service/Dockerfile \
+          #     -t carddemo/notification-service:1.0.0 \
+          #     card-platform/services/notification-service
+          #
+          # A cluster that pulls from a registry needs the image pushed there first, and
+          # the reference below prefixed with that registry host.
+          image: carddemo/notification-service:1.0.0
+          # A node that already holds the tag above runs it without contacting a registry.
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            # The image writes nothing under / after start. /app holds the extracted
+            # application layers and nothing else. The Dockerfile pins TMPDIR and
+            # java.io.tmpdir to /tmp, so the runtime and the servlet container write
+            # their work directories there. The one writable path is the volume below.
+            readOnlyRootFilesystem: true
+          ports:
+            # 8080 carries GET /notifications/{maskedCardNumber}, and the Service below
+            # targets it. 9080 carries /actuator and matches MANAGEMENT_PORT in
+            # 30-configmap.yaml. No Service exposes 9080, and the NetworkPolicy below
+            # admits it from monitoring pods alone. Both ports are encrypted, because
+            # 30-configmap.yaml sets SERVER_SSL_ENABLED and MANAGEMENT_SSL_ENABLED.
+            - name: http
+              containerPort: 8080
+            - name: management
+              containerPort: 9080
+          envFrom:
+            # Broker address, topic names, consumer group names, log levels, the three
+            # request-identity usernames, and the transport settings. No credential appears
+            # there.
+            - configMapRef:
+                name: carddemo-config
+            # This service's own two credentials: the password of its database login and
+            # the password of its broker identity. Two keys, and no other service reads this
+            # Secret.
+            - secretRef:
+                name: carddemo-notification-secret
+            # The three request-identity password hashes, shared by all six services.
+            # app/csd/CARDDEMO.CSD defines one USRSEC dataset that the whole region reads.
+            - secretRef:
+                name: carddemo-identity-secret
+          env:
+            # The schema and the login this service owns. 30-configmap.yaml holds both
+            # values under keys that name this service. envFrom above pulls the whole
+            # ConfigMap, so each of the six Deployments binds the keys it owns and no
+            # Deployment reads another service's schema.
+            - name: SPRING_FLYWAY_SCHEMAS
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: NOTIFICATION_DB_SCHEMA
+            - name: SPRING_FLYWAY_DEFAULT_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: NOTIFICATION_DB_SCHEMA
+            - name: SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: NOTIFICATION_DB_SCHEMA
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: NOTIFICATION_DB_USER
+            # The datasource URL this service owns, assembled here instead of shared. The five
+            # values below are declared in this env list and not merely pulled in by envFrom,
+            # because $(VAR) expansion reads this list alone. 30-configmap.yaml carries a
+            # SPRING_DATASOURCE_OPTIONS suffix and no database name. Each of the six
+            # Deployments therefore names the one database it owns, and no Deployment can
+            # reach another's.
+            - name: POSTGRES_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: POSTGRES_HOST
+            - name: POSTGRES_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: POSTGRES_PORT
+            - name: NOTIFICATION_DB_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: NOTIFICATION_DB_NAME
+            - name: NOTIFICATION_DB_SCHEMA
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: NOTIFICATION_DB_SCHEMA
+            - name: SPRING_DATASOURCE_OPTIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: SPRING_DATASOURCE_OPTIONS
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:postgresql://$(POSTGRES_HOST):$(POSTGRES_PORT)/$(NOTIFICATION_DB_NAME)?currentSchema=$(NOTIFICATION_DB_SCHEMA)&$(SPRING_DATASOURCE_OPTIONS)"
+            # No SPRING_FLYWAY_LOCATIONS override. The module ships one migration folder,
+            # db/migration, and no demo overlay for the classpath to add.
+            - name: KAFKA_SASL_USERNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: NOTIFICATION_KAFKA_USER
+            # Two listeners, two consumer groups, one Deployment. Each group name below is
+            # bound from its own ConfigMap key, and the two resolved values differ.
+            # Group notification-posted reads transaction.posted, and group
+            # notification-fraud reads fraud.assessed.
+            #
+            # 10-kafka.yaml grants this service's broker identity one consumer entry for
+            # each of those two pairs and no other. It grants one producer entry, on the
+            # dead-letter topic carddemo.dead-letter.
+            #
+            # The group below is the one a listener joins when it names none. The listener
+            # container factory reads it, and the module application.yml falls back to the
+            # same key.
+            - name: SPRING_KAFKA_CONSUMER_GROUP_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_NOTIFICATION_POSTED
+            # The transaction.posted listener joins this group.
+            - name: GROUP_NOTIFICATION_POSTED
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_NOTIFICATION_POSTED
+            # The fraud.assessed listener joins this group. The key differs from the one
+            # above, and so does the value it holds.
+            - name: GROUP_NOTIFICATION_FRAUD
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_NOTIFICATION_FRAUD
+            # The two passwords that open the mounted transport material. Both live in
+            # carddemo-tls-secret beside the files themselves, and both are named here
+            # instead of pulled with envFrom. That Secret also carries keys whose names
+            # are file names, and a file name is not a valid environment variable name.
+            - name: SERVER_SSL_KEYSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-tls-secret
+                  key: SERVER_SSL_KEYSTORE_PASSWORD
+            - name: SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: carddemo-tls-secret
+                  key: KAFKA_SSL_TRUSTSTORE_PASSWORD
+          # Both probes read /actuator/health on the management port over HTTPS, because
+          # 30-configmap.yaml encrypts that port too. Port 8080 answers no management
+          # request. Readiness allows time for the Flyway migration this service runs at
+          # startup.
+          #
+          # The kubelet does not verify the certificate it is presented on a probe. That is
+          # the one place on this platform where a certificate goes unchecked, and the
+          # kubelet is the one caller that cannot be given a truststore.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: management
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Liveness asks only whether the Java virtual machine is still working. The
+          # liveness group reports process state and excludes every external dependency.
+          # A broker or database outage therefore takes this Pod out of its Service and
+          # leaves the process running.
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: management
+              scheme: HTTPS
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          # The image caps the heap at 75 percent of the limit below.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            # The one writable path, capped so a runaway write fills 64 mebibytes of memory
+            # instead of a node's disk. card-platform/docker-compose.yml mounts a tmpfs of
+            # the same size at the same place.
+            - name: tmp
+              mountPath: /tmp
+            # Keystore, truststore and certificate authority, read-only. The keystore is
+            # what this service presents on both ports. The truststore is what it verifies
+            # the broker against. The authority is what the database driver verifies the
+            # server against under sslmode=verify-full.
+            - name: transport-security
+              mountPath: /etc/carddemo/tls
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+        - name: transport-security
+          secret:
+            secretName: carddemo-tls-secret
+            defaultMode: 0640
+            items:
+              - key: keystore.p12
+                path: keystore.p12
+              - key: truststore.p12
+                path: truststore.p12
+              - key: ca.crt
+                path: ca.crt
+---
+# Pods reach the service at notification-service:8080, a short name the Domain
+# Name System (DNS) resolves. /actuator answers on the management port alone, so
+# a caller of the address below reaches no runtime, database or broker internals.
+#
+# The address stays inside the cluster. ClusterIP publishes no port on a node,
+# and every Service in this folder carries the same type.
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: notification
+    app.kubernetes.io/part-of: card-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/part-of: card-platform
+  ports:
+    # 8080 alone. The management port is absent here. A Service address is what
+    # every pod in the cluster resolves, and /actuator answers on 9080.
+    # A monitoring collector reaches 9080 by pod address, which the NetworkPolicy
+    # below admits from monitoring pods only.
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+---
+# Network policy for the notification pod. Two ports, two different callers.
+#
+# 8080 carries GET /notifications/{maskedCardNumber}, and the module
+# config/SecurityConfig authenticates every request that arrives. 9080 carries
+# /actuator, where health answers with no credential so a probe can read it, and
+# every other endpoint requires ROLE_MONITORING. This policy closes the same gap
+# a second time, at the network layer.
+#
+# On probes. A kubelet probe originates from the node instead of from a pod, so
+# it matches neither podSelector below. The Container Network Interface plugins
+# this demo targets pass node-to-pod traffic without consulting the inbound rules
+# of a pod. No rule for the kubelet appears here.
+#
+# A cluster whose Container Network Interface plug-in does not implement
+# NetworkPolicy ignores this object. Confirm support before treating the
+# management port as closed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: notification-service-ingress
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: notification-service
+    app.kubernetes.io/component: notification
+    app.kubernetes.io/part-of: card-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: notification-service
+      app.kubernetes.io/part-of: card-platform
+  policyTypes:
+    - Ingress
+  ingress:
+    # The history surface. Any pod of this platform may call it, and Spring
+    # Security authenticates every request that arrives.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 8080
+          protocol: TCP
+    # The management surface. A monitoring collector carries the label below and
+    # nothing else in this namespace does, so no business pod reaches this port.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: monitoring
+      ports:
+        - port: 9080
+          protocol: TCP

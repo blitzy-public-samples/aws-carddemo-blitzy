@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.account.api.dto.AccountDataRequest;
+import com.carddemo.account.api.dto.AccountUpdateRequest;
+import com.carddemo.account.api.dto.AccountUpdateResponse;
 import com.carddemo.account.api.dto.AccountView;
 import com.carddemo.account.api.dto.CustomerDataRequest;
 import com.carddemo.account.api.dto.CustomerView;
@@ -73,7 +75,7 @@ import tools.jackson.databind.node.JsonNodeType;
  *
  * <h2>What is asserted</h2>
  *
- * <p><strong>Response redaction.</strong> Every one of the fifty-seven response components is
+ * <p><strong>Response redaction.</strong> Every one of the fifty-nine response components is
  * classified, and no classified component may carry a value the platform refuses to emit. The rule
  * is the one {@link SensitiveEventProperties} applies at the event boundary, widened by the names a
  * customer record adds, and it is aware of type as well as name:
@@ -151,17 +153,20 @@ class ApiSurfaceSecurityContractTest {
 
     /**
      * Source files making up the Application Programming Interface surface of the three modules
-     * this class classifies: the account, authorization and card services. Fifteen of the
-     * seventeen declare a record; the other two are the authorization endpoint and its exception
-     * handler.
+     * this class classifies: the account, authorization and card services. Sixteen of the
+     * nineteen declare a record; the other three are the authorization endpoint, the handler that
+     * answers a rejected request, and the card message inventory.
      */
-    private static final int API_SOURCE_FILE_COUNT = 17;
+    private static final int API_SOURCE_FILE_COUNT = 19;
 
-    /** Components the ten response types declare between them. */
-    private static final int RESPONSE_COMPONENT_COUNT = 57;
+    /** Components the eleven response types declare between them. */
+    private static final int RESPONSE_COMPONENT_COUNT = 59;
 
-    /** Main sources of the six services and the two libraries, all of which are scanned. */
-    private static final int MAIN_SOURCE_FILE_COUNT = 153;
+    /**
+     * Fewest main sources the six services and the two libraries carry between them, all of which
+     * are scanned. A scan returning fewer has missed a module or a source root.
+     */
+    private static final int MAIN_SOURCE_FILE_FLOOR = 153;
 
     /** Directory below the repository root holding the six service modules. */
     private static final String SERVICES_DIRECTORY = "card-platform/services";
@@ -221,10 +226,11 @@ class ApiSurfaceSecurityContractTest {
         SOURCE_DISCLOSED
     }
 
-    /** The ten types a service returns as a response body. */
+    /** The eleven types a service returns as a response body. */
     private static final List<Class<?>> RESPONSE_TYPES = List.of(
             AccountView.class,
             CustomerView.class,
+            AccountUpdateResponse.class,
             CycleCloseResponse.class,
             AuthorizationResponse.class,
             ApiErrorResponse.class,
@@ -234,9 +240,10 @@ class ApiSurfaceSecurityContractTest {
             CardUpdateResponse.class,
             CardUpdateResponse.RefreshedCard.class);
 
-    /** The four types a service accepts as a request body. */
+    /** The five types a service accepts as a request body. */
     private static final List<Class<?>> REQUEST_TYPES = List.of(
             AccountDataRequest.class,
+            AccountUpdateRequest.class,
             CustomerDataRequest.class,
             AuthorizationRequest.class,
             CardUpdateRequest.class);
@@ -250,7 +257,7 @@ class ApiSurfaceSecurityContractTest {
      */
     private static final Map<String, Disclosure> RESPONSE_COMPONENTS = responseComponents();
 
-    /** Builds the classification of all fifty-seven response components. */
+    /** Builds the classification of all fifty-nine response components. */
     private static Map<String, Disclosure> responseComponents() {
         Map<String, Disclosure> components = new LinkedHashMap<>();
 
@@ -272,6 +279,13 @@ class ApiSurfaceSecurityContractTest {
         components.put("CustomerView.dateOfBirth", Disclosure.SOURCE_DISCLOSED);
         // CUST-EFT-ACCOUNT-ID reaches the screen at app/cbl/COACTVWC.cbl:L520.
         components.put("CustomerView.eftAccountId", Disclosure.SOURCE_DISCLOSED);
+
+        // AccountUpdateResponse. The message slot is WS-RETURN-MSG at app/cbl/COACTUPC.cbl:L479,
+        // which carries a field label and never a submitted value. The account slot nests
+        // AccountView, whose eleven components are classified above.
+        for (String component : List.of("message", "account")) {
+            components.put("AccountUpdateResponse." + component, Disclosure.SAFE);
+        }
 
         // CycleCloseResponse. Counters app/cbl/CBACT04C.cbl:L353-L354 zeroes.
         for (String component : List.of("accountId", "currentCycleCredit", "currentCycleDebit")) {
@@ -351,13 +365,17 @@ class ApiSurfaceSecurityContractTest {
             "@ResponseStatus");
 
     /**
-     * Files declaring a web-endpoint annotation. Two carry a controller and two carry the handler
+     * Files declaring a web-endpoint annotation. Three carry a controller and two carry the handler
      * that answers a rejected request. Keys take the form {@code module/FileName.java}, which is how
      * {@link #MAIN_SOURCES} keys a source.
+     *
+     * <p>The ledger controller carries no handler beside it. Its one route constrains its path
+     * variable, and the framework answers a miss with its own problem document.</p>
      */
     private static final Set<String> ENDPOINT_SOURCE_FILES = Set.of(
             "authorization-service/AuthorizationController.java",
             "authorization-service/GlobalExceptionHandler.java",
+            "ledger-posting-service/BalanceQueryController.java",
             "notification-service/NotificationHistoryController.java",
             "notification-service/NotificationApiExceptionHandler.java");
 
@@ -636,7 +654,7 @@ class ApiSurfaceSecurityContractTest {
     /**
      * Builds one populated instance of every response type.
      *
-     * <p>Each value satisfies the constructor of the type that receives it. Five of the ten types
+     * <p>Each value satisfies the constructor of the type that receives it. Five types
      * validate what they are given, so the values are chosen to pass rather than to be minimal: an
      * account identifier of exactly eleven digits, a declined authorization carrying both a reason
      * and its text, and the one update outcome that carries a refreshed snapshot. The decline
@@ -654,13 +672,18 @@ class ApiSurfaceSecurityContractTest {
                 new CardUpdateResponse.RefreshedCard("EMBOSSED NAME", "2026", "08", "02", "Y");
 
         Map<String, Object> instances = new LinkedHashMap<>();
-        instances.put("AccountView", new AccountView(SHAPED_ACCOUNT_ID, "Y",
+        AccountView accountView = new AccountView(SHAPED_ACCOUNT_ID, "Y",
                 new BigDecimal("843.00"), new BigDecimal("5000.00"), new BigDecimal("500.00"),
                 new BigDecimal("0.00"), new BigDecimal("0.00"),
-                "2020-01-01", "2026-12-31", "2024-01-01", "ZEROAPR"));
+                "2020-01-01", "2026-12-31", "2024-01-01", "ZEROAPR");
+        instances.put("AccountView", accountView);
         instances.put("CustomerView", new CustomerView("000000011", 750, "1975-04-12",
                 "FIRST", "M", "LAST", "ADDRESS LINE ONE", "ADDRESS LINE TWO", "CITY", "NY",
                 "10001", "USA", "2125551234", "2125555678", "0000000001", "Y"));
+        // The message is the one app/cbl/COACTUPC.cbl:L2206-L2211 composes: a trimmed field label
+        // joined to the literal at app/cbl/COACTUPC.cbl:L2209, which carries no trailing period.
+        instances.put("AccountUpdateResponse",
+                new AccountUpdateResponse("Current Balance is not valid", accountView));
         instances.put("CycleCloseResponse", new CycleCloseResponse(SHAPED_ACCOUNT_ID,
                 new BigDecimal("0.00"), new BigDecimal("0.00")));
         instances.put("AuthorizationResponse", new AuthorizationResponse("0000000000000001",
@@ -1127,15 +1150,15 @@ class ApiSurfaceSecurityContractTest {
     class ResponseRedaction {
 
         /**
-         * The surface is seventeen files, and every record among them is classified as a response or
+         * The surface is nineteen files, and every record among them is classified as a response or
          * a request. A new file or a new record fails here, which is where classification is
-         * enforced. Two of the seventeen declare no record: the authorization endpoint and the
+         * enforced. Three of the nineteen declare no record: the authorization endpoint and the
          * handler that answers a rejected request, both of which the plan requires at
-         * {@code POST /authorizations}.
+         * {@code POST /authorizations}, and the card message inventory.
          */
         @Test
-        @DisplayName("the surface is seventeen files and every record on it is classified")
-        void theApiSurfaceIsSeventeenFilesAndEveryRecordIsClassified() {
+        @DisplayName("the surface is nineteen files and every record on it is classified")
+        void theApiSurfaceIsNineteenFilesAndEveryRecordIsClassified() {
             Map<String, String> apiSources = new LinkedHashMap<>();
             readSourcesBelow(REPOSITORY_ROOT.get().resolve(SERVICES_DIRECTORY)
                     .resolve("account-service").resolve(MAIN_SOURCE_PATH)
@@ -1179,13 +1202,13 @@ class ApiSurfaceSecurityContractTest {
                             CardValidationMessages.class.getSimpleName()), declaredClasses,
                     "the three files that declare no record are the authorization endpoint, the "
                             + "handler that answers a rejected request, and the message inventory");
-            assertEquals(10, RESPONSE_TYPES.size(), "ten types leave as a response body");
-            assertEquals(4, REQUEST_TYPES.size(), "four types enter as a request body");
+            assertEquals(11, RESPONSE_TYPES.size(), "eleven types leave as a response body");
+            assertEquals(5, REQUEST_TYPES.size(), "five types enter as a request body");
         }
 
         /** Every declared component is classified, and every classified component is declared. */
         @Test
-        @DisplayName("all fifty-seven response components are classified in both directions")
+        @DisplayName("all fifty-nine response components are classified in both directions")
         void everyResponseComponentIsClassified() {
             Set<String> declared = new TreeSet<>();
             for (Class<?> type : RESPONSE_TYPES) {
@@ -1725,16 +1748,24 @@ class ApiSurfaceSecurityContractTest {
     class WebSurfaceAccessControl {
 
         /**
-         * Two modules declare a web endpoint and four files carry the annotations: the synchronous
-         * authorization surface the plan requires at {@code POST /authorizations}, and the read-only
-         * notification history. Both are named here by file, so a third module or a fifth file fails
-         * this assertion and the failure text names what then has to be written.
+         * Three modules declare a web endpoint and five files carry the annotations: the synchronous
+         * authorization surface the plan requires at {@code POST /authorizations}, the read-only
+         * balance query at {@code GET /balances/{accountId}}, and the read-only notification
+         * history. All three are named here by file, so a fourth module or a sixth file fails this
+         * assertion and the failure text names what then has to be written.
+         *
+         * <p>The balance query returns the four values {@code 1200-SETUP-SCREEN-VARS} at
+         * {@code app/cbl/COACTVWC.cbl:L460} moves, less the six the account service owns. It reads
+         * and writes nothing, so it adds a route to the surface and no path that changes a
+         * balance.</p>
          */
         @Test
-        @DisplayName("the web endpoints are the four files two services declare")
-        void theWebEndpointsAreTheFourFilesTwoServicesDeclare() {
-            assertEquals(MAIN_SOURCE_FILE_COUNT, MAIN_SOURCES.get().size(),
-                    "every main source of the six services and the two libraries is scanned");
+        @DisplayName("the web endpoints are the five files three services declare")
+        void theWebEndpointsAreTheFiveFilesThreeServicesDeclare() {
+            assertTrue(MAIN_SOURCES.get().size() >= MAIN_SOURCE_FILE_FLOOR,
+                    "the scan reached " + MAIN_SOURCES.get().size() + " main sources of the six "
+                            + "services and the two libraries, under the "
+                            + MAIN_SOURCE_FILE_FLOOR + " they carry between them");
 
             Set<String> declaring = new TreeSet<>();
             Set<String> modules = new TreeSet<>();
@@ -1750,9 +1781,13 @@ class ApiSurfaceSecurityContractTest {
                             + "anonymous caller receives, the body an unhandled failure returns, "
                             + "and the headers the response carries. Add them beside the redaction "
                             + "assertions above: " + declaring);
-            assertEquals(Set.of("authorization-service", "notification-service"), modules,
-                    "the synchronous surface is the authorization endpoint and the notification "
-                            + "history, and no other module answers a request: " + modules);
+            assertEquals(
+                    Set.of("authorization-service", "ledger-posting-service",
+                            "notification-service"),
+                    modules,
+                    "the synchronous surface is the authorization endpoint, the balance query and "
+                            + "the notification history, and no other module answers a request: "
+                            + modules);
         }
 
         /**

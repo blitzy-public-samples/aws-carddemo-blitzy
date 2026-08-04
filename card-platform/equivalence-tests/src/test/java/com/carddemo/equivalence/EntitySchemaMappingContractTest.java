@@ -44,8 +44,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Compares every persistent attribute of all twenty-six entities against the Flyway migration that
- * creates its column.
+ * Compares every persistent attribute of all twenty-seven entities against the Flyway migration
+ * that creates its column.
  *
  * <p>Flyway owns every schema and Hibernate runs under {@code ddl-auto: validate} in all six
  * services, so a wrong column name, type, precision, scale, nullability or key does not fail at
@@ -71,10 +71,14 @@ import org.junit.jupiter.api.Test;
  * rendered types and compare them as numbers, so a precision or a length that agreed only as text
  * would still be caught.</p>
  *
- * <p>Seven tables are created by a migration and mapped by no entity. Each is classified in
+ * <p>Five tables are created by a migration and mapped by no entity. Each is classified in
  * {@link #TABLES_WITHOUT_AN_ENTITY} with the reason, and a table absent from both that list and the
  * entity set fails. A table that IS mapped and also appears in that list fails too, so the list
  * cannot be used to excuse an entity that exists.</p>
+ *
+ * <p>Two indexes are created by a migration and declared on no entity. Each is classified in
+ * {@link #INDEXES_NOT_DECLARED_ON_AN_ENTITY} with the reason, and an exemption naming an index no
+ * migration creates on a mapped table fails, so that list cannot go stale either.</p>
  *
  * <p>No failure message here carries a row value. Every fixture and every seed row is out of reach:
  * this class reads migration text and mapping metadata only, and reports table names, column names,
@@ -83,10 +87,10 @@ import org.junit.jupiter.api.Test;
 class EntitySchemaMappingContractTest {
 
     /** Entities the six services declare between them. */
-    private static final int ENTITY_COUNT = 26;
+    private static final int ENTITY_COUNT = 27;
 
     /** Persistent attributes those entities map between them. */
-    private static final int MAPPED_COLUMN_COUNT = 210;
+    private static final int MAPPED_COLUMN_COUNT = 215;
 
     /** Dialect the mapping model renders SQL types for, matching the shipped database. */
     private static final String POSTGRES_DIALECT = "org.hibernate.dialect.PostgreSQLDialect";
@@ -279,6 +283,7 @@ class EntitySchemaMappingContractTest {
                     com.carddemo.fraud.entity.ProcessedEventEntity.class,
                     com.carddemo.fraud.entity.VelocityWindowEntity.class)),
             new ServiceModule("notification-service", "notification", List.of(
+                    com.carddemo.notification.entity.NotificationLogEntity.class,
                     com.carddemo.notification.entity.ProcessedEventEntity.class,
                     com.carddemo.notification.entity.StatementTransactionEntity.class)),
             new ServiceModule("account-service", "account", List.of(
@@ -312,8 +317,6 @@ class EntitySchemaMappingContractTest {
         classified.put("ledger-posting-service.transaction_category",
                 "Seeded from app/data/ASCII/trancatg.txt by V2__seed.sql, on the same footing as "
                         + "transaction_type");
-        classified.put("notification-service.notification_log",
-                "The delivery-attempt record. Its entity is scheduled beyond this checkpoint");
         classified.put("account-service.us_phone_area_code",
                 "One of the three validation reference tables seeded from app/cpy/CSLKPCDY.cpy by "
                         + "V3__reference_data.sql. The validators read the literals through "
@@ -324,6 +327,34 @@ class EntitySchemaMappingContractTest {
         classified.put("account-service.us_state_zip_prefix",
                 "Seeded from app/cpy/CSLKPCDY.cpy and read through "
                         + "com.carddemo.cobol.reference.UsStateZipPrefixes");
+        return Map.copyOf(classified);
+    }
+
+    /**
+     * Indexes a migration creates on a mapped table and the entity declares none of, each with the
+     * reason.
+     *
+     * <p>The key is the module name and the index name. A {@code jakarta.persistence.Index}
+     * declaration feeds schema generation, which no service runs: Flyway owns every schema and
+     * {@code ddl-auto} is {@code validate}, which reads columns and never indexes. An entry here
+     * changes no runtime behaviour and keeps the divergence visible.</p>
+     */
+    private static final Map<String, String> INDEXES_NOT_DECLARED_ON_AN_ENTITY =
+            indexesNotDeclaredOnAnEntity();
+
+    /** Builds {@link #INDEXES_NOT_DECLARED_ON_AN_ENTITY}. */
+    private static Map<String, String> indexesNotDeclaredOnAnEntity() {
+        Map<String, String> classified = new LinkedHashMap<>();
+        classified.put("notification-service.ix_notification_log_card_number",
+                "NotificationLogEntity declares no index. Its specification states the class "
+                        + "carries none, and this index orders attempted_at descending, which "
+                        + "Hibernate drops from a declared column list, so a declaration would "
+                        + "read [card_number, attempted_at] against migration columns "
+                        + "[card_number, attempted_at DESC] and fail "
+                        + "everyDeclaredIndexIsCreatedByItsMigration");
+        classified.put("notification-service.ix_notification_log_attempted_at",
+                "NotificationLogEntity declares no index, on the same footing as "
+                        + "ix_notification_log_card_number");
         return Map.copyOf(classified);
     }
 
@@ -724,7 +755,7 @@ class EntitySchemaMappingContractTest {
     }
 
     @Nested
-    @DisplayName("Column mapping of all 26 entities")
+    @DisplayName("Column mapping of all 27 entities")
     class ColumnMapping {
 
         /** Every attribute of every entity maps a column its migration declares. */
@@ -951,7 +982,7 @@ class EntitySchemaMappingContractTest {
     }
 
     @Nested
-    @DisplayName("Keys and indexes of all 26 entities")
+    @DisplayName("Keys and indexes of all 27 entities")
     class KeysAndIndexes {
 
         /** Every entity's identifier maps exactly the primary key columns its migration declares. */
@@ -1031,11 +1062,23 @@ class EntitySchemaMappingContractTest {
         @DisplayName("every migrated index of a mapped table is declared on its entity")
         void everyMigratedIndexOfAMappedTableIsDeclared() {
             List<String> undeclared = new ArrayList<>();
+            List<String> exemptButDeclared = new ArrayList<>();
+            Set<String> exemptionsUsed = new TreeSet<>();
+
             for (ServiceModule service : SERVICES) {
                 MigrationSchema migration = migrationOf(service.moduleName());
                 for (MappedTable mapped : mappingOf(service.moduleName())) {
                     for (DdlIndex index : migration.indexesOf(mapped.table())) {
-                        if (!mapped.indexes().containsKey(index.name())) {
+                        String key = service.moduleName() + "." + index.name();
+                        boolean exempt = INDEXES_NOT_DECLARED_ON_AN_ENTITY.containsKey(key);
+                        boolean declared = mapped.indexes().containsKey(index.name());
+                        if (exempt) {
+                            exemptionsUsed.add(key);
+                        }
+                        if (exempt && declared) {
+                            exemptButDeclared.add(key);
+                        }
+                        if (!exempt && !declared) {
                             undeclared.add(service.moduleName() + " " + index.name() + " on "
                                     + mapped.table() + " " + index.columns() + " (entity "
                                     + simpleName(mapped.entityName()) + ")");
@@ -1047,6 +1090,23 @@ class EntitySchemaMappingContractTest {
             assertEquals(List.of(), undeclared,
                     "these migrated indexes are not declared on the entity that maps their table: "
                             + undeclared);
+            assertEquals(List.of(), exemptButDeclared,
+                    "these indexes are exempt from declaration and their entity declares them, so "
+                            + "the exemption is stale: " + exemptButDeclared);
+            assertEquals(new TreeSet<>(INDEXES_NOT_DECLARED_ON_AN_ENTITY.keySet()), exemptionsUsed,
+                    "every exemption names an index a migration creates on a mapped table");
+        }
+
+        /** Every exempt index states a reason rather than sitting in the list unexplained. */
+        @Test
+        @DisplayName("every index exempt from declaration carries a stated reason")
+        void everyExemptIndexCarriesAStatedReason() {
+            for (Map.Entry<String, String> exempt : INDEXES_NOT_DECLARED_ON_AN_ENTITY.entrySet()) {
+                assertFalse(exempt.getValue().isBlank(),
+                        exempt.getKey() + " is exempt from declaration with no reason");
+                assertTrue(exempt.getKey().contains("."),
+                        exempt.getKey() + " names its module and its index");
+            }
         }
 
         /**

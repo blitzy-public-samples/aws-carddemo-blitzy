@@ -23,7 +23,7 @@ import org.junit.jupiter.api.Test;
  * read with nothing, and the authorization demonstration has no card to authorize.
  *
  * <p>The two fixtures are loaded on z/OS by an IDCAMS copy step, which is where the seed migrations
- * of this platform come from: {@code REPRO INFILE(CARDDATA)} at {@code app/jcl/CARDFILE.jcl:L76}
+ * of this platform come from: {@code REPRO INFILE(CARDDATA)} at {@code app/jcl/CARDFILE.jcl:L75}
  * and {@code REPRO INFILE(XREFDATA)} at {@code app/jcl/XREFFILE.jcl:L64}.
  *
  * <p>Each test compares the migration text against the fixture, field by field. A seed value that
@@ -34,16 +34,22 @@ class CardSeedEquivalenceTest {
     /** Directory name of the card service under {@code card-platform/services}. */
     private static final String MODULE = "card-service";
 
-    /** One row of the {@code card} insert: six values, the fourth spanning to the next line. */
+    /**
+     * One row of the {@code card} insert: six values in column order.
+     *
+     * <p>{@link #seededCardRows()} joins the statement's lines before matching, so a row written on
+     * one line and a row split across two both parse. Line breaks and the spaces that align the
+     * literals are formatting, and the values are the contract.
+     *
+     * <p>The name group is reluctant, so {@code 'Lucious O''Connell'} parses as one row's name and
+     * stops at that row's own expiry date.
+     */
     private static final Pattern CARD_ROW = Pattern.compile(
-            "^    \\('([0-9]{16})', '([0-9]{11})', '([0-9]{3})', '(.*)',$");
+            "\\('([0-9]{16})', '([0-9]{11})', '([0-9]{3})', '((?:[^']|'')*?)', *"
+                    + "'([0-9]{4}-[0-9]{2}-[0-9]{2})', '([YN])'\\)");
 
-    /** The continuation line of a {@code card} row: the expiry date and the status. */
-    private static final Pattern CARD_ROW_TAIL =
-            Pattern.compile("^        '([0-9]{4}-[0-9]{2}-[0-9]{2})', '([YN])'\\),?;?$");
-
-    /** Width of the embossed name each seeded row writes, filled by {@link #seededCardRows()}. */
-    private static final Map<String, Integer> SEEDED_NAME_WIDTHS = new LinkedHashMap<>();
+    /** Embossed name each seeded row writes, unstripped, filled by {@link #seededCardRows()}. */
+    private static final Map<String, String> SEEDED_NAMES = new LinkedHashMap<>();
 
     /** One row of the {@code card_xref} insert. */
     private static final Pattern XREF_ROW =
@@ -63,9 +69,9 @@ class CardSeedEquivalenceTest {
     void everyCardRowMatchesTheFixture() {
         Map<String, List<String>> fixture = new LinkedHashMap<>();
         for (CopybookRecordParser.CardRecord card : CardDemoFixtureLoader.loadCards()) {
-            // CardDemoFixtureLoader trims the embossed name. The seed keeps the fifty characters
-            // of the source field for the CHAR(50) column, so this comparison trims both sides and
-            // theEmbossedNameKeepsItsSourceWidth() asserts the stored width separately.
+            // CardDemoFixtureLoader trims the embossed name, and so does the seed. Both sides are
+            // stripped here so the comparison reads the same whether or not a value carries
+            // padding, and theEmbossedNameArrivesTrimmed() asserts the padding separately.
             fixture.put(card.cardNumber(), List.of(card.accountId(), card.cardVerificationValue(),
                     card.embossedName().strip(), card.expirationDate(), card.activeStatus()));
         }
@@ -143,14 +149,26 @@ class CardSeedEquivalenceTest {
     }
 
     @Test
-    @DisplayName("the embossed name keeps the fifty characters of its source field")
-    void theEmbossedNameKeepsItsSourceWidth() {
+    @DisplayName("the embossed name arrives trimmed of the padding of its source field")
+    void theEmbossedNameArrivesTrimmed() {
+        Map<String, String> fixtureNames = new LinkedHashMap<>();
+        CardDemoFixtureLoader.loadCards().forEach(card ->
+                fixtureNames.put(card.cardNumber(), card.embossedName().strip()));
+
         seededCardRows();
 
-        assertEquals(50, SEEDED_NAME_WIDTHS.size(), "one width per seeded row");
-        SEEDED_NAME_WIDTHS.forEach((cardNumber, width) -> assertEquals(50, width.intValue(),
-                "CARD-EMBOSSED-NAME PIC X(50) is space padded, and the column is CHAR(50), so card "
-                        + cardNumber + " keeps all fifty characters"));
+        assertEquals(50, SEEDED_NAMES.size(), "one name per seeded row");
+        SEEDED_NAMES.forEach((cardNumber, name) -> {
+            // CARD-EMBOSSED-NAME PIC X(50) at app/cpy/CVACT02Y.cpy:L8 pads its value with spaces,
+            // and the seed writes the value without that padding. embossed_name is CHAR(50), so
+            // PostgreSQL pads the stored value back to fifty characters on the way in.
+            assertEquals(name.strip(), name,
+                    "card " + cardNumber + " carries no padding around its embossed name");
+            assertEquals(fixtureNames.get(cardNumber), name,
+                    "card " + cardNumber + " carries the embossed name of its fixture record");
+            assertTrue(name.length() <= 50, "card " + cardNumber
+                    + " holds a name no wider than CARD-EMBOSSED-NAME PIC X(50)");
+        });
     }
 
     /**
@@ -161,24 +179,16 @@ class CardSeedEquivalenceTest {
      */
     private static Map<String, List<String>> seededCardRows() {
         Map<String, List<String>> rows = new LinkedHashMap<>();
-        List<String> lines = insertBlock("card");
-        Map<String, Integer> widthsByCardNumber = new LinkedHashMap<>();
-        for (int index = 0; index < lines.size(); index++) {
-            Matcher head = CARD_ROW.matcher(lines.get(index));
-            if (!head.matches()) {
-                continue;
-            }
-            assertTrue(index + 1 < lines.size(),
-                    "a card row must carry its expiry date and status on the next line");
-            Matcher tail = CARD_ROW_TAIL.matcher(lines.get(index + 1));
-            assertTrue(tail.matches(),
-                    "unreadable continuation line: " + lines.get(index + 1));
-            rows.put(head.group(1), List.of(head.group(2), head.group(3),
-                    head.group(4).replace("''", "'").strip(), tail.group(1), tail.group(2)));
-            widthsByCardNumber.put(head.group(1), head.group(4).replace("''", "'").length());
+        Map<String, String> namesByCardNumber = new LinkedHashMap<>();
+        Matcher row = CARD_ROW.matcher(String.join(" ", insertBlock("card")));
+        while (row.find()) {
+            String name = row.group(4).replace("''", "'");
+            rows.put(row.group(1), List.of(row.group(2), row.group(3), name.strip(),
+                    row.group(5), row.group(6)));
+            namesByCardNumber.put(row.group(1), name);
         }
         assertEquals(50, rows.size(), "the card seed writes 50 rows");
-        SEEDED_NAME_WIDTHS.putAll(widthsByCardNumber);
+        SEEDED_NAMES.putAll(namesByCardNumber);
         return rows;
     }
 

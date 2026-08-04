@@ -1,15 +1,23 @@
 package com.carddemo.account.api.dto;
 
+import com.carddemo.account.domain.validation.AccountIdValidator;
+import com.carddemo.account.domain.validation.EditResult;
 import com.carddemo.events.EventEnvelope;
+import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
+
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -254,6 +262,213 @@ class DtoValidationWiringTest {
             assertFalse(validator.validate(withOpenDate("20201332")).isEmpty(),
                     "app/cbl/COACTUPC.cbl:L1478 labels the field Open Date and the date validator"
                             + " reached through CSUTLDTC refuses month 13");
+        }
+    }
+
+    /** The update request holds the three parts of its source group and bounds the width of one. */
+    @Nested
+    @DisplayName("AccountUpdateRequest composes the two data records")
+    class AccountUpdateComposition {
+
+        /** Eleven characters, the value row 1 of {@code acctdata.txt} carries at columns 1 to 11. */
+        private static final String ACCOUNT_ID = "00000000001";
+
+        /**
+         * First literal of the {@code STRING} at {@code app/cbl/COACTUPC.cbl:L1807}, copied
+         * character for character. The lower-case {@code a} in {@code a 11 digit} is the source
+         * wording.
+         */
+        private static final String SUPPLIED_RULE_FIRST_LITERAL =
+                "Account Number if supplied must be a 11 digit";
+
+        /**
+         * Second literal, at {@code app/cbl/COACTUPC.cbl:L1808}. The literal opens with one space
+         * and {@code DELIMITED BY SIZE} at line 1809 joins it whole.
+         */
+        private static final String SUPPLIED_RULE_SECOND_LITERAL = " Non-Zero Number";
+
+        /**
+         * Text of {@code 88 WS-PROMPT-FOR-ACCT} at {@code app/cbl/COACTUPC.cbl:L483-L484}, copied
+         * character for character.
+         */
+        private static final String NOT_PROVIDED = "Account number not provided";
+
+        @Test
+        @DisplayName("the record holds the identifier and the two groups of L757 and nothing more")
+        void theRecordHoldsThreeComponents() {
+            RecordComponent[] components = AccountUpdateRequest.class.getRecordComponents();
+
+            assertEquals(3, components.length,
+                    () -> "05 ACUP-NEW-DETAILS. at app/cbl/COACTUPC.cbl:L757 holds one identifier"
+                            + " and two subordinate groups, and this record holds: "
+                            + namesOf(components));
+            assertEquals("accountId", components[0].getName(), () -> namesOf(components));
+            assertEquals(String.class, components[0].getType(),
+                    "ACUP-NEW-ACCT-ID-X PIC X(11) at app/cbl/COACTUPC.cbl:L759 is the wire form,"
+                            + " and PIC 9(11) at L760-L761 redefines the same eleven bytes");
+            assertEquals("accountData", components[1].getName(), () -> namesOf(components));
+            assertEquals(AccountDataRequest.class, components[1].getType(), "L758 to L796");
+            assertEquals("customerData", components[2].getName(), () -> namesOf(components));
+            assertEquals(CustomerDataRequest.class, components[2].getType(), "L797 onward");
+        }
+
+        @Test
+        @DisplayName("the identifier keeps its ten leading zeros through a serialization round trip")
+        void theIdentifierKeepsItsLeadingZeros() {
+            AccountUpdateRequest request = updateOf(ACCOUNT_ID);
+
+            assertEquals(ACCOUNT_ID, request.accountId(),
+                    "the accessor returns the eleven characters that arrived");
+
+            ObjectMapper mapper = JsonMapper.builder().build();
+            String json = mapper.writeValueAsString(request);
+            AccountUpdateRequest returned = mapper.readValue(json, AccountUpdateRequest.class);
+
+            assertTrue(json.contains("\"" + ACCOUNT_ID + "\""),
+                    () -> "a numeric component would render 00000000001 as 1 and drop ten leading"
+                            + " zeros: " + json);
+            assertEquals(ACCOUNT_ID, returned.accountId(), () -> json);
+            assertEquals(request, returned, () -> json);
+        }
+
+        @Test
+        @DisplayName("an identifier wider than eleven characters breaks the width bound of L759")
+        void anIdentifierWiderThanElevenCharactersIsRefused() {
+            assertEquals(11, AccountUpdateRequest.ACCOUNT_ID_MAX_LENGTH,
+                    "ACUP-NEW-ACCT-ID-X PIC X(11) at app/cbl/COACTUPC.cbl:L759");
+            assertTrue(validator.validate(updateOf(ACCOUNT_ID)).isEmpty(),
+                    () -> "an eleven-character identifier passes: "
+                            + messagesOf(validator.validate(updateOf(ACCOUNT_ID))));
+
+            Set<ConstraintViolation<AccountUpdateRequest>> violations =
+                    validator.validate(updateOf("000000000012"));
+
+            assertEquals(1, violations.size(),
+                    () -> "one bound reports one violation: " + messagesOf(violations));
+            assertEquals("accountId",
+                    violations.iterator().next().getPropertyPath().toString(),
+                    () -> messagesOf(violations));
+        }
+
+        @Test
+        @DisplayName("a missing identifier reports no bean violation and reaches the validator")
+        void aMissingIdentifierReportsNoBeanViolation() {
+            for (String missing : List.of("", "   ", "           ")) {
+                assertTrue(validator.validate(updateOf(missing)).isEmpty(),
+                        () -> "app/cbl/COACTUPC.cbl:L1787-L1788 catches a field of spaces and"
+                                + " line 1792 answers with one text, so no bound answers first: "
+                                + messagesOf(validator.validate(updateOf(missing))));
+                assertEquals(NOT_PROVIDED, AccountIdValidator.validate(missing).message());
+            }
+            assertTrue(validator.validate(updateOf(null)).isEmpty(),
+                    () -> "an absent identifier reaches the validator untouched: "
+                            + messagesOf(validator.validate(updateOf(null))));
+            assertEquals(NOT_PROVIDED, AccountIdValidator.validate(null).message());
+        }
+
+        @Test
+        @DisplayName("a rejected identifier carries one text, copied from L1807 and L1808")
+        void aRejectedIdentifierCarriesOneUnprefixedText() {
+            EditResult rejected = AccountIdValidator.validate("00000000000");
+
+            assertFalse(rejected.valid(), "CC-ACCT-ID-N EQUAL ZEROS at app/cbl/COACTUPC.cbl:L1803");
+            assertEquals(SUPPLIED_RULE_FIRST_LITERAL + SUPPLIED_RULE_SECOND_LITERAL,
+                    rejected.message(),
+                    "the STRING at app/cbl/COACTUPC.cbl:L1806-L1810 joins both literals whole, and"
+                            + " no label field reaches the front of either");
+            assertEquals("Account Number if supplied must be a 11 digit Non-Zero Number",
+                    rejected.message(), "lower-case a, and no closing full stop");
+            assertFalse(rejected.message().endsWith("."), "the source literals close without one");
+            assertFalse(rejected.message().startsWith("Account Number "
+                            + SUPPLIED_RULE_FIRST_LITERAL),
+                    "neither text is built from the trimmed label field");
+
+            for (RecordComponent component : EditResult.class.getRecordComponents()) {
+                assertFalse(Collection.class.isAssignableFrom(component.getType())
+                                || Map.class.isAssignableFrom(component.getType()),
+                        () -> "WS-RETURN-MSG PIC X(75) at app/cbl/COACTUPC.cbl:L479 holds one text"
+                                + " under the guard at line 480, so no component collects many: "
+                                + component.getName());
+            }
+        }
+
+        @Test
+        @DisplayName("the cascade reaches the account section at L758")
+        void theCascadeReachesTheAccountSection() {
+            AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID,
+                    withActiveStatus("X"), VALID_CUSTOMER);
+
+            Set<ConstraintViolation<AccountUpdateRequest>> violations = validator.validate(request);
+
+            assertFalse(violations.isEmpty(),
+                    "without the cascade the edits of AccountDataRequest are unreachable through"
+                            + " the enclosing request");
+            assertTrue(violations.stream()
+                            .anyMatch(violation -> violation.getPropertyPath().toString()
+                                    .equals("accountData.activeStatus")),
+                    () -> "the path names the composed component: " + messagesOf(violations));
+        }
+
+        @Test
+        @DisplayName("the cascade reaches the customer section at L797")
+        void theCascadeReachesTheCustomerSection() {
+            AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, VALID_ACCOUNT,
+                    withFirstName("Aaron2"));
+
+            Set<ConstraintViolation<AccountUpdateRequest>> violations = validator.validate(request);
+
+            assertFalse(violations.isEmpty(),
+                    "without the cascade the edits of CustomerDataRequest are unreachable through"
+                            + " the enclosing request");
+            assertTrue(violations.stream()
+                            .anyMatch(violation -> violation.getPropertyPath().toString()
+                                    .equals("customerData.firstName")),
+                    () -> "the path names the composed component: " + messagesOf(violations));
+        }
+
+        @Test
+        @DisplayName("the rendering names all three components and carries no value")
+        void theRenderingNamesThreeComponentsAndCarriesNoValue() {
+            String rendering = updateOf(ACCOUNT_ID).toString();
+
+            assertFalse(rendering.contains(ACCOUNT_ID),
+                    () -> "the account identifier is the key every event of this account carries: "
+                            + rendering);
+            for (String value : List.of("Aaron", "500 Market Street", "5000.00", "ZEROGROUP1")) {
+                assertFalse(rendering.contains(value),
+                        () -> "the rendering carries " + value + ": " + rendering);
+            }
+            for (String component : List.of("accountId", "accountData", "customerData")) {
+                assertTrue(rendering.contains(component + "=" + CustomerDataRequest.WITHHELD),
+                        () -> "each component is named and its value withheld, and " + component
+                                + " is missing from: " + rendering);
+            }
+            assertTrue(rendering.startsWith("AccountUpdateRequest[") && rendering.endsWith("]"),
+                    () -> rendering);
+        }
+
+        /**
+         * Builds an update request carrying one identifier and both reference sections.
+         *
+         * @param accountId the identifier to submit; may be {@code null}
+         * @return the request
+         */
+        private AccountUpdateRequest updateOf(String accountId) {
+            return new AccountUpdateRequest(accountId, VALID_ACCOUNT, VALID_CUSTOMER);
+        }
+
+        /**
+         * Joins the component names of a record, for a failure message.
+         *
+         * @param components the components declared
+         * @return the names, comma separated
+         */
+        private String namesOf(RecordComponent[] components) {
+            List<String> names = new ArrayList<>();
+            for (RecordComponent component : components) {
+                names.add(component.getName());
+            }
+            return String.join(", ", names);
         }
     }
 

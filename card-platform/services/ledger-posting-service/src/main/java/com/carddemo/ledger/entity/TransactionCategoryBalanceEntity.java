@@ -33,8 +33,7 @@ import java.util.regex.Pattern;
  * <p>The balance carries eleven digits, two of them after the decimal point, and a negative
  * balance is ordinary traffic. This class stores that value and computes nothing:
  * {@code app/cbl/CBTRN02C.cbl:L508} and {@code app/cbl/CBTRN02C.cbl:L527} add a transaction amount
- * to it. The planned category-balance updater in the {@code domain} package is to own that
- * arithmetic, and it is not authored yet.</p>
+ * to it. {@code CategoryBalanceUpdater} in the {@code domain} package owns that arithmetic.</p>
  */
 @Entity
 @Table(name = "transaction_category_balance")

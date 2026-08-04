@@ -18,21 +18,44 @@ import org.hibernate.type.SqlTypes;
  * The card-keyed read model this service serves its alert history from.
  *
  * <p>Thirteen columns map the record {@code 01 TRNX-RECORD.} at {@code app/cpy/COSTM01.CPY:L20}.
- * The composite key comes from the group {@code 05 TRNX-KEY.} at {@code app/cpy/COSTM01.CPY:L21},
- * which the cluster definition declares as {@code KEYS(32 0)} at {@code app/jcl/CREASTMT.JCL:L30}
- * and the sort step orders as {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} at
- * {@code app/jcl/CREASTMT.JCL:L53}.
+ * The composite key is the group {@code 05 TRNX-KEY.} at {@code app/cpy/COSTM01.CPY:L21}, which
+ * the cluster definition declares as {@code KEYS(32 0)} at {@code app/jcl/CREASTMT.JCL:L30}, a Job
+ * Control Language (JCL) member. The sort step orders the two key parts as
+ * {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} at {@code app/jcl/CREASTMT.JCL:L53}, and that order
+ * is the key column order here.
+ *
+ * <p>Each column, with the source field and source line it maps:
+ *
+ * <pre>
+ * TRNX-CARD-NUM       L22   card_number            CHAR(16)
+ * TRNX-ID             L23   transaction_id         CHAR(16)
+ * TRNX-TYPE-CD        L25   type_code              CHAR(2)
+ * TRNX-CAT-CD         L26   category_code          CHAR(4)
+ * TRNX-SOURCE         L27   source                 CHAR(10)
+ * TRNX-DESC           L28   description            CHAR(100)
+ * TRNX-AMT            L29   amount                 NUMERIC(11,2)
+ * TRNX-MERCHANT-ID    L30   merchant_id            CHAR(9)
+ * TRNX-MERCHANT-NAME  L31   merchant_name          CHAR(50)
+ * TRNX-MERCHANT-CITY  L32   merchant_city          CHAR(50)
+ * TRNX-MERCHANT-ZIP   L33   merchant_zip           CHAR(10)
+ * TRNX-ORIG-TS        L34   origin_timestamp       CHAR(26)
+ * TRNX-PROC-TS        L35   processing_timestamp   CHAR(26)
+ * </pre>
  *
  * <p>The card number column holds the masked form: twelve mask characters then the last four
- * digits. Masking is an addition, and no masking exists in the source. The card field on the card
- * detail map occupies its full sixteen characters at {@code app/bms/COCRDSL.bms:L99}.
+ * digits. Masking is an addition. The source key holds a full Primary Account Number (PAN), and
+ * the card field on the card detail map occupies its full sixteen characters at
+ * {@code app/bms/COCRDSL.bms:L99}.
  *
- * <p>Two events fill a row. {@code TransactionAuthorized} supplies twelve columns and
- * {@code TransactionPosted} supplies the processing timestamp. Both carry the masked card number
- * and the transaction identifier, so either computes the key and either may arrive first. An
- * alphanumeric column the arriving event does not supply holds spaces, and a numeric column holds
- * zero, matching {@code MOVE SPACES} at {@code app/cbl/CBSTM03A.CBL:L459} and {@code MOVE ZERO} at
- * {@code app/cbl/CBSTM03A.CBL:L325}.
+ * <p>Both timestamp columns hold 26 characters of text, and neither maps to a date or time type.
+ * Two source constructs carry no column: the group {@code 05 TRNX-REST.} at
+ * {@code app/cpy/COSTM01.CPY:L24}, and the trailing {@code FILLER PIC X(20)} at
+ * {@code app/cpy/COSTM01.CPY:L36}. Both omissions appear in
+ * {@code card-platform/docs/traceability-matrix.md} (planned).
+ *
+ * <p>The one secondary index declared below is the index
+ * {@code src/main/resources/db/migration/V1__schema.sql} creates over
+ * {@code processing_timestamp}.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
@@ -46,72 +69,103 @@ public class StatementTransactionEntity {
     private static final Pattern MASKED_CARD_NUMBER =
             Pattern.compile("^\\*{12}[0-9]{4}$");
 
-    /** The composite key, from {@code 05 TRNX-KEY.} at {@code app/cpy/COSTM01.CPY:L21}. */
+    /** Holds the composite key. Source: {@code 05 TRNX-KEY.} at {@code app/cpy/COSTM01.CPY:L21}. */
     @EmbeddedId
     private StatementTransactionId id;
 
-    /** {@code TRNX-TYPE-CD PIC X(02)} at {@code app/cpy/COSTM01.CPY:L25}. */
+    /**
+     * Holds the transaction type code. Source: {@code TRNX-TYPE-CD PIC X(02)} at
+     * {@code app/cpy/COSTM01.CPY:L25}.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "type_code", nullable = false, length = PicClause.TRAN_TYPE_CD_WIDTH)
     private String typeCode;
 
     /**
-     * {@code TRNX-CAT-CD PIC 9(04)} at {@code app/cpy/COSTM01.CPY:L26}, held as four digit
-     * characters. The column is {@code CHAR(4)} so a leading zero survives storage, which a numeric
-     * column would drop.
+     * Holds the transaction category code, four digit characters with any leading zero kept.
+     *
+     * <p>Source: {@code TRNX-CAT-CD PIC 9(04)} at {@code app/cpy/COSTM01.CPY:L26}. The migration
+     * declares the column {@code CHAR(4)} and constrains it to four digits.</p>
      */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "category_code", nullable = false, length = PicClause.TRAN_CAT_CD_WIDTH)
     private String categoryCode;
 
-    /** {@code TRNX-SOURCE PIC X(10)} at {@code app/cpy/COSTM01.CPY:L27}. */
+    /**
+     * Holds the channel the transaction arrived through. Source:
+     * {@code TRNX-SOURCE PIC X(10)} at {@code app/cpy/COSTM01.CPY:L27}.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "source", nullable = false, length = PicClause.TRAN_SOURCE_WIDTH)
     private String source;
 
-    /** {@code TRNX-DESC PIC X(100)} at {@code app/cpy/COSTM01.CPY:L28}. */
+    /**
+     * Holds the text describing the transaction, at its full hundred characters. Source:
+     * {@code TRNX-DESC PIC X(100)} at {@code app/cpy/COSTM01.CPY:L28}.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "description", nullable = false, length = PicClause.TRAN_DESC_WIDTH)
     private String description;
 
-    /** {@code TRNX-AMT PIC S9(09)V99} at {@code app/cpy/COSTM01.CPY:L29}. */
+    /**
+     * Holds the transaction amount at scale {@value PicClause#TRAN_AMT_SCALE}. A refund carries a
+     * negative amount. Source: {@code TRNX-AMT PIC S9(09)V99} at
+     * {@code app/cpy/COSTM01.CPY:L29}.
+     */
     @Column(name = "amount", nullable = false,
             precision = PicClause.TRAN_AMT_PRECISION, scale = PicClause.TRAN_AMT_SCALE)
     private BigDecimal amount;
 
     /**
-     * {@code TRNX-MERCHANT-ID PIC 9(09)} at {@code app/cpy/COSTM01.CPY:L30}, held as nine digit
-     * characters for the same reason {@code category_code} is.
+     * Holds the merchant identifier, nine digit characters with any leading zero kept.
+     *
+     * <p>Source: {@code TRNX-MERCHANT-ID PIC 9(09)} at {@code app/cpy/COSTM01.CPY:L30}. The
+     * migration declares the column {@code CHAR(9)} and constrains it to nine digits.</p>
      */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "merchant_id", nullable = false, length = PicClause.TRAN_MERCHANT_ID_WIDTH)
     private String merchantId;
 
-    /** {@code TRNX-MERCHANT-NAME PIC X(50)} at {@code app/cpy/COSTM01.CPY:L31}. */
+    /**
+     * Holds the merchant name. Source: {@code TRNX-MERCHANT-NAME PIC X(50)} at
+     * {@code app/cpy/COSTM01.CPY:L31}.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "merchant_name", nullable = false,
             length = PicClause.TRAN_MERCHANT_NAME_WIDTH)
     private String merchantName;
 
-    /** {@code TRNX-MERCHANT-CITY PIC X(50)} at {@code app/cpy/COSTM01.CPY:L32}. */
+    /**
+     * Holds the merchant city. Source: {@code TRNX-MERCHANT-CITY PIC X(50)} at
+     * {@code app/cpy/COSTM01.CPY:L32}.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "merchant_city", nullable = false,
             length = PicClause.TRAN_MERCHANT_CITY_WIDTH)
     private String merchantCity;
 
-    /** {@code TRNX-MERCHANT-ZIP PIC X(10)} at {@code app/cpy/COSTM01.CPY:L33}. */
+    /**
+     * Holds the merchant mail code. Source: {@code TRNX-MERCHANT-ZIP PIC X(10)} at
+     * {@code app/cpy/COSTM01.CPY:L33}.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "merchant_zip", nullable = false,
             length = PicClause.TRAN_MERCHANT_ZIP_WIDTH)
     private String merchantZip;
 
-    /** {@code TRNX-ORIG-TS PIC X(26)} at {@code app/cpy/COSTM01.CPY:L34}. */
+    /**
+     * Holds when the transaction originated, as 26 characters of text. Source:
+     * {@code TRNX-ORIG-TS PIC X(26)} at {@code app/cpy/COSTM01.CPY:L34}.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "origin_timestamp", nullable = false,
             length = PicClause.TRAN_ORIG_TS_WIDTH)
     private String originTimestamp;
 
-    /** {@code TRNX-PROC-TS PIC X(26)} at {@code app/cpy/COSTM01.CPY:L35}. */
+    /**
+     * Holds when the platform recorded the transaction, as 26 characters of text. Source:
+     * {@code TRNX-PROC-TS PIC X(26)} at {@code app/cpy/COSTM01.CPY:L35}.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "processing_timestamp", nullable = false,
             length = PicClause.TRAN_PROC_TS_WIDTH)
@@ -126,7 +180,7 @@ public class StatementTransactionEntity {
      *
      * @param id the composite key
      * @param typeCode the transaction type code
-     * @param categoryCode the merchant category code, four digits
+     * @param categoryCode the transaction category code, four digits
      * @param source where the transaction entered the platform
      * @param description free text describing the transaction
      * @param amount the transaction amount, scale {@value PicClause#TRAN_AMT_SCALE}
@@ -169,29 +223,33 @@ public class StatementTransactionEntity {
      * @param scale the scale the column declares
      * @param field the field name the message reports
      * @return the argument
+     * @throws NullPointerException when the argument is null
+     * @throws IllegalArgumentException when the argument carries another scale
      */
     private static BigDecimal requireScale(BigDecimal value, int scale, String field) {
         Objects.requireNonNull(value, field + " is required");
         if (value.scale() != scale) {
-            throw new IllegalArgumentException(
-                    field + " carries scale " + value.scale() + " and the column declares " + scale);
+            throw new IllegalArgumentException(field + " carries scale " + value.scale()
+                    + " and the column declares " + scale);
         }
         return value;
     }
 
     /**
-     * Checks a digit-character argument against the width its column declares, left-padding a
+     * Checks a digit-character argument against the width its column declares, then left-pads a
      * shorter value with zeros.
      *
-     * <p>The column is {@code CHAR}, so it holds exactly {@code width} characters. Padding here is
-     * what keeps the leading zeros of {@code PIC 9(nn)}: the value {@code 1} of a four-digit
-     * category code is stored and returned as {@code 0001}, which is what
-     * {@code app/cpy/COSTM01.CPY} declares and a numeric column would lose.</p>
+     * <p>The column holds exactly {@code width} characters. This method returns {@code 0001} for a
+     * four-digit category code supplied as {@code 1}, the form
+     * {@code TRNX-CAT-CD PIC 9(04)} at {@code app/cpy/COSTM01.CPY:L26} declares.</p>
      *
      * @param value the argument
      * @param width the digit count the column holds
      * @param field the field name the message reports
      * @return the argument at {@code width} digits
+     * @throws NullPointerException when the argument is null
+     * @throws IllegalArgumentException when the argument is empty, wider than the column, or
+     *         carries a character that is not a digit
      */
     private static String requireDigits(String value, int width, String field) {
         Objects.requireNonNull(value, field + " is required");
@@ -292,13 +350,19 @@ public class StatementTransactionEntity {
         /** Serialization identity of this key. */
         private static final long serialVersionUID = 1L;
 
-        /** The masked card number, from {@code TRNX-CARD-NUM PIC X(16)}. */
+        /**
+         * Holds the masked card number. Source: {@code TRNX-CARD-NUM PIC X(16)} at
+         * {@code app/cpy/COSTM01.CPY:L22}.
+         */
         @JdbcTypeCode(SqlTypes.CHAR)
         @Column(name = "card_number", nullable = false,
                 length = PicClause.TRAN_CARD_NUM_WIDTH)
         private String cardNumber;
 
-        /** The transaction identifier, from {@code TRNX-ID PIC X(16)}. */
+        /**
+         * Holds the transaction identifier. Source: {@code TRNX-ID PIC X(16)} at
+         * {@code app/cpy/COSTM01.CPY:L23}.
+         */
         @JdbcTypeCode(SqlTypes.CHAR)
         @Column(name = "transaction_id", nullable = false, length = PicClause.TRAN_ID_WIDTH)
         private String transactionId;
