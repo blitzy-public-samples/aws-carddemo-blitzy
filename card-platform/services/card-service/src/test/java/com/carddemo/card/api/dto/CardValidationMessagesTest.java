@@ -28,9 +28,10 @@ import org.junit.jupiter.api.Test;
  * {@link #everyDeclaredConstantIsClassifiedAgainstTheTextInventory()} reconciles the whole
  * declared set against an enumerated inventory. That inventory holds twenty texts transcribed
  * from the card programs: the fifteen a caller can receive and the five distinct texts of the six
- * declarations no program sets. Beside them sits one additive text, which transcribes no source
- * literal and reports the transport width of the expiry day. The production class declares
- * twenty-two constants, and the reconciliation names each one that sits outside the twenty. A
+ * declarations no program sets. Beside them sit two additive texts, which transcribe no source
+ * literal and report what the stored column will not accept: the transport width of the expiry day,
+ * and a year, month and day naming no day of the calendar. The production class declares
+ * twenty-three constants, and the reconciliation names each one that sits outside the twenty. A
  * constant added, removed or renamed fails by name.</p>
  *
  * <p>Six declarations carry the {@code NEVER_EMITTED} prefix and hold five distinct
@@ -60,6 +61,8 @@ import org.junit.jupiter.api.Test;
  *
  * <p>No text names the card verification value {@code CARD-CVV-CD PIC 9(03)} at
  * {@code app/cpy/CVACT02Y.cpy:L7}, and one test holds that line.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 class CardValidationMessagesTest {
 
@@ -77,14 +80,15 @@ class CardValidationMessagesTest {
     private static final String NEVER_EMITTED_FIELD_PREFIX = "NEVER_EMITTED_";
 
     /**
-     * Prefix on the one declaration that transcribes no source literal. It reports the transport
-     * width of the expiry day, which no source paragraph edits, and the prefix is what keeps it
+     * Prefix on declarations that transcribe no source literal. They cover REST-only input shapes
+     * such as the card token, page size and browse direction, plus the two expiry values whose
+     * target column is stricter than the source text field. The prefix is what keeps them
      * distinguishable from the twenty texts read out of the card programs.
      */
     private static final String ADDITIVE_FIELD_PREFIX = "ADDITIVE_";
 
     /** Declarations carrying {@link #ADDITIVE_FIELD_PREFIX}. */
-    private static final int ADDITIVE_FIELD_COUNT = 1;
+    private static final int ADDITIVE_FIELD_COUNT = 5;
 
     /**
      * Count of declarations carrying the {@value #NEVER_EMITTED_FIELD_PREFIX} prefix. Six
@@ -97,7 +101,7 @@ class CardValidationMessagesTest {
     private static final int NEVER_EMITTED_DISTINCT_TEXT_COUNT = 5;
 
     /**
-     * Size of the text inventory this checkpoint reconciles: the fifteen texts a caller can
+     * Size of the text inventory this class reconciles: the fifteen texts a caller can
      * receive plus the five distinct texts of the declarations no card program sets. Every one of
      * the twenty is transcribed from {@code app/cbl/COCRDUPC.cbl} or {@code app/cbl/COCRDSLC.cbl}.
      */
@@ -440,19 +444,18 @@ class CardValidationMessagesTest {
     // Inventory reconciliation.
 
     /**
-     * Reconciles every constant the production class declares against an enumerated inventory, so
-     * a constant added, removed or renamed fails by name rather than passing under a count derived
-     * from the current declaration set.
+     * Reconciles every constant the production class declares against an enumerated inventory. A
+     * constant added, removed or renamed therefore fails by name, rather than passing under a
+     * count derived from the current declaration set.
      *
      * <p>Two classes exhaust the declarations. Fifteen constants hold a text a caller can
      * receive. Six carry the {@value #NEVER_EMITTED_FIELD_PREFIX} prefix and hold five distinct
      * texts, because lines 190 and 192 of {@code app/cbl/COCRDUPC.cbl} carry the same characters
      * under two condition names.</p>
      *
-     * <p>Fifteen plus five distinct gives the inventory of twenty source texts. The twenty-two
-     * declarations exceed it by two, and this test names both: the repeated never-emitted text, and
-     * the one constant carrying the {@value #ADDITIVE_FIELD_PREFIX} prefix, which transcribes no
-     * source literal and reports the transport width of the expiry day.</p>
+     * <p>Fifteen plus five distinct gives the inventory of twenty source texts. The twenty-six
+     * declarations exceed it by six: one repeated never-emitted text and five constants carrying
+     * the {@value #ADDITIVE_FIELD_PREFIX} prefix.</p>
      */
     @Test
     void everyDeclaredConstantIsClassifiedAgainstTheTextInventory() {
@@ -465,14 +468,14 @@ class CardValidationMessagesTest {
         assertEquals(NEVER_EMITTED_FIELD_COUNT, neverEmitted.size(),
                 "the never-emitted class names six constants");
         assertEquals(ADDITIVE_FIELD_COUNT, additive.size(),
-                "the additive class names one constant");
+                "the additive class names five constants");
 
         Set<String> classified = new LinkedHashSet<>();
         classified.addAll(reachable.keySet());
         classified.addAll(neverEmitted.keySet());
         classified.addAll(additive.keySet());
         assertEquals(REACHABLE_TEXT_COUNT + NEVER_EMITTED_FIELD_COUNT + ADDITIVE_FIELD_COUNT,
-                classified.size(), "the three classes name twenty-two distinct constants");
+                classified.size(), "the three classes name twenty-six distinct constants");
 
         Set<String> declaredNames = new LinkedHashSet<>();
         for (Field field : textFields()) {
@@ -529,33 +532,49 @@ class CardValidationMessagesTest {
                 constantValue("NEVER_EMITTED_SEARCHED_ACCT_NOT_NUMERIC"),
                 "app/cbl/COCRDUPC.cbl lines 190 and 192 carry the same characters");
         assertEquals(SOURCE_TEXT_INVENTORY_SIZE + 1 + ADDITIVE_FIELD_COUNT, declaredNames.size(),
-                "twenty inventory texts, one repeated never-emitted text and one additive text give "
-                        + "twenty-two declarations");
+                "twenty inventory texts, one repeated never-emitted text and two additive texts "
+                        + "give twenty-six declarations");
 
         // The reflection helpers agree with the enumerated classification. The additive text joins
         // the comparison here and not the inventory above, because it transcribes no source literal.
         Set<String> allTexts = new LinkedHashSet<>(sourceTexts);
         allTexts.addAll(additive.values());
         assertEquals(allTexts, messageTexts(),
-                "every declared constant holds one of the twenty source texts or the one additive "
-                        + "text");
+                "every declared constant holds one of the twenty source texts or one of the five "
+                        + "additive texts");
     }
 
     // Inventory helpers. Each map is typed here, so a text or a name that drifts fails by name.
 
     /**
-     * Returns the one text that transcribes no source literal, keyed by the constant holding it.
+     * Returns the five texts that transcribe no source literal, keyed by the constant holding each.
      *
      * <p>{@code CCUP-NEW-EXPDAY PIC X(2)} at {@code app/cbl/COCRDUPC.cbl:L312} reaches the
      * reassembled date at L1471 and no paragraph between L945 and L948 edits it, so the source
      * writes no text for a day outside that width. A 3270 field two characters wide cannot deliver a
      * third character and a Representational State Transfer payload can, so the platform states the
-     * width and this text reports it.
+     * width and the first text reports it.
      *
-     * @return the one additive text, keyed by its constant
+     * <p>The second text has the same cause one step further on. The source reassembles the three
+     * slices into {@code CARD-EXPIRAION-DATE PIC X(10)} and rewrites the record, so it stores a
+     * combination like {@code 2028-02-31} as ten characters of text without checking that the day
+     * exists. Column {@code expiration_date} is a {@code DATE}, which cannot hold one, so the update
+     * refuses it and says why. That is the one behavioural divergence of the update route, and
+     * {@code docs/business-rule-flags.md} carries it.
+     *
+     * @return the five additive texts, keyed by their constants
      */
     private static Map<String, String> additiveTexts() {
-        return Map.of("ADDITIVE_CARD_EXPIRY_DAY_WIDTH", "Card expiry day must be two digits");
+        return Map.of(
+                "ADDITIVE_CARD_CURSOR_MALFORMED",
+                "Card cursor must be a 64-character lower-case hexadecimal token",
+                "ADDITIVE_PAGE_SIZE_OUT_OF_RANGE",
+                "Page size falls outside the range this list admits",
+                "ADDITIVE_ONE_BROWSE_DIRECTION",
+                "A request names one browse direction, forward or backward",
+                "ADDITIVE_CARD_EXPIRY_DAY_WIDTH", "Card expiry day must be two digits",
+                "ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE",
+                "Card expiry year, month and day must name a day of the calendar");
     }
 
     /**
@@ -595,8 +614,8 @@ class CardValidationMessagesTest {
 
     /**
      * Returns the six declarations no card program sets, keyed by constant name. Their condition
-     * names sit at {@code app/cbl/COCRDUPC.cbl} lines 189, 191, 193, 201, 211 and 213, and the one
-     * {@code SET} site any of them has, {@code app/cbl/COCRDSLC.cbl:L799}, sits inside paragraph
+     * names sit at {@code app/cbl/COCRDUPC.cbl} lines 189, 191, 193, 201, 211 and 213. The one
+     * {@code SET} site any of them has is {@code app/cbl/COCRDSLC.cbl:L799}, inside paragraph
      * {@code 9150-GETCARD-BYACCT}, which no {@code PERFORM} names.
      *
      * @return constant name to expected text, in source line order

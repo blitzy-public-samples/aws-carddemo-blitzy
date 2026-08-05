@@ -6,8 +6,6 @@
 #
 # Paged browse: app/cbl/COCRDLIC.cbl. Detail: app/cbl/COCRDSLC.cbl. Update
 # validation: app/cbl/COCRDUPC.cbl.
-#
-# Rationale for every version and exclusion: card-platform/docs/decision-log.md (planned)
 
 # The one runtime image every service in this mono-repo shares. A Java Runtime
 # Environment (JRE) 25.0.4 runs the archive. The digest pins the layer, and the

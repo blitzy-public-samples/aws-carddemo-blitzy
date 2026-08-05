@@ -16,8 +16,7 @@ info:
     app/cbl/CBTRN02C.cbl:L380-L420, the request contract from the online capture program
     app/cbl/COTRN02C.cbl, and the four reject codes and their texts from
     app/cbl/CBTRN02C.cbl:L385-L420. No program named COPAUA0C and no transaction named CP00 exists
-    in the source repository, so this service is synthesised from those three programs and
-    card-platform/docs/traceability-matrix.md (planned) declares the synthesis.
+    in the source repository, so this service is synthesised from those three programs.
   license:
     name: Apache-2.0
 
@@ -70,23 +69,25 @@ paths:
                   merchantCity: North Enoshaven
                   merchantZip: '72112'
                   cardNumber: '4859452612877065'
-                  originTimestamp: '2022-06-10 19:27:53.412000'
-                  processingTimestamp: '2022-06-10-19.27.53.410000'
-              byAccountIdentifier:
-                summary: A purchase presenting an account identifier, which resolves the card.
+                  originTimestamp: '2026-08-05 00:00:00.000000'
+                  processingTimestamp: '2026-08-05-00.00.00.000000'
+              byCardNumberShortForm:
+                summary: >-
+                  The same purchase presenting a shorter card number, which is widened with leading
+                  zeros before the cross-reference read.
                 value:
                   transactionTypeCode: '01'
                   transactionCategoryCode: '0001'
                   source: POS TERM
                   description: Purchase at Abshire-Lowe
-                  amount: '504.77'
+                  amount: '+00000504.77'
                   merchantId: '800000000'
                   merchantName: Abshire-Lowe
                   merchantCity: North Enoshaven
                   merchantZip: '72112'
-                  accountId: '00000000077'
-                  originTimestamp: '2022-06-10 19:27:53.412000'
-                  processingTimestamp: '2022-06-10-19.27.53.410000'
+                  cardNumber: '859452612877065'
+                  originTimestamp: '2026-08-05 00:00:00.000000'
+                  processingTimestamp: '2026-08-05-00.00.00.000000'
       responses:
         '200':
           description: >-
@@ -117,7 +118,8 @@ paths:
                   summary: >-
                     Declined because no cross-reference row carries the card number, from
                     app/cbl/CBTRN02C.cbl:L383-L387. This is the one outcome carrying no account
-                    identifier, because none was resolved, and it publishes no event.
+                    identifier, because none was resolved. The same local transaction records the
+                    attempt and a schema-version-2 TransactionDeclined event keyed by transaction.
                   value:
                     transactionId: '0000001000000003'
                     accountId: null
@@ -152,6 +154,21 @@ paths:
                   - Category CD must be Numeric...
                   - Merchant Zip can NOT be empty...
                 timestamp: '2022-06-10T19:27:53.412Z'
+        '413':
+          description: >-
+            The request declares a body larger than this service reads.
+            config/RequestBodyCeilingFilter refuses it before the parser is reached, and
+            carddemo.api.max-request-body-bytes declares the bound. The body names no route and no
+            value.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+              example:
+                status: 413
+                error: Payload too large
+                messages:
+                  - This request declares a body larger than this service reads.
         '500':
           description: A fault inside the service. The body carries no value read from the request.
           content:
@@ -160,6 +177,27 @@ paths:
                 $ref: '#/components/schemas/ApiErrorResponse'
               example:
                 status: 500
+                error: Internal failure
+                messages:
+                  - Unable to authorize this transaction...
+                timestamp: '2022-06-10T19:27:53.412Z'
+        '503':
+          description: >-
+            The service refused to decide, because the replica tables its decline rules
+            read had not been observed within carddemo.replica.max-staleness. card_xref
+            and account_credit_snapshot are copies kept current by account.state-changed
+            and card.updated, and a copy whose events stopped arriving keeps answering
+            with whatever it last knew. This is the one status a caller should retry:
+            once the replica catches up the same request receives a real decision.
+            It is deliberately not a decline. The four reject reasons come from
+            app/cbl/CBTRN02C.cbl:L385-L420 and there is no fifth, and the card and the
+            account were both valid here.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+              example:
+                status: 503
                 error: Internal failure
                 messages:
                   - Unable to authorize this transaction...
@@ -181,9 +219,18 @@ components:
         LOW-VALUES.
 
 
-        Either accountId or cardNumber is supplied. app/cbl/COTRN02C.cbl:L195-L230 takes whichever
-        arrived and resolves the other from the cross-reference, and reports
-        "Account or Card Number must be entered..." when neither did.
+        cardNumber is required and accountId is not accepted in its place.
+        app/cbl/COTRN02C.cbl:L206-L209 also takes an account identifier and resolves a card from the
+        alternate index, and that branch is not reproduced: the card it returns is whichever one the
+        index holds first rather than one the caller presented, so a caller naming an account would
+        authorize a card the caller never held. A missing card number reports
+        "Account or Card Number must be entered...", the WHEN OTHER text of
+        app/cbl/COTRN02C.cbl:L226.
+
+
+        transactionId is not accepted either. This service allocates every identifier from the
+        transaction_id_seq sequence, because an identifier a caller chooses is one a caller can
+        repeat, and a repeated identifier merges one payment with another downstream.
       required:
         - transactionTypeCode
         - transactionCategoryCode
@@ -194,17 +241,18 @@ components:
         - merchantName
         - merchantCity
         - merchantZip
+        - cardNumber
         - originTimestamp
         - processingTimestamp
       properties:
         transactionId:
-          type: [string, 'null']
-          maxLength: 16
+          type: 'null'
           description: >-
             Identifier of the transaction, from DALYTRAN-ID PIC X(16) at app/cpy/CVTRA06Y.cpy:L5.
-            Optional. app/cbl/COTRN02C.cbl:L444-L451 allocates one when the screen supplies none,
-            and this service allocates from the transaction_id_seq sequence instead.
-          examples: ['0000000000683580']
+            Must be absent. app/cbl/COTRN02C.cbl:L444-L451 allocates one by browsing the transaction
+            file backwards from high values and adding one, and this service allocates from the
+            transaction_id_seq sequence instead. A supplied value is refused with 422 carrying
+            "Transaction ID is allocated by this service and must not be supplied...".
         transactionTypeCode:
           type: string
           pattern: '^[0-9]{1,2}$'
@@ -272,12 +320,13 @@ components:
             app/cpy/CVTRA06Y.cpy:L14.
           examples: ['72112']
         cardNumber:
-          type: [string, 'null']
+          type: string
           pattern: '^[0-9]{1,16}$'
           description: >-
-            Card number, from DALYTRAN-CARD-NUM PIC X(16) at app/cpy/CVTRA06Y.cpy:L15. Supplied when
-            accountId is absent. A shorter value is widened with leading zeros to sixteen digits,
-            which app/cbl/COTRN02C.cbl:L218-L221 does with one MOVE into a PIC 9(16) field.
+            Card number, from DALYTRAN-CARD-NUM PIC X(16) at app/cpy/CVTRA06Y.cpy:L15. Required, and
+            the only way a request names its subject. A shorter value is widened with leading zeros
+            to sixteen digits, which app/cbl/COTRN02C.cbl:L218-L221 does with one MOVE into a
+            PIC 9(16) field.
 
 
             The cross-reference lookup runs on all sixteen characters. Only the published event
@@ -289,8 +338,10 @@ components:
           description: >-
             Capture moment, from DALYTRAN-ORIG-TS PIC X(26) at app/cpy/CVTRA06Y.cpy:L16. Its first
             ten characters are compared against the account expiry date as text, character by
-            character, at app/cbl/CBTRN02C.cbl:L414.
-          examples: ['2022-06-10 19:27:53.412000']
+            character, at app/cbl/CBTRN02C.cbl:L414. The value is Coordinated Universal Time and,
+            by default, must be no more than 1,440 minutes old or five minutes ahead of the service
+            clock. Replace the example with the current capture moment when exercising the API.
+          examples: ['2026-08-05 00:00:00.000000']
         processingTimestamp:
           type: string
           pattern: '^\d{4}-\d{2}-\d{2}-\d{2}\.\d{2}\.\d{2}\.\d{2}0000$'
@@ -299,14 +350,15 @@ components:
             significant fractional digits then four zeros: the redefinition at
             app/cbl/CBTRN02C.cbl:L160-L174 declares DB2-MIL PIC 9(002) and DB2-REST PIC X(04), and
             app/cbl/CBTRN02C.cbl:L701 fills that remainder with zero characters.
-          examples: ['2022-06-10-19.27.53.410000']
+          examples: ['2026-08-05-00.00.00.000000']
         accountId:
           type: [string, 'null']
           pattern: '^[0-9]{1,11}$'
           description: >-
-            Account identifier, from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. Supplied
-            when cardNumber is absent. A shorter value is widened with leading zeros to eleven
-            digits, which app/cbl/COTRN02C.cbl:L204-L207 does with one MOVE into a PIC 9(11) field.
+            Optional account cross-check, from XREF-ACCT-ID PIC 9(11) at
+            app/cpy/CVACT03Y.cpy:L7. Never a substitute for cardNumber. When supplied beside the
+            card number, it is widened to eleven digits and must equal the account the
+            cross-reference resolves; a mismatch is refused.
           examples: ['00000000077', '7']
 
     AuthorizationResponse:
@@ -319,8 +371,8 @@ components:
 
         accountId is absent on exactly one outcome, a decline carrying 0100, because the
         cross-reference read found no row and no account exists to name. Every other outcome names
-        the account it read. That outcome also publishes no event, since every event contract
-        requires an eleven-digit account identifier, and the attempt is recorded durably instead.
+        the account it read. The unresolved-card outcome records both the durable attempt row and
+        a schema-version-2 TransactionDeclined event keyed by the allocated transaction identifier.
 
 
         No component carries a card number, masked or unmasked, and none carries the card
@@ -343,7 +395,7 @@ components:
         approved:
           type: boolean
           description: >-
-            True when the platform authorized the transaction. ADDITIVE:
+            True when the platform authorized the transaction. No source field carries it;
             app/cbl/CBTRN02C.cbl:L211 states the same outcome as a reject-code field holding zero.
           examples: [true]
         declineReasonCode:
@@ -373,7 +425,7 @@ components:
     ApiErrorResponse:
       type: object
       description: >-
-        Error body of every failed call. ADDITIVE: the source moves one text into WS-MESSAGE and
+        Error body of every failed call. No COBOL ancestor: the source moves one text into WS-MESSAGE and
         redisplays the screen, as app/cbl/COTRN02C.cbl:L254-L320 does eleven times over.
 
 

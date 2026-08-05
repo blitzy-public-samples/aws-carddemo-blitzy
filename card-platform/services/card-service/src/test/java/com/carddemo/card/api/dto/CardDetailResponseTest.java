@@ -127,23 +127,20 @@ final class CardDetailResponseTest {
     /** The count of trailing card-number characters the masked form keeps. */
     private static final int VISIBLE_CARD_NUMBER_WIDTH = 4;
 
-    /**
-     * A synthetic token at the width of {@code CARD-NUM PIC X(16)} at
-     * {@code app/cpy/CVACT02Y.cpy:L5}: twelve zeros and four trailing characters. No card number
-     * opens with a zero, so this class holds no card number of any fixture.
-     */
-    private static final String SYNTHETIC_CARD_NUMBER = "0".repeat(12) + "5740";
+    /** Generated card number at the width of {@code CARD-NUM PIC X(16)}. */
+    private static final String SYNTHETIC_CARD_NUMBER = syntheticCardNumber(5740L);
 
     /**
      * The masked form of {@link #SYNTHETIC_CARD_NUMBER}: twelve mask characters and four digits.
      */
-    private static final String SYNTHETIC_MASKED_CARD_NUMBER = "************5740";
+    private static final String SYNTHETIC_MASKED_CARD_NUMBER =
+            PanMasker.maskCardNumber(SYNTHETIC_CARD_NUMBER);
 
     /** A synthetic account identifier at the width of {@code CARD-ACCT-ID PIC 9(11)} at L6. */
-    private static final String SYNTHETIC_ACCOUNT_ID = "00000000050";
+    private static final String SYNTHETIC_ACCOUNT_ID = syntheticDigits(11, 500_001L);
 
     /** A synthetic value at the width of {@code CARD-CVV-CD PIC 9(03)} at L7. */
-    private static final String SYNTHETIC_VERIFICATION_VALUE = "451";
+    private static final String SYNTHETIC_VERIFICATION_VALUE = syntheticDigits(3, 451L);
 
     /** A synthetic name at the width of {@code CARD-EMBOSSED-NAME PIC X(50)} at L8. */
     private static final String SYNTHETIC_EMBOSSED_NAME = "JOHN Q PUBLIC";
@@ -152,9 +149,9 @@ final class CardDetailResponseTest {
      * A synthetic date at the width of {@code CARD-EXPIRAION-DATE PIC X(10)} at L9, which the
      * target spells {@code expirationDate}.
      */
-    private static final LocalDate SYNTHETIC_EXPIRATION_DATE = LocalDate.of(2023, 3, 9);
+    private static final LocalDate SYNTHETIC_EXPIRATION_DATE = LocalDate.of(2027, 3, 9);
 
-    /** Active status of record one, offset 91, width 1. */
+    /** Synthetic active status at the width of {@code CARD-ACTIVE-STATUS PIC X(01)}. */
     private static final String SYNTHETIC_ACTIVE_STATUS = "Y";
 
     CardDetailResponseTest() {
@@ -302,8 +299,8 @@ final class CardDetailResponseTest {
     /**
      * Asserts the masked card-number form: twelve mask characters and four digits.
      *
-     * <p>The test calls {@link PanMasker#maskCardNumber(String)} on the card number of record one
-     * of {@code app/data/ASCII/carddata.txt}. The result keeps the sixteen-character width of
+     * <p>The test calls {@link PanMasker#maskCardNumber(String)} on a generated synthetic value.
+     * The result keeps the sixteen-character width of
      * {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}. A card read keys on the full
      * sixteen-character Primary Account Number, and masking runs at the serialization boundary.
      */
@@ -314,7 +311,7 @@ final class CardDetailResponseTest {
         String visible = SYNTHETIC_CARD_NUMBER.substring(hiddenWidth);
         String hidden = SYNTHETIC_CARD_NUMBER.substring(0, hiddenWidth);
 
-        assertAll("masked form of the card number of record one",
+        assertAll("masked form of a generated synthetic card number",
                 () -> assertTrue(MASKED_CARD_NUMBER_PATTERN.matcher(masked).matches(),
                         "The masked card number must match "
                                 + MASKED_CARD_NUMBER_PATTERN.pattern()
@@ -324,8 +321,7 @@ final class CardDetailResponseTest {
                         "The masked card number must keep the width of"
                                 + " CARD-NUM PIC X(16) at app/cpy/CVACT02Y.cpy:L5."),
                 () -> assertEquals(SYNTHETIC_MASKED_CARD_NUMBER, masked,
-                        "The card number of record one of app/data/ASCII/carddata.txt must mask to"
-                                + " the published masked form."),
+                        "The generated card number must mask to the published form."),
                 () -> assertTrue(masked.endsWith(visible),
                         "The masked card number must end in the last "
                                 + VISIBLE_CARD_NUMBER_WIDTH + " characters of its argument."),
@@ -344,32 +340,32 @@ final class CardDetailResponseTest {
                 SYNTHETIC_ACTIVE_STATUS);
         String rendered = response.toString();
 
-        assertAll("record one of app/data/ASCII/carddata.txt",
+        assertAll("generated synthetic card data",
                 () -> assertEquals(SYNTHETIC_MASKED_CARD_NUMBER,
                         response.maskedCardNumber(),
-                        "The response for record one must carry the published masked card number."),
+                        "The response must carry the published masked card number."),
                 () -> assertFalse(rendered.contains(SYNTHETIC_VERIFICATION_VALUE),
-                        "The rendered response holds the card verification value of record one,"
-                                + " read at offset 28 of CARD-CVV-CD PIC 9(03) at"
+                        "The rendered response holds the generated card verification value,"
+                                + " whose width comes from CARD-CVV-CD PIC 9(03) at"
                                 + " app/cpy/CVACT02Y.cpy:L7. The rendered text is withheld from"
                                 + " this message so a failure cannot copy the value into a log."),
                 () -> assertFalse(rendered.contains(SYNTHETIC_CARD_NUMBER),
-                        "The rendered response holds the full card number of record one."),
+                        "The rendered response holds the full generated card number."),
                 () -> assertEquals(SYNTHETIC_ACCOUNT_ID, response.accountId(),
-                        "The response for record one must carry the account identifier read at"
-                                + " offset 17 of CARD-ACCT-ID PIC 9(11) at"
+                        "The response must carry the account identifier whose width is"
+                                + " CARD-ACCT-ID PIC 9(11) at"
                                 + " app/cpy/CVACT02Y.cpy:L6."),
                 () -> assertEquals(SYNTHETIC_EMBOSSED_NAME, response.embossedName(),
-                        "The response for record one must carry the embossed name read at"
-                                + " offset 31 of CARD-EMBOSSED-NAME PIC X(50) at"
+                        "The response must carry the embossed name declared as"
+                                + " CARD-EMBOSSED-NAME PIC X(50) at"
                                 + " app/cpy/CVACT02Y.cpy:L8."),
                 () -> assertEquals(SYNTHETIC_EXPIRATION_DATE, response.expirationDate(),
-                        "The response for record one must carry the expiration date read at"
-                                + " offset 81 of CARD-EXPIRAION-DATE PIC X(10) at"
+                        "The response must carry the expiration date declared as"
+                                + " CARD-EXPIRAION-DATE PIC X(10) at"
                                 + " app/cpy/CVACT02Y.cpy:L9."),
                 () -> assertEquals(SYNTHETIC_ACTIVE_STATUS, response.activeStatus(),
-                        "The response for record one must carry the active status read at"
-                                + " offset 91 of CARD-ACTIVE-STATUS PIC X(01) at"
+                        "The response must carry the active status declared as"
+                                + " CARD-ACTIVE-STATUS PIC X(01) at"
                                 + " app/cpy/CVACT02Y.cpy:L10."));
     }
 
@@ -431,6 +427,16 @@ final class CardDetailResponseTest {
             names.add(component.getName());
         }
         return List.copyOf(names);
+    }
+
+    /** Builds a clearly synthetic sixteen-digit card value. */
+    private static String syntheticCardNumber(long serial) {
+        return "9999" + syntheticDigits(12, serial);
+    }
+
+    /** Builds a zero-padded synthetic digit string. */
+    private static String syntheticDigits(int width, long serial) {
+        return String.format(Locale.ROOT, "%0" + width + "d", serial);
     }
 
     /**

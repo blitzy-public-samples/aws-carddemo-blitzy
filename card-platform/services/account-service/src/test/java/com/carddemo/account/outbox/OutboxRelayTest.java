@@ -1,22 +1,23 @@
 package com.carddemo.account.outbox;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
-
 import com.carddemo.account.AccountApplication;
+import com.carddemo.account.config.AccountProperties;
 import com.carddemo.account.config.KafkaProducerConfig;
+import com.carddemo.account.config.ObservabilityConfig;
 import com.carddemo.account.entity.OutboxEventEntity;
 import com.carddemo.account.messaging.EventPublisherPort;
 import com.carddemo.account.repository.AbstractAccountPostgresTest;
 import com.carddemo.account.repository.OutboxEventRepository;
-
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
-
 import java.lang.reflect.AnnotatedElement;
 import java.lang.reflect.Method;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -24,15 +25,22 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
@@ -44,29 +52,41 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import tools.jackson.databind.ObjectMapper;
 
 /**
- * Behaviour of {@link OutboxRelay}: when the sweep runs, how many rows it takes, in what order,
- * what reaches the publisher, how a sent row is marked, and what a refused publish leaves behind.
+ * Behaviour of {@link OutboxRelay}. Six questions.
  *
- * <p>ADDITIVE. The relay has one ancestor construct in the CardDemo source, and it is the one
- * asynchronous handoff there. The paragraph {@code WIRTE-JOBSUB-TDQ} runs from
- * {@code app/cbl/CORPT00C.cbl:L507}, opens at {@code app/cbl/CORPT00C.cbl:L515} under that
- * spelling, and writes at {@code app/cbl/CORPT00C.cbl:L517-L523}: {@code EXEC CICS WRITEQ TD}
- * with {@code QUEUE ('JOBS')} and {@code FROM (JCL-RECORD)}. One record reaches a Customer
- * Information Control System (CICS) transient data queue, and a later reader takes it.
+ * <ul>
+ *   <li>when the sweep runs</li>
+ *   <li>how many rows it takes</li>
+ *   <li>in what order</li>
+ *   <li>what reaches the publisher</li>
+ *   <li>how a sent row is marked</li>
+ *   <li>what a refused publish leaves behind</li>
+ * </ul>
+ *
+ * <p>No COBOL ancestor. The relay has one ancestor construct in the CardDemo source, and it is the
+ * one asynchronous handoff there. The paragraph {@code WIRTE-JOBSUB-TDQ} runs from {@code
+ * app/cbl/CORPT00C.cbl:L507}, opens at {@code app/cbl/CORPT00C.cbl:L515} under that spelling, and
+ * writes at {@code app/cbl/CORPT00C.cbl:L517-L523}: {@code EXEC CICS WRITEQ TD} with {@code QUEUE
+ * ('JOBS')} and {@code FROM (JCL-RECORD)}. One record reaches a Customer Information Control System
+ * (CICS) transient data queue, and a later reader takes it.
  *
  * <p>The message key is the account identifier, eleven digits wide. The width comes from
  * {@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5} and from {@code KEYS(11 0)} at
  * {@code app/jcl/ACCTFILE.jcl:L40}.
  *
  * <p><b>What the sweep does.</b> {@code OutboxRelay.publishPendingEvents()} carries
- * {@code @Scheduled(fixedDelay = 500)}, reads through
- * {@code findByPublishedFalseOrderByCreatedAtAscEventIdAsc(Limit.of(100))}, publishes each row,
- * then marks it. Ordering therefore runs on {@code created_at} and then on {@code event_id}, and
- * the table carries no other arrival column. The publish sits in a {@code try} block inside the
- * loop over the batch, and a refused row leaves the rows behind it attempted.
+ * {@code @Scheduled} and {@code @Transactional}, then reads through
+ * {@code claimDueRows}. The query returns the due head row of each account partition under
+ * {@code FOR UPDATE SKIP LOCKED}. A refused row pauses its account partition for that sweep,
+ * while rows of other accounts remain eligible.
  *
  * <p><b>The publisher every test here sees.</b> {@link RecordingEventPublisher} is the
  * {@code @Primary} bean {@link RecordingPublisherConfiguration} installs over the Kafka-backed
@@ -74,24 +94,19 @@ import org.springframework.transaction.support.TransactionTemplate;
  * request. No test here starts a broker and none needs a created topic.
  *
  * <p><b>How rows reach the table.</b> {@link AbstractAccountPostgresTest} owns the one PostgreSQL
- * container of the module, and no container appears here. Each writing test below carries
- * {@link Transactional}, calls the sweep directly, and Spring rolls the rows back as the test
- * returns. {@link #theSchedulerPublishesACommittedRow()} is the one test that commits and the one
- * that waits on the scheduler; {@link #removeSeededRows()} deletes what it wrote, in a transaction
- * of its own. Every payload here carries the marker {@value #MARKER}, and every assertion reads
- * the rows and the triples that marker selects.
+ * container of the module, and no container appears here. Most writing tests carry
+ * {@link Transactional}; the scheduler and concurrency cases commit their rows and
+ * {@link #removeSeededRows()} removes them. Every payload carries the marker
+ * {@value #MARKER}, which selects this class's rows and publications.
  *
  * <p><b>What the siblings own.</b> {@code repository/OutboxEventRepositoryTest} asserts the
- * declared method inventory of the repository, its row bound as a parameter, and the absence of a
- * publication mutator. That class also asserts the finder's ordering and its tiebreak at the query
- * level, and the assertions below read the publication sequence.
+ * declared method inventory of the repository, disjoint skip-locked claims, due-row filtering,
+ * stale-claim recovery and retention purge. The assertions below read the relay's publication
+ * sequence.
  * {@code outbox/DeadLetterMetadataTest} asserts the configured topic surface and the dead-letter
  * topic name.
- *
- * <p>{@code card-platform/docs/event-flow.md} draws the path a written row travels.
- * {@code card-platform/docs/decision-log.md} carries the reasoning this file leaves out.
  */
-@DisplayName("OutboxRelay, the sweep that publishes outbox_event rows and marks them sent")
+@DisplayName("OutboxRelay, the transactional sweep over claimed outbox_event rows")
 class OutboxRelayTest extends AbstractAccountPostgresTest {
 
     /** Name of the one scheduled method of the relay. */
@@ -153,6 +168,9 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
     /** The instant every transactional row here measures from, well behind any live row. */
     private static final Instant BASE_INSTANT = Instant.parse("2024-01-01T00:00:00Z");
 
+    /** Future instant used by committed concurrency rows, beyond the live scheduler's clock. */
+    private static final Instant CLAIM_NOW = Instant.parse("2099-01-01T00:00:10Z");
+
     /** Row number of the committed row the scheduler test writes, above every other number here. */
     private static final int SCHEDULED_ROW = 0xe0;
 
@@ -172,6 +190,10 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
     @Autowired
     private OutboxRelay relay;
 
+    /** The bound relay settings, so a test asserts the values the relay actually runs with. */
+    @Autowired
+    private AccountProperties accountProperties;
+
     /** The table this class writes rows to and reads them back from. */
     @Autowired
     private OutboxEventRepository outboxEvents;
@@ -187,6 +209,15 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
     /** The manager {@link #removeSeededRows()} opens its own transaction through. */
     @Autowired
     private PlatformTransactionManager transactionManager;
+
+    /** Mapper the production relay uses for a terminal dead-letter envelope. */
+    @Autowired
+    @Qualifier("accountEventObjectMapper")
+    private ObjectMapper objectMapper;
+
+    /** Registry supplied to manually constructed relay instances. */
+    @Autowired
+    private MeterRegistry meterRegistry;
 
     /** The flush path, which sends pending changes to the table before a read. */
     @PersistenceContext
@@ -233,27 +264,32 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
                 .containsExactly(SWEEP_METHOD);
     }
 
+    /**
+     * The delay has to come from the shipped file, not from a number written into the class.
+     *
+     * <p>A numeric {@code fixedDelay} ignores {@code carddemo.outbox.relay.fixed-delay-ms} entirely,
+     * so the shipped value and the running value can differ with nothing to say which one applies.
+     * Asserting on the placeholder text is what keeps the two in step.
+     */
     @Test
-    @DisplayName("The sweep runs on a fixed delay of 500 milliseconds, carried as a number")
+    @DisplayName("The sweep reads its fixed delay from the shipped relay property")
     void theSweepRunsOnAFixedDelayOfFiveHundredMilliseconds() {
         Scheduled schedule = sweepMethod().getAnnotation(Scheduled.class);
 
         assertThat(schedule.fixedDelay())
-                .as("fixedDelay of %s, from @Scheduled(fixedDelay = 500) on OutboxRelay",
-                        SWEEP_METHOD)
-                .isEqualTo(FIXED_DELAY_MS);
+                .as("numeric fixedDelay of %s", SWEEP_METHOD)
+                .isNegative();
         assertThat(schedule.fixedDelayString())
-                .as("fixedDelayString of %s, empty while the numeric attribute carries the delay",
-                        SWEEP_METHOD)
-                .isEmpty();
+                .as("fixedDelayString of %s", SWEEP_METHOD)
+                .isEqualTo("${carddemo.outbox.relay.fixed-delay-ms:500}");
         assertThat(schedule.timeUnit())
                 .as("time unit the delay counts in")
                 .isEqualTo(TimeUnit.MILLISECONDS);
     }
 
     @Test
-    @DisplayName("Neither the sweep nor the relay class carries a transaction annotation")
-    void neitherTheSweepNorTheRelayCarriesATransactionAnnotation() {
+    @DisplayName("The sweep opens its claim transaction explicitly")
+    void theSweepOpensItsClaimTransactionExplicitly() {
         Method sweep = sweepMethod();
 
         assertThat(annotationNamesOf(sweep))
@@ -263,8 +299,7 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
                 .as("annotations declared on OutboxRelay")
                 .doesNotContain(Transactional.class.getSimpleName());
         assertThat(AnnotatedElementUtils.hasAnnotation(sweep, Transactional.class))
-                .as("%s carries @Transactional, directly or through a meta-annotation",
-                        SWEEP_METHOD)
+                .as("%s leaves transaction ownership to TransactionTemplate", SWEEP_METHOD)
                 .isFalse();
         assertThat(AnnotatedElementUtils.hasAnnotation(OutboxRelay.class, Transactional.class))
                 .as("OutboxRelay carries @Transactional, directly or through a meta-annotation")
@@ -346,7 +381,7 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
     @Transactional
     @DisplayName("Each row the sweep takes reaches the publisher exactly once")
     void eachRowReachesThePublisherExactlyOnce() {
-        List<OutboxEventEntity> rows = writeRows(0x00, 5, ACCOUNT_ID_LEADING_ZERO);
+        List<OutboxEventEntity> rows = writeRowsAcrossAccounts(0x00, 5);
 
         relay.publishPendingEvents();
         flushAndDetach();
@@ -432,14 +467,16 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
     @DisplayName("The sweep publishes by created_at ascending, then by event_id ascending")
     void publicationFollowsTheCreationInstantThenTheEventIdentifier() {
         Instant sharedInstant = BASE_INSTANT.plusSeconds(2);
-        OutboxEventEntity third = writeRow(0x30, BASE_INSTANT.plusSeconds(3),
-                ACCOUNT_ID_LEADING_ZERO);
-        OutboxEventEntity first = writeRow(0x31, BASE_INSTANT.plusSeconds(1),
-                ACCOUNT_ID_LEADING_ZERO);
-        OutboxEventEntity tiedLower = writeRow(0x32, sharedInstant, ACCOUNT_ID_LEADING_ZERO);
-        OutboxEventEntity tiedHigher = writeRow(0x33, sharedInstant, ACCOUNT_ID_LEADING_ZERO);
-        OutboxEventEntity last = writeRow(0x34, BASE_INSTANT.plusSeconds(4),
-                ACCOUNT_ID_LEADING_ZERO);
+        OutboxEventEntity third =
+                writeRow(0x30, BASE_INSTANT.plusSeconds(3), accountIdFor(0x30));
+        OutboxEventEntity first =
+                writeRow(0x31, BASE_INSTANT.plusSeconds(1), accountIdFor(0x31));
+        OutboxEventEntity tiedLower =
+                writeRow(0x32, sharedInstant, accountIdFor(0x32));
+        OutboxEventEntity tiedHigher =
+                writeRow(0x33, sharedInstant, accountIdFor(0x33));
+        OutboxEventEntity last =
+                writeRow(0x34, BASE_INSTANT.plusSeconds(4), accountIdFor(0x34));
         flushAndDetach();
 
         relay.publishPendingEvents();
@@ -474,15 +511,21 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
     }
 
     /**
-     * Refuses one publish, reads the row, then accepts a publish and reads the row again.
+     * Refuses one publish, reads the row, then accepts a publish once the row is due again.
      *
      * <p>{@code OutboxRelay} writes no retry loop and names no second topic. A refused row keeps
-     * {@code published} false and {@code published_at} empty, and the next sweep takes it.
+     * {@code published} false and {@code published_at} empty, and a sweep takes it again once its
+     * backoff has passed.
+     *
+     * <p>The immediate sweep in the middle is the assertion that the backoff exists. Retrying a
+     * refused row on the very next sweep is what makes one undeliverable row hold every row behind it,
+     * because the sweep stops at the first failure. The row is then made due by hand rather than by
+     * sleeping, so the test states the rule instead of waiting on a clock.
      */
     @Test
     @Transactional
-    @DisplayName("A refused publish leaves the row pending, and the next sweep publishes it")
-    void aRefusedPublishLeavesTheRowPendingUntilTheNextSweep() {
+    @DisplayName("A refused publish leaves the row pending, and a sweep takes it once it is due")
+    void aRefusedPublishLeavesTheRowPendingUntilItIsDueAgain() {
         OutboxEventEntity row = writeRow(0x50, BASE_INSTANT, ACCOUNT_ID_LEADING_ZERO);
         flushAndDetach();
         publisher.refuseEveryPublish();
@@ -503,28 +546,42 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
         flushAndDetach();
 
         assertThat(outboxEvents.findById(row.getEventId()).orElseThrow().isPublished())
-                .as("published column after the next sweep")
+                .as("published column while the row is still inside its backoff, which is what "
+                        + "keeps one undeliverable row from being retried by every sweep")
+                .isFalse();
+
+        makeDueNow(row.getEventId());
+        relay.publishPendingEvents();
+        flushAndDetach();
+
+        assertThat(outboxEvents.findById(row.getEventId()).orElseThrow().isPublished())
+                .as("published column after the sweep that follows the backoff")
                 .isTrue();
     }
 
     /**
      * Refuses every publish of a three-row batch and reads what the sweep attempted.
      *
-     * <p>The publish of {@code OutboxRelay.publishPendingEvents()} sits in a {@code try} block
-     * inside the loop over the batch.
+     * <p>One attempt, not three. Ordering exists to keep one account's events in the order its state
+     * changed, and attempting the rest of the batch after a refusal defeats it: the second and third
+     * rows would reach the broker while the first had not, leaving a consumer with a later value and
+     * never the earlier one. The sweep therefore stops on the first refusal and the next sweep resumes
+     * at that row.
      */
     @Test
     @Transactional
-    @DisplayName("A refused publish leaves the rows behind it in the batch attempted")
-    void aRefusedPublishLeavesTheRowsBehindItAttempted() {
+    @DisplayName("A refused publish stops later rows of the same account partition")
+    void aRefusedPublishStopsTheAccountPartition() {
         List<OutboxEventEntity> rows = writeRows(0x60, 3, ACCOUNT_ID_LEADING_ZERO);
+        OutboxEventEntity otherAccount =
+                writeRow(0x63, BASE_INSTANT.plusSeconds(4), ACCOUNT_ID_PLAIN);
         publisher.refuseEveryPublish();
 
         relay.publishPendingEvents();
 
         assertThat(markedPayloads())
-                .as("attempts the sweep made while every publish was refused")
-                .containsExactlyElementsOf(payloadsOf(rows));
+                .as("one attempt per account partition")
+                .containsExactly(payloadOf(rows.getFirst()), payloadOf(otherAccount));
     }
 
     @Test
@@ -545,6 +602,112 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
                 .isNotEmpty()
                 .extracting(PublishedMessage::topic)
                 .doesNotContain(DEAD_LETTER_TOPIC);
+    }
+
+    @Test
+    @DisplayName("two concurrent relays publish disjoint claimed rows")
+    void twoConcurrentRelaysPublishDisjointClaimedRows() throws Exception {
+        OutboxEventEntity firstRow =
+                pendingRow(0xa0, CLAIM_NOW.minusSeconds(2), ACCOUNT_ID_LEADING_ZERO);
+        OutboxEventEntity secondRow =
+                pendingRow(0xa1, CLAIM_NOW.minusSeconds(1), ACCOUNT_ID_PLAIN);
+        inTransaction(() -> {
+            outboxEvents.saveAll(List.of(firstRow, secondRow));
+            return null;
+        });
+
+        BlockingEventPublisher blockingPublisher = new BlockingEventPublisher();
+        AccountProperties oneRowPerClaim = propertiesWithBatchSize(1);
+        Clock clock = Clock.fixed(CLAIM_NOW, ZoneOffset.UTC);
+        OutboxRelay firstRelay = new OutboxRelay(
+                outboxEvents, blockingPublisher, immediateTransactions(), oneRowPerClaim,
+                objectMapper, accountMeters(), clock, "relay-one");
+        OutboxRelay secondRelay = new OutboxRelay(
+                outboxEvents, blockingPublisher, immediateTransactions(), oneRowPerClaim,
+                objectMapper, accountMeters(), clock, "relay-two");
+
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> first = workers.submit(
+                    () -> inTransaction(() -> {
+                        firstRelay.publishPendingEvents();
+                        return null;
+                    }));
+            assertThat(blockingPublisher.firstPublishEntered.await(5, TimeUnit.SECONDS)).isTrue();
+
+            Future<?> second = workers.submit(
+                    () -> inTransaction(() -> {
+                        secondRelay.publishPendingEvents();
+                        return null;
+                    }));
+            second.get(5, TimeUnit.SECONDS);
+
+            blockingPublisher.releaseFirstPublish.countDown();
+            first.get(5, TimeUnit.SECONDS);
+        } finally {
+            blockingPublisher.releaseFirstPublish.countDown();
+            workers.shutdownNow();
+        }
+
+        assertThat(blockingPublisher.messages)
+                .extracting(PublishedMessage::payload)
+                .containsExactlyInAnyOrder(payloadOf(firstRow), payloadOf(secondRow))
+                .doesNotHaveDuplicates();
+        assertThat(outboxEvents.findById(firstRow.getEventId()).orElseThrow().isPublished())
+                .isTrue();
+        assertThat(outboxEvents.findById(secondRow.getEventId()).orElseThrow().isPublished())
+                .isTrue();
+    }
+
+    @Test
+    @DisplayName("a stale claim returns to pending and is published in the same sweep")
+    void aStaleClaimIsRecoveredAndPublished() {
+        OutboxEventEntity row =
+                pendingRow(0xa2, CLAIM_NOW.minusSeconds(120), ACCOUNT_ID_LEADING_ZERO);
+        row.claim("relay-that-stopped", CLAIM_NOW.minusSeconds(60));
+        inTransaction(() -> {
+            outboxEvents.save(row);
+            return null;
+        });
+        OutboxRelay recoveringRelay = manualRelay(
+                publisher, propertiesWithBatchSize(1), "recovering-relay");
+
+        inTransaction(() -> {
+            recoveringRelay.publishPendingEvents();
+            return null;
+        });
+
+        OutboxEventEntity recovered = outboxEvents.findById(row.getEventId()).orElseThrow();
+        assertThat(recovered.isPublished()).isTrue();
+        assertThat(recovered.getRelayState())
+                .isEqualTo(OutboxEventEntity.RelayState.PUBLISHED);
+        assertThat(recovered.getAttemptCount()).isEqualTo(1);
+        assertThat(markedPayloads()).contains(payloadOf(row));
+    }
+
+    @Test
+    @DisplayName("the relay leaves published-row retention to the dedicated retention sweep")
+    void theRelayLeavesPublishedRowRetentionToTheDedicatedSweep() {
+        OutboxEventEntity expired =
+                pendingRow(0xa3, CLAIM_NOW.minus(Duration.ofHours(3)), ACCOUNT_ID_LEADING_ZERO);
+        expired.markPublished(CLAIM_NOW.minus(Duration.ofHours(2)));
+        OutboxEventEntity retained =
+                pendingRow(0xa4, CLAIM_NOW.minus(Duration.ofHours(2)), ACCOUNT_ID_PLAIN);
+        retained.markPublished(CLAIM_NOW.minus(Duration.ofMinutes(30)));
+        inTransaction(() -> {
+            outboxEvents.saveAll(List.of(expired, retained));
+            return null;
+        });
+        OutboxRelay purgingRelay = manualRelay(
+                publisher, propertiesWithBatchSizeAndRetention(1, 1L), "purging-relay");
+
+        inTransaction(() -> {
+            purgingRelay.publishPendingEvents();
+            return null;
+        });
+
+        assertThat(outboxEvents.findById(expired.getEventId())).isPresent();
+        assertThat(outboxEvents.findById(retained.getEventId())).isPresent();
     }
 
     @Test
@@ -621,7 +784,7 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
         List<OutboxEventEntity> oldestFirst = new ArrayList<>();
         for (int rowNumber = 0; rowNumber < ROWS_ABOVE_ONE_BATCH; rowNumber++) {
             oldestFirst.add(pendingRow(rowNumber, BASE_INSTANT.plusSeconds(rowNumber + 1L),
-                    ACCOUNT_ID_LEADING_ZERO));
+                    accountIdFor(rowNumber)));
         }
         List<OutboxEventEntity> newestFirst = new ArrayList<>(oldestFirst);
         Collections.reverse(newestFirst);
@@ -643,6 +806,25 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
         for (int offset = 0; offset < count; offset++) {
             rows.add(pendingRow(firstRowNumber + offset, BASE_INSTANT.plusSeconds(offset + 1L),
                     accountId));
+        }
+        outboxEvents.saveAll(rows);
+        flushAndDetach();
+        return List.copyOf(rows);
+    }
+
+    /**
+     * Writes a run of pending rows, each under a separate account partition.
+     *
+     * @param firstRowNumber row number of the oldest row
+     * @param count          how many rows to write
+     * @return the written rows, oldest first
+     */
+    private List<OutboxEventEntity> writeRowsAcrossAccounts(int firstRowNumber, int count) {
+        List<OutboxEventEntity> rows = new ArrayList<>();
+        for (int offset = 0; offset < count; offset++) {
+            int rowNumber = firstRowNumber + offset;
+            rows.add(pendingRow(rowNumber, BASE_INSTANT.plusSeconds(offset + 1L),
+                    accountIdFor(rowNumber)));
         }
         outboxEvents.saveAll(rows);
         flushAndDetach();
@@ -686,6 +868,42 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
      */
     private static UUID eventId(int rowNumber) {
         return UUID.fromString(EVENT_ID_STEM + String.format("%02x", rowNumber));
+    }
+
+    /** Returns one eleven-digit account identifier for a row number. */
+    private static String accountIdFor(int rowNumber) {
+        return String.format("%011d", 1_000L + rowNumber);
+    }
+
+    /** Returns valid account properties with the supplied claim size. */
+    private static AccountProperties propertiesWithBatchSize(int batchSize) {
+        return propertiesWithBatchSizeAndRetention(batchSize, 168L);
+    }
+
+    /** Returns valid account properties with the supplied claim size and retention. */
+    private static AccountProperties propertiesWithBatchSizeAndRetention(
+            int batchSize, long retentionHours) {
+        return new AccountProperties(
+                new AccountProperties.Api(65536L),
+                new AccountProperties.Kafka(
+                        new AccountProperties.Kafka.Topics(DEFAULT_TOPIC,
+                                "customer.context-changed", DEAD_LETTER_TOPIC)),
+                new AccountProperties.Outbox(
+                        new AccountProperties.Outbox.Relay(
+                                FIXED_DELAY_MS, batchSize, "account-relay",
+                                java.time.Duration.ofSeconds(30L), 30_000L,
+                                java.time.Duration.ofSeconds(10L)),
+                        retentionHours),
+                new AccountProperties.ProcessedEvent(168L),
+                new AccountProperties.Retention(3_600_000L));
+    }
+
+    /** Builds a manually driven relay on the fixed concurrency-test clock. */
+    private OutboxRelay manualRelay(EventPublisherPort eventPublisher,
+            AccountProperties properties, String relayId) {
+        return new OutboxRelay(
+                outboxEvents, eventPublisher, immediateTransactions(), properties, objectMapper,
+                accountMeters(), Clock.fixed(CLAIM_NOW, ZoneOffset.UTC), relayId);
     }
 
     /**
@@ -749,10 +967,39 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
                 .toList();
     }
 
+    /**
+     * Brings one row's next attempt forward to now, so a sweep claims it without a wait.
+     *
+     * <p>The update runs through the entity manager rather than through the entity, because
+     * {@code nextAttemptAt} has no setter: the entity moves it only through
+     * {@code recordFailure}, which is what keeps a caller from quietly cancelling a backoff in
+     * production. A test that needs the row due says so here, in one place a reader can find.
+     *
+     * @param eventId the row to bring forward
+     */
+    private void makeDueNow(UUID eventId) {
+        entityManager.createQuery("""
+                        UPDATE OutboxEventEntity row
+                        SET row.nextAttemptAt = :now
+                        WHERE row.eventId = :eventId
+                        """)
+                .setParameter("now", Instant.now())
+                .setParameter("eventId", eventId)
+                .executeUpdate();
+        flushAndDetach();
+    }
+
     /** Sends pending changes to the table and detaches every row, so the next read reaches it. */
     private void flushAndDetach() {
         entityManager.flush();
         entityManager.clear();
+    }
+
+    /** Runs one callback in a new transaction. */
+    private <T> T inTransaction(java.util.function.Supplier<T> callback) {
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        return transaction.execute(status -> callback.get());
     }
 
     /**
@@ -800,23 +1047,25 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
      * Keeps every publication in call order and refuses a publish on request.
      *
      * <p>The scheduler and the calling test both reach this publisher, so the recording is a
-     * thread-safe list and the refusal flag is volatile. A refused publish is recorded before it
-     * throws, so a caller reads what was attempted.
+     * thread-safe list and the refusal flag is volatile. A refused publish is recorded before its
+     * returned stage fails, so a caller reads what was attempted.
      */
     static final class RecordingEventPublisher implements EventPublisherPort {
 
         /** Every publication this publisher took, in call order. */
         private final List<PublishedMessage> messages = new CopyOnWriteArrayList<>();
 
-        /** Whether the next publish throws. */
+        /** Whether every publish returns an exceptional completion. */
         private volatile boolean refusing;
 
         @Override
-        public void publish(String topic, String aggregateId, String payload) {
+        public CompletionStage<Void> publish(String topic, String aggregateId, String payload) {
             messages.add(new PublishedMessage(topic, aggregateId, payload));
             if (refusing) {
-                throw new IllegalStateException("the recording publisher refuses this publish");
+                return CompletableFuture.failedFuture(
+                        new IllegalStateException("the recording publisher refuses this publish"));
             }
+            return CompletableFuture.completedFuture(null);
         }
 
         /** Empties the recording and returns to accepting every publish. */
@@ -857,6 +1106,33 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
         }
     }
 
+    /** Blocks its first publication while a competing relay claims another row. */
+    static final class BlockingEventPublisher implements EventPublisherPort {
+
+        private final AtomicBoolean blockFirst = new AtomicBoolean(true);
+        private final CountDownLatch firstPublishEntered = new CountDownLatch(1);
+        private final CountDownLatch releaseFirstPublish = new CountDownLatch(1);
+        private final List<PublishedMessage> messages = new CopyOnWriteArrayList<>();
+
+        @Override
+        public CompletionStage<Void> publish(String topic, String aggregateId, String payload) {
+            messages.add(new PublishedMessage(topic, aggregateId, payload));
+            if (!blockFirst.compareAndSet(true, false)) {
+                return CompletableFuture.completedFuture(null);
+            }
+            firstPublishEntered.countDown();
+            try {
+                if (!releaseFirstPublish.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError("the competing relay did not finish");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("the blocked publish was interrupted", interrupted);
+            }
+            return CompletableFuture.completedFuture(null);
+        }
+    }
+
     /**
      * One publication, as {@link EventPublisherPort#publish(String, String, String)} received it.
      *
@@ -866,4 +1142,23 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
      */
     record PublishedMessage(String topic, String key, String payload) {
     }
+
+    /** Runs a transaction callback directly, so no transaction manager takes part. */
+    private static TransactionTemplate immediateTransactions() {
+        return new TransactionTemplate() {
+
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public <T> T execute(TransactionCallback<T> action) {
+                return action.doInTransaction(new SimpleTransactionStatus());
+            }
+        };
+    }
+
+    /** The shared meter holder this service records through. */
+    private static ObservabilityConfig.AccountMeters accountMeters() {
+        return new ObservabilityConfig().accountMeters(new SimpleMeterRegistry());
+    }
+
 }

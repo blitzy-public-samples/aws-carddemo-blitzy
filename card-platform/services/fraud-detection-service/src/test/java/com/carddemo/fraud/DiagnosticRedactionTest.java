@@ -19,8 +19,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Asserts that no entity of the fraud detection service can hand a logger a transaction identifier,
  * an account identifier or a monetary amount.
  *
- * <p>ADDITIVE. This service has no COBOL ancestor at all, and no COBOL program renders a record for
- * a log, so this class has none either.
+ * <p>No COBOL (Common Business Oriented Language) ancestor: no COBOL program renders a record for
+ * a log, and this service has no ancestor of any kind.
  *
  * <p>The assessment outcome survives redaction on purpose. A risk score and a flagged verdict name
  * no cardholder and carry no money, and reading them is why anyone opens an assessment row. The two

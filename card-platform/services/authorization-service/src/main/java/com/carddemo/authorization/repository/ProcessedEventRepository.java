@@ -12,7 +12,7 @@ import org.springframework.data.repository.query.Param;
  * Access path to the idempotency marker of the authorization service, table
  * {@code processed_event}.
  *
- * <p>ADDITIVE. This interface has no COBOL ancestor. No program in {@code app/cbl/} detects a
+ * <p>This interface has no COBOL ancestor. No program in {@code app/cbl/} detects a
  * duplicate delivery, and {@code app/cbl/CBTRN02C.cbl:L562-L579} drives a replayed feed into a
  * duplicate key and straight to the abend routine.
  *
@@ -28,9 +28,37 @@ import org.springframework.data.repository.query.Param;
  * present, writes one that is not, and a purge removes markers past the retention horizon. Nothing
  * updates a marker and nothing deletes one by identifier, so neither operation is exposed.
  *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 public interface ProcessedEventRepository extends Repository<ProcessedEventEntity, UUID> {
+
+    /** Rows {@link #claimEvent} writes when the marker already exists, so the delivery is a repeat. */
+    int ALREADY_CLAIMED = 0;
+
+    /**
+     * Inserts the marker for one event, and reports whether this delivery took the claim.
+     *
+     * <p>The insert carries {@code ON CONFLICT (event_id) DO NOTHING}, so two deliveries racing on
+     * the same event cannot both proceed: the loser reads {@link #ALREADY_CLAIMED} and writes
+     * nothing. A read followed by a write cannot give that guarantee, because both readers see no
+     * marker before either writes one.
+     *
+     * <p>The caller runs this inside the transaction that carries its side effects, so the marker
+     * and the effects commit together or not at all.
+     *
+     * @param eventId       the event identifier from the envelope
+     * @param processedAt   the instant the marker records
+     * @param consumedTopic the topic the delivery arrived on, or {@code null}
+     * @return 1 when this delivery took the claim, {@link #ALREADY_CLAIMED} when it did not
+     */
+    @Modifying
+    @Query(value = """
+            INSERT INTO processed_event (event_id, processed_at, consumed_topic)
+            VALUES (:eventId, :processedAt, :consumedTopic)
+            ON CONFLICT (event_id) DO NOTHING
+            """, nativeQuery = true)
+    int claimEvent(@Param("eventId") UUID eventId,
+            @Param("processedAt") Instant processedAt,
+            @Param("consumedTopic") String consumedTopic);
 
     /**
      * Reports whether this service has already handled the event with the given identifier.
@@ -53,18 +81,23 @@ public interface ProcessedEventRepository extends Repository<ProcessedEventEntit
     ProcessedEventEntity save(ProcessedEventEntity marker);
 
     /**
-     * Deletes markers written before the given instant, and returns how many it removed.
+     * Deletes at most {@code limit} markers older than the horizon, and returns how many it removed.
      *
-     * <p>A marker matters only while a redelivery of its event is still possible. Past that horizon
-     * it is dead weight on a table that otherwise grows for the life of the service.
-     * {@code carddemo.processed-event.marker-retention-hours} in
-     * {@code src/main/resources/application.yml} supplies the horizon, and
-     * {@code ix_processed_event_processed_at} serves this delete.
+     * <p>The bound keeps one retention pass from producing a single very large statement on a schema
+     * that has been idle for a long time. A caller repeats the call until it returns zero.
      *
      * @param horizon the instant before which a marker is removed
-     * @return the number of markers removed
+     * @param limit   the largest number of rows one statement removes
+     * @return the number of rows removed
      */
     @Modifying
-    @Query("DELETE FROM ProcessedEventEntity marker WHERE marker.processedAt < :horizon")
-    int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon);
+    @Query(value = """
+            DELETE FROM processed_event
+            WHERE event_id IN (SELECT event_id
+                               FROM processed_event
+                               WHERE processed_at < :horizon
+                               ORDER BY processed_at
+                               LIMIT :limit)
+            """, nativeQuery = true)
+    int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon, @Param("limit") int limit);
 }

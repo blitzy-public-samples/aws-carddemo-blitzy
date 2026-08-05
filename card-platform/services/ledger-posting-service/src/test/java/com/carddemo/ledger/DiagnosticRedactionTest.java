@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Asserts that no entity of the posting path can hand a logger a transaction identifier, an account
  * identifier or a monetary amount.
  *
- * <p>ADDITIVE. No COBOL program renders a record for a log; {@code app/cbl/CBTRN02C.cbl:L714-L727}
+ * <p>No COBOL program renders a record for a log; {@code app/cbl/CBTRN02C.cbl:L714-L727}
  * formats a two-byte file status into four digits and nothing else. This class has no ancestor.
  *
  * <p>This is the service that holds the money, so all five of its entities are covered. Each
@@ -42,8 +42,12 @@ class DiagnosticRedactionTest {
     /**
      * The full Primary Account Number the masked form above stands for. The reject row masks it in
      * its own constructor, so this value reaches no column and no rendering.
+     *
+     * <p>Its four leading digits are {@code 9999}, and no card of
+     * {@code app/data/ASCII/carddata.txt} begins with them. Its visible tail is the tail
+     * {@link #MASKED_CARD_NUMBER} shows.
      */
-    private static final String CARD_NUMBER = "4859452612877065";
+    private static final String CARD_NUMBER = "9999" + "452612877065";
 
     /** An amount at the two-place scale {@code TRAN-AMT PIC S9(09)V99} declares. */
     private static final BigDecimal AMOUNT = new BigDecimal("1250.75");

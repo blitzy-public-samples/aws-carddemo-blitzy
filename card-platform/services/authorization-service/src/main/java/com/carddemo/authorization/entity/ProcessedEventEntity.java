@@ -13,7 +13,7 @@ import java.util.UUID;
  * One row per event identifier the authorization service has handled, in table
  * {@code processed_event}.
  *
- * <p>ADDITIVE: no CardDemo copybook and no CardDemo program is the ancestor of this table. The
+ * <p>No CardDemo copybook and no CardDemo program is the ancestor of this table. The
  * source detects no duplicate at all. {@code 2900-WRITE-TRANSACTION-FILE} at
  * {@code app/cbl/CBTRN02C.cbl:L562-L579} tests the transaction file status at L566. A duplicate key
  * fails that test and reaches {@code PERFORM 9999-ABEND-PROGRAM} at L577. That abend routine at
@@ -25,21 +25,18 @@ import java.util.UUID;
  * restart, a consumer group rebalance, or a crash between the side effects and the offset commit
  * redelivers a message.
  *
- * <p>The concrete incoming event this marker guards is {@code AccountStateChanged}, which the
- * account service publishes on an account update and on a cycle close. The authorization service
- * reads {@code account_credit_snapshot} on every decision, and that projection is only current while
- * something applies those events to it. Applying one twice would double-count a cycle accumulator,
- * so the consumer records the event identifier here in the same local transaction as the projection
- * row it changes. {@code repository/ProcessedEventRepository} owns the existence check, the insert
- * and the retention purge.
+ * <p>No listener currently writes this table. The authorization service registers none, so the
+ * table stays empty and this mapping is the guard a future consumer would use. The event such a
+ * consumer would read is {@code AccountStateChanged}, which the account service publishes on an
+ * account update and on a cycle close: the authorization service reads
+ * {@code account_credit_snapshot} on every decision, and applying one of those events twice would
+ * double-count a cycle accumulator. {@code repository/ProcessedEventRepository} owns the existence
+ * check, the insert and the retention purge.
  *
- * <p>Two columns, both {@code NOT NULL}, created on PostgreSQL 18.4 by
- * {@code src/main/resources/db/migration/V1__schema.sql:L80-L84}:
- *
- * <pre>
- *   event_id      UUID                        PRIMARY KEY
- *   processed_at  TIMESTAMP(6) WITH TIME ZONE
- * </pre>
+ * <p>Three columns and one index, created on PostgreSQL 18.4 by
+ * {@code src/main/resources/db/migration/V1__schema.sql}, which is authoritative for their
+ * definitions: {@code event_id} as the primary key, {@code processed_at}, {@code consumed_topic},
+ * and {@code ix_processed_event_processed_at} over {@code processed_at} for the retention purge.
  *
  * <p>The producer assigns the event identifier while building the event envelope, and the writer
  * supplies the timestamp. Each of the other five services owns a {@code processed_event} table in
@@ -50,6 +47,8 @@ import java.util.UUID;
  * {@code src/main/resources/application.yml}. That file sets
  * {@code spring.jpa.hibernate.ddl-auto} to {@code validate}. Hibernate checks this mapping against
  * the migration above at start-up.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "processed_event",
@@ -79,20 +78,20 @@ public class ProcessedEventEntity {
      * Which topic the delivery that first handled this event arrived on, or null when the
      * marker was written without one.
      *
-     * <p>A marker on its own says an event was handled and nothing about where it came from, which
-     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
-     * came from or arrive on a dead-letter topic during a recovery, and those are different
-     * situations. Recording the topic separates them.
+     * <p>A marker on its own says an event was handled and nothing about where it came from,
+     * which is not enough to investigate a replay. The same identifier can be redelivered on the
+     * topic it came from, or arrive on a dead-letter topic during a recovery. Those are different
+     * situations, and recording the topic separates them.
      */
     @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
     private String consumedTopic;
 
     /**
-     * No-argument constructor the persistence provider calls. Hibernate assigns both fields through
-     * reflection after calling it.
+     * No-argument constructor the persistence provider calls. Hibernate assigns all three mapped
+     * fields through reflection after calling it.
      */
     protected ProcessedEventEntity() {
-        // Both fields stay unassigned until the persistence provider populates them.
+        // Every field stays unassigned until the persistence provider populates them.
     }
 
     /**
@@ -145,7 +144,8 @@ public class ProcessedEventEntity {
     }
 
     /**
-     * Renders both columns. Neither one carries a Primary Account Number (PAN).
+     * Renders the event identifier and the timestamp, and omits {@code consumedTopic}. Neither
+     * rendered value carries a Primary Account Number (PAN).
      *
      * @return the event identifier and the timestamp
      */

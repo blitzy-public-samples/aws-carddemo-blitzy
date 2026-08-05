@@ -39,13 +39,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * configured threshold and reports {@code AMOUNT_ANOMALY}. Every value here is an inline literal,
  * and no test starts a context or opens a connection.
  *
- * <p>ADDITIVE IN FULL. The CardDemo Common Business Oriented Language (COBOL) source holds no risk
- * scoring and no threshold rule, so this rule is net new; no COBOL ancestor. A negative amount is
- * ordinary traffic: 50 of the 300 daily transaction fixture records carry one, and
- * {@code card-platform/docs/business-rule-flags.md} records that sign convention.
+ * <p>The CardDemo Common Business Oriented Language (COBOL) source holds no risk scoring and no
+ * threshold rule, so this rule is net new; no COBOL ancestor.
  */
-@DisplayName("AmountAnomalyRule, the signed threshold comparison on a transaction amount")
+@DisplayName("AmountAnomalyRule, the magnitude threshold comparison on a transaction amount")
 class AmountAnomalyRuleTest {
+
+    /**
+     * Card token of the fixture card number, sixty-four lower-case hexadecimal characters.
+     *
+     * <p>Additive. No source field exists. {@code com.carddemo.cobol.PanMasker#tokenOf} writes this
+     * value from the full card number {@code 4859452612877065}, and the width and case are that
+     * method's.</p>
+     */
+    private static final String CARD_TOKEN =
+            "f8da0217fb8bd2e172d427a2ef66d54656a59baa9fe8f9bc2ce9d383b90e1173";
 
     /** The rule under test. */
     private static final Class<AmountAnomalyRule> SUBJECT = AmountAnomalyRule.class;
@@ -186,14 +194,19 @@ class AmountAnomalyRuleTest {
         }
 
         @ParameterizedTest
-        @CsvSource({"500.00, -919.00", "10.00, -56.77"})
-        @DisplayName("Applies no absolute value: a negative amount stays below a positive threshold")
-        void appliesNoAbsoluteValueToASignedAmount(String threshold, String amount) {
+        @CsvSource({
+            "500.00, -919.00, true, 30",
+            "1000.00, -919.00, false, 0",
+            "10.00, -56.77, true, 30"
+        })
+        @DisplayName("Scores a refund by absolute magnitude")
+        void scoresARefundByAbsoluteMagnitude(
+                String threshold, String amount, boolean triggered, int points) {
             RiskRule.Contribution contribution =
                     new AmountAnomalyRule(threshold).evaluate(authorizedFor(amount));
             assertAll("contribution for " + amount + " against " + threshold,
-                    () -> assertFalse(contribution.triggered(), "triggered"),
-                    () -> assertEquals(0, contribution.points(), "points"));
+                    () -> assertEquals(triggered, contribution.triggered(), "triggered"),
+                    () -> assertEquals(points, contribution.points(), "points"));
         }
 
         @ParameterizedTest
@@ -280,7 +293,7 @@ class AmountAnomalyRuleTest {
                 EventEnvelope.SCHEMA_VERSION, OCCURRED_AT, ACCOUNT_IDENTIFIER,
                 TRANSACTION_IDENTIFIER, "01", "0001", "POS TERM", "Purchase at Abshire-Lowe",
                 new BigDecimal(amount), "800000000", "Abshire-Lowe", "North Enoshaven", "72112",
-                "************7065", "2022-06-10 19:27:53.000000", ACCOUNT_IDENTIFIER,
+                "************7065", null, "2022-06-10 19:27:53.000000", ACCOUNT_IDENTIFIER,
                 TransactionAuthorized.CURRENCY);
     }
 

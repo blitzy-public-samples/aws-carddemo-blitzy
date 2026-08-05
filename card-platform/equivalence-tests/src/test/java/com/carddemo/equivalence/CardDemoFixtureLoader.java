@@ -26,12 +26,10 @@ import java.util.Objects;
  * matching {@link CopybookRecordParser} operation. Returned lists and maps are immutable, and no
  * fixture is opened for anything other than reading.</p>
  *
- * <p>ADDITIVE: {@code app/data/ASCII/cardxref.txt} delivers
- * {@link PicClause#CARDXREF_FIXTURE_RECORD_WIDTH} bytes where {@code app/jcl/XREFFILE.jcl:L44}
- * declares {@code RECORDSIZE(50 50)}. {@code XREF-ACCT-ID} at {@code app/cpy/CVACT03Y.cpy:L7}
- * closes on the last delivered byte and the {@code app/cpy/CVACT03Y.cpy:L8} filler is absent. That
- * fixture is the only width mismatch among the nine, and the tolerance is recorded in
- * {@code card-platform/docs/decision-log.md} (planned).</p>
+ * <p>No COBOL ancestor: {@code app/data/ASCII/cardxref.txt} delivers {@link
+ * PicClause#CARDXREF_FIXTURE_RECORD_WIDTH} bytes where {@code app/jcl/XREFFILE.jcl:L44} declares
+ * {@code RECORDSIZE(50 50)}. {@code XREF-ACCT-ID} at {@code app/cpy/CVACT03Y.cpy:L7} closes on the
+ * last delivered byte and the {@code app/cpy/CVACT03Y.cpy:L8} filler is absent.
  *
  * <p>Every failure this class reports names the fixture file, the field, the one-based record
  * ordinal, the position inside a field, and the widths and counts involved. None carries the text
@@ -42,7 +40,8 @@ public final class CardDemoFixtureLoader {
 
     /**
      * System property that names the fixture directory. A value set here skips the search for an
-     * ancestor directory and is used as given.
+     * ancestor directory. The value is trimmed, resolved to its real path, and then checked for the
+     * nine fixture files.
      */
     public static final String FIXTURE_DIRECTORY_PROPERTY = "carddemo.fixture.directory";
 
@@ -328,14 +327,13 @@ public final class CardDemoFixtureLoader {
 
     // Declared layout. The cross-reference fixture is the one file narrower than its dataset
     // definition, and this operation restores the declared width.
-    // ADDITIVE, recorded in card-platform/docs/decision-log.md (planned).
 
     /**
      * Reads {@code app/data/ASCII/cardxref.txt} and pads each record to the declared layout.
      *
-     * <p>ADDITIVE. Each record gains the {@link PicClause#CARD_XREF_RECORD_FILLER_WIDTH} trailing
-     * spaces that {@code app/cpy/CVACT03Y.cpy:L8} declares and the file omits, reaching the
-     * {@link PicClause#CARD_XREF_RECORD_LENGTH} bytes of {@code app/jcl/XREFFILE.jcl:L44}.</p>
+     * <p>No COBOL ancestor. Each record gains the {@link PicClause#CARD_XREF_RECORD_FILLER_WIDTH}
+     * trailing spaces that {@code app/cpy/CVACT03Y.cpy:L8} declares and the file omits, reaching
+     * the {@link PicClause#CARD_XREF_RECORD_LENGTH} bytes of {@code app/jcl/XREFFILE.jcl:L44}.</p>
      *
      * @return {@link PicClause#CARDXREF_FIXTURE_RECORD_COUNT} immutable records, each
      *         {@link PicClause#CARD_XREF_RECORD_LENGTH} characters long
@@ -487,9 +485,10 @@ public final class CardDemoFixtureLoader {
      * directory and the repository root both resolve.</p>
      *
      * <p>Whichever path is chosen, it is resolved to its real path and then checked: the directory
-     * has to hold all nine fixture files as regular files. A system property therefore cannot point
-     * this loader at an unrelated tree, and a symbolic link cannot point one check at one directory
-     * and the read at another.</p>
+     * has to hold all nine fixture files as regular files. The check is presence by name, so a
+     * directory holding those nine names passes and any further file it holds is ignored. Resolving
+     * the real path first means a symbolic link cannot point one check at one directory and the
+     * read at another.</p>
      *
      * @return the real, absolute, normalised fixture directory
      * @throws IllegalStateException when any of these checks fails:
@@ -542,11 +541,12 @@ public final class CardDemoFixtureLoader {
     }
 
     /**
-     * Checks that a resolved directory is the CardDemo fixture directory and nothing else.
+     * Checks that a resolved directory holds the nine fixture files this class reads.
      *
-     * <p>The directory must hold all nine fixture files this class reads. A directory chosen
-     * through {@link #FIXTURE_DIRECTORY_PROPERTY} therefore cannot point this loader at an
-     * unrelated tree, and a partial or substituted directory fails before any file is read.</p>
+     * <p>Presence by name is the whole check: each of the nine names has to resolve to a regular
+     * file, and any further file in the directory is ignored. A partial directory therefore fails
+     * before any file is read, and file contents are validated later, on load, against the record
+     * width and count {@link PicClause} publishes.</p>
      *
      * @param directory the resolved candidate directory
      * @return the same directory
@@ -613,8 +613,8 @@ public final class CardDemoFixtureLoader {
         Path fixture = directory.resolve(fileName);
         if (!Files.isRegularFile(fixture, LinkOption.NOFOLLOW_LINKS)) {
             throw new IllegalStateException("fixture '" + fileName + "' is absent from '"
-                    + directory + "', or is not a regular file. A symbolic link is refused: the "
-                    + "loader reads the nine files of the fixture directory and nothing else.");
+                    + directory + "', or is not a regular file. Each of the nine named fixtures has "
+                    + "to resolve to a regular file, and a symbolic link is refused.");
         }
         byte[] content;
         try (SeekableByteChannel channel = Files.newByteChannel(fixture, StandardOpenOption.READ)) {

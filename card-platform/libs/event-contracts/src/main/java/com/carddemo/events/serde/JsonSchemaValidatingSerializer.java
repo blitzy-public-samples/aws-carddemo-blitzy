@@ -34,25 +34,25 @@ import tools.jackson.databind.module.SimpleModule;
  * and the destination topic before returning them. A malformed or misrouted event never reaches a
  * Kafka topic.
  *
- * <p>ADDITIVE IN FULL. No COBOL program and no copybook in this repository defines this class.
+ * <p>No COBOL program and no copybook in this repository defines this class.
  *
  * <p>Three checks run on every call, in this order.
  *
  * <ol>
  * <li>The event must be one of the five records of {@code com.carddemo.events}. The class of the
- * argument selects the event type: the five records of this module through
- * {@link #EVENT_TYPES_BY_CLASS}, and a mutation record of a service through its own simple name,
- * which {@link EventContracts#isRegistered(String)} must recognise. An arbitrary object or map whose
- * JSON happens to carry a supported {@code eventType} is therefore rejected before anything is
- * written.</li>
+ * argument selects the event type. The five records of this module resolve through
+ * {@link #EVENT_TYPES_BY_CLASS}. A mutation record of a service resolves through its own simple
+ * name, which {@link EventContracts#isRegistered(String)} must recognise. An arbitrary object or
+ * map whose JSON happens to carry a supported {@code eventType} is therefore rejected before
+ * anything is written.</li>
  * <li>{@link EventContracts} must bind that event type to the topic the caller named. A producer
  * that sends an approval to the declined topic therefore fails here rather than at a consumer.
  * {@code FraudFlagged} and {@code FraudCleared} both bind to {@code fraud.assessed}, which is the
  * one topic two event types share. A deployment that renames a topic passes that name through
  * {@link #TOPIC_OVERRIDE_PREFIX} in the producer properties.</li>
- * <li>The written JSON must carry no property {@link SensitiveEventProperties} forbids, so a card
- * number, a verification value or a government identifier cannot travel even where a schema would
- * tolerate an undeclared property.</li>
+ * <li>The written JSON must carry no property {@link SensitiveEventProperties} forbids. A card
+ * number, a verification value or a government identifier therefore cannot travel, even where a
+ * schema would tolerate an undeclared property.</li>
  * <li>The written JSON must satisfy the schema document of that event type at the contract
  * version the event itself declares, which {@link EventContracts#violationsOf(String, String)}
  * selects and checks. {@code TransactionDeclined} publishes two contracts, and validating one
@@ -76,11 +76,11 @@ import tools.jackson.databind.module.SimpleModule;
  * reach a log through a failure. This class writes no log line and records no metric.
  *
  * <p>Two bounds apply beside the schema. The parser that reads the {@code eventType} back runs
- * under {@link EventWireBounds#streamReadConstraints()}, and the finished document is refused when
- * it exceeds {@link EventWireBounds#MAX_EVENT_BYTES}, which is also the width of the
- * {@code payload} column of every {@code outbox_event} table. An event that serializes therefore
- * fits the row that carries it, and every shipped schema closes its property set, so an
- * undeclared field cannot ride along inside a known event type.
+ * under {@link EventWireBounds#streamReadConstraints()}. The finished document is refused when it
+ * exceeds {@link EventWireBounds#MAX_EVENT_BYTES}, the width of the {@code payload} column of
+ * every {@code outbox_event} table. An event that serializes therefore fits the row that carries
+ * it. Every shipped schema closes its property set, so an undeclared field cannot ride along
+ * inside a known event type.
  *
  * <p>Versions: Java 25, {@code jackson-databind 3.1.5}, {@code json-schema-validator 3.0.6} for
  * JSON Schema Draft 2020-12, and {@code kafka-clients 4.2.1} for the {@link Serializer} interface.
@@ -92,9 +92,11 @@ import tools.jackson.databind.module.SimpleModule;
  * {@link JsonSchemaValidatingDeserializer} is the consume side, so one payload is measured against
  * one document at both ends.
  *
- * @param <T> the event this serializer writes: one of the five records in
- *            {@code com.carddemo.events}, or a mutation event record of the service that owns
- *            the aggregate, whose {@code eventType} names a schema in {@link EventSchemas}
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
+ *
+ * @param <T> the event this serializer writes. Either one of the five records in
+ *            {@code com.carddemo.events}, or a mutation event record of the service that owns the
+ *            aggregate. Its {@code eventType} names a schema in {@link EventSchemas}
  */
 public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
 
@@ -186,10 +188,10 @@ public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
      * @param topic the topic the record is bound for, checked against the event type
      * @param data  the event to write, or {@code null}
      * @return the checked JSON as UTF-8 bytes, or {@code null} when {@code data} is {@code null}
-     * @throws SerializationException when the argument is not one of the five event records, when
-     *                                the event type does not belong on {@code topic}, when the
-     *                                mapper cannot write the event, when the written JSON names
-     *                                another event type, or when the JSON breaks its schema
+     * @throws SerializationException on any of five conditions. The argument is not a registered
+     *                                event record. The event type does not belong on {@code topic}.
+     *                                The mapper cannot write the event. The written JSON names
+     *                                another event type. The JSON breaks its schema
      */
     @Override
     public byte[] serialize(String topic, T data) {
@@ -232,11 +234,20 @@ public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
                     + "event type \"" + written + "\", so the record and its envelope disagree.");
         }
 
-        String forbidden = SensitiveEventProperties.firstForbiddenProperty(mapper.readTree(json));
+        JsonNode screened = mapper.readTree(json);
+        String forbidden = SensitiveEventProperties.firstForbiddenProperty(screened);
         if (forbidden != null) {
             throw new SerializationException("The JSON written for " + eventType
                     + " carries the property \"" + forbidden
                     + "\", which no event may carry. See SensitiveEventProperties.");
+        }
+
+        String sensitive = SensitiveEventProperties.firstSensitiveValue(screened);
+        if (sensitive != null) {
+            throw new SerializationException("The JSON written for " + eventType
+                    + " carries a card number or a government identifier in the free-text property "
+                    + "\"" + sensitive + "\". No event may carry either. "
+                    + "See SensitiveEventProperties.");
         }
 
         List<String> violations;

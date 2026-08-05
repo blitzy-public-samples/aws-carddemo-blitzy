@@ -20,19 +20,19 @@ import org.springframework.stereotype.Component;
  * reaches its threshold.
  *
  * <p>No COBOL (Common Business Oriented Language) program under {@code app/cbl/} counts
- * authorization velocity. ADDITIVE IN FULL: net new; no COBOL ancestor.
+ * authorization velocity. No COBOL ancestor.
  *
  * <p>The rule-object shape comes from {@code 1500-VALIDATE-TRAN} at
  * {@code app/cbl/CBTRN02C.cbl:L370-L378}, whose {@code :L377} comment marks the extension point:
  * shape only, no logic.
  *
- * <p>A call reads {@code velocity_window} and writes nothing. {@code RiskScoringService} updates
- * the window after every rule has run, so a call reads the counters as they stood before the
- * current event. The {@code processed_event} check in the sibling {@code messaging} package runs
- * first, so a repeated delivery counts once. One account's events all carry its identifier as the
- * Kafka message key, so one partition holds them in publish order.
+ * <p>A call reads {@code velocity_window} and writes nothing. {@code RiskScoringService} atomically
+ * adds the current event before every rule runs, so the decision includes the event being assessed.
+ * The {@code processed_event} check in the sibling {@code messaging} package runs first, so a
+ * repeated delivery counts once. One account's events all carry its identifier as the Kafka message
+ * key, so one partition holds them in publish order.
  *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
+ * <p>Decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Component
 @Order(10)
@@ -42,17 +42,16 @@ public class VelocityRule implements RiskRule {
     private static final String RULE_ID = "VELOCITY";
 
     /**
-     * Points a triggered contribution adds, on the zero-to-one-hundred scale
-     * {@code carddemo.fraud.risk.flag-threshold} compares a score against. Demonstration value: no
-     * measurement stands behind it.
+     * Points this rule contributes when triggered, on the zero-to-one-hundred scale a risk score
+     * carries. Demonstration value: no measurement stands behind it.
      */
     private static final int TRIGGERED_POINTS = 30;
 
     /**
      * Totalled amount at or above which this rule triggers, at the two-digit scale of
      * {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L10}. Demonstration value: no
-     * measurement stands behind it. A negative amount lowers a total, so a total can fall as well
-     * as rise.
+     * measurement stands behind it. Stored totals are magnitudes, so a refund raises the velocity
+     * total by its absolute amount instead of lowering it.
      */
     private static final BigDecimal AMOUNT_THRESHOLD = new BigDecimal("2500.00");
 
@@ -117,11 +116,11 @@ public class VelocityRule implements RiskRule {
             return Contribution.notTriggered();
         }
 
-        int authorizations = 0;
+        long authorizations = 0L;
         BigDecimal totalled = ZERO_AMOUNT;
         for (VelocityWindowEntity window : windows) {
             authorizations += window.getAuthorizationCount();
-            totalled = CobolDecimal.add(totalled, window.getTotalAmount(),
+            totalled = CobolDecimal.add(totalled, window.getTotalAmount().abs(),
                     PicClause.TRAN_AMT_SCALE);
         }
 

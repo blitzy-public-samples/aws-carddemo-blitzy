@@ -21,9 +21,11 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import java.math.BigDecimal;
 import java.util.Objects;
 import java.util.regex.Pattern;
+import org.springframework.data.domain.Persistable;
 
 /**
  * One posted transaction: the thirteen fields of the 350-byte {@code TRAN-RECORD} at
@@ -63,13 +65,21 @@ import java.util.regex.Pattern;
  * fixed-width character columns. Nine columns hold variable-width text, and {@code amount} holds a
  * fixed-point decimal. Every field is required, and every accessor is read-only. The trailing
  * {@code FILLER PIC X(20)} at {@code app/cpy/CVTRA05Y.cpy:L18} carries no column.</p>
+ *
+ * <p><b>Insert only.</b> {@link #isNew()} answers {@code true} for every instance, so a store
+ * inserts and never updates. {@code 2900-WRITE-TRANSACTION-FILE} at
+ * {@code app/cbl/CBTRN02C.cbl:L562-L579} issues {@code WRITE} and no paragraph of
+ * {@code app/cbl/} issues {@code REWRITE} or {@code DELETE} against the transaction master. A
+ * second store of an identifier the table already holds therefore raises a primary-key violation
+ * and rolls the whole posting transaction back, rather than replacing the stored row with the
+ * arriving one and leaving the two balance updates it already applied in place.</p>
  */
 @Entity
 @Table(
         name = "transaction",
         indexes = @Index(name = "idx_transaction_processed_timestamp",
                 columnList = "processed_timestamp"))
-public class TransactionEntity {
+public class TransactionEntity implements Persistable<String> {
 
     /**
      * Shape of the value {@code cardNumber} holds: twelve asterisks and four digits. The
@@ -85,14 +95,11 @@ public class TransactionEntity {
      * Primary key. {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5}.
      *
      * <p>Column {@code transaction_id VARCHAR(16) NOT NULL}. The mapping states the width and the
-     * nullability rather than leaving the provider to describe them, so a drift between this field
-     * and the migration fails the start-up check that {@code ddl-auto: validate} runs.
+     * nullability rather than leaving the provider to describe them. A drift between this field and
+     * the migration therefore fails the start-up check that {@code ddl-auto: validate} runs.
      *
      * <p>The Picture clause is alphanumeric, so any character may occupy any of the sixteen
-     * positions, and the constructor tests the width alone. A caller supplies the value: the
-     * authorization service allocates it from {@code transaction_id_seq}, replacing the
-     * browse-backwards-and-add-one mechanism at {@code app/cbl/COTRN02C.cbl:L444-L451}, which is
-     * register item 15 in {@code card-platform/docs/business-rule-flags.md} (planned).
+     * positions, and the constructor tests the width alone.
      */
     @Id
     @Column(name = "transaction_id", nullable = false, length = TRAN_ID_WIDTH)
@@ -248,6 +255,31 @@ public class TransactionEntity {
 
     public String getTransactionId() {
         return transactionId;
+    }
+
+    /**
+     * Returns the primary key of this row.
+     *
+     * @return the sixteen-character {@code TRAN-ID}, never {@code null} on a constructed instance
+     */
+    @Override
+    public String getId() {
+        return transactionId;
+    }
+
+    /**
+     * Reports this row as new, always.
+     *
+     * <p>The identifier arrives from the caller rather than from the database, so a provider given
+     * a populated key would otherwise read the table and choose an update. This answer removes that
+     * choice: every store is an insert.
+     *
+     * @return {@code true}
+     */
+    @Override
+    @Transient
+    public boolean isNew() {
+        return true;
     }
 
     public String getTypeCode() {

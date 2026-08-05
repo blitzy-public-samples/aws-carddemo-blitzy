@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Asserts the relay-state machine on {@link OutboxEventEntity}.
  *
- * <p>ADDITIVE throughout. The CardDemo source has one asynchronous handoff, the transient data
+ * <p>The CardDemo source has one asynchronous handoff, the transient data
  * queue write at {@code app/cbl/CORPT00C.cbl:L517}, and one scheduled job picks the record up, so
  * nothing there can claim a row twice or give up on one. There is no COBOL behaviour to compare
  * against here; what these tests assert is that the two failures the columns exist to prevent are

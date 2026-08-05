@@ -2,7 +2,7 @@
 # Every value reads an environment variable and falls back to the default that
 # card-platform/.env.example documents.
 # Source: app/cbl/CBTRN02C.cbl, invoked at app/jcl/POSTTRAN.jcl:L23.
-# Rationale for the settings below: card-platform/docs/decision-log.md (planned)
+# Rationale for the settings below: card-platform/docs/decision-log.md
 
 spring:
   application:
@@ -12,24 +12,24 @@ spring:
   # below. It reaches no other database and reads no other schema.
   datasource:
     # sslmode=require encrypts this connection and stops the driver from falling back to
-    # cleartext. It does not verify the certificate, because a direct run has no
-    # certificate authority to verify against; the compose stack overrides this whole URL
-    # with the same mode against a server that presents a certificate it generated for
-    # itself, and deploy/k8s/30-configmap.yaml overrides it with verify-full, because a
-    # cluster has an authority and a network path worth protecting.
+    # cleartext. It does not verify the certificate, since a direct run has no
+    # certificate authority to verify against. The compose stack overrides this whole URL
+    # with the same mode, against a server presenting a certificate it generated for
+    # itself. deploy/k8s/30-configmap.yaml overrides it with verify-full, because a
+    # cluster has an authority.
     url: "${SPRING_DATASOURCE_URL:jdbc:postgresql://${POSTGRES_HOST:postgres}:${POSTGRES_PORT:5432}/${LEDGER_DB_NAME:carddemo_ledger}?currentSchema=${LEDGER_DB_SCHEMA:ledger_service}&sslmode=require}"
     # This service's own login, which owns one database on the compose path and one schema on
-    # the cluster path. The superuser is deliberately not the default here: a shared login
-    # would mean the private schema this service claims to own was a convention rather than a
-    # control, and a compromise of any service could read and alter every other service's
-    # card, customer, balance, fraud and event data. A login name is not a credential and
-    # carries a default; the password below carries none.
+    # the cluster path. The superuser is not the default here. A login name is not a
+    # credential and carries a default; the password below carries none.
     username: "${SPRING_DATASOURCE_USERNAME:${LEDGER_DB_USER:carddemo_ledger_svc}}"
     # No fallback. An unset password stops start-up rather than signing on under a
     # password this repository publishes. docker-compose.yml sets
     # SPRING_DATASOURCE_PASSWORD; a direct run sets POSTGRES_PASSWORD.
     password: "${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD}}"
     driver-class-name: org.postgresql.Driver
+    hikari:
+      connection-timeout: "${SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT:3000}"
+      validation-timeout: "${SPRING_DATASOURCE_HIKARI_VALIDATION_TIMEOUT:2000}"
 
   # Jakarta Persistence API (JPA) settings. Hibernate validates its mapping
   # against the migrated schema at startup and writes no schema object.
@@ -54,23 +54,28 @@ spring:
     validate-on-migrate: true
 
   kafka:
-    bootstrap-servers: "${SPRING_KAFKA_BOOTSTRAP_SERVERS:${KAFKA_BOOTSTRAP_SERVERS:kafka:9092}}"
+    # kafka:29092 is the internal listener docker-compose.yml publishes, which is the one
+    # context a shipped default can be correct in. deploy/k8s/30-configmap.yaml overrides it
+    # to kafka:9092, and a run straight on the host sets KAFKA_BOOTSTRAP_SERVERS to
+    # localhost:9092. The other five services carry the same default.
+    bootstrap-servers: "${SPRING_KAFKA_BOOTSTRAP_SERVERS:${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}}"
+    admin:
+      operation-timeout: "${SPRING_KAFKA_ADMIN_OPERATION_TIMEOUT:3s}"
 
     # Broker authentication. The broker requires a Simple Authentication and Security
     # Layer (SASL) identity on every client listener, and its authorizer refuses any
-    # operation no access control entry allows, so this service reaches exactly the
-    # topics and the consumer group its own configuration names and nothing else.
+    # operation no access control entry allows. This service therefore reaches exactly
+    # the topics and the consumer group its own configuration names.
     # docker-compose.yml installs that matrix at broker start and
     # deploy/k8s/10-kafka.yaml installs the same one.
     #
-    # SASL_PLAINTEXT authenticates without encrypting, which is the shipped default and
-    # what the compose stack runs: the broker publishes on the loopback address alone and
-    # every service reaches it across one Docker bridge on one machine.
+    # SASL_PLAINTEXT authenticates without encrypting, and is the shipped default the
+    # compose stack runs. The broker publishes on the loopback address alone, and every
+    # service reaches it across one Docker bridge on one machine.
     # deploy/k8s/30-configmap.yaml sets SASL_SSL instead, because a cluster pod network
     # is a shared path, and supplies the truststore by environment as
     # SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION and _PASSWORD. Those two keys are
-    # deliberately absent here: an empty truststore path in a shipped file reads like a
-    # setting that has been dealt with.
+    # absent here.
     security:
       protocol: "${KAFKA_SECURITY_PROTOCOL:SASL_PLAINTEXT}"
     properties:
@@ -87,11 +92,11 @@ spring:
     #
     # Both serializers take text. outbox/OutboxWriter.java writes the event as JSON and
     # the payload column of outbox_event stores that text, so a relay publishing a row
-    # hands the template a String. com.carddemo.events.serde.JsonSchemaValidatingSerializer
-    # writes one of the registered event records and refuses every other value, so naming
-    # it here would fail every publish with a SerializationException while the service
-    # still reported itself healthy. The schema gate runs at write time, inside
-    # OutboxWriter, where a rejected event can still roll back its own transaction.
+    # hands the template a String. Do NOT name
+    # com.carddemo.events.serde.JsonSchemaValidatingSerializer here. It accepts one of
+    # the registered event records and refuses every other value, including this text.
+    # The schema gate runs at write time, inside OutboxWriter, where a rejected event
+    # still rolls back its own transaction.
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -104,7 +109,8 @@ spring:
         max.block.ms: 5000
 
     # Manual acknowledgement, with automatic commit disabled, under a group of
-    # this service's own.
+    # this service's own. messaging/TransactionAuthorizedConsumer reads
+    # carddemo.kafka.topics.transaction-authorized under this group.
     consumer:
       group-id: "${SPRING_KAFKA_CONSUMER_GROUP_ID:${GROUP_LEDGER_POSTING:ledger-posting}}"
       enable-auto-commit: false
@@ -128,8 +134,10 @@ carddemo:
       transaction-authorized: "${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}"
       transaction-posted: "${TOPIC_TRANSACTION_POSTED:transaction.posted}"
       transaction-declined: "${TOPIC_TRANSACTION_DECLINED:transaction.declined}"
-      # One shared dead-letter topic carries every record no listener could consume.
+      # The shared name is a fallback. Normal failures route to <source-topic><suffix>, which keeps
+      # event formats separate and lets each recovery consumer bind one schema.
       dead-letter: "${TOPIC_DEAD_LETTER:carddemo.dead-letter}"
+      dead-letter-suffix: "${TOPIC_DEAD_LETTER_SUFFIX:.DLT}"
 
   # Delivery attempts a consumer makes, and the wait between two attempts.
   consumer:
@@ -142,27 +150,30 @@ carddemo:
     relay:
       fixed-delay-ms: "${OUTBOX_RELAY_INTERVAL_MS:500}"
       batch-size: "${OUTBOX_RELAY_BATCH_SIZE:100}"
+      instance-id: "${OUTBOX_RELAY_INSTANCE_ID:${HOSTNAME:ledger-relay}}"
+      claim-timeout: "${OUTBOX_RELAY_CLAIM_TIMEOUT:PT2M}"
     # Retention. A published row has done its work and stays only for diagnosis, and a
     # processed-event marker matters only while a redelivery of its event is still
-    # possible. The purge methods on the two repositories delete rows past these
-    # horizons, and ix_outbox_event_published_at and ix_processed_event_processed_at
-    # serve those deletes. Both tables grow without bound if nothing calls them.
+    # possible. domain/RetentionSweep calls the two repository purge methods on the
+    # configured interval, and ix_outbox_event_published_at plus
+    # ix_processed_event_processed_at serve those deletes.
     published-retention-hours: "${OUTBOX_PUBLISHED_RETENTION_HOURS:168}"
   processed-event:
     marker-retention-hours: "${PROCESSED_EVENT_RETENTION_HOURS:168}"
+  retention:
+    sweep-interval-ms: "${RETENTION_SWEEP_INTERVAL_MS:3600000}"
 
 # The container listens on 8080. docker-compose.yml publishes host port 8082.
 
   # Request identities. config/SecurityConfig maps each entry onto one Spring Security
-  # user, and start-up fails when this list is empty: a service that runs with no
-  # identity would either refuse every request or invite a default one.
+  # user. Start-up fails when this list is empty, rather than running with no identity
+  # at all.
   #
   # password holds an ALREADY-ENCODED value carrying its algorithm prefix, for example
-  # {bcrypt}$2a$10$... A plaintext value authenticates nothing, which is how this
-  # platform declines to reproduce the plaintext comparison at
-  # app/cbl/COSGN00C.cbl:L223. card-platform/.env.example documents the three variables
-  # and how to generate a hash, and none of them holds a usable default: an unset
-  # variable stops start-up rather than admitting a password this repository publishes.
+  # {bcrypt}$2a$10$... A plaintext value authenticates nothing, so this platform does
+  # not reproduce the plaintext comparison at app/cbl/COSGN00C.cbl:L223.
+  # card-platform/.env.example documents the three variables and how to generate a
+  # hash. None of them holds a usable default, so an unset variable stops start-up.
   #
   # role is ADMIN, USER or MONITORING. ADMIN and USER are the two outcomes of the
   # SEC-USR-TYPE fork at app/cbl/COSGN00C.cbl:L232-L236. MONITORING is additive: it
@@ -171,8 +182,9 @@ carddemo:
   #
   # scopes carries what an ordinary identity owns, one authority per entitlement:
   # SCOPE_ACCOUNT_<eleven digits>, SCOPE_CUSTOMER_<nine digits> or
-  # SCOPE_CARD_<masked card number>. Each identifier is written exactly as its column
-  # holds it, leading zeros and mask characters included. An ADMIN entry needs none: it
+  # SCOPE_CARD_<card token>. Each identifier is written exactly as its column holds
+  # it, leading zeros included, and a card token is the 64 lower-case hexadecimal
+  # characters PanMasker.tokenOf produces for that card number. An ADMIN entry needs none: it
   # passes every ownership check by role.
   security:
     users:
@@ -192,15 +204,14 @@ server:
 
   # Transport Layer Security for the Representational State Transfer surface, off in the
   # shipped file and on in the cluster. The compose stack runs every service on one
-  # Docker bridge on one machine and publishes each port on the loopback address alone,
-  # so there is no network path there for a third party to read. A cluster pod network is
-  # a shared path, so deploy/k8s/30-configmap.yaml sets SERVER_SSL_ENABLED to true and
-  # names the keystore deploy/k8s/31-secret.example.yaml templates.
+  # Docker bridge on one machine and publishes each port on the loopback address alone.
+  # A cluster pod network is a shared path, so deploy/k8s/30-configmap.yaml sets
+  # SERVER_SSL_ENABLED to true and names the keystore deploy/k8s/31-secret.example.yaml
+  # templates.
   #
-  # Every value below carries a default, and the default of the keystore password is
-  # empty rather than absent: a shipped file that stopped start-up over a keystore
-  # nothing has asked for would be a file nobody could run. Enabling the first key
-  # without the other three is what fails, loudly, at start-up.
+  # Every value below carries a default, and the keystore password defaults to empty
+  # rather than absent. Enabling the first key without the other three is what fails,
+  # loudly, at start-up.
   ssl:
     enabled: "${SERVER_SSL_ENABLED:false}"
     key-store: "${SERVER_SSL_KEYSTORE:}"
@@ -215,8 +226,8 @@ management:
   server:
     port: ${MANAGEMENT_PORT:9080}
     # The management port carries the same posture as the service port above, declared
-    # rather than inherited: a monitoring credential travelling to a collector deserves
-    # the same protection as a cardholder identifier travelling to a client. A Kubernetes
+    # rather than inherited. A monitoring credential travelling to a collector deserves
+    # the protection a cardholder identifier gets. A Kubernetes
     # probe against an encrypted management port needs scheme HTTPS, which
     # deploy/k8s/40-authorization-service.yaml sets.
     ssl:
@@ -224,15 +235,23 @@ management:
       key-store: "${SERVER_SSL_KEYSTORE:}"
       key-store-type: "${SERVER_SSL_KEYSTORE_TYPE:PKCS12}"
       key-store-password: "${SERVER_SSL_KEYSTORE_PASSWORD:}"
-  # config/SecurityConfig secures this surface: /actuator/health answers without a
-  # credential because a container health check and a Kubernetes probe carry none, and
-  # every other endpoint below requires ROLE_MONITORING. An anonymous caller receives
-  # 401 and an identity holding a business role receives 403, so exposing metrics and
-  # the Prometheus scrape here discloses nothing to a pod that merely reaches the port.
+  # config/SecurityConfig secures this surface. /actuator/health answers without a
+  # credential, because a container health check and a Kubernetes probe carry none.
+  # Every other endpoint below requires ROLE_MONITORING. An anonymous caller receives
+  # 401, and an identity holding a business role receives 403.
   endpoints:
     web:
       exposure:
         include: "${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:${MANAGEMENT_ENDPOINTS:health,metrics,prometheus}}"
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db,kafka,listeners,outbox
   prometheus:
     metrics:
       export:

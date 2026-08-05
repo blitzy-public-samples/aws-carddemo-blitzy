@@ -22,20 +22,22 @@ import org.springframework.data.repository.Repository;
  * transaction master. A posted transaction is a record of something that happened, so removing one
  * would leave the balance it moved unexplained. Extending {@link Repository} states that surface on
  * the interface itself.</p>
- *
- * <p>{@code card-platform/docs/decision-log.md} (planned) holds the rationale, and
- * {@code card-platform/docs/traceability-matrix.md} (planned) holds the source-to-target
- * mapping.</p>
  */
 public interface TransactionRepository extends Repository<TransactionEntity, String> {
 
     /**
-     * Inserts one posted transaction.
+     * Inserts one posted transaction, and never updates one.
      *
      * <p>The caller writes this row in the same local transaction as the balance rows it moves and
      * the idempotency marker that guards them. {@code app/cbl/CBTRN02C.cbl:L440-L442} performs the
      * three updates one after another with no rollback between them, so a failure part way through
      * leaves the source files disagreeing. One transaction removes that window.
+     *
+     * <p>{@link TransactionEntity#isNew()} answers {@code true} for every instance, so this method
+     * inserts. An identifier the table already holds raises a primary-key violation, which reaches
+     * the caller as a {@link org.springframework.dao.DataIntegrityViolationException} and rolls the
+     * balance updates back with it. That is the target form of the duplicate-key limb at
+     * {@code app/cbl/CBTRN02C.cbl:L566-L578}, which dumps the file status and ends the run.
      *
      * @param transaction the row to insert, carrying an application-assigned sixteen-character
      *     identifier
@@ -54,9 +56,13 @@ public interface TransactionRepository extends Repository<TransactionEntity, Str
     /**
      * Reports whether a posted transaction already carries this identifier.
      *
-     * <p>{@code app/cbl/CBTRN02C.cbl:L562-L579} answers a duplicate key by dumping the file status
-     * and abending. This read lets the posting path recognise the same condition and complete
-     * without a second insert.
+     * <p>This is a read for a caller that wants to know, not a guard on the posting path. A read
+     * followed by an insert leaves a window in which a second delivery reads nothing and both
+     * insert, and skipping the insert on a hit would leave the two balance updates of that delivery
+     * standing against a transaction row it did not write. The posting path therefore inserts
+     * unconditionally and lets the primary key decide, matching the duplicate-key limb at
+     * {@code app/cbl/CBTRN02C.cbl:L566-L578}. Duplicate delivery of one event is refused earlier
+     * still, by the processed-event marker.
      *
      * @param transactionId the sixteen-character {@code TRAN-ID}
      * @return {@code true} when the table already holds the identifier

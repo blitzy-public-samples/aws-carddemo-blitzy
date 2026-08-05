@@ -1,5 +1,6 @@
 package com.carddemo.account.domain;
 
+import com.carddemo.account.config.ObservabilityConfig.AccountMeters;
 import com.carddemo.account.domain.validation.AccountIdValidator;
 import com.carddemo.account.domain.validation.AlphabeticOptionalValidator;
 import com.carddemo.account.domain.validation.AlphabeticRequiredValidator;
@@ -16,27 +17,27 @@ import com.carddemo.account.domain.validation.UsStateCodeValidator;
 import com.carddemo.account.domain.validation.UsStateZipPrefixValidator;
 import com.carddemo.account.domain.validation.YesNoFlagValidator;
 import com.carddemo.account.entity.AccountEntity;
+import com.carddemo.account.entity.CardCrossReferenceEntity;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.account.messaging.AccountStateChanged;
+import com.carddemo.account.messaging.CustomerContextChanged;
 import com.carddemo.account.outbox.OutboxWriter;
 import com.carddemo.account.repository.AccountRepository;
+import com.carddemo.account.repository.CardCrossReferenceRepository;
 import com.carddemo.account.repository.CustomerRepository;
 import com.carddemo.cobol.CobolDateValidator;
 import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
 
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
-
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Edits one submitted account and customer pair, then stores both records and one outbox row.
@@ -60,11 +61,6 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>The account row, the customer row and the outbox row commit together.
  * {@link #updateAccount} opens the transaction {@link OutboxWriter} requires and publishes
  * nothing.
- *
- * <p>Architecture: {@code card-platform/docs/architecture-before-after.md}. Message path:
- * {@code card-platform/docs/event-flow.md}. Column derivation:
- * {@code card-platform/docs/data-model.md}. Reproduced findings:
- * {@code card-platform/docs/business-rule-flags.md}.
  */
 @Service
 public class AccountUpdateService {
@@ -77,25 +73,76 @@ public class AccountUpdateService {
      * {@code 88 NO-SEARCH-CRITERIA-RECEIVED} at {@code app/cbl/COACTUPC.cbl:L489-L490}, set at
      * {@code app/cbl/COACTUPC.cbl:L1442}.
      */
-    static final String NO_INPUT_RECEIVED = "No input received";
+    public static final String NO_INPUT_RECEIVED = "No input received";
 
     /**
      * {@code 88 NO-CHANGES-DETECTED} at {@code app/cbl/COACTUPC.cbl:L491-L492}, set at
      * {@code app/cbl/COACTUPC.cbl:L1769}.
      */
-    static final String NO_CHANGE_DETECTED = "No change detected with respect to values fetched.";
+    public static final String NO_CHANGE_DETECTED = "No change detected with respect to values fetched.";
 
     /**
      * {@code 88 COULD-NOT-LOCK-ACCT-FOR-UPDATE} at {@code app/cbl/COACTUPC.cbl:L517-L518}, set at
      * {@code app/cbl/COACTUPC.cbl:L3912}.
      */
-    static final String COULD_NOT_LOCK_ACCOUNT = "Could not lock account record for update";
+    public static final String COULD_NOT_LOCK_ACCOUNT = "Could not lock account record for update";
 
     /**
      * {@code 88 COULD-NOT-LOCK-CUST-FOR-UPDATE} at {@code app/cbl/COACTUPC.cbl:L519-L520}, set at
      * {@code app/cbl/COACTUPC.cbl:L3939}.
      */
-    static final String COULD_NOT_LOCK_CUSTOMER = "Could not lock customer record for update";
+    public static final String COULD_NOT_LOCK_CUSTOMER = "Could not lock customer record for update";
+
+    /**
+     * Reported when the cross-reference names no customer for the account, or names more than one.
+     *
+     * <p>{@code app/cbl/COACTUPC.cbl:L3668-L3685} reports the cross-reference miss on the account
+     * identifier and sets {@code FLG-ACCTFILTER-NOT-OK}. The source reports a response code beside
+     * the text; a relational read reports a row count instead, so the text carries neither.
+     */
+    public static final String CUSTOMER_NOT_IN_CROSS_REFERENCE =
+            "Account not found in Cross ref file";
+
+    /**
+     * Reported when the customer the caller submitted is not the customer the account resolves to.
+     *
+     * <p>{@code app/cbl/COACTUPC.cbl:L3617-L3618} reads the cross-reference on the account
+     * identifier and {@code app/cbl/COACTUPC.cbl:L3666} takes {@code XREF-CUST-ID} from the record
+     * it returns, so the stored association names the customer the update locks. The source screen
+     * carries no customer key a caller could contradict.
+     */
+    public static final String CUSTOMER_KEY_MISMATCH =
+            "Customer submitted is not the customer this account resolves to";
+
+    /**
+     * The two messages that report a row this service could not lock.
+     *
+     * <p>A caller has to tell these apart from an edit that a submitted field failed, because the two
+     * ask for opposite responses: a lock failure is worth retrying unchanged, and a failed edit is
+     * not. Both texts come from {@code app/cbl/COACTUPC.cbl:L3907-L3915} and
+     * {@code app/cbl/COACTUPC.cbl:L3934-L3942}, where the source reports them alongside its own
+     * changed-record verdict.
+     *
+     * <p>The list is exposed rather than the two constants, so a caller cannot come to depend on one
+     * and miss the other when a third lock is added.
+     *
+     * @return the two texts, in the order the source can produce them
+     */
+    public static List<String> lockFailureMessages() {
+        return List.of(COULD_NOT_LOCK_ACCOUNT, COULD_NOT_LOCK_CUSTOMER);
+    }
+
+    /**
+     * Fixed target-side refusal when the submitted account and customer do not name one
+     * relationship held by {@code card_xref}. The source derives the customer identifier from that
+     * cross-reference and never lets the caller choose it independently.
+     */
+    static final String ACCOUNT_CUSTOMER_RELATIONSHIP_NOT_FOUND =
+            "Account and customer do not name one stored relationship";
+
+    /** Message returned when submitted keys name records outside the fetched pair. */
+    static final String IDENTIFIER_OWNERSHIP_MISMATCH =
+            "Submitted identifiers do not match the fetched records.";
 
     // -----------------------------------------------------------------------------------------
     // Edit labels, in the order the container paragraph moves them. Each label opens the message
@@ -187,31 +234,6 @@ public class AccountUpdateService {
 
     /** Label of edit 24, moved at {@code app/cbl/COACTUPC.cbl:L1657}. */
     static final String PRIMARY_CARD_HOLDER_LABEL = "Primary Card Holder";
-
-    // -----------------------------------------------------------------------------------------
-    // Meters. ObservabilityConfig registers these three names, and a meter is identified by its
-    // name and its tags, so the fields below hold the instruments that configuration registered.
-    // -----------------------------------------------------------------------------------------
-
-    /** Name of the timer over this path. */
-    static final String UPDATE_LATENCY_METER = "carddemo.account.update.latency";
-
-    /** Name of the counter of updates that committed. */
-    static final String UPDATE_APPLIED_METER = "carddemo.account.update.applied";
-
-    /** Name of the counter of submitted fields that failed an edit. */
-    static final String VALIDATION_FAILED_METER = "carddemo.account.validation.failed";
-
-    /** Description the timer carries. */
-    private static final String UPDATE_LATENCY_DESCRIPTION =
-            "Wall time of one account update, from request entry to commit";
-
-    /** Description the applied-update counter carries. */
-    private static final String UPDATE_APPLIED_DESCRIPTION = "Account updates that committed";
-
-    /** Description the validation-failure counter carries. */
-    private static final String VALIDATION_FAILED_DESCRIPTION =
-            "Submitted account or customer fields rejected by validation";
 
     // -----------------------------------------------------------------------------------------
     // Widths, scales and slice positions.
@@ -309,56 +331,54 @@ public class AccountUpdateService {
     /** Reads the customer master row for update and stores it. */
     private final CustomerRepository customerRepository;
 
+    /** Resolves the customer identifier the platform stores for one account. */
+    private final CardCrossReferenceRepository cardCrossReferenceRepository;
+
     /** Reports whether the stored records changed under the caller. */
     private final ConcurrentChangeDetector concurrentChangeDetector;
 
     /** Stores the one event row this update produces. */
     private final OutboxWriter outboxWriter;
 
-    /** Wall time of one call. */
-    private final Timer updateLatency;
+    /** The explicit transaction boundary around the two rows and their outbox event. */
+    private final TransactionTemplate transactionTemplate;
 
-    /** Updates that reached the outbox write. */
-    private final Counter updateApplied;
-
-    /** Passes that ended with a field message. */
-    private final Counter validationFailed;
+    /** Records only after that transaction has committed or failed. */
+    private final AccountMeters meters;
 
     /**
-     * Takes the two repositories, the concurrency check, the outbox writer and the meter
+     * Takes the three repositories, the concurrency check, the outbox writer and the meter
      * registry.
      *
      * @param accountRepository        store of the account master row
      * @param customerRepository       store of the customer master row
+     * @param cardCrossReferenceRepository service-local account-to-customer relationship replica
      * @param concurrentChangeDetector the check at {@code app/cbl/COACTUPC.cbl:L3947-L3948}
      * @param outboxWriter             writer of the one event row, joining this transaction
-     * @param meterRegistry            registry holding the three meters this path records against
+     * @param transactionTemplate      boundary around one update attempt
+     * @param meters                   recording surface used after the transaction completes
      * @throws NullPointerException when an argument is {@code null}
      */
     public AccountUpdateService(AccountRepository accountRepository,
             CustomerRepository customerRepository,
+            CardCrossReferenceRepository cardCrossReferenceRepository,
             ConcurrentChangeDetector concurrentChangeDetector,
             OutboxWriter outboxWriter,
-            MeterRegistry meterRegistry) {
+            TransactionTemplate transactionTemplate,
+            AccountMeters meters) {
 
         this.accountRepository =
                 Objects.requireNonNull(accountRepository, "accountRepository must be present");
         this.customerRepository =
                 Objects.requireNonNull(customerRepository, "customerRepository must be present");
+        this.cardCrossReferenceRepository = Objects.requireNonNull(cardCrossReferenceRepository,
+                "cardCrossReferenceRepository must be present");
         this.concurrentChangeDetector = Objects.requireNonNull(concurrentChangeDetector,
                 "concurrentChangeDetector must be present");
         this.outboxWriter = Objects.requireNonNull(outboxWriter, "outboxWriter must be present");
-        Objects.requireNonNull(meterRegistry, "meterRegistry must be present");
-
-        this.updateLatency = Timer.builder(UPDATE_LATENCY_METER)
-                .description(UPDATE_LATENCY_DESCRIPTION)
-                .register(meterRegistry);
-        this.updateApplied = Counter.builder(UPDATE_APPLIED_METER)
-                .description(UPDATE_APPLIED_DESCRIPTION)
-                .register(meterRegistry);
-        this.validationFailed = Counter.builder(VALIDATION_FAILED_METER)
-                .description(VALIDATION_FAILED_DESCRIPTION)
-                .register(meterRegistry);
+        this.transactionTemplate =
+                Objects.requireNonNull(transactionTemplate, "transactionTemplate must be present");
+        this.meters = Objects.requireNonNull(meters, "meters must be present");
     }
 
     /**
@@ -386,12 +406,11 @@ public class AccountUpdateService {
      *                         fetched
      * @param fetchedCustomer  the customer values the caller was shown; {@code null} when none was
      *                         fetched
-     * @return a passing verdict once both rows and the event row are written, a passing verdict
-     *         carrying {@link #NO_CHANGE_DETECTED} when nothing changed, otherwise a failing
-     *         verdict carrying the first message the pass produced
+     * @return a passing verdict once both rows and the event row are written. It carries
+     *         {@link #NO_CHANGE_DETECTED} when nothing changed. A failing verdict carries the
+     *         first message the pass produced
      * @throws NullPointerException when either proposed object is {@code null}
      */
-    @Transactional
     public EditResult updateAccount(AccountEntity proposedAccount, CustomerEntity proposedCustomer,
             AccountEntity fetchedAccount, CustomerEntity fetchedCustomer) {
 
@@ -400,44 +419,112 @@ public class AccountUpdateService {
 
         long startedAt = System.nanoTime();
         try {
-            // app/cbl/COACTUPC.cbl:L1433 tests ACUP-DETAILS-NOT-FETCHED and L1446 returns.
-            if (fetchedAccount == null || fetchedCustomer == null) {
-                return countFieldFailure(editSearchKey(proposedAccount));
-            }
-
-            // app/cbl/COACTUPC.cbl:L1460-L1461 runs ahead of every field edit.
-            if (!proposedDiffersFromFetched(proposedAccount, proposedCustomer, fetchedAccount,
-                    fetchedCustomer)) {
-                // app/cbl/COACTUPC.cbl:L1466 clears the non-key flags and L1467 returns.
-                return new EditResult(true, NO_CHANGE_DETECTED);
-            }
-
-            // app/cbl/COACTUPC.cbl:L1470-L1676.
-            EditResult fieldEdits =
-                    countFieldFailure(editMapInputs(proposedAccount, proposedCustomer));
-            if (!fieldEdits.valid()) {
-                return fieldEdits;
-            }
-
-            // app/cbl/COACTUPC.cbl:L3888-L4104.
-            return writeProcessing(proposedAccount, proposedCustomer, fetchedAccount,
-                    fetchedCustomer);
-        } finally {
-            updateLatency.record(Duration.ofNanos(System.nanoTime() - startedAt));
+            TransactionResult result = Objects.requireNonNull(
+                    transactionTemplate.execute(status -> updateWithinTransaction(
+                            proposedAccount, proposedCustomer, fetchedAccount, fetchedCustomer)),
+                    "the account update transaction must answer with a result");
+            result.recordCommitted(meters, Duration.ofNanos(System.nanoTime() - startedAt));
+            return result.verdict();
+        } catch (RuntimeException failure) {
+            meters.recordUpdateFailure();
+            throw failure;
         }
     }
 
     /**
-     * Counts a failing verdict and returns it unchanged.
+     * Resolves the customer identifier from the account cross-reference and checks both copies the
+     * caller submitted against it.
      *
-     * @param verdict the verdict a field pass produced
-     * @return the argument
+     * <p>The source reads the cross-reference before the customer record. This check restores that
+     * authority boundary without a synchronous call to another service. A missing relationship and
+     * a mismatched relationship produce one fixed message that reveals no identifier.
      */
-    private EditResult countFieldFailure(EditResult verdict) {
-        if (!verdict.valid()) {
-            validationFailed.increment();
+    private Optional<String> authoritativeCustomerId(AccountEntity proposedAccount,
+            CustomerEntity proposedCustomer, AccountEntity fetchedAccount,
+            CustomerEntity fetchedCustomer) {
+
+        String proposedAccountId = proposedAccount.getAccountId();
+        String fetchedAccountId = fetchedAccount.getAccountId();
+        String proposedCustomerId = proposedCustomer.getCustomerId();
+        String fetchedCustomerId = fetchedCustomer.getCustomerId();
+        if (proposedAccountId == null || !proposedAccountId.equals(fetchedAccountId)
+                || proposedCustomerId == null || fetchedCustomerId == null) {
+            return Optional.empty();
         }
-        return verdict;
+
+        return cardCrossReferenceRepository
+                .findFirstByAccountIdOrderByCardNumberAsc(proposedAccountId)
+                .map(CardCrossReferenceEntity::getCustomerId)
+                .filter(proposedCustomerId::equals)
+                .filter(fetchedCustomerId::equals);
+    }
+
+    /**
+     * Runs the edit and write path inside the explicit transaction boundary.
+     *
+     * @param proposedAccount  the account values the caller submits
+     * @param proposedCustomer the customer values the caller submits
+     * @param fetchedAccount   the account values the caller was shown
+     * @param fetchedCustomer  the customer values the caller was shown
+     * @return the verdict and the bounded metric outcomes to record after commit
+     */
+    private TransactionResult updateWithinTransaction(AccountEntity proposedAccount,
+            CustomerEntity proposedCustomer, AccountEntity fetchedAccount,
+            CustomerEntity fetchedCustomer) {
+
+        // app/cbl/COACTUPC.cbl:L1433 tests ACUP-DETAILS-NOT-FETCHED and L1446 returns.
+        if (fetchedAccount == null || fetchedCustomer == null) {
+            EditResult result = editSearchKey(proposedAccount);
+            return new TransactionResult(result, false, !result.valid());
+        }
+
+        // The path and fetched pair own both identifiers. Refuse a submitted key change before
+        // field validation or any repository access can obscure that boundary.
+        if (!submittedIdentifiersMatchFetched(proposedAccount, proposedCustomer,
+                fetchedAccount, fetchedCustomer)) {
+            return new TransactionResult(
+                    EditResult.failure(IDENTIFIER_OWNERSHIP_MISMATCH), false, true);
+        }
+
+        // app/cbl/COACTUPC.cbl:L1460-L1461 runs ahead of every field edit.
+        if (!proposedDiffersFromFetched(proposedAccount, proposedCustomer, fetchedAccount,
+                fetchedCustomer)) {
+            if (authoritativeCustomerId(proposedAccount, proposedCustomer, fetchedAccount,
+                    fetchedCustomer).isEmpty()) {
+                return new TransactionResult(
+                        EditResult.failure(ACCOUNT_CUSTOMER_RELATIONSHIP_NOT_FOUND), false, true);
+            }
+            // app/cbl/COACTUPC.cbl:L1466 clears the non-key flags and L1467 returns.
+            return new TransactionResult(new EditResult(true, NO_CHANGE_DETECTED), false, false);
+        }
+
+        // app/cbl/COACTUPC.cbl:L1470-L1676.
+        EditResult fieldEdits = editMapInputs(proposedAccount, proposedCustomer);
+        if (!fieldEdits.valid()) {
+            return new TransactionResult(fieldEdits, false, true);
+        }
+
+        Optional<String> authoritativeCustomerId = authoritativeCustomerId(proposedAccount,
+                proposedCustomer, fetchedAccount, fetchedCustomer);
+        if (authoritativeCustomerId.isEmpty()) {
+            return new TransactionResult(
+                    EditResult.failure(ACCOUNT_CUSTOMER_RELATIONSHIP_NOT_FOUND), false, true);
+        }
+
+        // app/cbl/COACTUPC.cbl:L3888-L4104.
+        EditResult written = writeProcessing(proposedAccount, proposedCustomer, fetchedAccount,
+                fetchedCustomer, authoritativeCustomerId.get());
+        boolean applied = written.valid() && !written.hasMessage();
+        return new TransactionResult(written, applied, false);
+    }
+
+    /** Reports whether the submitted pair keeps the identifiers of the pair the caller fetched. */
+    private static boolean submittedIdentifiersMatchFetched(AccountEntity proposedAccount,
+            CustomerEntity proposedCustomer, AccountEntity fetchedAccount,
+            CustomerEntity fetchedCustomer) {
+        return Objects.equals(proposedAccount.getAccountId(), fetchedAccount.getAccountId())
+                && Objects.equals(proposedCustomer.getCustomerId(),
+                        fetchedCustomer.getCustomerId());
     }
 
     /**
@@ -795,12 +882,13 @@ public class AccountUpdateService {
      * @param proposedCustomer the customer values the caller submits
      * @param fetchedAccount   the account values the caller was shown
      * @param fetchedCustomer  the customer values the caller was shown
+     * @param authoritativeCustomerId customer identifier derived from {@code card_xref}
      * @return a passing verdict once both rows and the event row are written, otherwise a failing
      *         verdict carrying one message
      */
     private EditResult writeProcessing(AccountEntity proposedAccount,
             CustomerEntity proposedCustomer, AccountEntity fetchedAccount,
-            CustomerEntity fetchedCustomer) {
+            CustomerEntity fetchedCustomer, String authoritativeCustomerId) {
 
         // app/cbl/COACTUPC.cbl:L3892-L3903.
         Optional<AccountEntity> lockedAccount =
@@ -810,10 +898,10 @@ public class AccountUpdateService {
             return EditResult.failure(COULD_NOT_LOCK_ACCOUNT);
         }
 
-        // app/cbl/COACTUPC.cbl:L3919-L3930. The source takes the identifier from the
-        // cross-reference, and this service owns no cross-reference table.
+        // app/cbl/COACTUPC.cbl:L3919-L3930. The source takes this identifier from the
+        // cross-reference, and the caller cannot replace it with another customer identifier.
         Optional<CustomerEntity> lockedCustomer =
-                customerRepository.findForUpdateByCustomerId(proposedCustomer.getCustomerId());
+                customerRepository.findForUpdateByCustomerId(authoritativeCustomerId);
         if (lockedCustomer.isEmpty()) {
             // app/cbl/COACTUPC.cbl:L3934-L3942.
             return EditResult.failure(COULD_NOT_LOCK_CUSTOMER);
@@ -835,14 +923,48 @@ public class AccountUpdateService {
         accountRepository.save(storedAccount);
         customerRepository.save(storedCustomer);
 
-        // The one event this update produces. The relay publishes it on a later sweep.
+        // One event per rewritten record. app/cbl/COACTUPC.cbl:L4066 rewrites the account and
+        // app/cbl/COACTUPC.cbl:L4086 rewrites the customer, and both rows join this transaction.
+        // The relay publishes them on a later sweep.
         outboxWriter.write(AccountStateChanged.of(storedAccount.getAccountId(),
-                AccountStateChanged.ChangeKind.ACCOUNT_UPDATED, storedAccount.getCreditLimit(),
-                storedAccount.getCurrentCycleCredit(), storedAccount.getCurrentCycleDebit(),
-                storedAccount.getExpirationDate()));
+                AccountStateChanged.ChangeKind.ACCOUNT_UPDATED, storedAccount.getCurrentBalance(),
+                storedAccount.getCreditLimit(), storedAccount.getCurrentCycleCredit(),
+                storedAccount.getCurrentCycleDebit(), storedAccount.getExpirationDate()));
+        outboxWriter.writeCustomerContext(CustomerContextChanged.of(storedAccount.getAccountId(),
+                storedCustomer.getFirstName(), storedCustomer.getMiddleName(),
+                storedCustomer.getLastName(), storedCustomer.getAddressLine1(),
+                storedCustomer.getAddressLine2(), storedCustomer.getAddressCity(),
+                storedCustomer.getAddressStateCode(), storedCustomer.getAddressCountryCode(),
+                storedCustomer.getAddressZip(), storedCustomer.getFicoCreditScore()));
 
-        updateApplied.increment();
         return EditResult.ok();
+    }
+
+    /**
+     * Carries transactional outcomes to the caller so meters are touched only after commit.
+     *
+     * @param verdict           business result returned to the controller
+     * @param applied           whether both rows and the outbox event were written
+     * @param validationFailure whether a field edit rejected the request
+     */
+    static record TransactionResult(
+            EditResult verdict,
+            boolean applied,
+            boolean validationFailure) {
+
+        TransactionResult {
+            Objects.requireNonNull(verdict, "verdict");
+        }
+
+        void recordCommitted(AccountMeters meters, Duration elapsed) {
+            meters.recordUpdateLatency(elapsed);
+            if (applied) {
+                meters.recordUpdateApplied();
+            }
+            if (validationFailure) {
+                meters.recordValidationFailure();
+            }
+        }
     }
 
     /**

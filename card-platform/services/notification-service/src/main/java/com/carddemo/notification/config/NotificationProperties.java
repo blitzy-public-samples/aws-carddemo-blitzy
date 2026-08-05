@@ -1,23 +1,28 @@
 package com.carddemo.notification.config;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.PositiveOrZero;
-
+import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
 /**
  * The {@code carddemo} block of {@code application.yml}, bound and checked at start-up.
  *
- * <p>ADDITIVE IN FULL. The statement program {@code app/cbl/CBSTM03A.CBL} names its datasets in
+ * <p>The statement program {@code app/cbl/CBSTM03A.CBL} names its datasets in
  * {@code app/jcl/CREASTMT.JCL} and reads no configuration file, so no configuration record has an
  * ancestor here.
  *
  * <p>Every value the notification service takes from configuration arrives through this record. A
- * key with no component here is not configuration, and a component with no key fails start-up.
+ * key with no component here is not configuration, and a component with no key fails start-up. That
+ * rule is why {@link History} exists: {@code carddemo.history} was declared in
+ * {@code application.yml} and bound by nothing, so its page limits documented a bound that no query
+ * applied and its retention windows named a horizon no delete could read.
  *
  * <p>{@link Validated} runs the constraints below while the context builds. A blank consumer group,
  * a blank topic name or a retry count under one therefore stops start-up with the offending property
@@ -28,10 +33,13 @@ import org.springframework.validation.annotation.Validated;
  * this record as a bean. An injected instance is immutable. This module runs no outbox relay, so it
  * carries no relay setting.
  *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
+ * <p>Decisions: {@code card-platform/docs/decision-log.md}.
  *
- * @param kafka    the consumer groups and the topic names this service reads
- * @param consumer the delivery-attempt settings a listener applies
+ * @param kafka         the consumer groups and the topic names this service reads
+ * @param consumer      the delivery-attempt settings a listener applies
+ * @param processedEvent the duplicate-marker horizon the retention sweep applies
+ * @param history       the read-model horizons the retention sweep applies, and the page sizes the
+ *                      history endpoint applies
  */
 @ConfigurationProperties(prefix = "carddemo")
 @Validated
@@ -39,13 +47,17 @@ public record NotificationProperties(
 
         @NotNull @Valid Kafka kafka,
 
-        @NotNull @Valid Consumer consumer) {
+        @NotNull @Valid Consumer consumer,
+
+        @NotNull @Valid ProcessedEvent processedEvent,
+
+        @NotNull @Valid History history) {
 
     /**
      * The broker-facing names this service uses.
      *
      * @param groups one consumer group per listener
-     * @param topics the three consumed topics and the dead-letter suffix
+     * @param topics the three consumed topics, the fallback dead-letter topic and its suffix
      */
     public record Kafka(
 
@@ -54,27 +66,35 @@ public record NotificationProperties(
             @NotNull @Valid Topics topics) {
 
         /**
-         * One group per listener. This service registers two listeners, and neither shares a group
-         * with the other.
+         * One group per listener, and no group shared. This service registers listeners on the
+         * posted, assessment, and customer-context topics.
          *
          * @param transactionPosted the group of the listener on the posted topic
          * @param fraudAssessed     the group of the listener on the assessment topic
+         * @param customerContextChanged the group of the listener on the customer-context topic
          */
         public record Groups(
 
                 @NotBlank String transactionPosted,
 
-                @NotBlank String fraudAssessed) {
+                @NotBlank String fraudAssessed,
+
+                @NotBlank String customerContextChanged) {
         }
 
         /**
-         * The two consumed topics and the one shared dead-letter topic.
+         * The three consumed topics, the fallback dead-letter topic and the per-topic suffix.
          *
-         * @param transactionPosted the posted balance, taken from
-         *                          {@code app/cbl/CBTRN02C.cbl:L547}
-         * @param fraudAssessed     the topic both assessment outcomes travel on
-         * @param deadLetter        the one topic every record no listener could consume reaches,
-         *                          shared by every service rather than named per consumed topic
+         * @param transactionPosted      the posted balance, taken from
+         *                               {@code app/cbl/CBTRN02C.cbl:L547}
+         * @param fraudAssessed          the topic both assessment outcomes travel on
+         * @param customerContextChanged the topic the ten cardholder fields of
+         *                               {@code app/cpy/CVCUS01Y.cpy:L6-L22} travel on
+         * @param deadLetter             the fallback topic a record reaches when its source topic
+         *                               is not known, shared by every service
+         * @param deadLetterSuffix       appended to the source topic name to address that topic's
+         *                               own dead-letter topic, so a poison record is traceable to
+         *                               the topic it arrived on
          */
         public record Topics(
 
@@ -82,9 +102,15 @@ public record NotificationProperties(
 
                 @NotBlank String fraudAssessed,
 
-                @NotBlank String deadLetter) {
+                @NotBlank String customerContextChanged,
+
+                @NotBlank String deadLetter,
+
+                @NotBlank String deadLetterSuffix) {
         }
     }
+
+
 
     /**
      * The consume-side settings.
@@ -105,6 +131,91 @@ public record NotificationProperties(
                 @Min(1) int maxAttempts,
 
                 @PositiveOrZero long backoffMs) {
+        }
+    }
+
+    /**
+     * The duplicate-marker horizon.
+     *
+     * <p>A marker matters only while a redelivery of its event is still possible, and past that
+     * point it is dead weight on a table every message passes through. The horizon has to outlast
+     * the topic retention the broker itself applies, or a replayed event finds no marker and is
+     * processed twice.
+     *
+     * @param markerRetentionHours how long a marker is kept after it was written
+     */
+    public record ProcessedEvent(@Positive int markerRetentionHours) {
+    }
+
+    /**
+     * The read-model horizons and the page sizes of the history endpoint.
+     *
+     * <p>Both tables grow by one row per consumed event, so a sweep is what bounds them. A statement
+     * row backs the history endpoint and therefore outlives an alert by a wide margin.
+     *
+     * @param statementRetentionDays how long a read-model row is kept after its processing timestamp
+     * @param logRetentionDays       how long an alert attempt row is kept after it was attempted
+     * @param sweepIntervalMs        milliseconds between the end of one retention sweep and the next
+     * @param defaultPageSize        rows the history endpoint returns when a caller names no limit
+     * @param maximumPageSize        the largest limit the history endpoint honours
+     */
+    public record History(
+
+            @Positive int statementRetentionDays,
+
+            @Positive int logRetentionDays,
+
+            @Positive long sweepIntervalMs,
+
+            @Positive @Max(MAXIMUM_PAGE_CEILING) int defaultPageSize,
+
+            @Positive @Max(MAXIMUM_PAGE_CEILING) int maximumPageSize) {
+
+        /**
+         * The ceiling both page sizes are held under, which is the row cap one rendered alert
+         * carries.
+         *
+         * <p>A page larger than a rendered alert can hold would report a total over rows the alert
+         * never showed, so the two limits are one number.
+         */
+        public static final int MAXIMUM_PAGE_CEILING = 200;
+
+        /**
+         * Resolves the page size one request reads, from the caller's value or the default.
+         *
+         * <p>A request naming no size takes {@code carddemo.history.default-page-size}. A request
+         * naming more rows than {@code carddemo.history.maximum-page-size} takes the maximum, which
+         * is what {@code src/main/resources/openapi.yaml} declares for the parameter: a caller
+         * asking for more than the renderer accepts is served the ceiling rather than refused. A
+         * size below one is refused, because a page of no rows names no page.
+         *
+         * @param requested the caller's page size, or {@code null} when the caller named none
+         * @return {@code defaultPageSize} for no request, {@code maximumPageSize} for a request
+         *         above it, and the requested value otherwise
+         * @throws IllegalArgumentException when the caller named a size below one
+         */
+        public int resolvePageSize(Integer requested) {
+            if (requested == null) {
+                return defaultPageSize;
+            }
+            if (requested < 1) {
+                throw new IllegalArgumentException("size must be 1 or greater, found " + requested);
+            }
+            return Math.min(requested, maximumPageSize);
+        }
+
+        /**
+         * Holds the default page size at or under the maximum.
+         *
+         * @throws IllegalArgumentException when the default exceeds the maximum, which would make
+         *                                  the maximum unreachable and the default unusable
+         */
+        public History {
+            if (defaultPageSize > 0 && maximumPageSize > 0
+                    && defaultPageSize > maximumPageSize) {
+                throw new IllegalArgumentException("carddemo.history.default-page-size must be at "
+                        + "or under carddemo.history.maximum-page-size");
+            }
         }
     }
 }

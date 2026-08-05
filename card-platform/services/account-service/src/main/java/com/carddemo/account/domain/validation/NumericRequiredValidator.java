@@ -33,9 +33,6 @@ import java.math.BigDecimal;
  * {@code app/cbl/COACTUPC.cbl:L479}. Keeping the first message of a validation pass is the caller's
  * work. This class reads its arguments and changes none of them, so a second call on the same
  * arguments returns the same verdict.</p>
- *
- * <p>Every deviation this class carries from paragraph behaviour is labelled ADDITIVE below and
- * recorded in {@code card-platform/docs/decision-log.md} (planned).
  */
 public final class NumericRequiredValidator {
 
@@ -58,7 +55,7 @@ public final class NumericRequiredValidator {
     private static final String IS_ZERO_MESSAGE = " must not be zero.";
 
     /**
-     * ADDITIVE. Opens the message text for a value wider than the edited field. No source
+     * No COBOL ancestor. Opens the message text for a value wider than the edited field. No source
      * literal carries this text.
      *
      * <p>The edit refuses a value wider than {@code WS-EDIT-ALPHANUM-LENGTH} at
@@ -67,7 +64,7 @@ public final class NumericRequiredValidator {
      */
     private static final String ADDITIVE_NO_LONGER_THAN = " must be no longer than ";
 
-    /** ADDITIVE. Closes the message text {@link #ADDITIVE_NO_LONGER_THAN} opens. */
+    /** No COBOL ancestor. Closes the message text {@link #ADDITIVE_NO_LONGER_THAN} opens. */
     private static final String ADDITIVE_CHARACTERS = " characters.";
 
     /**
@@ -127,7 +124,7 @@ public final class NumericRequiredValidator {
             return EditResult.failure(trimSpaces(fieldLabel) + NOT_SUPPLIED_MESSAGE);
         }
 
-        // ADDITIVE. A value wider than the edited field is refused.
+        // No COBOL ancestor. A value wider than the edited field is refused.
         if (carriesContentPastEditedWidth(value, length)) {
             return EditResult.failure(trimSpaces(fieldLabel) + ADDITIVE_NO_LONGER_THAN
                     + length + ADDITIVE_CHARACTERS);
@@ -298,7 +295,7 @@ public final class NumericRequiredValidator {
     /**
      * Reports whether the value carries a character other than a space past the edited width.
      *
-     * <p>ADDITIVE. The source moves a fixed-width screen field into its edit field, so the
+     * <p>No COBOL ancestor. The source moves a fixed-width screen field into its edit field, so the
      * {@code MOVE} drops nothing but padding. A Representational State Transfer (REST) caller can
      * supply a wider value. Trailing spaces past the width are the padding the source itself holds.
      * Any other character past the width is content the edit does not inspect.</p>

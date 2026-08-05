@@ -9,8 +9,8 @@ import org.springframework.stereotype.Component;
 /**
  * Allocates one transaction identifier per authorization call.
  *
- * <p>This replaces the source mechanism rather than reproducing it, and the replacement is a declared
- * behaviour change recorded in {@code card-platform/docs/decision-log.md} (planned).
+ * <p>This replaces the source mechanism rather than reproducing it, which is a declared behaviour
+ * change.
  *
  * <p>Both online capture paths allocate an identifier by browsing the transaction file backwards from
  * high values and adding one. {@code app/cbl/COTRN02C.cbl:L444-L451} does it for a new transaction and

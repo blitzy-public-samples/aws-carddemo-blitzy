@@ -2,11 +2,8 @@
 # transaction.authorized under the consumer group fraud-detection and writes
 # fraud.assessed. The authorization path never calls this service.
 #
-# The listener, the risk rules and the outbox relay this manifest configures
-# are planned and unauthored, so the container starts and answers /actuator
-# only.
-#
-# Rationale for every choice in this folder: card-platform/docs/decision-log.md (planned)
+# The module includes its listener, its three risk rules, its outbox relay and its
+# fraud-assessment query endpoint.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -57,13 +54,15 @@ spec:
           # directory and names no image, because compose builds and a cluster does not.
           # Build and load it before applying this file:
           #
+          #   version=$(mvn -f card-platform/pom.xml help:evaluate \
+          #     -Dexpression=project.version -q -DforceStdout)
           #   mvn -f card-platform/pom.xml -pl services/fraud-detection-service -am package
           #   docker build -f card-platform/services/fraud-detection-service/Dockerfile \
-          #     -t carddemo/fraud-detection-service:1.0.0 \
+          #     -t "carddemo/fraud-detection-service:${version}" \
           #     card-platform/services/fraud-detection-service
-          image: carddemo/fraud-detection-service:1.0.0
-          # The kubelet pulls only when no image of this tag is on the node.
-          imagePullPolicy: IfNotPresent
+          image: carddemo/fraud-detection-service:1.0.0-SNAPSHOT
+          # This local-demo image must already be loaded on the node.
+          imagePullPolicy: Never
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -180,20 +179,16 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: FRAUD_KAFKA_USER
-            # The two passwords that open the mounted transport material. Both
-            # live in carddemo-tls-secret beside the files themselves. Both are
-            # named here and not pulled with envFrom, because that Secret also
-            # carries keys whose names are file names. A file name is not a
-            # valid environment variable name.
+            # The server keystore is private to this service; trust material is shared.
             - name: SERVER_SSL_KEYSTORE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-tls-secret
+                  name: carddemo-fraud-tls-secret
                   key: SERVER_SSL_KEYSTORE_PASSWORD
             - name: SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-tls-secret
+                  name: carddemo-trust-secret
                   key: KAFKA_SSL_TRUSTSTORE_PASSWORD
           # Both probes read /actuator/health on the management port over
           # HTTPS, because 30-configmap.yaml encrypts that port too. Port 8080
@@ -253,16 +248,21 @@ spec:
             medium: Memory
             sizeLimit: 64Mi
         - name: transport-security
-          secret:
-            secretName: carddemo-tls-secret
+          projected:
             defaultMode: 0640
-            items:
-              - key: keystore.p12
-                path: keystore.p12
-              - key: truststore.p12
-                path: truststore.p12
-              - key: ca.crt
-                path: ca.crt
+            sources:
+              - secret:
+                  name: carddemo-fraud-tls-secret
+                  items:
+                    - key: keystore.p12
+                      path: keystore.p12
+              - secret:
+                  name: carddemo-trust-secret
+                  items:
+                    - key: truststore.p12
+                      path: truststore.p12
+                    - key: ca.crt
+                      path: ca.crt
 ---
 # Pods reach this service at fraud-detection-service:8080, a short name the
 # Domain Name System (DNS) resolves. The port carries the read-only assessment
@@ -291,21 +291,21 @@ spec:
       targetPort: 8080
       protocol: TCP
 ---
-# Who may reach the fraud detection pod, at the network layer.
+# Network policy for the fraud detection pod. Ingress admits its lookup and
+# management surfaces. Egress admits only Domain Name System (DNS), PostgreSQL
+# and Kafka.
 #
-# This service must never sit in the authorization response path, and this policy is
-# where that is expressed at the network layer: nothing calls it to score a
-# transaction. It reads transaction.authorized and publishes fraud.assessed, so the
-# only inbound traffic it expects is the read-only assessment lookup on 8080 and a
-# metrics scrape on 9080.
+# This service never sits in the authorization response path, and this policy states
+# that at the network layer. Nothing calls it to score a transaction. It reads
+# transaction.authorized and publishes fraud.assessed. The only inbound traffic it
+# expects is the read-only assessment lookup on 8080 and a metrics scrape on 9080.
 #
-# The request layer already answers both: config/SecurityConfig authenticates every
-# call to the lookup surface, and it leaves /actuator/health open for probes while
-# requiring ROLE_MONITORING for metrics and the Prometheus scrape, so an anonymous
-# caller receives 401 and an identity holding a business role receives 403. This
-# policy closes the same two gaps a second time, at the network rather than the
-# request layer. 40-authorization-service.yaml carries the same shape and the note on
-# kubelet probes, which originate from the node and match neither selector below.
+# config/SecurityConfig authenticates every call to the lookup surface. It leaves
+# /actuator/health open for probes and requires ROLE_MONITORING for metrics and the
+# Prometheus scrape. An anonymous caller receives 401; an identity holding a business
+# role receives 403. This policy closes the same two gaps at the network layer.
+# 40-authorization-service.yaml carries the same shape and the note on kubelet
+# probes, which originate from the node and match neither selector below.
 #
 # A cluster whose Container Network Interface plug-in does not implement
 # NetworkPolicy ignores this object. Confirm support before treating the service as
@@ -326,6 +326,7 @@ spec:
       app.kubernetes.io/part-of: card-platform
   policyTypes:
     - Ingress
+    - Egress
   ingress:
     # The assessment lookup surface. Any pod of this platform may call it, and Spring
     # Security authenticates every request that arrives.
@@ -344,4 +345,33 @@ spec:
               app.kubernetes.io/component: monitoring
       ports:
         - port: 9080
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kafka
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 9092
           protocol: TCP

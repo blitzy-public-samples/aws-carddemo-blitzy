@@ -20,6 +20,8 @@ package com.carddemo.account.domain.validation;
  * separate range test for either one. A part one of zeros fails the not-zero check of that same
  * numeric edit, which closes the gate ahead of the excluded-value test. The verdict carries at most
  * one message, and no message repeats a supplied digit.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public final class UsSocialSecurityNumberValidator {
 

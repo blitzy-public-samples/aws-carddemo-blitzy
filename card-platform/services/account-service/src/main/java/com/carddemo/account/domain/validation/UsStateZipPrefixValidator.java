@@ -82,7 +82,7 @@ public final class UsStateZipPrefixValidator {
      *         app/cbl/COACTUPC.cbl:L2550
      */
     public static EditResult validate(String stateCode, String zipCode) {
-        // ADDITIVE. A value wider than its source field forms no listed combination.
+        // No COBOL ancestor. A value wider than its source field forms no listed combination.
         if (exceedsDeclaredWidth(stateCode, STATE_CODE_WIDTH)
                 || exceedsDeclaredWidth(zipCode, ZIP_FIELD_WIDTH)) {
             return EditResult.failure(INVALID_ZIP_FOR_STATE_MESSAGE);
@@ -135,9 +135,10 @@ public final class UsStateZipPrefixValidator {
     /**
      * Reports whether a value holds more characters than its source field declares.
      *
-     * <p>ADDITIVE. The state code arrives from {@code PIC X(02)} at app/cbl/COACTUPC.cbl:L807 and
-     * the zip code from {@code PIC X(10)} at app/cbl/COACTUPC.cbl:L809. A wider value forms no
-     * combination the list at app/cpy/CSLKPCDY.cpy:L1074-L1313 holds.</p>
+     * <p>No COBOL ancestor. The state code arrives from {@code PIC X(02)} at
+     * app/cbl/COACTUPC.cbl:L807 and the zip code from {@code PIC X(10)} at
+     * app/cbl/COACTUPC.cbl:L809. A wider value forms no combination the list at
+     * app/cpy/CSLKPCDY.cpy:L1074-L1313 holds.</p>
      *
      * <p>Trailing spaces past the declared width are the padding the source field itself holds, so
      * they are not content and this test reports false for them.</p>

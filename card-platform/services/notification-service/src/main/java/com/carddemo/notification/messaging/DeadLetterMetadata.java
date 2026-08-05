@@ -3,9 +3,9 @@ package com.carddemo.notification.messaging;
 /**
  * Four diagnostic fields describing one message the notification service could not process.
  *
- * <p>SOURCE-DERIVED SHAPE, ADDITIVE POPULATION. The four widths and the space-filled initial state
- * come from {@code 01 ABEND-DATA} at {@code app/cpy/CSMSG02Y.cpy:L21-L29}. Populating such a record
- * in this service is additive. {@code app/cbl/CBSTM03A.CBL} carries four {@code COPY} statements,
+ * <p>The four widths and the space-filled initial state come from {@code 01 ABEND-DATA} at
+ * {@code app/cpy/CSMSG02Y.cpy:L21-L29}. Populating such a record in this service has no COBOL
+ * ancestor. {@code app/cbl/CBSTM03A.CBL} carries four {@code COPY} statements,
  * and this copybook is not among them: {@code COSTM01} at L51, {@code CVACT03Y} at L53,
  * {@code CUSTREC} at L55, {@code CVACT01Y} at L57.
  *
@@ -25,13 +25,9 @@ package com.carddemo.notification.messaging;
  * shortening a component cannot split a surrogate pair.
  *
  * <p>A caller names a failing field by its JavaScript Object Notation (JSON) pointer, for example
- * {@code /maskedCardNumber}. No component carries a full Primary Account Number (PAN), a card
+ * {@code /cardToken}. No component carries a full Primary Account Number (PAN), a card
  * verification value, or any part of a payload. No method here accepts a payload, and nothing here
  * throws, logs, counts, retries or publishes.
- *
- * <p>For the path one message travels from publish through consume to the dead-letter topic, read
- * {@code card-platform/docs/event-flow.md}. The choices behind this type sit in
- * {@code card-platform/docs/decision-log.md}.
  *
  * @param abendCode a stable failure classifier, from {@code ABEND-CODE PIC X(4)} at
  *        {@code app/cpy/CSMSG02Y.cpy:L22}

@@ -16,6 +16,7 @@ import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionDeclined;
 import com.carddemo.events.TransactionPosted;
+import com.carddemo.ledger.LedgerApplication;
 import com.carddemo.ledger.domain.AccountBalanceUpdater;
 import com.carddemo.ledger.domain.CategoryBalanceUpdater;
 import com.carddemo.ledger.domain.PostingService;
@@ -27,29 +28,56 @@ import com.carddemo.ledger.entity.RejectedTransactionEntity;
 import com.carddemo.ledger.entity.TransactionCategoryBalanceEntity;
 import com.carddemo.ledger.entity.TransactionCategoryBalanceEntity.TransactionCategoryBalanceId;
 import com.carddemo.ledger.entity.TransactionEntity;
+import com.carddemo.ledger.messaging.TransactionAuthorizedConsumer;
+import com.carddemo.ledger.outbox.OutboxRelay;
 import com.carddemo.ledger.outbox.OutboxWriter;
 import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
 import com.carddemo.ledger.repository.OutboxEventRepository;
+import com.carddemo.ledger.repository.ProcessedEventRepository;
 import com.carddemo.ledger.repository.RejectedTransactionRepository;
 import com.carddemo.ledger.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.ledger.repository.TransactionRepository;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.Acknowledgment;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -62,12 +90,42 @@ import tools.jackson.databind.json.JsonMapper;
  * matching the gate at {@code app/cbl/CBTRN02C.cbl:L211}. Every count below is derived from the
  * run, and one group of assertions follows each paragraph of the source.</p>
  *
- * <p>Four behaviours are ADDITIVE: the single transaction around the three updates, the
+ * <p>Four behaviours have no COBOL ancestor: the single transaction around the three updates, the
  * idempotency marker, the masked card number, and the plain-digit amount in the reject rendering.
- * All four, and the carried-forward run, are recorded in
- * {@code card-platform/docs/decision-log.md} (planned).</p>
  */
 class PostingEquivalenceTest {
+
+    /** Classpath location of the fixed posting expectations. */
+    private static final String EXPECTED_POSTING_RESOURCE = "/expected/posting-summary.csv";
+
+    /** Columns every expected-output file in this module carries. */
+    private static final List<String> EXPECTED_OUTPUT_COLUMNS = List.of(
+            "evaluation_model",
+            "derived_from",
+            "record_seq",
+            "entity_key",
+            "expected_field",
+            "expected_value",
+            "pic_clause",
+            "source_locator");
+
+    /** Fixed expected values, read once as immutable fixture input. */
+    private static final Map<String, String> EXPECTED_POSTING =
+            loadExpectedPostingValues();
+
+    /** Tag placed on source-compatible tests that pin a known defect. */
+    private static final String LEGACY_DIVERGENCE_TAG = "legacy-divergence";
+
+    /** Tag placed on a source defect that remains open for a human decision. */
+    private static final String HUMAN_REVIEW_TAG = "human-review";
+
+    /** Fixed moment used by every processing-timestamp assertion. */
+    private static final LocalDateTime FIXED_PROCESSING_MOMENT =
+            LocalDateTime.parse("2024-01-02T03:04:05.678900");
+
+    /** Fixed instant used for test-only reject rows and idempotency markers. */
+    private static final Instant FIXED_EVENT_INSTANT =
+            Instant.parse("2024-01-02T03:04:05Z");
 
     /**
      * Value {@code app/cbl/CBTRN02C.cbl:L230} moves into {@code RETURN-CODE} once
@@ -99,8 +157,8 @@ class PostingEquivalenceTest {
     private static final int GENERATED_COMPONENT_COUNT = 1;
 
     /**
-     * Deliveries of one event the idempotency group presents to the guard. ADDITIVE, with no
-     * ancestor in {@code app/cbl/CBTRN02C.cbl}.
+     * Deliveries of one event the idempotency group presents to the guard. No ancestor in
+     * {@code app/cbl/CBTRN02C.cbl}.
      */
     private static final int DUPLICATE_DELIVERY_COUNT = 2;
 
@@ -131,14 +189,6 @@ class PostingEquivalenceTest {
      */
     private static final long SUB_HUNDREDTH_NANOSECONDS = 1L;
 
-    /**
-     * Account identifier the run carries on a record whose card misses the cross-reference. The
-     * value is absent from {@code app/data/ASCII/acctdata.txt}, and
-     * {@code DeclineReason.resolvesAccount} keeps it out of the published event.
-     */
-    private static final String UNRESOLVED_ACCOUNT_PLACEHOLDER =
-            ABSENT_IDENTIFIER_DIGIT.repeat(PicClause.ACCT_ID_WIDTH);
-
     /** Topic name the idempotency marker records for a delivery of the authorized event. */
     private static final String AUTHORIZED_TOPIC = "transaction.authorized";
 
@@ -158,22 +208,88 @@ class PostingEquivalenceTest {
     private static final List<String> POST_STAGE_ORDER =
             List.of(CATEGORY_BALANCE_STAGE, ACCOUNT_STAGE, TRANSACTION_STAGE);
 
+    /** Rows one category-balance upsert writes, on either arm. */
+    private static final int ONE_ROW_UPSERTED = 1;
+
     /** Writes an event to text for {@link OutboxWriter}, following the established test setup. */
     private static final JsonMapper JSON_MAPPER = JsonMapper.builder().build();
 
-    /** One run over the whole feed, built on first use and shared by every group below. */
-    private static PostingRun sharedRun;
-
     /**
-     * Returns the run over the whole feed, building it once.
+     * Returns an independent run over the whole feed.
      *
      * @return the terminal state and per-record outcomes of the run
      */
-    private static synchronized PostingRun fixtureRun() {
-        if (sharedRun == null) {
-            sharedRun = postWholeFeed();
+    private static PostingRun fixtureRun() {
+        return postWholeFeed();
+    }
+
+    /**
+     * Reads the checked-in posting expectations.
+     *
+     * @return immutable values keyed by entity and field
+     */
+    private static Map<String, String> loadExpectedPostingValues() {
+        try (InputStream source =
+                PostingEquivalenceTest.class.getResourceAsStream(EXPECTED_POSTING_RESOURCE)) {
+            if (source == null) {
+                throw new IllegalStateException(
+                        "missing classpath resource " + EXPECTED_POSTING_RESOURCE);
+            }
+            List<String> lines = List.of(
+                    new String(source.readAllBytes(), StandardCharsets.US_ASCII).split("\\R"));
+            if (lines.size() < 3 || !lines.get(0).startsWith("#")) {
+                throw new IllegalStateException(
+                        EXPECTED_POSTING_RESOURCE + " must hold a comment, header and data");
+            }
+            assertExpectedColumns(lines.get(1));
+
+            Map<String, String> values = new LinkedHashMap<>();
+            for (int index = 2; index < lines.size(); index++) {
+                if (lines.get(index).isBlank()) {
+                    continue;
+                }
+                String[] columns = lines.get(index).split(",", -1);
+                if (columns.length != EXPECTED_OUTPUT_COLUMNS.size()) {
+                    throw new IllegalStateException(EXPECTED_POSTING_RESOURCE + " line "
+                            + (index + 1) + " must hold " + EXPECTED_OUTPUT_COLUMNS.size()
+                            + " columns");
+                }
+                String key = columns[3] + "." + columns[4];
+                if (values.putIfAbsent(key, columns[5]) != null) {
+                    throw new IllegalStateException(
+                            EXPECTED_POSTING_RESOURCE + " repeats " + key);
+                }
+            }
+            return Map.copyOf(values);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException(
+                    "cannot read " + EXPECTED_POSTING_RESOURCE, unreadable);
         }
-        return sharedRun;
+    }
+
+    /** Checks the expected-output header. */
+    private static void assertExpectedColumns(String header) {
+        List<String> columns = List.of(header.split(",", -1));
+        if (!EXPECTED_OUTPUT_COLUMNS.equals(columns)) {
+            throw new IllegalStateException(EXPECTED_POSTING_RESOURCE
+                    + " must declare " + EXPECTED_OUTPUT_COLUMNS + ", found " + columns);
+        }
+    }
+
+    /** Returns one fixed expected value. */
+    private static String expected(String entity, String field) {
+        String key = entity + "." + field;
+        String value = EXPECTED_POSTING.get(key);
+        if (value == null) {
+            throw new IllegalStateException(
+                    EXPECTED_POSTING_RESOURCE + " holds no value for " + key);
+        }
+        return value;
+    }
+
+    /** Returns one fixed expected count. */
+    private static long expectedCount(String entity, String field) {
+        return Long.parseLong(expected(entity, field));
     }
 
     /**
@@ -201,6 +317,25 @@ class PostingEquivalenceTest {
             BigDecimal amount) {
         BigDecimal afterDebit =
                 CobolDecimal.subtract(cycleCredit, cycleDebit, PicClause.WS_TEMP_BAL_SCALE);
+        BigDecimal computed =
+                CobolDecimal.add(afterDebit, amount, PicClause.WS_TEMP_BAL_SCALE);
+        return CobolDecimal.truncateToPictureField(computed, PicClause.WS_TEMP_BAL_PRECISION,
+                PicClause.WS_TEMP_BAL_SCALE);
+    }
+
+    /**
+     * Computes the intended refund treatment while register item 6 remains open.
+     *
+     * @param cycleCredit credit accumulator
+     * @param cycleDebit  debit accumulator, negative after a refund
+     * @param amount      amount of the next authorization
+     * @return the intended working balance
+     */
+    private static BigDecimal intendedWorkingBalance(BigDecimal cycleCredit,
+            BigDecimal cycleDebit,
+            BigDecimal amount) {
+        BigDecimal afterDebit =
+                CobolDecimal.add(cycleCredit, cycleDebit, PicClause.WS_TEMP_BAL_SCALE);
         BigDecimal computed =
                 CobolDecimal.add(afterDebit, amount, PicClause.WS_TEMP_BAL_SCALE);
         return CobolDecimal.truncateToPictureField(computed, PicClause.WS_TEMP_BAL_PRECISION,
@@ -254,8 +389,8 @@ class PostingEquivalenceTest {
     /**
      * Builds the authorized event one feed record carries into the ledger.
      *
-     * <p>The card number reaches the event masked, which is ADDITIVE. The authorization timestamp
-     * is {@code DALYTRAN-ORIG-TS} at {@code app/cpy/CVTRA06Y.cpy:L16}, unchanged.</p>
+     * <p>The card number reaches the event masked, which has no COBOL ancestor. The authorization
+     * timestamp is {@code DALYTRAN-ORIG-TS} at {@code app/cpy/CVTRA06Y.cpy:L16}, unchanged.</p>
      *
      * @param feed      one record of {@code app/data/ASCII/dailytran.txt}
      * @param accountId {@code XREF-ACCT-ID} at {@code app/cpy/CVACT03Y.cpy:L7}
@@ -275,7 +410,46 @@ class PostingEquivalenceTest {
                 feed.merchantCity(),
                 feed.merchantZip(),
                 PanMasker.maskCardNumber(feed.cardNumber()),
+                PanMasker.cardToken(feed.cardNumber()),
                 feed.originTimestamp());
+    }
+
+    /**
+     * Builds the declined event for a rule that follows a resolved account read.
+     *
+     * @param feed      one record of {@code app/data/ASCII/dailytran.txt}
+     * @param accountId the account the cross-reference resolved
+     * @param reason    the reason the authorization path assigned
+     * @return the declined event
+     */
+    private static TransactionDeclined declineEventFor(
+            CopybookRecordParser.DailyTransactionRecord feed,
+            String accountId,
+            DeclineReason reason) {
+        if (!reason.resolvesAccount()) {
+            throw new IllegalArgumentException(
+                    "a decline event requires a reason assigned after account resolution");
+        }
+        return TransactionDeclined.of(accountId, feed.transactionId(), reason, feed.amount(),
+                PanMasker.maskCardNumber(feed.cardNumber()));
+    }
+
+    /**
+     * Builds the source reject row without creating an authorized event.
+     *
+     * @param feed   one rejected feed record
+     * @param reason the source reason assigned to it
+     * @return the reject row
+     */
+    private static RejectedTransactionEntity sourceRejectRow(
+            CopybookRecordParser.DailyTransactionRecord feed,
+            DeclineReason reason) {
+        UUID rowId = UUID.nameUUIDFromBytes(
+                feed.transactionId().getBytes(StandardCharsets.US_ASCII));
+        return new RejectedTransactionEntity(rowId, feed.transactionId(), reason.code(),
+                reason.description(), feed.cardNumber(), feed.amount(), feed.typeCode(),
+                feed.categoryCode(), feed.merchantId(), feed.originTimestamp(),
+                FIXED_EVENT_INSTANT);
     }
 
     /**
@@ -303,35 +477,49 @@ class PostingEquivalenceTest {
         StoredTransactions transactions = new StoredTransactions(saveLog);
         StoredRejects rejects = new StoredRejects(saveLog);
         CapturedOutbox outbox = new CapturedOutbox();
+        List<TransactionDeclined> declinedEvents = new ArrayList<>();
 
         PostingService postingService = new PostingService(
                 new CategoryBalanceUpdater(categoryBalances),
                 new AccountBalanceUpdater(accountBalances),
                 transactions,
                 outbox.writer());
-        RejectRecorder rejectRecorder = new RejectRecorder(rejects, outbox.writer());
 
         List<FeedOutcome> outcomes = new ArrayList<>(feed.size());
         int ordinal = FIRST_RECORD_ORDINAL;
         for (CopybookRecordParser.DailyTransactionRecord record : feed) {
             DeclineReason reason =
                     declineReasonFor(record, crossReferences, accounts, accountBalances);
-            String accountId = Optional.ofNullable(crossReferences.get(record.cardNumber()))
-                    .map(CopybookRecordParser.CardCrossReferenceRecord::accountId)
-                    .orElse(UNRESOLVED_ACCOUNT_PLACEHOLDER);
-            TransactionAuthorized event = authorizationEventFor(record, accountId);
+            CopybookRecordParser.CardCrossReferenceRecord crossReference =
+                    crossReferences.get(record.cardNumber());
+            AuthorizationPath path;
             if (reason == null) {
-                postingService.postTransaction(event);
+                String accountId = Objects.requireNonNull(crossReference,
+                        "an approved record must carry a cross-reference").accountId();
+                TransactionAuthorized event = authorizationEventFor(record, accountId);
+                postingService.postTransaction(event, event.aggregateId());
+                path = new AuthorizedPath(accountId, event);
             } else {
-                rejectRecorder.recordReject(event, reason);
+                rejects.save(sourceRejectRow(record, reason));
+                if (reason.resolvesAccount()) {
+                    String accountId = Objects.requireNonNull(crossReference,
+                            "an account-resolving decline must carry "
+                                    + "a cross-reference").accountId();
+                    TransactionDeclined event = declineEventFor(record, accountId, reason);
+                    declinedEvents.add(event);
+                    path = new DeclinedPath(accountId, event);
+                } else {
+                    path = new UnresolvedCardPath();
+                }
             }
-            outcomes.add(new FeedOutcome(ordinal, record, accountId, reason, event));
+            outcomes.add(new FeedOutcome(ordinal, record, reason, path));
             ordinal++;
         }
 
         return new PostingRun(List.copyOf(outcomes), accounts, crossReferences, seededKeys,
                 accountBalances.snapshot(), categoryBalances.snapshot(), transactions.snapshot(),
-                rejects.snapshot(), outbox.snapshot(), List.copyOf(saveLog),
+                rejects.snapshot(), List.copyOf(declinedEvents), outbox.snapshot(),
+                List.copyOf(saveLog),
                 transactions.repeatedIdentifiers(), categoryBalances.keysMissedOnRead());
     }
 
@@ -372,6 +560,62 @@ class PostingEquivalenceTest {
     }
 
     @Nested
+    @DisplayName("Checked-in Model B outputs")
+    class CheckedInExpectedOutputs {
+
+        @Test
+        @DisplayName("the full in-memory result matches the fixed output fingerprints")
+        void theFullResultMatchesTheFixedOutputFingerprints() {
+            PostingRun run = fixtureRun();
+            long nonzeroCategoryRows =
+                    run.categoryRowsAboveZero() + run.categoryRowsBelowZero();
+
+            assertEquals(expectedCount("posting", "record_count"), run.outcomes().size(),
+                    "the Model B run must cover the fixed feed count");
+            assertEquals(expectedCount("posting", "approved_count"), run.postedCount(),
+                    "the Model B approval count moved");
+            assertEquals(expectedCount("posting", "declined_count"), run.rejectedCount(),
+                    "the Model B decline count moved");
+            assertEquals(expectedCount("posting", "declined_event_count"),
+                    run.declinedEvents().size(),
+                    "the resolved-account decline event count moved");
+            assertEquals(expectedCount("posting", "return_code"), run.returnCode(),
+                    "the batch return code moved");
+            assertEquals(expectedCount("posting", "transaction_row_count"),
+                    run.postedTransactions().size(),
+                    "the posted transaction count moved");
+            assertEquals(expectedCount("posting", "posted_outbox_count"),
+                    run.outboxRowsOfType(TransactionPosted.EVENT_TYPE).size(),
+                    "the posted-event outbox count moved");
+            assertEquals(expectedCount("category_balance", "row_count"),
+                    run.categoryBalances().size(),
+                    "the total category row count moved");
+            assertEquals(expectedCount("category_balance", "nonzero_row_count"),
+                    nonzeroCategoryRows,
+                    "the nonzero category row count moved");
+            assertEquals(expectedCount("category_balance", "positive_row_count"),
+                    run.categoryRowsAboveZero(),
+                    "the positive category row count moved");
+            assertEquals(expectedCount("category_balance", "negative_row_count"),
+                    run.categoryRowsBelowZero(),
+                    "the negative category row count moved");
+
+            assertEquals(expected("posting", "approved_transaction_ids_sha256"),
+                    sha256Lines(approvedTransactionIdLines(run)),
+                    "the approved transaction identifiers moved");
+            assertEquals(expected("posting", "declined_outcomes_sha256"),
+                    sha256Lines(declinedOutcomeLines(run)),
+                    "the declined transaction identifiers or reasons moved");
+            assertEquals(expected("account_projection", "state_sha256"),
+                    sha256Lines(accountProjectionLines(run.accountBalances())),
+                    "the final account projection moved");
+            assertEquals(expected("category_balance", "state_sha256"),
+                    sha256Lines(categoryBalanceLines(run.categoryBalances())),
+                    "the final category balances moved");
+        }
+    }
+
+    @Nested
     @DisplayName("Driver loop and return code, app/cbl/CBTRN02C.cbl:L202-L234")
     class DriverLoop {
 
@@ -397,14 +641,16 @@ class PostingEquivalenceTest {
         @DisplayName("the post branch and the reject branch together cover the feed, L211-L216")
         void bothBranchesTogetherCoverTheFeed() {
             PostingRun run = fixtureRun();
+            long expectedApproved = expectedCount("posting", "approved_count");
+            long expectedDeclined = expectedCount("posting", "declined_count");
 
             assertEquals(run.outcomes().size(), run.postedCount() + run.rejectedCount(),
                     "CBTRN02C L211 sends each record to exactly one of L212 and L215, so the two "
                             + "counts add up to the record count");
-            assertTrue(run.postedCount() > 0,
-                    "CBTRN02C L212 posts at least one record of dailytran.txt");
-            assertTrue(run.rejectedCount() > 0,
-                    "CBTRN02C L215 rejects at least one record of dailytran.txt");
+            assertEquals(expectedApproved, run.postedCount(),
+                    "the post branch diverged from the checked-in Model B output");
+            assertEquals(expectedDeclined, run.rejectedCount(),
+                    "the reject branch diverged from the checked-in Model B output");
         }
 
         @Test
@@ -448,6 +694,8 @@ class PostingEquivalenceTest {
             PostingRun run = fixtureRun();
             long statelessDeclines = statelessDeclineCount();
 
+            assertEquals(expectedCount("model_a", "declined_count"), statelessDeclines,
+                    "the stateless pass diverged from the checked-in Model A output");
             assertNotEquals(statelessDeclines, run.rejectedCount(),
                     "the rewrite at CBTRN02C L554 leaves the accumulators for the next record, so "
                             + "a run that froze them at their fixture values reaches a different "
@@ -502,14 +750,30 @@ class PostingEquivalenceTest {
             PostingRun run = fixtureRun();
 
             for (FeedOutcome outcome : run.outcomes()) {
-                assertEquals(outcome.accountId(), outcome.event().aggregateId(),
-                        where(outcome.ordinal(), "1500-B-LOOKUP-ACCT",
-                                "app/cbl/CBTRN02C.cbl:L394")
-                                + ": the account the cross-reference resolved is the message key");
-                assertEquals(outcome.accountId(), outcome.event().accountId(),
-                        where(outcome.ordinal(), "1500-B-LOOKUP-ACCT",
-                                "app/cbl/CBTRN02C.cbl:L394")
-                                + ": the event carries one account identifier in both components");
+                if (outcome.path() instanceof AuthorizedPath authorized) {
+                    assertEquals(authorized.accountId(), authorized.event().aggregateId(),
+                            where(outcome.ordinal(), "1500-B-LOOKUP-ACCT",
+                                    "app/cbl/CBTRN02C.cbl:L394")
+                                    + ": the account is the authorized-event message key");
+                    assertEquals(authorized.accountId(), authorized.event().accountId(),
+                            where(outcome.ordinal(), "1500-B-LOOKUP-ACCT",
+                                    "app/cbl/CBTRN02C.cbl:L394")
+                                    + ": the authorized event carries one account value");
+                } else if (outcome.path() instanceof DeclinedPath declined) {
+                    assertEquals(declined.accountId(), declined.event().aggregateId(),
+                            where(outcome.ordinal(), "1500-B-LOOKUP-ACCT",
+                                    "app/cbl/CBTRN02C.cbl:L394")
+                                    + ": the account is the declined-event message key");
+                    assertEquals(declined.accountId(), declined.event().accountId(),
+                            where(outcome.ordinal(), "1500-B-LOOKUP-ACCT",
+                                    "app/cbl/CBTRN02C.cbl:L394")
+                                    + ": the declined event carries one account value");
+                } else {
+                    assertEquals(DeclineReason.INVALID_CARD_NUMBER, outcome.declineReason(),
+                            where(outcome.ordinal(), "1500-A-LOOKUP-XREF",
+                                    "app/cbl/CBTRN02C.cbl:L385-L387")
+                                    + ": the unresolved path publishes no event");
+                }
             }
         }
 
@@ -602,14 +866,14 @@ class PostingEquivalenceTest {
         }
 
         @Test
-        @DisplayName("the three updates share one transaction, an ADDITIVE guarantee")
+        @DisplayName("the three updates share one transaction, a guarantee with no COBOL ancestor")
         void theThreeUpdatesShareOneTransaction() throws NoSuchMethodException {
             Method postTransaction = PostingService.class
-                    .getMethod("postTransaction", TransactionAuthorized.class);
+                    .getMethod("postTransaction", TransactionAuthorized.class, String.class);
 
             assertTrue(postTransaction.isAnnotationPresent(Transactional.class),
                     "CBTRN02C L440-L442 runs the three updates with no rollback, and the target "
-                            + "wraps them in one transaction, which is ADDITIVE");
+                            + "wraps them in one transaction, which has no COBOL ancestor");
         }
 
         @Test
@@ -879,7 +1143,7 @@ class PostingEquivalenceTest {
             for (FeedOutcome outcome : run.postedOutcomes()) {
                 Map<String, List<BigDecimal>> target =
                         outcome.feed().amount().signum() >= 0 ? creditBound : debitBound;
-                target.computeIfAbsent(outcome.accountId(), key -> new ArrayList<>())
+                target.computeIfAbsent(outcome.resolvedAccountId(), key -> new ArrayList<>())
                         .add(outcome.feed().amount());
             }
 
@@ -912,7 +1176,8 @@ class PostingEquivalenceTest {
             BigDecimal zero = BigDecimal.ZERO.setScale(PicClause.DALYTRAN_AMT_SCALE);
 
             probe.postingService().postTransaction(
-                    eventCarrying(accountId, syntheticTransactionId(FIRST_RECORD_ORDINAL), zero));
+                    eventCarrying(accountId, syntheticTransactionId(FIRST_RECORD_ORDINAL), zero),
+                    accountId);
             AccountBalanceProjectionEntity held =
                     probe.accountBalances().findById(accountId).orElseThrow();
 
@@ -938,13 +1203,13 @@ class PostingEquivalenceTest {
                     syntheticTransactionId(FIRST_RECORD_ORDINAL), firstFeedRecord().amount());
 
             assertThrows(AccountBalanceUpdater.AccountBalanceRowMissingException.class,
-                    () -> probe.postingService().postTransaction(event),
+                    () -> probe.postingService().postTransaction(event, event.aggregateId()),
                     "account " + absentAccountId + ", stage " + ACCOUNT_STAGE
                             + ", source app/cbl/CBTRN02C.cbl:L554-L559: the rewrite found no row, "
                             + "and the target raises a failure the consumer does not acknowledge");
             assertEquals(0L, probe.transactions().count(),
                     "stage " + TRANSACTION_STAGE + ", source app/cbl/CBTRN02C.cbl:L440-L442: the "
-                            + "failure left no transaction row, which is the ADDITIVE atomicity "
+                            + "failure left no transaction row, which is the added atomicity "
                             + "guarantee");
         }
     }
@@ -977,7 +1242,7 @@ class PostingEquivalenceTest {
                     syntheticTransactionId(FIRST_RECORD_ORDINAL), firstFeedRecord().amount());
 
             IllegalStateException raised = assertThrows(IllegalStateException.class,
-                    () -> probe.postingService().postTransaction(event),
+                    () -> probe.postingService().postTransaction(event, event.aggregateId()),
                     "stage " + TRANSACTION_STAGE + ", source app/cbl/CBTRN02C.cbl:L566-L578: a "
                             + "status the ladder refuses abends the source, and the target raises "
                             + "a failure that withholds the acknowledgement and reaches the "
@@ -989,10 +1254,12 @@ class PostingEquivalenceTest {
     }
 
     @Nested
-    @DisplayName("Refund sign convention, app/cbl/CBTRN02C.cbl:L551 read with L404")
+    @DisplayName("Legacy divergence, register item 6: refund sign convention")
     class RefundSignConvention {
 
         @Test
+        @Tag(LEGACY_DIVERGENCE_TAG)
+        @Tag(HUMAN_REVIEW_TAG)
         @DisplayName("a refund drives the cycle debit accumulator below zero, L551")
         void aRefundDrivesTheCycleDebitBelowZero() {
             String accountId = firstFeedAccountId();
@@ -1000,7 +1267,7 @@ class PostingEquivalenceTest {
             BigDecimal refund = firstFeedRecord().amount().negate();
 
             probe.postingService().postTransaction(eventCarrying(accountId,
-                    syntheticTransactionId(FIRST_RECORD_ORDINAL), refund));
+                    syntheticTransactionId(FIRST_RECORD_ORDINAL), refund), accountId);
             AccountBalanceProjectionEntity held =
                     probe.accountBalances().findById(accountId).orElseThrow();
 
@@ -1011,6 +1278,8 @@ class PostingEquivalenceTest {
         }
 
         @Test
+        @Tag(LEGACY_DIVERGENCE_TAG)
+        @Tag(HUMAN_REVIEW_TAG)
         @DisplayName("a refund raises the working balance the next record is tested against, L404")
         void aRefundRaisesTheNextWorkingBalance() {
             String accountId = firstFeedAccountId();
@@ -1020,7 +1289,7 @@ class PostingEquivalenceTest {
             BigDecimal beforeRefund = workingBalance(zeroAmount(), zeroAmount(), probeAmount);
 
             probe.postingService().postTransaction(eventCarrying(accountId,
-                    syntheticTransactionId(FIRST_RECORD_ORDINAL), refund));
+                    syntheticTransactionId(FIRST_RECORD_ORDINAL), refund), accountId);
             AccountBalanceProjectionEntity held =
                     probe.accountBalances().findById(accountId).orElseThrow();
             BigDecimal afterRefund = workingBalance(held.getCycleCredit(), held.getCycleDebit(),
@@ -1034,6 +1303,8 @@ class PostingEquivalenceTest {
         }
 
         @Test
+        @Tag(LEGACY_DIVERGENCE_TAG)
+        @Tag(HUMAN_REVIEW_TAG)
         @DisplayName("a refund can turn the next approval into a decline, L407")
         void aRefundCanTurnTheNextApprovalIntoADecline() {
             String accountId = firstFeedAccountId();
@@ -1050,7 +1321,7 @@ class PostingEquivalenceTest {
                             + "while both accumulators hold zero");
 
             probe.postingService().postTransaction(eventCarrying(accountId,
-                    syntheticTransactionId(FIRST_RECORD_ORDINAL), refund));
+                    syntheticTransactionId(FIRST_RECORD_ORDINAL), refund), accountId);
             AccountBalanceProjectionEntity held =
                     probe.accountBalances().findById(accountId).orElseThrow();
 
@@ -1060,6 +1331,27 @@ class PostingEquivalenceTest {
                     "account " + accountId + ", stage 1500-B-LOOKUP-ACCT, source "
                             + "app/cbl/CBTRN02C.cbl:L407 read with L551: the same amount now "
                             + "fails the limit test, so the refund tightened the authorization");
+        }
+
+        @Test
+        @Tag(HUMAN_REVIEW_TAG)
+        @DisplayName("intended target: a recorded refund lowers the next working balance")
+        void theIntendedTargetLowersTheNextWorkingBalance() {
+            BigDecimal probeAmount = firstFeedRecord().amount().abs();
+            BigDecimal refund = probeAmount.negate();
+            BigDecimal beforeRefund = intendedWorkingBalance(
+                    zeroAmount(), zeroAmount(), probeAmount);
+            BigDecimal intendedAfterRefund = intendedWorkingBalance(
+                    zeroAmount(), refund, probeAmount);
+            BigDecimal shippedAfterRefund = workingBalance(
+                    zeroAmount(), refund, probeAmount);
+
+            assertTrue(intendedAfterRefund.compareTo(beforeRefund) < 0,
+                    "the intended target must lower the next working balance");
+            assertNotEquals(intendedAfterRefund, shippedAfterRefund,
+                    "the intended target must remain distinct from the shipped formula");
+            assertTrue(shippedAfterRefund.compareTo(beforeRefund) > 0,
+                    "the shipped formula must keep the register-item-6 divergence visible");
         }
     }
 
@@ -1112,7 +1404,7 @@ class PostingEquivalenceTest {
         }
 
         @Test
-        @DisplayName("the amount inside the data part carries plain digits, an ADDITIVE divergence")
+        @DisplayName("the amount inside the data part carries plain digits, a divergence from the source")
         void theAmountInsideTheDataPartCarriesPlainDigits() {
             PostingRun run = fixtureRun();
             int amountOffset = amountOffsetInFeedRecord();
@@ -1122,17 +1414,22 @@ class PostingEquivalenceTest {
                 String dataPart = renderRejectRecord(outcome.feed(), outcome.declineReason())
                         .substring(0, PicClause.REJECT_TRAN_DATA_WIDTH);
                 String amountSlice = dataPart.substring(amountOffset, amountEnd);
+                String leadingDigits = amountSlice.substring(0, amountSlice.length() - 1);
+                char trailing = amountSlice.charAt(amountSlice.length() - 1);
                 CopybookRecordParser.DailyTransactionRecord reparsed =
                         CopybookRecordParser.parseDailyTransaction(dataPart);
 
-                assertTrue(amountSlice.chars().allMatch(Character::isDigit),
+                assertTrue(leadingDigits.chars().allMatch(Character::isDigit),
+                        where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L10")
+                                + ": every position ahead of the last holds a digit");
+                assertTrue(overpunchDigits(outcome.feed().amount()).indexOf(trailing) >= 0,
                         where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L10")
                                 + ": the amount slice holds digits alone and carries no sign "
-                                + "overpunch, which is ADDITIVE");
+                                + "overpunch, which diverges from the source");
                 assertEquals(0, outcome.feed().amount().abs().compareTo(reparsed.amount()),
                         where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L10")
-                                + ": the plain digits read back as the absolute value of the "
-                                + "fixture amount, compared numerically");
+                                + ": the rendered field reads back as the signed fixture amount, "
+                                + "compared numerically");
             }
         }
 
@@ -1192,7 +1489,7 @@ class PostingEquivalenceTest {
                 assertEquals(PanMasker.maskCardNumber(outcome.feed().cardNumber()),
                         row.getMaskedCardNumber(),
                         where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L15")
-                                + ": the row carries the masked number, which is ADDITIVE");
+                                + ": the row carries the masked number, which has no COBOL ancestor");
             }
         }
 
@@ -1201,10 +1498,12 @@ class PostingEquivalenceTest {
         void oneDeclinedEventFollowsEachReject() {
             PostingRun run = fixtureRun();
 
-            assertEquals(run.rejectedCount(),
-                    run.outboxRowsOfType(TransactionDeclined.EVENT_TYPE).size(),
-                    "each pass of CBTRN02C L215 writes one reject record, and the target "
-                            + "publishes one " + TransactionDeclined.EVENT_TYPE + " for it");
+            long publishableDeclines =
+                    run.rejectedCount() - run.unresolvedCardAttemptCount();
+
+            assertEquals(publishableDeclines, run.declinedEvents().size(),
+                    "each resolved-account decline publishes one "
+                            + TransactionDeclined.EVENT_TYPE);
         }
 
         @Test
@@ -1222,8 +1521,13 @@ class PostingEquivalenceTest {
                             + "account read at L394, so exactly one of the four reasons names no "
                             + "account");
             assertFalse(DeclineReason.INVALID_CARD_NUMBER.resolvesAccount(),
-                    "the reason CBTRN02C L385 assigns is the one that names no account, and its "
-                            + "declined event is keyed on the transaction identifier");
+                    "the reason CBTRN02C L385 assigns names no account");
+            assertThrows(IllegalArgumentException.class,
+                    () -> TransactionDeclined.of(firstFeedAccountId(),
+                            syntheticTransactionId(FIRST_RECORD_ORDINAL),
+                            DeclineReason.INVALID_CARD_NUMBER, firstFeedRecord().amount(),
+                            PanMasker.maskCardNumber(firstFeedRecord().cardNumber())),
+                    "reason 0100 must not publish an account-keyed decline event");
         }
 
         @Test
@@ -1274,7 +1578,7 @@ class PostingEquivalenceTest {
         @Test
         @DisplayName("the outbound field holds a dash then dots, L166 and L702-L703")
         void theOutboundFieldHoldsADashThenDots() {
-            String rendered = CobolDecimal.formatProcessingTimestamp(LocalDateTime.now());
+            String rendered = CobolDecimal.formatProcessingTimestamp(FIXED_PROCESSING_MOMENT);
             int separator = PicClause.PROCESSING_TIMESTAMP_SEPARATOR_WIDTH;
 
             assertEquals(PicClause.PROCESSING_TIMESTAMP_WIDTH, rendered.length(),
@@ -1340,7 +1644,7 @@ class PostingEquivalenceTest {
         @Test
         @DisplayName("truncation changes a finer field, L701")
         void truncationChangesAFinerField() {
-            String rendered = CobolDecimal.formatProcessingTimestamp(LocalDateTime.now());
+            String rendered = CobolDecimal.formatProcessingTimestamp(FIXED_PROCESSING_MOMENT);
             String finer = rendered.substring(0,
                             PicClause.PROCESSING_TIMESTAMP_TRAILING_ZEROS_OFFSET)
                     + ABSENT_IDENTIFIER_DIGIT.repeat(
@@ -1355,7 +1659,7 @@ class PostingEquivalenceTest {
         @Test
         @DisplayName("a moment finer than a hundredth renders the same, L700")
         void aMomentFinerThanAHundredthRendersTheSame() {
-            LocalDateTime moment = LocalDateTime.now().withNano(0);
+            LocalDateTime moment = FIXED_PROCESSING_MOMENT.withNano(0);
             LocalDateTime finerMoment = moment.plusNanos(SUB_HUNDREDTH_NANOSECONDS);
 
             assertEquals(CobolDecimal.formatProcessingTimestamp(moment),
@@ -1366,7 +1670,7 @@ class PostingEquivalenceTest {
     }
 
     @Nested
-    @DisplayName("Idempotency marker, ADDITIVE with no ancestor in app/cbl/CBTRN02C.cbl")
+    @DisplayName("Idempotency marker, with no ancestor in app/cbl/CBTRN02C.cbl")
     class IdempotencyGuard {
 
         @Test
@@ -1382,7 +1686,7 @@ class PostingEquivalenceTest {
             int postsMade = 0;
             for (int delivery = 0; delivery < DUPLICATE_DELIVERY_COUNT; delivery++) {
                 if (claimMarker(markers, event) == CLAIM_TAKEN) {
-                    probe.postingService().postTransaction(event);
+                    probe.postingService().postTransaction(event, event.aggregateId());
                     postsMade++;
                 }
             }
@@ -1422,6 +1726,294 @@ class PostingEquivalenceTest {
                     "the marker is keyed by the envelope identifier");
             assertEquals(AUTHORIZED_TOPIC, marker.getConsumedTopic(),
                     "the marker records the topic the delivery arrived on");
+        }
+    }
+
+    /**
+     * Runs the fixture through the deployable ledger path.
+     *
+     * <p>Flyway creates and seeds the schema. Jakarta Persistence API repositories hold the state,
+     * and the real Kafka listener method invokes the transactional consumer path. The broker-facing
+     * relay is replaced, so no record leaves this test.</p>
+     */
+    @Nested
+    @DisplayName("Flyway, JPA and the real ledger consumer")
+    @SpringBootTest(classes = LedgerApplication.class,
+            webEnvironment = SpringBootTest.WebEnvironment.NONE,
+            properties = {
+                    "spring.kafka.listener.auto-startup=false",
+                    "spring.kafka.consumer.group-id=ledger-posting-equivalence",
+                    "spring.kafka.consumer.auto-offset-reset=earliest",
+                    "spring.kafka.listener.ack-mode=manual_immediate",
+                    "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
+                    "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
+                    "USER_PASSWORD_HASH={noop}not-a-real-user-password",
+                    "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+                    "spring.jpa.hibernate.ddl-auto=validate",
+                    "carddemo.kafka.topics.transaction-authorized=transaction.authorized",
+                    "carddemo.kafka.topics.transaction-posted=transaction.posted",
+                    "carddemo.kafka.topics.transaction-declined=transaction.declined",
+                    "carddemo.kafka.topics.dead-letter=carddemo.dead-letter",
+                    "carddemo.kafka.topics.dead-letter-suffix=.DLT",
+                    "carddemo.consumer.retry.max-attempts=3",
+                    "carddemo.consumer.retry.backoff-ms=0",
+                    "carddemo.outbox.relay.fixed-delay-ms=3600000",
+                    "carddemo.outbox.relay.batch-size=100"
+            })
+    @Testcontainers
+    class DeployablePostingPath {
+
+        /** Database login and database name of the isolated PostgreSQL server. */
+        private static final String DATABASE_LOGIN = "carddemo";
+
+        /** Private schema the ledger service owns. */
+        private static final String SERVICE_SCHEMA = "ledger_service";
+
+        /** Isolated PostgreSQL server for this group. */
+        private static final PostgreSQLContainer POSTGRES =
+                new PostgreSQLContainer("postgres:18.4")
+                        .withDatabaseName(DATABASE_LOGIN)
+                        .withUsername(DATABASE_LOGIN)
+                        .withPassword(DATABASE_LOGIN);
+
+        static {
+            POSTGRES.start();
+        }
+
+        /** Replaces the broker-facing relay and its scheduled method. */
+        @MockitoBean
+        private OutboxRelay outboxRelay;
+
+        /** Replaces the producer channel created by the service configuration. */
+        @MockitoBean
+        private KafkaTemplate<String, Object> publishChannel;
+
+        /** Real consumer bean reached through its listener method. */
+        @Autowired
+        private TransactionAuthorizedConsumer consumer;
+
+        /** Real account projection repository. */
+        @Autowired
+        private AccountBalanceProjectionRepository accountBalances;
+
+        /** Real posted transaction repository. */
+        @Autowired
+        private TransactionRepository postedTransactions;
+
+        /** Real processed-event repository. */
+        @Autowired
+        private ProcessedEventRepository processedEvents;
+
+        /** Real reject repository, which the authorized consumer must not touch. */
+        @Autowired
+        private RejectedTransactionRepository rejectedTransactions;
+
+        /** Real outbox repository. */
+        @Autowired
+        private OutboxEventRepository outboxEvents;
+
+        /** Query channel used for complete-state comparisons. */
+        @Autowired
+        private JdbcTemplate jdbc;
+
+        /** Points the datasource at the isolated server and its service schema. */
+        @DynamicPropertySource
+        static void datasourceProperties(DynamicPropertyRegistry registry) {
+            registry.add("spring.datasource.url", DeployablePostingPath::jdbcUrl);
+            registry.add("spring.datasource.username", POSTGRES::getUsername);
+            registry.add("spring.datasource.password", POSTGRES::getPassword);
+            registry.add("spring.flyway.locations",
+                    DeployablePostingPath::ledgerMigrationLocation);
+            registry.add("spring.flyway.schemas", () -> SERVICE_SCHEMA);
+            registry.add("spring.flyway.default-schema", () -> SERVICE_SCHEMA);
+            registry.add("spring.jpa.properties.hibernate.default_schema",
+                    () -> SERVICE_SCHEMA);
+        }
+
+        /** Returns the container URL with the service schema on the connection search path. */
+        private static String jdbcUrl() {
+            String url = POSTGRES.getJdbcUrl();
+            return url + (url.contains("?") ? "&" : "?")
+                    + "currentSchema=" + SERVICE_SCHEMA;
+        }
+
+        /** Returns the ledger migration directory alone. */
+        private static String ledgerMigrationLocation() {
+            return "filesystem:" + CardDemoFixtureLoader.fixtureDirectory()
+                    .getParent()
+                    .getParent()
+                    .getParent()
+                    .resolve("card-platform/services/ledger-posting-service/src/main/resources"
+                            + "/db/migration")
+                    .toAbsolutePath();
+        }
+
+        /** Restores the migrated tables to their seed state before each case. */
+        @BeforeEach
+        void restoreSeedState() {
+            jdbc.update("DELETE FROM outbox_event");
+            jdbc.update("DELETE FROM processed_event");
+            jdbc.update("DELETE FROM rejected_transaction");
+            jdbc.update("DELETE FROM \"transaction\"");
+            jdbc.update("DELETE FROM transaction_category_balance");
+
+            for (CopybookRecordParser.TransactionCategoryBalanceRecord row
+                    : CardDemoFixtureLoader.loadTransactionCategoryBalances()) {
+                jdbc.update("""
+                        INSERT INTO transaction_category_balance
+                            (account_id, type_code, category_code, category_balance)
+                        VALUES (?, ?, ?, ?)
+                        """, row.accountId(), row.typeCode(), row.categoryCode(), row.balance());
+            }
+            for (CopybookRecordParser.AccountRecord account
+                    : CardDemoFixtureLoader.loadAccounts()) {
+                jdbc.update("""
+                        UPDATE account_balance_projection
+                        SET current_balance = ?, cycle_credit = ?, cycle_debit = ?
+                        WHERE account_id = ?
+                        """, account.currentBalance(), account.currentCycleCredit(),
+                        account.currentCycleDebit(), account.accountId());
+            }
+        }
+
+        @Test
+        @DisplayName("the migrated consumer result matches the checked-in Model B output")
+        void theMigratedConsumerResultMatchesTheCheckedInOutput() {
+            Map<String, CopybookRecordParser.CardCrossReferenceRecord> crossReferences =
+                    CardDemoFixtureLoader.cardCrossReferencesByCardNumber();
+            Map<String, CopybookRecordParser.AccountRecord> accounts =
+                    CardDemoFixtureLoader.accountsByAccountId();
+            List<String> approvedIds = new ArrayList<>();
+            List<String> declinedOutcomes = new ArrayList<>();
+            List<TransactionDeclined> declinedEvents = new ArrayList<>();
+            AtomicInteger acknowledgments = new AtomicInteger();
+            long offset = 0L;
+
+            for (CopybookRecordParser.DailyTransactionRecord record
+                    : CardDemoFixtureLoader.loadDailyTransactions()) {
+                DeclineReason reason =
+                        declineReasonFor(record, crossReferences, accounts, accountBalances);
+                CopybookRecordParser.CardCrossReferenceRecord crossReference =
+                        crossReferences.get(record.cardNumber());
+                if (reason == null) {
+                    String accountId = Objects.requireNonNull(crossReference,
+                            "an approved fixture record must resolve an account").accountId();
+                    TransactionAuthorized event = authorizationEventFor(record, accountId);
+                    Acknowledgment acknowledgment = acknowledgments::incrementAndGet;
+
+                    consumer.onTransactionAuthorized(
+                            new ConsumerRecord<>(AUTHORIZED_TOPIC, 0, offset, accountId, event),
+                            acknowledgment);
+                    approvedIds.add(record.transactionId());
+                } else {
+                    declinedOutcomes.add(record.transactionId() + "," + reason.code());
+                    if (reason.resolvesAccount()) {
+                        CopybookRecordParser.CardCrossReferenceRecord resolvedCrossReference =
+                                Objects.requireNonNull(crossReference,
+                                        "an account-resolving decline must carry "
+                                                + "a cross-reference");
+                        String accountId = resolvedCrossReference.accountId();
+                        declinedEvents.add(declineEventFor(record, accountId, reason));
+                    } else {
+                        assertTrue(crossReference == null,
+                                "reason 0100 must follow a missing cross-reference");
+                    }
+                }
+                offset++;
+            }
+
+            List<String> storedTransactionIds = jdbc.queryForList(
+                    "SELECT transaction_id FROM \"transaction\" ORDER BY transaction_id",
+                    String.class);
+            List<String> accountLines = jdbc.query("""
+                    SELECT account_id, current_balance, cycle_credit, cycle_debit
+                    FROM account_balance_projection
+                    ORDER BY account_id
+                    """, (result, row) -> result.getString("account_id") + ","
+                            + money(result.getBigDecimal("current_balance")) + ","
+                            + money(result.getBigDecimal("cycle_credit")) + ","
+                            + money(result.getBigDecimal("cycle_debit")));
+            List<String> categoryLines = jdbc.query("""
+                    SELECT account_id, type_code, category_code, category_balance
+                    FROM transaction_category_balance
+                    ORDER BY account_id, type_code, category_code
+                    """, (result, row) -> result.getString("account_id") + ","
+                            + result.getString("type_code") + ","
+                            + result.getString("category_code") + ","
+                            + money(result.getBigDecimal("category_balance")));
+
+            assertEquals(List.of("1", "2"), jdbc.queryForList(
+                            "SELECT version FROM flyway_schema_history "
+                                    + "WHERE success AND version IS NOT NULL "
+                                    + "ORDER BY installed_rank",
+                            String.class),
+                    "Flyway must apply both ledger migrations");
+            assertEquals(expectedCount("posting", "record_count"), offset,
+                    "the real path must inspect the whole feed");
+            assertEquals(expectedCount("posting", "approved_count"), approvedIds.size(),
+                    "the real path approval count moved");
+            assertEquals(expectedCount("posting", "declined_count"), declinedOutcomes.size(),
+                    "the real path decline count moved");
+            assertEquals(expectedCount("posting", "declined_event_count"), declinedEvents.size(),
+                    "the real path decline event count moved");
+            assertEquals(expectedCount("posting", "approved_count"), acknowledgments.get(),
+                    "each authorized delivery must acknowledge after its transaction");
+            assertEquals(expectedCount("posting", "transaction_row_count"),
+                    postedTransactions.count(),
+                    "the migrated transaction table count moved");
+            assertEquals(expectedCount("posting", "processed_event_count"),
+                    processedEvents.count(),
+                    "the migrated processed-event count moved");
+            assertEquals(expectedCount("posting", "ledger_rejected_transaction_count"),
+                    rejectedTransactions.count(),
+                    "the authorized consumer must not create reject rows");
+            assertEquals(expectedCount("posting", "posted_outbox_count"),
+                    outboxEvents.findAll().stream()
+                            .filter(row -> TransactionPosted.EVENT_TYPE.equals(row.getEventType()))
+                            .count(),
+                    "the migrated outbox count moved");
+
+            long categoryRows = jdbc.queryForObject(
+                    "SELECT count(*) FROM transaction_category_balance", Long.class);
+            long nonzeroCategoryRows = jdbc.queryForObject(
+                    "SELECT count(*) FROM transaction_category_balance "
+                            + "WHERE category_balance <> 0",
+                    Long.class);
+            long positiveCategoryRows = jdbc.queryForObject(
+                    "SELECT count(*) FROM transaction_category_balance "
+                            + "WHERE category_balance > 0",
+                    Long.class);
+            long negativeCategoryRows = jdbc.queryForObject(
+                    "SELECT count(*) FROM transaction_category_balance "
+                            + "WHERE category_balance < 0",
+                    Long.class);
+
+            assertEquals(expectedCount("category_balance", "row_count"), categoryRows,
+                    "the migrated category table must keep the total-row output");
+            assertEquals(expectedCount("category_balance", "nonzero_row_count"),
+                    nonzeroCategoryRows,
+                    "the migrated category table must keep the nonzero-row output");
+            assertEquals(expectedCount("category_balance", "positive_row_count"),
+                    positiveCategoryRows,
+                    "the migrated category table positive-row count moved");
+            assertEquals(expectedCount("category_balance", "negative_row_count"),
+                    negativeCategoryRows,
+                    "the migrated category table negative-row count moved");
+
+            assertEquals(approvedIds, storedTransactionIds,
+                    "the real consumer must persist exactly the approved transaction identifiers");
+            assertEquals(expected("posting", "approved_transaction_ids_sha256"),
+                    sha256Lines(storedTransactionIds),
+                    "the migrated transaction identifier output moved");
+            assertEquals(expected("posting", "declined_outcomes_sha256"),
+                    sha256Lines(declinedOutcomes),
+                    "the migrated decision path moved");
+            assertEquals(expected("account_projection", "state_sha256"),
+                    sha256Lines(accountLines),
+                    "the migrated account projection output moved");
+            assertEquals(expected("category_balance", "state_sha256"),
+                    sha256Lines(categoryLines),
+                    "the migrated category balance output moved");
         }
     }
 
@@ -1592,7 +2184,7 @@ class PostingEquivalenceTest {
     private static Map<String, List<BigDecimal>> postedAmountsByAccount(PostingRun run) {
         Map<String, List<BigDecimal>> byAccount = new LinkedHashMap<>();
         for (FeedOutcome outcome : run.postedOutcomes()) {
-            byAccount.computeIfAbsent(outcome.accountId(), key -> new ArrayList<>())
+            byAccount.computeIfAbsent(outcome.resolvedAccountId(), key -> new ArrayList<>())
                     .add(outcome.feed().amount());
         }
         return byAccount;
@@ -1609,7 +2201,8 @@ class PostingEquivalenceTest {
         Map<TransactionCategoryBalanceId, List<BigDecimal>> byKey = new LinkedHashMap<>();
         for (FeedOutcome outcome : run.postedOutcomes()) {
             TransactionCategoryBalanceId key = new TransactionCategoryBalanceId(
-                    outcome.accountId(), outcome.feed().typeCode(), outcome.feed().categoryCode());
+                    outcome.resolvedAccountId(), outcome.feed().typeCode(),
+                    outcome.feed().categoryCode());
             byKey.computeIfAbsent(key, unused -> new ArrayList<>()).add(outcome.feed().amount());
         }
         return byKey;
@@ -1630,6 +2223,62 @@ class PostingEquivalenceTest {
             held = CobolDecimal.add(held, addend, scale);
         }
         return held;
+    }
+
+    /** Renders one monetary value at the two-decimal scale of the posting records. */
+    private static String money(BigDecimal value) {
+        return value.setScale(PicClause.TRAN_AMT_SCALE, RoundingMode.DOWN).toPlainString();
+    }
+
+    /** Hashes canonical lines, each terminated by one line feed. */
+    private static String sha256Lines(List<String> lines) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (String line : lines) {
+                digest.update(line.getBytes(StandardCharsets.US_ASCII));
+                digest.update((byte) '\n');
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new AssertionError("SHA-256 must be available", unavailable);
+        }
+    }
+
+    /** Canonical approved transaction identifiers, sorted by their fixed-width key. */
+    private static List<String> approvedTransactionIdLines(PostingRun run) {
+        return run.postedTransactions().keySet().stream().sorted().toList();
+    }
+
+    /** Canonical declined transaction identifiers and reason codes, in feed order. */
+    private static List<String> declinedOutcomeLines(PostingRun run) {
+        return run.rejectedOutcomes().stream()
+                .map(outcome -> outcome.feed().transactionId() + ","
+                        + outcome.declineReason().code())
+                .toList();
+    }
+
+    /** Canonical account projection rows, sorted by account identifier. */
+    private static List<String> accountProjectionLines(
+            Map<String, AccountBalanceProjectionEntity> projections) {
+        return projections.entrySet().stream()
+                .map(entry -> entry.getKey() + ","
+                        + money(entry.getValue().getCurrentBalance()) + ","
+                        + money(entry.getValue().getCycleCredit()) + ","
+                        + money(entry.getValue().getCycleDebit()))
+                .sorted()
+                .toList();
+    }
+
+    /** Canonical category balance rows, sorted by the seventeen-character source key. */
+    private static List<String> categoryBalanceLines(
+            Map<TransactionCategoryBalanceId, TransactionCategoryBalanceEntity> balances) {
+        return balances.entrySet().stream()
+                .map(entry -> entry.getKey().getAccountId() + ","
+                        + entry.getKey().getTypeCode() + ","
+                        + entry.getKey().getCategoryCode() + ","
+                        + money(entry.getValue().getCategoryBalance()))
+                .sorted()
+                .toList();
     }
 
     /**
@@ -1676,7 +2325,7 @@ class PostingEquivalenceTest {
      * Records one idempotency marker, refusing a repeat of the same event identifier.
      *
      * <p>The refusal follows {@code ProcessedEventRepository.claimEvent}, whose insert leaves an
-     * existing marker in place. ADDITIVE, with no ancestor in {@code app/cbl/CBTRN02C.cbl}.</p>
+     * existing marker in place. No ancestor in {@code app/cbl/CBTRN02C.cbl}.</p>
      *
      * @param markers markers this consumer has already written
      * @param event   the delivery being claimed
@@ -1686,7 +2335,7 @@ class PostingEquivalenceTest {
     private static int claimMarker(Map<UUID, ProcessedEventEntity> markers,
             TransactionAuthorized event) {
         ProcessedEventEntity marker =
-                new ProcessedEventEntity(event.eventId(), Instant.now());
+                new ProcessedEventEntity(event.eventId(), FIXED_EVENT_INSTANT);
         marker.setConsumedTopic(AUTHORIZED_TOPIC);
         return markers.putIfAbsent(event.eventId(), marker) == null
                 ? CLAIM_TAKEN
@@ -1711,7 +2360,7 @@ class PostingEquivalenceTest {
                 template.categoryCode(), template.source(), template.description(), amount,
                 template.merchantId(), template.merchantName(), template.merchantCity(),
                 template.merchantZip(), PanMasker.maskCardNumber(template.cardNumber()),
-                template.originTimestamp());
+                PanMasker.cardToken(template.cardNumber()), template.originTimestamp());
     }
 
     /**
@@ -1733,8 +2382,8 @@ class PostingEquivalenceTest {
     /**
      * Renders one {@code REJECT-RECORD} as {@code app/cbl/CBTRN02C.cbl:L446-L465} lays it out.
      *
-     * <p>The amount carries plain zero-padded digits from the absolute value, which is ADDITIVE.
-     * The trailer holds the reason code at {@link PicClause#VALIDATION_FAIL_REASON_WIDTH}
+     * <p>The amount carries plain zero-padded digits from the absolute value, which has no COBOL
+     * ancestor. The trailer holds the reason code at {@link PicClause#VALIDATION_FAIL_REASON_WIDTH}
      * characters and the description at {@link PicClause#VALIDATION_FAIL_REASON_DESC_WIDTH}.</p>
      *
      * @param feed   the record {@code app/cbl/CBTRN02C.cbl:L447} moves into
@@ -1750,7 +2399,7 @@ class PostingEquivalenceTest {
                 .append(numeric(feed.categoryCode(), PicClause.DALYTRAN_CAT_CD_WIDTH))
                 .append(alphanumeric(feed.source(), PicClause.DALYTRAN_SOURCE_WIDTH))
                 .append(alphanumeric(feed.description(), PicClause.DALYTRAN_DESC_WIDTH))
-                .append(plainDigitAmount(feed.amount()))
+                .append(signedOverpunchAmount(feed.amount()))
                 .append(numeric(feed.merchantId(), PicClause.DALYTRAN_MERCHANT_ID_WIDTH))
                 .append(alphanumeric(feed.merchantName(), PicClause.DALYTRAN_MERCHANT_NAME_WIDTH))
                 .append(alphanumeric(feed.merchantCity(), PicClause.DALYTRAN_MERCHANT_CITY_WIDTH))
@@ -1766,14 +2415,37 @@ class PostingEquivalenceTest {
     }
 
     /**
-     * Renders an amount as plain zero-padded digits, dropping the sign.
+     * Renders an amount as zero-padded digits whose trailing character carries the sign.
+     *
+     * <p>The sign travels on the last position, as {@code PIC S9(09)V99} holds it in the amount
+     * column of {@code app/data/ASCII/dailytran.txt}. The character comes from
+     * {@link CopybookRecordParser#POSITIVE_SIGN_OVERPUNCH_DIGITS} or from
+     * {@link CopybookRecordParser#NEGATIVE_SIGN_OVERPUNCH_DIGITS}, indexed by the digit it
+     * replaces, so {@link CopybookRecordParser#parseDailyTransaction} reads the value back with
+     * its sign.</p>
      *
      * @param amount the value {@code DALYTRAN-AMT} holds
-     * @return {@link PicClause#DALYTRAN_AMT_WIDTH} digit characters
+     * @return {@link PicClause#DALYTRAN_AMT_WIDTH} characters
      */
-    private static String plainDigitAmount(BigDecimal amount) {
-        return numeric(amount.abs().movePointRight(PicClause.DALYTRAN_AMT_SCALE)
+    private static String signedOverpunchAmount(BigDecimal amount) {
+        String digits = numeric(amount.abs().movePointRight(PicClause.DALYTRAN_AMT_SCALE)
                 .toBigInteger().toString(), PicClause.DALYTRAN_AMT_WIDTH);
+        int lastPosition = digits.length() - 1;
+        int lastDigit = digits.charAt(lastPosition) - '0';
+
+        return digits.substring(0, lastPosition) + overpunchDigits(amount).charAt(lastDigit);
+    }
+
+    /**
+     * Selects the overpunch list that carries the sign of one amount.
+     *
+     * @param amount the value {@code DALYTRAN-AMT} holds
+     * @return the negative list for a value below zero, the positive list otherwise
+     */
+    private static String overpunchDigits(BigDecimal amount) {
+        return amount.signum() < 0
+                ? CopybookRecordParser.NEGATIVE_SIGN_OVERPUNCH_DIGITS
+                : CopybookRecordParser.POSITIVE_SIGN_OVERPUNCH_DIGITS;
     }
 
     /**
@@ -1802,20 +2474,77 @@ class PostingEquivalenceTest {
                 : PADDING_DIGIT.repeat(width - digits.length()) + digits;
     }
 
+    /** Event path selected after the source validation chain runs. */
+    private sealed interface AuthorizationPath
+            permits AuthorizedPath, DeclinedPath, UnresolvedCardPath {
+    }
+
+    /**
+     * Path that publishes an authorized event and reaches the ledger consumer.
+     *
+     * @param accountId account the cross-reference resolved
+     * @param event     event the ledger consumes
+     */
+    private record AuthorizedPath(String accountId, TransactionAuthorized event)
+            implements AuthorizationPath {
+
+        AuthorizedPath {
+            Objects.requireNonNull(accountId, "accountId is required");
+            Objects.requireNonNull(event, "event is required");
+        }
+    }
+
+    /**
+     * Path that publishes a declined event and never reaches the ledger consumer.
+     *
+     * @param accountId account the cross-reference resolved
+     * @param event     event the authorization service publishes
+     */
+    private record DeclinedPath(String accountId, TransactionDeclined event)
+            implements AuthorizationPath {
+
+        DeclinedPath {
+            Objects.requireNonNull(accountId, "accountId is required");
+            Objects.requireNonNull(event, "event is required");
+        }
+    }
+
+    /** Path for reason 0100, which has no resolved account and publishes no decline event. */
+    private record UnresolvedCardPath() implements AuthorizationPath {
+    }
+
     /**
      * What one pass of the loop at {@code app/cbl/CBTRN02C.cbl:L202-L219} did with one record.
      *
      * @param ordinal       position of the record in {@code app/data/ASCII/dailytran.txt}
      * @param feed          the record as {@code app/cpy/CVTRA06Y.cpy} lays it out
-     * @param accountId     the account the cross-reference resolved, or the placeholder
      * @param declineReason the reason a decline carried, or {@code null} on a post
-     * @param event         the event the ledger services consumed
+     * @param path          the one reachable event path
      */
     private record FeedOutcome(int ordinal,
             CopybookRecordParser.DailyTransactionRecord feed,
-            String accountId,
             DeclineReason declineReason,
-            TransactionAuthorized event) {
+            AuthorizationPath path) {
+
+        FeedOutcome {
+            Objects.requireNonNull(feed, "feed is required");
+            Objects.requireNonNull(path, "path is required");
+            if ((path instanceof AuthorizedPath) != (declineReason == null)) {
+                throw new IllegalArgumentException(
+                        "an authorized path must have no decline reason, "
+                                + "and a decline must have one");
+            }
+            if (path instanceof DeclinedPath declined
+                    && declined.event().declineReasonCode() != declineReason) {
+                throw new IllegalArgumentException(
+                        "the declined event must carry the outcome reason");
+            }
+            if (path instanceof UnresolvedCardPath
+                    && declineReason != DeclineReason.INVALID_CARD_NUMBER) {
+                throw new IllegalArgumentException(
+                        "the unresolved-card path carries reason 0100 only");
+            }
+        }
 
         /**
          * Reports whether {@code app/cbl/CBTRN02C.cbl:L211} sent this record to
@@ -1824,7 +2553,53 @@ class PostingEquivalenceTest {
          * @return {@code true} when the record posted
          */
         boolean posted() {
-            return declineReason == null;
+            return path instanceof AuthorizedPath;
+        }
+
+        /**
+         * Returns the account identifier of a path that resolved one.
+         *
+         * @return the resolved account identifier
+         * @throws IllegalStateException for the unresolved-card path
+         */
+        String resolvedAccountId() {
+            if (path instanceof AuthorizedPath authorized) {
+                return authorized.accountId();
+            }
+            if (path instanceof DeclinedPath declined) {
+                return declined.accountId();
+            }
+            throw new IllegalStateException("reason 0100 resolves no account identifier");
+        }
+
+        /**
+         * Returns the authorized event.
+         *
+         * @return the event the ledger consumes
+         * @throws IllegalStateException on either decline path
+         */
+        TransactionAuthorized authorizedEvent() {
+            if (path instanceof AuthorizedPath authorized) {
+                return authorized.event();
+            }
+            throw new IllegalStateException("a decline carries no authorized event");
+        }
+
+        /**
+         * Returns the declined event when the account was resolved.
+         *
+         * @return the event, or empty for an approval and reason 0100
+         */
+        Optional<TransactionDeclined> declinedEvent() {
+            if (path instanceof DeclinedPath declined) {
+                return Optional.of(declined.event());
+            }
+            return Optional.empty();
+        }
+
+        /** Reports whether this outcome is the reason-0100 unresolved-card path. */
+        boolean unresolvedCardAttempt() {
+            return path instanceof UnresolvedCardPath;
         }
     }
 
@@ -1839,6 +2614,7 @@ class PostingEquivalenceTest {
      * @param categoryBalances   category balances after the last record
      * @param postedTransactions rows the transaction store holds, keyed by transaction identifier
      * @param rejectedRows       rows the reject store holds, in feed order
+     * @param declinedEvents     events the resolved-account decline path produced
      * @param outboxRows         rows the outbox holds, in publication order
      * @param saveLog            stage name of every write the run made, in order
      * @param repeatedTransactionIdentifiers identifiers a transaction write presented twice
@@ -1852,6 +2628,7 @@ class PostingEquivalenceTest {
             Map<TransactionCategoryBalanceId, TransactionCategoryBalanceEntity> categoryBalances,
             Map<String, TransactionEntity> postedTransactions,
             List<RejectedTransactionEntity> rejectedRows,
+            List<TransactionDeclined> declinedEvents,
             List<OutboxEventEntity> outboxRows,
             List<String> saveLog,
             List<String> repeatedTransactionIdentifiers,
@@ -1873,6 +2650,11 @@ class PostingEquivalenceTest {
          */
         long rejectedCount() {
             return outcomes.size() - postedCount();
+        }
+
+        /** Counts reason-0100 outcomes, which publish no decline event. */
+        long unresolvedCardAttemptCount() {
+            return outcomes.stream().filter(FeedOutcome::unresolvedCardAttempt).count();
         }
 
         /**
@@ -1981,6 +2763,11 @@ class PostingEquivalenceTest {
         }
 
         @Override
+        public Optional<AccountBalanceProjectionEntity> findForUpdateById(String accountId) {
+            return findById(accountId);
+        }
+
+        @Override
         public AccountBalanceProjectionEntity save(AccountBalanceProjectionEntity projection) {
             if (!seeding) {
                 saveLog.add(ACCOUNT_STAGE);
@@ -2051,6 +2838,39 @@ class PostingEquivalenceTest {
             }
             rows.put(categoryBalance.getId(), categoryBalance);
             return categoryBalance;
+        }
+
+        /**
+         * Applies the upsert of {@code 2700-UPDATE-TCATBAL} in memory, recording which arm ran.
+         *
+         * <p>An absent key is the {@code INVALID KEY} condition at
+         * {@code app/cbl/CBTRN02C.cbl:L475-L478}, so the key joins {@link #keysMissedOnRead()} and
+         * the opening balance is the amount itself, matching {@code :L504-L508}. A present key takes
+         * the amount on top of its stored balance, matching {@code :L527}.
+         *
+         * @param accountId    eleven digits
+         * @param typeCode     two characters
+         * @param categoryCode four digits
+         * @param amount       the signed amount to add
+         * @return 1, the one row the statement writes on either arm
+         */
+        @Override
+        public int addToCategoryBalance(String accountId, String typeCode, String categoryCode,
+                BigDecimal amount) {
+            TransactionCategoryBalanceId key =
+                    new TransactionCategoryBalanceId(accountId, typeCode, categoryCode);
+            TransactionCategoryBalanceEntity stored = rows.get(key);
+            BigDecimal opening = stored == null ? BigDecimal.ZERO : stored.getCategoryBalance();
+
+            if (stored == null) {
+                keysMissedOnRead.add(key);
+            }
+            if (!seeding) {
+                saveLog.add(CATEGORY_BALANCE_STAGE);
+            }
+            rows.put(key, new TransactionCategoryBalanceEntity(key,
+                    CobolDecimal.add(opening, amount, PicClause.TRAN_CAT_BAL_SCALE)));
+            return ONE_ROW_UPSERTED;
         }
 
         @Override

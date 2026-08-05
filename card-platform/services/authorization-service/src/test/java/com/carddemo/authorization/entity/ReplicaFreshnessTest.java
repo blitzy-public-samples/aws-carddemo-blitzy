@@ -18,8 +18,8 @@ import org.junit.jupiter.api.Test;
  * Asserts that a replica row can say how old it is, and that an authorization refuses to claim
  * freshness it cannot establish.
  *
- * <p>ADDITIVE, and the reason is a difference between the source and the target rather than a
- * difference of opinion. {@code app/cbl/CBTRN02C.cbl:L382} and {@code app/cbl/CBTRN02C.cbl:L395}
+ * <p>No COBOL ancestor, because the source and the target read different things.
+ * {@code app/cbl/CBTRN02C.cbl:L382} and {@code app/cbl/CBTRN02C.cbl:L395}
  * issue keyed reads against the cross-reference and account datasets, so the source reads the
  * records themselves and has nothing that can go stale. This service reads copies kept current by
  * state-change events, and a copy whose events stopped arriving keeps answering with whatever it

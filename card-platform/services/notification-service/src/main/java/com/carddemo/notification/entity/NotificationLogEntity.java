@@ -1,5 +1,6 @@
 package com.carddemo.notification.entity;
 
+import com.carddemo.cobol.PanMasker;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -14,14 +15,15 @@ import org.hibernate.type.SqlTypes;
 /**
  * Records one cardholder alert this service rendered and attempted to deliver.
  *
- * <p>One instance maps to one row of the table {@code notification_log}, whose five columns this
+ * <p>One instance maps to one row of the table {@code notification_log}, whose six columns this
  * module declares in {@code src/main/resources/db/migration/V1__schema.sql}. The primary key
  * {@code pk_notification_log} covers {@code id} alone. The check constraint
+ * {@code ck_notification_log_card_token} holds {@code card_token} to the token shape and
  * {@code ck_notification_log_card_number} holds {@code card_number} to the masked shape. A row
  * names no statement row: the migration declares no foreign key.
  *
- * <p>ADDITIVE: this class has no source ancestor. No Common Business Oriented Language (COBOL)
- * program in CardDemo records a delivery attempt. Every locator below is a reference.
+ * <p>No COBOL ancestor: this class has no source ancestor. No Common Business Oriented Language
+ * (COBOL) program in CardDemo records a delivery attempt. Every locator below is a reference.
  *
  * <p>{@code channel} names which rendered format one attempt carried. The source renders two: the
  * text layout {@code 01 STATEMENT-LINES.} at {@code app/cbl/CBSTM03A.CBL:L85}, and the markup
@@ -30,14 +32,15 @@ import org.hibernate.type.SqlTypes;
  * {@code HTMLFILE} at {@code LRECL=100} in {@code app/jcl/CREASTMT.JCL:L94}. The classes
  * {@code PlainTextRenderer} and {@code HtmlRenderer} produce them.
  *
- * <p>The card number column holds the masked form alone. Masking is an addition, and the source
- * masks nothing: the card number occupies all sixteen characters on the card detail map, where
- * {@code CARDSID DFHMDF} carries {@code LENGTH=16} at {@code app/bms/COCRDSL.bms:L99}. No column,
- * field or accessor here carries a card verification value.
+ * <p>Two columns identify the card, and neither holds a full one. {@code card_token} carries the
+ * stable opaque identifier {@link PanMasker#cardToken(String)} derives, and it is the value
+ * {@code ix_notification_log_card_token} reads one card's attempts by. {@code card_number} carries
+ * the masked form for display. Both are additions, and the source masks nothing: the card number
+ * occupies all sixteen characters on the card detail map, where {@code CARDSID DFHMDF} carries
+ * {@code LENGTH=16} at {@code app/bms/COCRDSL.bms:L99}. No column, field or accessor here carries a
+ * card verification value.
  *
  * <p>The caller supplies all five values, {@code id} and {@code attemptedAt} among them.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Entity
 @Table(name = "notification_log")
@@ -47,15 +50,30 @@ public class NotificationLogEntity {
      * Shape of a masked card number: twelve mask characters then four digits.
      *
      * <p>The check constraint {@code ck_notification_log_card_number} holds
-     * {@code card_number} to the same shape.</p>
+     * {@code masked_card_number} to the same shape.</p>
      */
     private static final Pattern MASKED_CARD_NUMBER = Pattern.compile("^\\*{12}[0-9]{4}$");
 
     /**
-     * Characters {@code card_number CHAR(16)} holds, matching {@code TRNX-CARD-NUM PIC X(16)} at
+     * Characters {@code masked_card_number CHAR(16)} holds, matching {@code TRNX-CARD-NUM PIC X(16)}
      * {@code app/cpy/COSTM01.CPY:L22}.
      */
     public static final int CARD_NUMBER_LENGTH = 16;
+
+    /**
+     * Characters the {@code card_token} column holds, the width
+     * {@link com.carddemo.cobol.PanMasker#CARD_TOKEN_LENGTH} fixes.
+     */
+    public static final int CARD_TOKEN_LENGTH = PanMasker.CARD_TOKEN_LENGTH;
+
+    /**
+     * Shape of a card token: {@value PanMasker#CARD_TOKEN_LENGTH} lower-case hexadecimal
+     * characters.
+     *
+     * <p>The check constraint {@code ck_notification_log_card_token} holds {@code card_token} to
+     * the same shape.</p>
+     */
+    private static final Pattern CARD_TOKEN = Pattern.compile(PanMasker.CARD_TOKEN_PATTERN);
 
     /**
      * Characters {@code transaction_id CHAR(16)} holds, matching {@code TRNX-ID PIC X(16)} at
@@ -77,15 +95,27 @@ public class NotificationLogEntity {
     private UUID id;
 
     /**
+     * The card this attempt alerted, named by its token.
+     *
+     * <p>Maps to {@code card_token NOT NULL}. The index
+     * {@code ix_notification_log_card_token} reads the delivery history of one card through this
+     * column, so it and not {@code card_number} is the identity a query names.</p>
+     */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "card_token", nullable = false, length = CARD_TOKEN_LENGTH)
+    private String cardToken;
+
+    /**
      * The card this attempt alerted, held as twelve mask characters then the last four digits.
      *
      * <p>Maps to {@code card_number CHAR(16) NOT NULL}. PostgreSQL pads a {@code CHAR} value to
      * its declared width on read, and a masked card number already fills all
-     * {@value #CARD_NUMBER_LENGTH} characters.</p>
+     * {@value #CARD_NUMBER_LENGTH} characters. Display only: every card ending in the same four
+     * digits shares one masked form, so no query names this column.</p>
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "card_number", nullable = false, length = CARD_NUMBER_LENGTH)
-    private String cardNumber;
+    @Column(name = "masked_card_number", nullable = false, length = CARD_NUMBER_LENGTH)
+    private String maskedCardNumber;
 
     /**
      * The transaction this attempt alerted on.
@@ -119,9 +149,9 @@ public class NotificationLogEntity {
     /**
      * No-argument constructor for the Jakarta Persistence provider.
      *
-     * <p>The provider calls it while materialising a row, then assigns all five fields.
+     * <p>The provider calls it while materialising a row, then assigns all six fields.
      * Application code calls
-     * {@link #NotificationLogEntity(UUID, String, String, String, Instant)}.</p>
+     * {@link #NotificationLogEntity(UUID, String, String, String, String, Instant)}.</p>
      */
     protected NotificationLogEntity() {
     }
@@ -130,46 +160,69 @@ public class NotificationLogEntity {
      * Records one delivery attempt.
      *
      * @param id identifier of this attempt
-     * @param cardNumber the masked card number: twelve mask characters then four digits
+     * @param cardToken the card token, exactly {@value #CARD_TOKEN_LENGTH} lower-case hexadecimal
+     *        characters
+     * @param maskedCardNumber the display card number: twelve mask characters then four digits
      * @param transactionId the transaction identifier, exactly {@value #TRANSACTION_ID_LENGTH}
      *        characters
      * @param channel which rendered format the attempt carried, up to
      *        {@value #CHANNEL_MAX_LENGTH} characters
      * @param attemptedAt instant at which the attempt ran
      * @throws NullPointerException when an argument is {@code null}, naming the field
-     * @throws IllegalArgumentException when the card number is not masked, when the transaction
-     *         identifier is not exactly {@value #TRANSACTION_ID_LENGTH} characters, or when the
-     *         channel is blank or over {@value #CHANNEL_MAX_LENGTH} characters
+     * @throws IllegalArgumentException when the card token is not the token form, when the card
+     *         number is not masked, when the transaction identifier is not exactly
+     *         {@value #TRANSACTION_ID_LENGTH} characters, or when the channel is blank or over
+     *         {@value #CHANNEL_MAX_LENGTH} characters
      */
-    public NotificationLogEntity(UUID id, String cardNumber, String transactionId, String channel,
-            Instant attemptedAt) {
+    public NotificationLogEntity(UUID id, String cardToken, String maskedCardNumber,
+            String transactionId, String channel, Instant attemptedAt) {
         this.id = Objects.requireNonNull(id, "id must not be null");
-        this.cardNumber = requireMaskedCardNumber(cardNumber);
+        this.cardToken = requireCardToken(cardToken);
+        this.maskedCardNumber = requireMaskedCardNumber(maskedCardNumber);
         this.transactionId = requireTransactionId(transactionId);
         this.channel = requireChannel(channel);
         this.attemptedAt = Objects.requireNonNull(attemptedAt, "attemptedAt must not be null");
     }
 
     /**
-     * Checks a card number against the masked shape the column holds.
+     * Checks a card token against the shape the column holds.
      *
-     * <p>The message reports the width of the argument and never the argument, so no Primary
-     * Account Number (PAN) reaches a log line through a refusal.</p>
+     * <p>The message reports the width of the argument and never the argument.</p>
      *
-     * @param cardNumber the argument
+     * @param cardToken the argument
      * @return the argument
-     * @throws NullPointerException when {@code cardNumber} is {@code null}
-     * @throws IllegalArgumentException when {@code cardNumber} is not twelve mask characters
+     * @throws NullPointerException when {@code cardToken} is {@code null}
+     * @throws IllegalArgumentException when {@code cardToken} is not
+     *         {@value #CARD_TOKEN_LENGTH} lower-case hexadecimal characters
+     */
+    private static String requireCardToken(String cardToken) {
+        Objects.requireNonNull(cardToken, "cardToken must not be null");
+        if (!CARD_TOKEN.matcher(cardToken).matches()) {
+            throw new IllegalArgumentException("cardToken holds " + cardToken.length()
+                    + " characters and this column holds " + CARD_TOKEN_LENGTH
+                    + " lower-case hexadecimal characters");
+        }
+        return cardToken;
+    }
+
+    /**
+     * Checks the argument against the masked shape the column holds.
+     *
+     * @param maskedCardNumber the argument
+     * @return the argument
+     * @throws NullPointerException when {@code maskedCardNumber} is {@code null}
+     * @throws IllegalArgumentException when {@code maskedCardNumber} is not twelve mask characters
      *         followed by four digits
      */
-    private static String requireMaskedCardNumber(String cardNumber) {
-        Objects.requireNonNull(cardNumber, "cardNumber must not be null");
-        if (!MASKED_CARD_NUMBER.matcher(cardNumber).matches()) {
-            throw new IllegalArgumentException("cardNumber holds " + cardNumber.length()
+    private static String requireMaskedCardNumber(String maskedCardNumber) {
+        Objects.requireNonNull(maskedCardNumber, "maskedCardNumber must not be null");
+        if (!MASKED_CARD_NUMBER.matcher(maskedCardNumber).matches()) {
+            throw new IllegalArgumentException("maskedCardNumber holds "
+                    + maskedCardNumber.length()
                     + " characters and this column holds " + CARD_NUMBER_LENGTH
                     + " in the masked form");
         }
-        return cardNumber;
+        return maskedCardNumber;
     }
 
     /**
@@ -216,9 +269,14 @@ public class NotificationLogEntity {
         return id;
     }
 
-    /** @return the masked card number this attempt alerted */
-    public String getCardNumber() {
-        return cardNumber;
+    /** @return the token of the card this attempt alerted */
+    public String getCardToken() {
+        return cardToken;
+    }
+
+    /** @return the masked card number this attempt displayed, which identifies no single card */
+    public String getMaskedCardNumber() {
+        return maskedCardNumber;
     }
 
     /** @return the transaction identifier this attempt alerted on */
@@ -264,15 +322,16 @@ public class NotificationLogEntity {
     }
 
     /**
-     * Renders all five fields. The card number is already masked, and no field names a cardholder,
-     * an account or an amount.
+     * Renders all six fields. The card number is already masked, the card token carries no digit of
+     * a card number, and no field names a cardholder, an account or an amount.
      *
-     * @return the simple class name followed by the five field values
+     * @return the simple class name followed by the six field values
      */
     @Override
     public String toString() {
         return "NotificationLogEntity[id=" + id
-                + ", cardNumber=" + cardNumber
+                + ", cardToken=" + cardToken
+                + ", maskedCardNumber=" + maskedCardNumber
                 + ", transactionId=" + transactionId
                 + ", channel=" + channel
                 + ", attemptedAt=" + attemptedAt + "]";

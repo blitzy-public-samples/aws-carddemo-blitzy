@@ -34,18 +34,17 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * entity.
  *
  * <p>Two layers guard this row and they have to agree. The entity refuses an out-of-range score, an
- * unknown rule, a repeated rule and a verdict its rule list contradicts. The migration repeats each
- * of those as a {@code CHECK}. Agreement is not obvious, because the entity stores its rule list
- * through a converter. A converter writing a form the {@code CHECK} rejects would fail every insert
- * at flush time, and no unit test would notice. The round trip below proves the two layers agree.
+ * unknown rule and a repeated rule. The migration repeats the score and rule-shape checks. The
+ * threshold-based verdict is deliberately independent of the rule list: one rule may contribute
+ * points without the total reaching the configured threshold.
  *
  * <p>Three tests insert through Hibernate. Three more insert through native statements that skip
  * the entity, which is how a repair script or a hand-written migration would reach the table. Each
  * of those asserts that the database refuses the malformed shape on its own.
  *
- * <p>ADDITIVE IN FULL: no COBOL (Common Business Oriented Language) program scores risk, so nothing
- * here cites a source paragraph. The bounds and the rule identifiers come from {@link FraudFlagged},
- * which the schema document {@code fraud-flagged-v1.json} enumerates.
+ * <p>No COBOL ancestor: no COBOL (Common Business Oriented Language) program scores risk, so
+ * nothing here cites a source paragraph. The bounds and the rule identifiers come from {@link
+ * FraudFlagged}, which the schema document {@code fraud-flagged-v1.json} enumerates.
  */
 @Testcontainers
 class FraudAssessmentPersistenceTest {
@@ -193,10 +192,18 @@ class FraudAssessmentPersistenceTest {
     }
 
     @Test
-    @DisplayName("The database refuses a verdict its rule list contradicts, written past the entity")
-    void databaseRefusesContradictoryVerdict() {
-        assertRefused("PERSISTBADVERD01", "00000000006", 10, true, "[]",
-                "ck_fraud_assessment_verdict");
+    @DisplayName("A cleared verdict may retain the rule that contributed below threshold")
+    void clearedVerdictRetainsContributingRule() {
+        String transactionId = "PERSISTBELOWTHR1";
+        persist(new FraudAssessmentEntity(transactionId, "00000000006", 30, false,
+                List.of(FraudFlagged.AMOUNT_ANOMALY_RULE), ASSESSED_AT));
+        entityManager.clear();
+
+        FraudAssessmentEntity read = entityManager.find(FraudAssessmentEntity.class, transactionId);
+        assertNotNull(read, "the threshold-based row was not persisted");
+        assertFalse(read.isFlagged(), "the verdict changed while persisting");
+        assertEquals(List.of(FraudFlagged.AMOUNT_ANOMALY_RULE), read.getTriggeredRules(),
+                "the contributing rule was lost");
     }
 
     @Test

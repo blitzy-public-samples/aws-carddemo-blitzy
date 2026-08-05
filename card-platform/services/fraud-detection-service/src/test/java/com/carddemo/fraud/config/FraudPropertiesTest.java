@@ -12,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Binds the shipped {@code application.yml} into {@link FraudProperties} and reads the result back.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor. Each test builds a context holding one properties
+ * <p>This class has no COBOL ancestor. Each test builds a context holding one properties
  * bean and no auto-configuration, so no database and no message broker has to run.
  *
  * <p>The first test is the reachability check: a key that no component reads binds to nothing, and
@@ -46,10 +46,12 @@ class FraudPropertiesTest {
             assertThat(properties.kafka().topics().fraudAssessed()).isEqualTo("fraud.assessed");
             assertThat(properties.kafka().topics().deadLetter())
                     .isEqualTo("carddemo.dead-letter");
+            assertThat(properties.kafka().topics().deadLetterSuffix()).isEqualTo(".DLT");
             assertThat(properties.consumer().retry().maxAttempts()).isEqualTo(3);
             assertThat(properties.consumer().retry().backoffMs()).isEqualTo(1000L);
             assertThat(properties.outbox().relay().fixedDelayMs()).isEqualTo(500L);
             assertThat(properties.outbox().relay().batchSize()).isEqualTo(100);
+            assertThat(properties.outbox().relay().maxDurationMs()).isEqualTo(5000L);
             assertThat(properties.fraud().risk().flagThreshold()).isEqualTo(50);
             assertThat(properties.fraud().risk().velocityWindowMinutes()).isEqualTo(60);
             assertThat(properties.fraud().risk().velocityCountThreshold()).isEqualTo(5);
@@ -62,6 +64,45 @@ class FraudPropertiesTest {
     @DisplayName("a risk threshold above one hundred stops start-up")
     void aRiskThresholdAboveOneHundredStopsStartUp() {
         shipped.withPropertyValues("carddemo.fraud.risk.flag-threshold=101")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("fraud.risk.flagThreshold");
+                });
+    }
+
+    /**
+     * A threshold of zero would flag a transaction no rule objected to. The published contract
+     * requires a flagged event to name at least one rule and {@code fraud_assessment} refuses a
+     * flagged row that names none, so zero produces an event and a row that both fail further down.
+     * Refusing it here names the property instead.
+     */
+    @Test
+    @DisplayName("a risk threshold of zero stops start-up")
+    void aRiskThresholdOfZeroStopsStartUp() {
+        shipped.withPropertyValues("carddemo.fraud.risk.flag-threshold=0")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("fraud.risk.flagThreshold");
+                });
+    }
+
+    @Test
+    @DisplayName("a risk threshold of one is accepted, since one rule alone can then flag")
+    void aRiskThresholdOfOneIsAccepted() {
+        shipped.withPropertyValues("carddemo.fraud.risk.flag-threshold=1")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(FraudProperties.class).fraud().risk().flagThreshold())
+                            .isEqualTo(1);
+                });
+    }
+
+    @Test
+    @DisplayName("a risk threshold of zero stops start-up")
+    void aZeroRiskThresholdStopsStartUp() {
+        shipped.withPropertyValues("carddemo.fraud.risk.flag-threshold=0")
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
@@ -99,6 +140,39 @@ class FraudPropertiesTest {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
                             .hasStackTraceContaining("kafka.topics.fraudAssessed");
+                });
+    }
+
+    @Test
+    @DisplayName("a blank dead-letter suffix stops start-up")
+    void aBlankDeadLetterSuffixStopsStartUp() {
+        shipped.withPropertyValues("carddemo.kafka.topics.dead-letter-suffix=")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("kafka.topics.deadLetterSuffix");
+                });
+    }
+
+    @Test
+    @DisplayName("an outbox pass duration below one millisecond stops start-up")
+    void aZeroOutboxPassDurationStopsStartUp() {
+        shipped.withPropertyValues("carddemo.outbox.relay.max-duration-ms=0")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("outbox.relay.maxDurationMs");
+                });
+    }
+
+    @Test
+    @DisplayName("an outbox pass duration above five minutes stops start-up")
+    void anExcessiveOutboxPassDurationStopsStartUp() {
+        shipped.withPropertyValues("carddemo.outbox.relay.max-duration-ms=300001")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("outbox.relay.maxDurationMs");
                 });
     }
 

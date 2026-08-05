@@ -1,10 +1,12 @@
 package com.carddemo.authorization.api;
 
+import com.carddemo.authorization.domain.AuthenticatedActor;
 import com.carddemo.authorization.domain.AuthorizationService;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.DeclineReason;
 import jakarta.validation.Valid;
 import java.math.BigDecimal;
+import java.security.Principal;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -64,13 +66,21 @@ public class AuthorizationController {
      * local transaction inside the service. Publication happens afterwards, from the outbox, so this
      * method never waits for a broker.
      *
+     * <p>The authenticated identity travels into the service, which records it against the decision
+     * in {@code authorization_audit}. A decision nobody can be held to is a decision nobody can
+     * revoke, and {@code app/cpy/CVTRA05Y.cpy:L4-L18} declares no field for it, so the record is an
+     * addition. The identity reaches no response body and no event.
+     *
      * @param request the transaction to authorize, validated before this method runs
+     * @param caller  the authenticated identity the container resolved. The route requires a role, so
+     *                a request reaching this method carries one
      * @return {@code 200} carrying the decision, whether it approves or declines
      */
     @PostMapping
     public ResponseEntity<AuthorizationResponse> authorize(
-            @Valid @RequestBody AuthorizationRequest request) {
-        AuthorizationService.Outcome outcome = authorizations.authorize(request);
+            @Valid @RequestBody AuthorizationRequest request, Principal caller) {
+        AuthorizationService.Outcome outcome =
+                authorizations.authorize(request, AuthenticatedActor.actorOf(caller));
 
         return ResponseEntity.status(HttpStatus.OK).body(render(outcome));
     }

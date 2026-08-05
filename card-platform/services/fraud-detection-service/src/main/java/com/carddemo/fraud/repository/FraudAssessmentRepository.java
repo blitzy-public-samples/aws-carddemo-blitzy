@@ -9,16 +9,13 @@ import org.springframework.stereotype.Repository;
 /**
  * Reads and writes the risk assessment the fraud consumer records once per authorized transaction.
  *
- * <p>ADDITIVE IN FULL: no COBOL (Common Business Oriented Language) program scores risk, so the
- * assessment is net new; no COBOL ancestor exists.</p>
+ * <p>No Common Business Oriented Language (COBOL) ancestor: no COBOL program scores risk.</p>
  *
  * <p>The identifier is the transaction identifier, and the lookup on that primary key is inherited
  * from {@link JpaRepository}.</p>
  *
  * <p>{@code LK-M03B-AREA} at {@code app/cbl/CBSTM03B.CBL:L99-L114} sends every read and write
  * through one subroutine, which this interface borrows as shape only, no logic.</p>
- *
- * <p>{@code card-platform/docs/traceability-matrix.md} records the mapping.</p>
  */
 @Repository
 public interface FraudAssessmentRepository extends JpaRepository<FraudAssessmentEntity, String> {

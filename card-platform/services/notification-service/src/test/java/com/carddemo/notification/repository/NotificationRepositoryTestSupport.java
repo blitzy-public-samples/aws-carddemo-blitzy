@@ -19,10 +19,10 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * Persistence (JPA) mapping against the migrated catalogue. So {@code mvn test} asks for a running
  * Docker daemon and nothing else: no hand-made database, no schema step, no environment variable.
  *
- * <p>Every subclass shares one Spring context, so one container serves the whole package. The three
- * tables start empty, since the service seeds no row and builds its read model by consuming events.
- * Each test method runs in a transaction the slice rolls back, so one subclass never reads a row
- * another subclass wrote. The class itself declares no test method, no assertion and no fixture.
+ * <p>Every subclass shares one Spring context, so one container serves the whole package. The
+ * cardholder projection starts with fixture-backed rows; the read model, attempt log and marker
+ * table start empty. Each test method runs in a transaction the slice rolls back, so one subclass
+ * never reads a row another subclass wrote.</p>
  *
  * <p>The repository contract those subclasses exercise descends from
  * {@code app/cbl/CBSTM03B.CBL}. Its parameter area {@code 01 LK-M03B-AREA.} at line 100 routes
@@ -30,8 +30,6 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  *
  * <p>Agent Action Plan section 0.5.1 pins each version named here: {@code postgres:18.4},
  * Testcontainers 2.0.5 and Java 25.
- *
- * <p>Rationale: {@code card-platform/docs/decision-log.md} (planned).
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)

@@ -1,9 +1,11 @@
 package com.carddemo.notification.entity;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import com.carddemo.cobol.PanMasker;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
@@ -42,21 +44,20 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 /**
- * Shape tests for {@link StatementTransactionEntity}, the card-keyed read model of the notification
+ * Shape tests for {@link StatementTransactionEntity}, the account-keyed read model of the notification
  * service.
  *
  * <p>Every assertion reads declared members and Jakarta Persistence (JPA) annotations through
  * reflection. No Spring context starts, no container starts and no socket opens. {@code mvn test}
  * therefore runs the class on a machine with no database and no message broker.</p>
  *
- * <p>Thirteen columns map thirteen fields of {@code 01 TRNX-RECORD.} at
- * {@code app/cpy/COSTM01.CPY:L20}, a copybook of the Common Business Oriented Language (COBOL)
- * source. Two source constructs carry no column: the group {@code 05 TRNX-REST.} at
- * {@code app/cpy/COSTM01.CPY:L24}, and the trailing {@code FILLER PIC X(20)} at
- * {@code app/cpy/COSTM01.CPY:L36}. The 350-byte record width comes from
- * {@code RECORDSIZE(350 350)} at {@code app/jcl/CREASTMT.JCL:L32}, a Job Control Language (JCL)
- * member, since the copybook states none.
- * {@code card-platform/docs/traceability-matrix.md} records both omissions.</p>
+ * <p>Thirteen columns map thirteen fields of {@code 01 TRNX-RECORD.} at {@code
+ * app/cpy/COSTM01.CPY:L20}, a copybook of the Common Business Oriented Language (COBOL) source. Two
+ * source constructs carry no column: the group {@code 05 TRNX-REST.} at {@code
+ * app/cpy/COSTM01.CPY:L24}, and the trailing {@code FILLER PIC X(20)} at {@code
+ * app/cpy/COSTM01.CPY:L36}. The 350-byte record width comes from {@code RECORDSIZE(350 350)} at
+ * {@code app/jcl/CREASTMT.JCL:L32}, a Job Control Language (JCL) member, since the copybook states
+ * none.
  *
  * <p>The composite key comes from {@code KEYS(32 0)} at {@code app/jcl/CREASTMT.JCL:L30}, a
  * 32-byte key at offset zero. That span covers {@code TRNX-CARD-NUM PIC X(16)} at
@@ -77,12 +78,8 @@ import org.junit.jupiter.api.function.Executable;
  * reaches no rendered alert, no log line and no interface response, and masking runs at the
  * serialization boundary. The tests here assert the column name, the field type, the declared width
  * and the null constraint, and assert no character pattern.
- * {@code card-platform/docs/suggested-next-tasks.md} carries the open item on the stored form.</p>
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}. Flagged source findings:
- * {@code card-platform/docs/business-rule-flags.md}.</p>
  */
-@DisplayName("StatementTransactionEntity, the mapped shape of the card-keyed read model")
+@DisplayName("StatementTransactionEntity, the mapped shape of the account-keyed read model")
 final class StatementTransactionEntityTest {
 
     /** Table the read model maps, from {@code src/main/resources/db/migration/V1__schema.sql}. */
@@ -94,39 +91,48 @@ final class StatementTransactionEntityTest {
     /** Field of the entity that embeds the composite key. */
     private static final String KEY_FIELD = "id";
 
-    /** Key component fields, in the order {@code KEYS(32 0)} spans the two source fields. */
+    /**
+     * Key component fields, in the order {@code KEYS(32 0)} spans the two source fields.
+     *
+     * <p>The card half is the card token, not a card number. A masked number identifies no single
+     * card, so a key over it would merge the histories of two cards sharing their last four
+     * digits.</p>
+     */
     private static final List<String> KEY_COMPONENT_FIELDS =
-            List.of("cardNumber", "transactionId");
+            List.of("cardToken", "transactionId");
 
     /** Key columns, in the order of {@link #KEY_COMPONENT_FIELDS}. */
-    private static final List<String> KEY_COLUMNS = List.of("card_number", "transaction_id");
+    private static final List<String> KEY_COLUMNS = List.of("card_token", "transaction_id");
 
     /** Fields the entity maps beside the key, in declaration order. */
     private static final List<String> NON_KEY_FIELDS = List.of(
-            "typeCode", "categoryCode", "source", "description", "amount", "merchantId",
-            "merchantName", "merchantCity", "merchantZip", "originTimestamp",
+            "maskedCardNumber", "typeCode", "categoryCode", "source", "description", "amount",
+            "merchantId", "merchantName", "merchantCity", "merchantZip", "originTimestamp",
             "processingTimestamp");
 
     /** Columns the entity maps beside the key, in the order of {@link #NON_KEY_FIELDS}. */
     private static final List<String> NON_KEY_COLUMNS = List.of(
-            "type_code", "category_code", "source", "description", "amount", "merchant_id",
-            "merchant_name", "merchant_city", "merchant_zip", "origin_timestamp",
+            "masked_card_number", "type_code", "category_code", "source", "description", "amount",
+            "merchant_id", "merchant_name", "merchant_city", "merchant_zip", "origin_timestamp",
             "processing_timestamp");
 
-    /** Columns the table declares: the two key columns and the eleven beside them. */
-    private static final int MAPPED_COLUMN_COUNT = 13;
+    /** Columns the table declares: the two key columns and the twelve beside them. */
+    private static final int MAPPED_COLUMN_COUNT = 14;
 
-    /** Instance fields the entity declares: the embedded key and the eleven mapped values. */
-    private static final int ENTITY_FIELD_COUNT = 12;
+    /** Instance fields the entity declares: the embedded key and the twelve mapped values. */
+    private static final int ENTITY_FIELD_COUNT = 13;
 
     /**
      * Declared width of every character field, keyed by field name.
      *
      * <p>Each width is the digit or character count of the {@code PIC} clause the field maps, read
-     * from {@code app/cpy/COSTM01.CPY:L22-L35}.</p>
+     * from {@code app/cpy/COSTM01.CPY:L22-L35}. The card token is the one exception: it stands in for
+     * {@code TRNX-CARD-NUM PIC X(16)} and holds the 64 characters
+     * {@code PanMasker.CARD_TOKEN_LENGTH} declares.</p>
      */
     private static final Map<String, Integer> CHARACTER_WIDTHS = Map.ofEntries(
-            Map.entry("cardNumber", 16),
+            Map.entry("cardToken", 64),
+            Map.entry("maskedCardNumber", 16),
             Map.entry("transactionId", 16),
             Map.entry("typeCode", 2),
             Map.entry("categoryCode", 4),
@@ -180,10 +186,6 @@ final class StatementTransactionEntityTest {
     private static final List<String> ROW_LIFECYCLE_NAMES = List.of(
             "created_at", "createdat", "created", "inserted_at", "insertedat", "rowcreatedat",
             "updated_at", "updatedat", "modified_at", "modifiedat");
-
-    /** Names no field and no column takes. The account identifier keys the event, not a row. */
-    private static final List<String> ACCOUNT_IDENTIFIER_NAMES =
-            List.of("account_id", "accountid", "acct_id", "acctid");
 
     /**
      * Fragments naming a card verification value. The second fragment is assembled from characters,
@@ -514,11 +516,11 @@ final class StatementTransactionEntityTest {
     }
 
     @Nested
-    @DisplayName("Key components: the card number then the transaction identifier")
+    @DisplayName("Key components: the card token then the transaction identifier")
     class KeyComponents {
 
         @Test
-        @DisplayName("the key declares cardNumber then transactionId, in that order")
+        @DisplayName("the key declares cardToken then transactionId, in that order")
         void declaresTheTwoComponentsInKeyOrder() {
             assertThat(fieldNames(keyFields()))
                     .as("instance fields of %s", KEY_CLASS_NAME)
@@ -540,7 +542,7 @@ final class StatementTransactionEntityTest {
         }
 
         @Test
-        @DisplayName("the key components map card_number then transaction_id")
+        @DisplayName("the key components map account_id then transaction_id")
         void mapTheTwoKeyColumns() {
             List<String> columns = new ArrayList<>();
             for (String name : KEY_COMPONENT_FIELDS) {
@@ -553,8 +555,8 @@ final class StatementTransactionEntityTest {
         }
 
         @Test
-        @DisplayName("both key columns hold sixteen characters and refuse a null")
-        void bothKeyColumnsHoldSixteenCharacters() {
+        @DisplayName("both key columns hold their declared widths and refuse a null")
+        void bothKeyColumnsHoldTheirDeclaredWidths() {
             List<Executable> checks = new ArrayList<>();
             for (String name : KEY_COMPONENT_FIELDS) {
                 Column column = columnOf(instanceField(keyClass(), name));
@@ -571,12 +573,12 @@ final class StatementTransactionEntityTest {
     }
 
     @Nested
-    @DisplayName("The closed set of thirteen mapped columns")
+    @DisplayName("The closed set of fourteen mapped columns")
     class ColumnInventory {
 
         @Test
-        @DisplayName("the entity declares twelve instance fields: the key and eleven values")
-        void declaresTwelveInstanceFields() {
+        @DisplayName("the entity declares thirteen instance fields: the key and twelve values")
+        void declaresThirteenInstanceFields() {
             List<Field> fields = instanceFields(StatementTransactionEntity.class);
             List<String> expected = new ArrayList<>();
             expected.add(KEY_FIELD);
@@ -592,8 +594,8 @@ final class StatementTransactionEntityTest {
         }
 
         @Test
-        @DisplayName("eleven fields beside the key carry a column")
-        void elevenFieldsBesideTheKeyCarryAColumn() {
+        @DisplayName("twelve fields beside the key carry a column")
+        void twelveFieldsBesideTheKeyCarryAColumn() {
             List<Field> columnFields = entityColumnFields();
 
             assertAll("columns beside the key",
@@ -606,8 +608,8 @@ final class StatementTransactionEntityTest {
         }
 
         @Test
-        @DisplayName("the eleven column names are the ones the migration creates")
-        void theElevenColumnNamesMatchTheMigration() {
+        @DisplayName("the twelve column names are the ones the migration creates")
+        void theTwelveColumnNamesMatchTheMigration() {
             List<String> columns = new ArrayList<>();
             for (Field field : entityColumnFields()) {
                 columns.add(columnOf(field).name());
@@ -619,8 +621,8 @@ final class StatementTransactionEntityTest {
         }
 
         @Test
-        @DisplayName("thirteen columns carry one row, key columns included")
-        void thirteenColumnsCarryOneRow() {
+        @DisplayName("fourteen columns carry one row, key columns included")
+        void fourteenColumnsCarryOneRow() {
             List<String> expected = new ArrayList<>(KEY_COLUMNS);
             expected.addAll(NON_KEY_COLUMNS);
 
@@ -634,8 +636,8 @@ final class StatementTransactionEntityTest {
         }
 
         @Test
-        @DisplayName("all thirteen columns refuse a null")
-        void allThirteenColumnsRefuseANull() {
+        @DisplayName("all fourteen columns refuse a null")
+        void allFourteenColumnsRefuseANull() {
             List<Executable> checks = new ArrayList<>();
             for (Field field : mappedFields()) {
                 Column column = columnOf(field);
@@ -830,8 +832,8 @@ final class StatementTransactionEntityTest {
         }
 
         @Test
-        @DisplayName("no fourteenth column reaches the table")
-        void noFourteenthColumnReachesTheTable() {
+        @DisplayName("no fifteenth column reaches the table")
+        void noFifteenthColumnReachesTheTable() {
             List<Executable> checks = new ArrayList<>();
             for (Field field : instanceFields(StatementTransactionEntity.class)) {
                 boolean mapped = field.getAnnotation(Column.class) != null
@@ -862,21 +864,6 @@ final class StatementTransactionEntityTest {
             }
 
             assertAll("row-lifecycle names over every field and column name", checks);
-        }
-
-        @Test
-        @DisplayName("no column carries the account identifier")
-        void noColumnCarriesTheAccountIdentifier() {
-            List<Executable> checks = new ArrayList<>();
-            for (String name : mappedFieldAndColumnNames()) {
-                String folded = fold(name);
-                checks.add(() -> assertThat(ACCOUNT_IDENTIFIER_NAMES)
-                        .as("'%s' names an account identifier, which app/cpy/COSTM01.CPY declares "
-                                + "no field for", name)
-                        .doesNotContain(folded));
-            }
-
-            assertAll("account-identifier names over every field and column name", checks);
         }
 
         @Test

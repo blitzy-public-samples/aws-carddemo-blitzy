@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Reads back what {@link StreamNameReport} would write for the authorization service.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor.
+ * <p>This class has no COBOL ancestor.
  *
  * <p>The first test is the coverage check: every name the shipped {@code application.yml} carries
  * must appear in the report, and with the value the shipped file documents. A name missing here is a
@@ -47,11 +47,17 @@ class StreamNameReportTest {
             assertThat(report.reportedNames())
                     .extracting(StreamNameReport.ReportedName::environmentKey)
                     .containsExactly("TOPIC_TRANSACTION_AUTHORIZED",
-                            "TOPIC_TRANSACTION_DECLINED");
+                            "TOPIC_TRANSACTION_DECLINED",
+                            "TOPIC_ACCOUNT_STATE_CHANGED",
+                            "TOPIC_CARD_UPDATED",
+                            "TOPIC_DEAD_LETTER");
             assertThat(report.reportedNames())
                     .extracting(StreamNameReport.ReportedName::value)
                     .containsExactly("transaction.authorized",
-                            "transaction.declined");
+                            "transaction.declined",
+                            "account.state-changed",
+                            "card.updated",
+                            "carddemo.dead-letter");
         });
     }
 

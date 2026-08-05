@@ -2,6 +2,7 @@ package com.carddemo.account.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.carddemo.account.domain.ConcurrentChangeDetector;
 import com.carddemo.account.entity.AccountEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
@@ -10,11 +11,21 @@ import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Checks the two finders of {@link AccountRepository} and the field values the seeded account rows
@@ -37,9 +48,16 @@ import org.springframework.transaction.annotation.Transactional;
  * operation code at {@code L102}, with six codes at {@code L103-L108}. The dispatch at
  * {@code app/cbl/CBSTM03B.CBL:L118-L127} selects one paragraph per dataset.</p>
  *
- * <p>Four of those codes map onto {@link AccountRepository}. The keyed read {@code 'K'} becomes
- * a find by identifier, the sequential read {@code 'R'} becomes a stream of every row, the write
- * {@code 'W'} becomes an insert, and the rewrite {@code 'Z'} becomes an update. The open code
+ * <p>Four of those codes map onto {@link AccountRepository}.
+ *
+ * <ul>
+ *   <li>keyed read {@code 'K'} becomes a find by identifier</li>
+ *   <li>sequential read {@code 'R'} becomes a stream of every row</li>
+ *   <li>write {@code 'W'} becomes an insert</li>
+ *   <li>rewrite {@code 'Z'} becomes an update</li>
+ * </ul>
+ *
+ * <p>The open code
  * {@code 'O'} and the close code {@code 'C'} map onto nothing here, and the framework opens and
  * closes each connection.</p>
  *
@@ -54,9 +72,6 @@ import org.springframework.transaction.annotation.Transactional;
  * {@code app/cpy/CVACT01Y.cpy:L17}, reaching the 300 that {@code RECORDSIZE(300 300)} at
  * {@code app/jcl/ACCTFILE.jcl:L41} declares. Every method here queries the database and opens no
  * fixture file.</p>
- *
- * <p>{@code card-platform/docs/decision-log.md} records the decisions the class rests on, and
- * {@code card-platform/docs/data-model.md} draws the table.</p>
  */
 @DisplayName("AccountRepository over the seeded account table")
 class AccountRepositoryTest extends AbstractAccountPostgresTest {
@@ -98,11 +113,21 @@ class AccountRepositoryTest extends AbstractAccountPostgresTest {
      */
     private static final String SEEDED_ADDRESS_ZIP = "A000000000";
 
+    /** Group value committed by the winning transaction in the compare-and-swap test. */
+    private static final String WINNING_GROUP_ID = "LOCKTEST01";
+
+    /** Group value the losing transaction would write if it missed the concurrent change. */
+    private static final String LOSING_GROUP_ID = "LOSTWRITE1";
+
     @Autowired
     private AccountRepository repository;
 
     @Autowired
     private EntityManager entityManager;
+
+    /** Opens the independent transactions used by the lock-exclusion test. */
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @Test
     @DisplayName("findByAccountId resolves the seeded account at columns 1 to 11")
@@ -193,6 +218,106 @@ class AccountRepositoryTest extends AbstractAccountPostgresTest {
                 .as("Lock annotation on findForUpdateByAccountId")
                 .isNotNull();
         assertThat(declaredLock.value()).isEqualTo(LockModeType.PESSIMISTIC_WRITE);
+    }
+
+    @Test
+    @DisplayName("a second transaction waits until the first account write lock is released")
+    void aSecondTransactionWaitsForTheAccountWriteLock() throws Exception {
+        CountDownLatch firstLocked = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondStarted = new CountDownLatch(1);
+        CountDownLatch secondLocked = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<String> first = workers.submit(() -> inTransaction(() -> {
+                String identifier = repository.findForUpdateByAccountId(SEEDED_ACCOUNT_ID)
+                        .orElseThrow()
+                        .getAccountId();
+                firstLocked.countDown();
+                await(releaseFirst, "the first account lock was not released");
+                return identifier;
+            }));
+            assertThat(firstLocked.await(5, TimeUnit.SECONDS)).isTrue();
+
+            Future<String> second = workers.submit(() -> inTransaction(() -> {
+                secondStarted.countDown();
+                String identifier = repository.findForUpdateByAccountId(SEEDED_ACCOUNT_ID)
+                        .orElseThrow()
+                        .getAccountId();
+                secondLocked.countDown();
+                return identifier;
+            }));
+            assertThat(secondStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(secondLocked.await(300, TimeUnit.MILLISECONDS)).isFalse();
+
+            releaseFirst.countDown();
+            assertThat(first.get(5, TimeUnit.SECONDS)).isEqualTo(SEEDED_ACCOUNT_ID);
+            assertThat(second.get(5, TimeUnit.SECONDS)).isEqualTo(SEEDED_ACCOUNT_ID);
+            assertThat(secondLocked.getCount()).isZero();
+        } finally {
+            releaseFirst.countDown();
+            workers.shutdownNow();
+        }
+    }
+
+    @Test
+    @DisplayName("the waiting transaction re-reads the winner and refuses its stale write")
+    void theWaitingTransactionDetectsTheCommittedChange() throws Exception {
+        AccountEntity fetched = seededAccountOne();
+        String originalGroupId = fetched.getGroupId();
+        ConcurrentChangeDetector detector = new ConcurrentChangeDetector();
+        CountDownLatch firstLocked = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondStarted = new CountDownLatch(1);
+        AtomicBoolean staleWriteRefused = new AtomicBoolean();
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<?> first = workers.submit(() -> inTransaction(() -> {
+                AccountEntity locked = repository.findForUpdateByAccountId(SEEDED_ACCOUNT_ID)
+                        .orElseThrow();
+                locked.setGroupId(WINNING_GROUP_ID);
+                firstLocked.countDown();
+                await(releaseFirst, "the winning account transaction was not released");
+                repository.save(locked);
+                return null;
+            }));
+            assertThat(firstLocked.await(5, TimeUnit.SECONDS)).isTrue();
+
+            Future<?> second = workers.submit(() -> inTransaction(() -> {
+                secondStarted.countDown();
+                AccountEntity locked = repository.findForUpdateByAccountId(SEEDED_ACCOUNT_ID)
+                        .orElseThrow();
+                boolean changed = detector.storedRecordChanged(locked, null, fetched, null);
+                staleWriteRefused.set(changed);
+                if (!changed) {
+                    locked.setGroupId(LOSING_GROUP_ID);
+                    repository.save(locked);
+                }
+                return null;
+            }));
+            assertThat(secondStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+            releaseFirst.countDown();
+            first.get(5, TimeUnit.SECONDS);
+            second.get(5, TimeUnit.SECONDS);
+
+            assertThat(staleWriteRefused).isTrue();
+            assertThat(repository.findByAccountId(SEEDED_ACCOUNT_ID).orElseThrow().getGroupId())
+                    .isEqualTo(WINNING_GROUP_ID)
+                    .isNotEqualTo(LOSING_GROUP_ID);
+        } finally {
+            releaseFirst.countDown();
+            workers.shutdownNow();
+            inTransaction(() -> {
+                AccountEntity stored = repository.findForUpdateByAccountId(SEEDED_ACCOUNT_ID)
+                        .orElseThrow();
+                stored.setGroupId(originalGroupId);
+                repository.save(stored);
+                return null;
+            });
+        }
     }
 
     @Test
@@ -343,5 +468,24 @@ class AccountRepositoryTest extends AbstractAccountPostgresTest {
                 .as("methods AccountRepository declares under the name " + name)
                 .hasSize(1);
         return matches.getFirst();
+    }
+
+    /** Runs one callback in a new transaction. */
+    private <T> T inTransaction(Supplier<T> callback) {
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        return transaction.execute(status -> callback.get());
+    }
+
+    /** Waits for one test latch and preserves interruption. */
+    private static void await(CountDownLatch latch, String failureMessage) {
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                throw new AssertionError(failureMessage);
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("the account lock wait was interrupted", interrupted);
+        }
     }
 }

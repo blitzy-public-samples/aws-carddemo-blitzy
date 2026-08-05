@@ -44,7 +44,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Compares every persistent attribute of all twenty-seven entities against the Flyway migration
+ * Compares every persistent attribute of all thirty entities against the Flyway migration
  * that creates its column.
  *
  * <p>Flyway owns every schema and Hibernate runs under {@code ddl-auto: validate} in all six
@@ -60,8 +60,8 @@ import org.junit.jupiter.api.Test;
  * them as camel-case names that no migration declares.</p>
  *
  * <p>One registry is built per service rather than one for the platform. Five services each map a
- * table named {@code outbox_event} and six map one named {@code processed_event}, so a single
- * registry would fold six different tables of the same name into one and compare none of them
+ * table named {@code outbox_event} and five map one named {@code processed_event}, so a single
+ * registry would fold five different tables of either repeated name into one and compare none
  * correctly.</p>
  *
  * <p>Comparisons run against the SQL type Hibernate renders for the column, which carries the type
@@ -87,10 +87,16 @@ import org.junit.jupiter.api.Test;
 class EntitySchemaMappingContractTest {
 
     /** Entities the six services declare between them. */
-    private static final int ENTITY_COUNT = 27;
+    private static final int ENTITY_COUNT = 30;
 
-    /** Persistent attributes those entities map between them. */
-    private static final int MAPPED_COLUMN_COUNT = 215;
+    /**
+     * Persistent attributes those entities map between them.
+     *
+     * <p>The notification read model accounts for two of these where one source field sits: the card
+     * token that keys a row and the masked card number that displays it. A masked value identifies no
+     * single card, so it can display one and key none.</p>
+     */
+    private static final int MAPPED_COLUMN_COUNT = 248;
 
     /** Dialect the mapping model renders SQL types for, matching the shipped database. */
     private static final String POSTGRES_DIALECT = "org.hibernate.dialect.PostgreSQLDialect";
@@ -130,6 +136,25 @@ class EntitySchemaMappingContractTest {
     private static final Pattern CREATE_TABLE =
             Pattern.compile("CREATE\\s+TABLE\\s+(\\w+)\\s*\\((.*?)\\R\\);",
                     Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
+    /**
+     * Matches one {@code ALTER TABLE ... ALTER COLUMN ... TYPE ...} statement, capturing the table,
+     * the column and the new type.
+     *
+     * <p>A later migration that widens a column changes the schema a service validates against
+     * exactly as the statement that created it. Reading the change here is what keeps this
+     * comparison measuring the schema rather than its first version.
+     */
+    private static final Pattern ALTER_COLUMN_TYPE = Pattern.compile(
+            "ALTER\\s+TABLE\\s+(\\w+)\\s+ALTER\\s+COLUMN\\s+(\\w+)\\s+"
+                    + "(?:SET\\s+DATA\\s+)?TYPE\\s+((?:DOUBLE\\s+PRECISION|\\w+)"
+                    + "(?:\\s*\\([^)]*\\))?(?:\\s+WITH(?:OUT)?\\s+TIME\\s+ZONE)?)",
+            Pattern.CASE_INSENSITIVE);
+
+    /** Matches one later migration adding a column to an existing table. */
+    private static final Pattern ALTER_ADD_COLUMN = Pattern.compile(
+            "ALTER\\s+TABLE\\s+(\\w+)\\s+ADD\\s+COLUMN\\s+(\\w+)\\s+([^;]+);",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
     /** Matches one {@code CREATE INDEX} statement, the name and the {@code ON} clause included. */
     private static final Pattern CREATE_INDEX =
@@ -266,6 +291,7 @@ class EntitySchemaMappingContractTest {
     private static final List<ServiceModule> SERVICES = List.of(
             new ServiceModule("authorization-service", "authorization", List.of(
                     com.carddemo.authorization.entity.AccountCreditSnapshotEntity.class,
+                    com.carddemo.authorization.entity.AuthorizationDecisionEntity.class,
                     com.carddemo.authorization.entity.CardCrossReferenceEntity.class,
                     com.carddemo.authorization.entity.OutboxEventEntity.class,
                     com.carddemo.authorization.entity.ProcessedEventEntity.class,
@@ -283,11 +309,13 @@ class EntitySchemaMappingContractTest {
                     com.carddemo.fraud.entity.ProcessedEventEntity.class,
                     com.carddemo.fraud.entity.VelocityWindowEntity.class)),
             new ServiceModule("notification-service", "notification", List.of(
+                    com.carddemo.notification.entity.CardholderContextEntity.class,
                     com.carddemo.notification.entity.NotificationLogEntity.class,
                     com.carddemo.notification.entity.ProcessedEventEntity.class,
                     com.carddemo.notification.entity.StatementTransactionEntity.class)),
             new ServiceModule("account-service", "account", List.of(
                     com.carddemo.account.entity.AccountEntity.class,
+                    com.carddemo.account.entity.CardCrossReferenceEntity.class,
                     com.carddemo.account.entity.CustomerEntity.class,
                     com.carddemo.account.entity.DisclosureGroupEntity.class,
                     com.carddemo.account.entity.OutboxEventEntity.class,
@@ -302,8 +330,8 @@ class EntitySchemaMappingContractTest {
      * Tables a migration creates and no entity maps, each with the reason.
      *
      * <p>The key is the module name and the table name. Every entry is either a table Flyway seeds
-     * and the running code reads through something other than persistence, or a table whose entity
-     * the plan schedules beyond this checkpoint.</p>
+     * and the running code reads through something other than persistence, or a table no entity
+     * maps yet.</p>
      */
     private static final Map<String, String> TABLES_WITHOUT_AN_ENTITY = tablesWithoutAnEntity();
 
@@ -345,16 +373,16 @@ class EntitySchemaMappingContractTest {
     /** Builds {@link #INDEXES_NOT_DECLARED_ON_AN_ENTITY}. */
     private static Map<String, String> indexesNotDeclaredOnAnEntity() {
         Map<String, String> classified = new LinkedHashMap<>();
-        classified.put("notification-service.ix_notification_log_card_number",
+        classified.put("notification-service.ix_notification_log_card_token",
                 "NotificationLogEntity declares no index. Its specification states the class "
                         + "carries none, and this index orders attempted_at descending, which "
                         + "Hibernate drops from a declared column list, so a declaration would "
-                        + "read [card_number, attempted_at] against migration columns "
-                        + "[card_number, attempted_at DESC] and fail "
+                        + "read [card_token, attempted_at] against migration columns "
+                        + "[card_token, attempted_at DESC] and fail "
                         + "everyDeclaredIndexIsCreatedByItsMigration");
         classified.put("notification-service.ix_notification_log_attempted_at",
                 "NotificationLogEntity declares no index, on the same footing as "
-                        + "ix_notification_log_card_number");
+                        + "ix_notification_log_card_token");
         return Map.copyOf(classified);
     }
 
@@ -462,7 +490,52 @@ class EntitySchemaMappingContractTest {
         Matcher index = CREATE_INDEX.matcher(statements);
         while (index.find()) {
             indexes.add(new DdlIndex(index.group(2), index.group(3), index.group(1) != null,
-                    splitList(index.group(4))));
+                    indexColumns(index.group(4))));
+        }
+        Matcher alteredColumn = ALTER_COLUMN_TYPE.matcher(statements);
+        while (alteredColumn.find()) {
+            String tableName = alteredColumn.group(1);
+            String columnName = alteredColumn.group(2);
+            String alteredType = collapse(alteredColumn.group(3));
+            DdlTable altered = tables.get(tableName);
+            if (altered == null) {
+                throw new IllegalStateException(path + " alters the column " + columnName
+                        + " of the table " + tableName + ", which no migration creates");
+            }
+            DdlColumn before = altered.columns().get(columnName);
+            if (before == null) {
+                throw new IllegalStateException(path + " alters the column " + columnName
+                        + ", which the table " + tableName + " does not declare");
+            }
+            Map<String, DdlColumn> alteredColumns = new LinkedHashMap<>(altered.columns());
+            alteredColumns.put(columnName, new DdlColumn(columnName, alteredType,
+                    before.nullable()));
+            tables.put(tableName, new DdlTable(tableName, Map.copyOf(alteredColumns),
+                    altered.primaryKey()));
+        }
+        Matcher addedColumn = ALTER_ADD_COLUMN.matcher(statements);
+        while (addedColumn.find()) {
+            String tableName = addedColumn.group(1);
+            String columnName = addedColumn.group(2);
+            String definition = collapse(addedColumn.group(3));
+            DdlTable altered = tables.get(tableName);
+            if (altered == null) {
+                throw new IllegalStateException(path + " adds the column " + columnName
+                        + " to the table " + tableName + ", which no migration creates");
+            }
+            Matcher type = COLUMN_TYPE.matcher(definition);
+            if (!type.find()) {
+                throw new IllegalStateException(path + " adds the column " + columnName
+                        + " without a readable type");
+            }
+            Map<String, DdlColumn> alteredColumns = new LinkedHashMap<>(altered.columns());
+            if (alteredColumns.put(columnName, new DdlColumn(columnName, collapse(type.group(1)),
+                    !definition.toUpperCase(java.util.Locale.ROOT).contains(NOT_NULL))) != null) {
+                throw new IllegalStateException(path + " adds the column " + columnName
+                        + ", which the table " + tableName + " already declares");
+            }
+            tables.put(tableName, new DdlTable(tableName, Map.copyOf(alteredColumns),
+                    altered.primaryKey()));
         }
         List<String> sequences = new ArrayList<>();
         Matcher sequence = CREATE_SEQUENCE.matcher(statements);
@@ -536,6 +609,25 @@ class EntitySchemaMappingContractTest {
         return List.copyOf(elements);
     }
 
+    /**
+     * Splits an index column list and drops the sort keyword each element may carry.
+     *
+     * <p>A migration may name the order a column is indexed in, as {@code assessed_at DESC} does.
+     * The mapping model reports column names alone, so the keyword is dropped here and this
+     * comparison stays a comparison of columns. The physical order of an index is asserted by the
+     * owning service's own integration test against the catalogue.</p>
+     *
+     * @param list the column list of one {@code CREATE INDEX} statement
+     * @return the column names, in the order the statement names them
+     */
+    private static List<String> indexColumns(String list) {
+        List<String> columns = new ArrayList<>();
+        for (String element : splitList(list)) {
+            columns.add(element.replaceFirst("(?i)\\s+(ASC|DESC)$", ""));
+        }
+        return List.copyOf(columns);
+    }
+
     /** Splits a comma-separated list and trims every element. */
     private static List<String> splitList(String list) {
         List<String> elements = new ArrayList<>();
@@ -601,7 +693,7 @@ class EntitySchemaMappingContractTest {
                 Map<String, List<String>> indexes = new LinkedHashMap<>();
                 table.getIndexes().forEach((name, index) -> {
                     List<String> indexed = new ArrayList<>();
-                    index.getColumns().forEach(column -> indexed.add(column.getName()));
+                    index.getSelectables().forEach(selectable -> indexed.add(selectable.getText()));
                     indexes.put(name, List.copyOf(indexed));
                 });
                 mapped.add(new MappedTable(persistentClass.getEntityName(), table.getName(),
@@ -755,7 +847,7 @@ class EntitySchemaMappingContractTest {
     }
 
     @Nested
-    @DisplayName("Column mapping of all 27 entities")
+    @DisplayName("Column mapping of all 30 entities")
     class ColumnMapping {
 
         /** Every attribute of every entity maps a column its migration declares. */
@@ -982,7 +1074,7 @@ class EntitySchemaMappingContractTest {
     }
 
     @Nested
-    @DisplayName("Keys and indexes of all 27 entities")
+    @DisplayName("Keys and indexes of all 30 entities")
     class KeysAndIndexes {
 
         /** Every entity's identifier maps exactly the primary key columns its migration declares. */

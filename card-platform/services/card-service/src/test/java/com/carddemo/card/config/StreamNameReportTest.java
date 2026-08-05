@@ -1,5 +1,6 @@
 package com.carddemo.card.config;
 
+import java.time.Duration;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
@@ -11,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Reads back what {@link StreamNameReport} would write.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor.
+ * <p>This class has no COBOL ancestor.
  *
  * <p>The first test is the coverage check: every topic the shipped {@code application.yml} names
  * must appear in the report, because a stream whose resolution goes unreported is the silent
@@ -24,8 +25,15 @@ class StreamNameReportTest {
 
     /** The shipped defaults, bound by hand so no context has to start. */
     private static final CardProperties SHIPPED = new CardProperties(
+            new CardProperties.Api(65536L),
             new CardProperties.Kafka(new CardProperties.Kafka.Topics("card.updated")),
-            new CardProperties.Outbox(new CardProperties.Outbox.Relay(500L, 100)));
+            new CardProperties.Outbox(new CardProperties.Outbox.Relay(
+                    500L,
+                    100,
+                    "card-relay",
+                    Duration.ofMinutes(2L)), 168L),
+            new CardProperties.ProcessedEvent(168L),
+            new CardProperties.Retention(3_600_000L));
 
     @Test
     @DisplayName("every topic this module names is reported exactly once")
@@ -41,8 +49,11 @@ class StreamNameReportTest {
     @DisplayName("the reported value is the bound value, not the environment variable")
     void theReportedValueIsTheBoundValue() {
         CardProperties overridden = new CardProperties(
+                SHIPPED.api(),
                 new CardProperties.Kafka(new CardProperties.Kafka.Topics("card.updated.v2")),
-                SHIPPED.outbox());
+                SHIPPED.outbox(),
+                SHIPPED.processedEvent(),
+                SHIPPED.retention());
 
         StreamNameReport report = new StreamNameReport(new MockEnvironment(), overridden);
 

@@ -1,5 +1,6 @@
 package com.carddemo.ledger.api;
 
+import com.carddemo.events.EventEnvelope;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
 import jakarta.validation.constraints.NotBlank;
@@ -52,8 +53,6 @@ import org.springframework.web.bind.annotation.RestController;
  * <li>omitted: {@code CDEMO-LAST-MAPSET PIC X(7)} at {@code app/cpy/COCOM01Y.cpy:L44}</li>
  * <li>omitted: the first-entry length test at {@code app/cbl/COACTVWC.cbl:L462}</li>
  * </ul>
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @RestController
 @RequestMapping("/balances")
@@ -128,6 +127,23 @@ public class BalanceQueryController {
                     projection.getCurrentBalance().toPlainString(),
                     projection.getCycleCredit().toPlainString(),
                     projection.getCycleDebit().toPlainString());
+        }
+
+        /**
+         * Names this record and withholds all four values.
+         *
+         * <p>This override replaces the representation the compiler generates for a record, which
+         * prints the account identifier and the three amounts. A response record reaches a log
+         * whenever a framework renders a handler argument or a return value, and an account
+         * identifier is stable across every request that names it.
+         *
+         * @return the record name and four withheld components, never {@code null}
+         */
+        @Override
+        public String toString() {
+            return "AccountBalance[accountId=" + EventEnvelope.WITHHELD + ", currentBalance="
+                    + EventEnvelope.WITHHELD + ", cycleCredit=" + EventEnvelope.WITHHELD
+                    + ", cycleDebit=" + EventEnvelope.WITHHELD + "]";
         }
     }
 }

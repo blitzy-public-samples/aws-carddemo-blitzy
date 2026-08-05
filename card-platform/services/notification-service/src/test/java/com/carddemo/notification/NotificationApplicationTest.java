@@ -6,6 +6,7 @@ import com.carddemo.notification.domain.HtmlRenderer;
 import com.carddemo.notification.domain.NotificationRenderer;
 import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import com.carddemo.notification.domain.PlainTextRenderer;
+import com.carddemo.notification.repository.CardholderContextRepository;
 import com.carddemo.notification.repository.NotificationLogRepository;
 import com.carddemo.notification.repository.ProcessedEventRepository;
 import com.carddemo.notification.repository.StatementTransactionRepository;
@@ -29,6 +30,7 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.ComponentScan;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.FilterType;
+import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -42,13 +44,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Bootstrap and start-up tests for the notification service. The first group reads class metadata
  * off {@link NotificationApplication} and starts nothing. The second group starts a Spring context
- * over the production component scan, so a broken scan root, a bean that cannot be constructed or a
+ * over the production component scan. A broken scan root, a bean that cannot be constructed or a
  * duplicate renderer fails here rather than at deployment. Neither group loads auto-configuration,
  * so {@code mvn test} passes on a clean machine with no database and no message broker running.
  *
  * <p>The module replaces the customer-facing tail of app/cbl/CBSTM03A.CBL, the 924-line statement
  * program that app/jcl/CREASTMT.JCL runs at L79 as {@code EXEC PGM=CBSTM03A}. The sort at
  * app/jcl/CREASTMT.JCL:L53 keys that program's output by card number and transaction identifier.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("NotificationApplication, the bootstrap and start-up contract of the notification "
         + "service")
@@ -76,14 +80,14 @@ class NotificationApplicationTest {
     private static final int RENDERER_COUNT = 2;
 
     /**
-     * The credentials the shipped configuration deliberately leaves without a default, supplied here
+     * The credentials the shipped configuration leaves without a default, supplied here
      * so a context can start.
      *
-     * <p>{@code config/SecurityConfig} refuses to start when any of them is unset, which is the
-     * point of shipping them undefaulted: an unset password must stop start-up rather than sign on
-     * under a password this repository publishes. {@code SecurityConfigTest} asserts that refusal.
-     * The values below are generated-looking and distinct from every example the repository carries,
-     * so none of them trips the published-value guard.
+     * <p>{@code config/SecurityConfig} refuses to start when any of them is unset. An unset
+     * password stops start-up rather than signing on under a password this repository publishes.
+     * {@code SecurityConfigTest} asserts that refusal. The values below are generated-looking and
+     * distinct from every example the repository carries, so none of them trips the
+     * published-value guard.
      */
     private static final String[] CREDENTIALS = {
         "POSTGRES_PASSWORD=a-generated-value-for-this-test",
@@ -113,13 +117,15 @@ class NotificationApplicationTest {
                     () -> Mockito.mock(NotificationLogRepository.class))
             .withBean(ProcessedEventRepository.class,
                     () -> Mockito.mock(ProcessedEventRepository.class))
+            .withBean(CardholderContextRepository.class,
+                    () -> Mockito.mock(CardholderContextRepository.class))
             .withBean(TransactionTemplate.class, () -> Mockito.mock(TransactionTemplate.class))
             .withUserConfiguration(ProductionComponentScan.class);
 
     /**
-     * Asserts the class carries exactly the two class-level annotations this module needs,
-     * {@link SpringBootApplication} and {@link ConfigurationPropertiesScan}, in that order. The
-     * count catches a third annotation whether or not a test here names it.
+     * Asserts the class carries exactly the three class-level annotations this module needs:
+     * {@link SpringBootApplication}, {@link ConfigurationPropertiesScan}, and
+     * {@link EnableScheduling}, in that order.
      *
      * <p>{@link ConfigurationPropertiesScan} registers
      * {@code com.carddemo.notification.config.NotificationProperties}, which binds and validates the
@@ -127,14 +133,15 @@ class NotificationApplicationTest {
      * three consumed topic names, the dead-letter suffix and both retry settings would sit in that
      * file with nothing reading them.
      *
-     * <p>{@code @EnableScheduling} is absent, and stays absent. This module runs no outbox relay.</p>
+     * <p>{@link EnableScheduling} activates the one retention scheduler that bounds the read model,
+     * duplicate markers, and delivery-attempt log.</p>
      */
     @Test
-    void carriesTwoAnnotationsAndTheyAreSpringBootApplicationAndConfigurationPropertiesScan() {
+    void carriesTheBootstrapPropertiesAndSchedulingAnnotations() {
         Annotation[] declared = NotificationApplication.class.getDeclaredAnnotations();
 
-        assertEquals(2, declared.length,
-                "NotificationApplication must carry exactly two class-level annotations, found "
+        assertEquals(3, declared.length,
+                "NotificationApplication must carry exactly three class-level annotations, found "
                         + annotationTypeNames(declared));
         assertSame(SpringBootApplication.class, declared[0].annotationType(),
                 "the first class-level annotation must be @SpringBootApplication");
@@ -142,8 +149,10 @@ class NotificationApplicationTest {
                 "the second class-level annotation must be @ConfigurationPropertiesScan, which "
                         + "registers NotificationProperties and so makes every carddemo key in "
                         + "application.yml reachable");
-        assertEquals(2, NotificationApplication.class.getAnnotations().length,
-                "NotificationApplication must present no annotation beyond the two it declares");
+        assertSame(EnableScheduling.class, declared[2].annotationType(),
+                "the third class-level annotation activates the one retention scheduler");
+        assertEquals(3, NotificationApplication.class.getAnnotations().length,
+                "NotificationApplication must present no annotation beyond the three it declares");
     }
 
     /**

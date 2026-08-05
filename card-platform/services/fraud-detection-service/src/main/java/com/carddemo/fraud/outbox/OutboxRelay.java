@@ -2,25 +2,31 @@ package com.carddemo.fraud.outbox;
 
 import com.carddemo.events.FraudCleared;
 import com.carddemo.events.FraudFlagged;
+import com.carddemo.fraud.config.FraudProperties;
 import com.carddemo.fraud.config.ObservabilityConfig.FraudMeters;
 import com.carddemo.fraud.entity.OutboxEventEntity;
 import com.carddemo.fraud.messaging.DeadLetterMetadata;
 import com.carddemo.fraud.repository.OutboxEventRepository;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 import org.apache.kafka.common.errors.SerializationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Limit;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.ObjectMapper;
@@ -29,7 +35,7 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Publishes the {@code outbox_event} rows {@link OutboxWriter} stored, then marks each one it sent.
  *
- * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. The one ancestor construct of the outbox pattern
+ * <p>No COBOL ancestor. The one ancestor construct of the outbox pattern
  * is the Customer Information Control System (CICS) transient data queue write at
  * {@code app/cbl/CORPT00C.cbl:L517-L523}. One program writes a Job Control Language (JCL) record
  * there and a separate job reads it later. Shape only, no logic.
@@ -56,7 +62,7 @@ import tools.jackson.databind.json.JsonMapper;
  * Notation (JSON) object. A written {@link FraudFlagged} holds ten properties, and a written
  * {@link FraudCleared} holds eight.
  *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Component
 public class OutboxRelay {
@@ -66,6 +72,9 @@ public class OutboxRelay {
 
     /** The failure code every dead letter of this relay carries. */
     private static final String ABEND_CODE = "0999";
+
+    /** Reason recorded on a row whose claiming instance died before it finished. */
+    private static final String CLAIM_EXPIRED = "ClaimExpired";
 
     /** The component every dead letter of this relay names. */
     private static final String CULPRIT = "RELAY";
@@ -96,6 +105,9 @@ public class OutboxRelay {
     /** Offset every dead letter reports, on the same footing as the partition above. */
     private static final long NO_SOURCE_OFFSET = 0L;
 
+    /** Largest configured pass duration accepted, five minutes. */
+    private static final long MAX_DURATION_MS = 300_000L;
+
     /** Reads unpublished rows and stores the flag each published row carries. */
     private final OutboxEventRepository outboxEvents;
 
@@ -123,40 +135,71 @@ public class OutboxRelay {
     /** The topic a row no tick can publish travels on. */
     private final String deadLetterTopic;
 
-    /** Rows one tick reads. */
+    /** Rows one tick claims. */
     private final int batchSize;
 
+    /** The boundary one tick runs inside, so the claim holds and no counter joins it. */
+    private final TransactionTemplate transactionTemplate;
+
+    /** Base of the retry backoff, from {@code carddemo.outbox.relay.fixed-delay-ms}. */
+    private final Duration tickDelay;
+
+    /** How long a claim may stand before another tick recovers it, and the backoff ceiling. */
+    private final Duration claimTimeout;
+
+    /** What this instance writes into {@code claimed_by}, so a claim can be traced to a process. */
+    private final String instanceId;
+
     /**
-     * Takes the store, the template and the meters, reads the three configured values, and builds
+     * Nanoseconds one whole pass may take, from {@code carddemo.outbox.relay.max-duration-ms}.
+     *
+     * <p>A broker that accepts a connection and never answers would otherwise hold the scheduled
+     * thread for the life of the process. A pass stops at this deadline, the rows it did not reach
+     * stay due, and the next tick starts fresh.
+     */
+    private final long maxDurationNanos;
+
+    /**
+     * Takes the store, the template and the meters, reads the four configured values, and builds
      * the one mapper this relay reads payloads with.
      *
-     * <p>Each of the three property keys carries a default, so this service runs before a
+     * <p>Each property key carries a default, so this service runs before a
      * deployment sets any of them.
      *
      * @param outboxEvents       store of unpublished events
      * @param kafkaTemplate      the template both topics are reached through
      * @param meters             the recording surface of this service
-     * @param batchSize          rows one tick reads, from {@code carddemo.outbox.relay.batch-size}
      * @param fraudAssessedTopic topic both assessment outcomes travel on, from
      *                           {@code carddemo.kafka.topics.fraud-assessed}
      * @param deadLetterTopic    topic an unpublishable row travels on, from
      *                           {@code carddemo.kafka.topics.dead-letter}
+     * @param transactionTemplate the boundary one tick runs inside
+     * @param properties          the bound {@code carddemo} block, read for the relay settings
      * @throws NullPointerException     if the store, the template or the meters is null
-     * @throws IllegalArgumentException if the batch size is below one, or if either topic name
-     *                                  resolves to no usable value
+     * @throws IllegalArgumentException if the batch size or duration is outside its accepted range,
+     *                                  or if either topic name resolves to no usable value
      */
     public OutboxRelay(OutboxEventRepository outboxEvents,
             @Qualifier("fraudEventKafkaTemplate") KafkaTemplate<String, Object> kafkaTemplate,
             FraudMeters meters,
-            @Value("${carddemo.outbox.relay.batch-size:100}") int batchSize,
             @Value("${carddemo.kafka.topics.fraud-assessed:fraud.assessed}")
                     String fraudAssessedTopic,
             @Value("${carddemo.kafka.topics.dead-letter:carddemo.dead-letter}")
-                    String deadLetterTopic) {
+                    String deadLetterTopic,
+            TransactionTemplate transactionTemplate,
+            FraudProperties properties) {
         this.outboxEvents = Objects.requireNonNull(outboxEvents, "outboxEvents must be present");
         this.kafkaTemplate = Objects.requireNonNull(kafkaTemplate, "kafkaTemplate must be present");
         this.meters = Objects.requireNonNull(meters, "meters must be present");
-        this.batchSize = requireBatchSize(batchSize);
+        this.transactionTemplate =
+                Objects.requireNonNull(transactionTemplate, "transactionTemplate must be present");
+        FraudProperties.Outbox.Relay relay =
+                Objects.requireNonNull(properties, "properties must be present").outbox().relay();
+        this.batchSize = requireBatchSize(relay.batchSize());
+        this.tickDelay = Duration.ofMillis(relay.fixedDelayMs());
+        this.claimTimeout = relay.claimTimeout();
+        this.instanceId = relay.instanceId();
+        this.maxDurationNanos = requireMaxDurationNanos(relay.maxDurationMs());
         this.fraudAssessedTopic =
                 requireTopic(fraudAssessedTopic, "carddemo.kafka.topics.fraud-assessed");
         this.deadLetterTopic = requireTopic(deadLetterTopic, "carddemo.kafka.topics.dead-letter");
@@ -166,49 +209,142 @@ public class OutboxRelay {
     }
 
     /**
-     * Publishes one batch of unpublished rows, oldest first, and marks every row it closes.
+     * Runs one tick and records what it did once that tick has committed.
      *
-     * <p>Each row is handled on its own, so a row the broker refuses does not stop the rows behind
-     * it. A row is marked only after its send returns, so no row is marked for a message the broker
-     * never acknowledged. An abandoned row is left alone, and it is the one terminal state an
-     * unpublished batch still holds.
+     * <p>The tick runs inside one transaction because the claim depends on it:
+     * {@link OutboxEventRepository#claimDueRows} holds each row it returns with
+     * {@code FOR NO KEY UPDATE ... SKIP LOCKED}, and that lock lives exactly as long as the
+     * transaction that took it. Two instances of this service therefore claim disjoint batches instead
+     * of both publishing every assessment.
      *
-     * <p>The delay is measured from the end of one tick to the start of the next, so a slow batch
-     * cannot overlap itself. An empty batch writes no log line.
+     * <p>The boundary is opened here rather than declared with an annotation so that the counters sit
+     * outside it. A counter takes no part in a database transaction, so an increment made inside one
+     * survives a rollback and reports assessments as published that were never marked.
+     *
+     * <p>The delay is measured from the end of one tick to the start of the next. The repository
+     * takes pessimistic write locks with skip-locked semantics, so concurrent service instances claim
+     * disjoint batches. An empty batch writes no log line.
      */
     @Scheduled(fixedDelayString = "${carddemo.outbox.relay.fixed-delay-ms:500}")
-    @Transactional
     public void publishPendingEvents() {
-        List<OutboxEventEntity> pending =
-                outboxEvents.findByPublishedFalseOrderByCreatedAtAsc(PageRequest.ofSize(batchSize));
-        if (pending.isEmpty()) {
-            return;
+        TickResult result = transactionTemplate.execute(status -> publishOneTick());
+
+        Objects.requireNonNull(result, "the tick must answer with a result").record(meters);
+    }
+
+    /**
+     * Recovers stranded claims, claims the due rows, and works through them longest-waiting first.
+     *
+     * <p>A row whose payload or schema is refused is permanently unpublishable, so it is dead-lettered
+     * and closed, and the tick carries on: nothing about the rows behind it is affected by a row that
+     * will never be sent.
+     *
+     * <p>A row the broker could not take is a different matter. It stays unpublished, becomes due again
+     * after a backoff, and the tick stops there. Continuing would publish a later assessment of the
+     * same account while an earlier one had not been sent, which is exactly the reordering the message
+     * key and the ordering exist to prevent.
+     *
+     * @return what this tick published and how many rows it failed on
+     */
+    private TickResult publishOneTick() {
+        long deadline = System.nanoTime() + maxDurationNanos;
+        Instant now = Instant.now();
+        int failed = recoverStrandedClaims(now);
+
+        List<OutboxEventEntity> due = outboxEvents.claimDueRows(now, Limit.of(batchSize));
+        if (due.isEmpty() && failed == 0) {
+            return new TickResult(0, 0);
         }
 
         int published = 0;
-        int failed = 0;
-        for (OutboxEventEntity row : pending) {
-            if (row.isTerminal()) {
-                continue;
-            }
+        for (OutboxEventEntity row : due) {
+            row.claim(instanceId, now);
             Class<?> recordType = recordTypesByEventType.get(row.getEventType());
             if (recordType == null) {
                 failed++;
-                meters.recordPublishFailure();
                 routeToDeadLetter(row, DeadLetterMetadata.of(ABEND_CODE, CULPRIT,
-                        UNKNOWN_TYPE_REASON, UNKNOWN_TYPE_MESSAGE));
+                        UNKNOWN_TYPE_REASON, UNKNOWN_TYPE_MESSAGE), deadline);
                 continue;
             }
             try {
-                publishAndMark(row, recordType);
+                publishAndMark(row, recordType, deadline);
                 published++;
             } catch (RuntimeException failure) {
                 failed++;
-                meters.recordPublishFailure();
-                onFailedRow(row, failure);
+                if (onFailedRow(row, failure, now, deadline)) {
+                    continue;
+                }
+                log.info("Outbox relay published {} rows this tick and failed {}", published, failed);
+                return new TickResult(published, failed);
             }
         }
         log.info("Outbox relay published {} rows this tick and failed {}", published, failed);
+        return new TickResult(published, failed);
+    }
+
+    /**
+     * Returns rows a dead instance left claimed to {@link OutboxEventEntity.RelayState#PENDING}.
+     *
+     * <p>Without this one crash costs one assessment permanently: the row stays
+     * {@link OutboxEventEntity.RelayState#CLAIMED}, the claim query filters on
+     * {@link OutboxEventEntity.RelayState#PENDING}, and nothing looks at it again. The recovery counts
+     * as an attempt, so a row that strands repeatedly is eventually abandoned.
+     *
+     * @param now the moment this tick started
+     * @return how many rows were recovered
+     */
+    private int recoverStrandedClaims(Instant now) {
+        List<OutboxEventEntity> stranded =
+                outboxEvents.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
+                        OutboxEventEntity.RelayState.CLAIMED, now.minus(claimTimeout),
+                        Limit.of(batchSize));
+
+        for (OutboxEventEntity row : stranded) {
+            row.recordFailure(CLAIM_EXPIRED, now, now);
+            outboxEvents.save(row);
+            log.warn("An outbox row of type {} was claimed by an instance that did not finish, so it "
+                            + "is due again. Attempt {} of {}.", row.getEventType(),
+                    row.getAttemptCount(), OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+        }
+        return stranded.size();
+    }
+
+    /**
+     * Returns how long to wait before attempting a row again.
+     *
+     * <p>The wait doubles per attempt from the tick delay and stops at the claim timeout, so a row the
+     * broker keeps refusing is retried less and less often while always staying claimable within one
+     * timeout. Both bounds are configured values rather than numbers written here.
+     *
+     * @param attemptsSoFar attempts this row had taken before the one that just failed
+     * @return the wait, never longer than the claim timeout
+     */
+    private Duration backoffAfter(int attemptsSoFar) {
+        Duration doubled = tickDelay;
+        for (int step = 0; step < attemptsSoFar && doubled.compareTo(claimTimeout) < 0; step++) {
+            doubled = doubled.multipliedBy(2L);
+        }
+        return doubled.compareTo(claimTimeout) > 0 ? claimTimeout : doubled;
+    }
+
+    /**
+     * What one tick did, carried out of the transaction so it can be counted after the commit.
+     *
+     * @param published rows the broker accepted and this tick marked
+     * @param failed    rows this tick could not publish, whether dead-lettered or left for a retry
+     */
+    private record TickResult(int published, int failed) {
+
+        /**
+         * Records this result against {@code meters}.
+         *
+         * @param meters the recording surface of this service
+         */
+        void record(FraudMeters meters) {
+            for (int failure = 0; failure < failed; failure++) {
+                meters.recordPublishFailure();
+            }
+        }
     }
 
     /**
@@ -220,37 +356,51 @@ public class OutboxRelay {
      *
      * @param row        the unpublished row
      * @param recordType the record its payload reads into
+     * @param deadline   the pass deadline on the monotonic clock
      * @throws SerializationException if the event does not satisfy its schema document
      * @throws JacksonException       if the payload does not read into {@code recordType}
      */
-    private void publishAndMark(OutboxEventEntity row, Class<?> recordType) {
+    private void publishAndMark(OutboxEventEntity row, Class<?> recordType, long deadline) {
         Object event = objectMapper.readValue(row.getPayload(), recordType);
 
-        kafkaTemplate.send(fraudAssessedTopic, row.getAggregateId(), event).join();
+        sendWithinDeadline(fraudAssessedTopic, row.getAggregateId(), event, deadline);
         row.markPublished(Instant.now());
         outboxEvents.save(row);
     }
 
     /**
-     * Routes one failed row to the dead-letter topic, or leaves it for the next tick.
+     * Routes one failed row to the dead-letter topic, or schedules it for another attempt.
      *
      * <p>A failure the event contract raised is permanent, and the row travels to the dead-letter
-     * topic. Every other failure is a broker or a network fault, and the row stays unpublished for
-     * the next tick. The log line names the event type and the failure type. It carries no payload,
-     * no message key and no event value.
+     * topic and is closed. Every other failure is a broker or a network fault: the row records the
+     * attempt, becomes due again after a backoff, and the caller stops the tick so a later assessment
+     * of the same account cannot overtake it.
+     *
+     * <p>The log line names the event type and the failure class. It carries no payload, no message
+     * key and no event value, and neither does the reason stored on the row.
      *
      * @param row     the row whose send failed
      * @param failure the failure the send raised
+     * @param now      the moment this tick started
+     * @param deadline the pass deadline on the monotonic clock
+     * @return true when the failure was permanent and the row is closed, so the tick may carry on
      */
-    private void onFailedRow(OutboxEventEntity row, RuntimeException failure) {
+    private boolean onFailedRow(OutboxEventEntity row, RuntimeException failure, Instant now,
+            long deadline) {
         Throwable cause = rootCause(failure);
         if (isPermanent(failure)) {
             routeToDeadLetter(row, DeadLetterMetadata.fromFailure(ABEND_CODE, cause,
-                    CONTRACT_REASON, CONTRACT_MESSAGE));
-            return;
+                    CONTRACT_REASON, CONTRACT_MESSAGE), deadline);
+            return true;
         }
-        log.warn("An outbox row of type {} stays unpublished after {}, and the next tick takes it "
-                + "again", row.getEventType(), cause.getClass().getSimpleName());
+        String failureClass = cause.getClass().getSimpleName();
+        row.recordFailure(failureClass, now, now.plus(backoffAfter(row.getAttemptCount())));
+        outboxEvents.save(row);
+
+        log.warn("An outbox row of type {} stays unpublished after {}, becomes due again after a "
+                        + "backoff, and the tick stops there. Attempt {} of {}.", row.getEventType(),
+                failureClass, row.getAttemptCount(), OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+        return false;
     }
 
     /**
@@ -267,24 +417,54 @@ public class OutboxRelay {
      *
      * @param row      the row this relay cannot publish
      * @param metadata the four diagnostic values, each already held to its own width
+     * @param deadline the pass deadline on the monotonic clock
+     * @return {@code true} when the dead letter reached the broker
      */
-    private void routeToDeadLetter(OutboxEventEntity row, DeadLetterMetadata metadata) {
+    private boolean routeToDeadLetter(
+            OutboxEventEntity row, DeadLetterMetadata metadata, long deadline) {
         try {
             Object deadLetter = metadata.toEnvelope(row.getAggregateId(), fraudAssessedTopic,
                     NO_SOURCE_PARTITION, NO_SOURCE_OFFSET, row.getEventId().toString(),
                     reportableEventType(row.getEventType()), row.getAttemptCount() + 1);
 
-            kafkaTemplate.send(deadLetterTopic, row.getAggregateId(), deadLetter).join();
+            sendWithinDeadline(deadLetterTopic, row.getAggregateId(), deadLetter, deadline);
         } catch (RuntimeException undelivered) {
             log.error("The dead letter for an outbox row of type {} did not reach topic {} after "
                     + "{}, and the row stays unpublished", row.getEventType(), deadLetterTopic,
                     rootCause(undelivered).getClass().getSimpleName());
-            return;
+            return false;
         }
         row.markPublished(Instant.now());
         outboxEvents.save(row);
         log.error("An outbox row of type {} reached topic {} and takes no further attempt",
                 row.getEventType(), deadLetterTopic);
+        return true;
+    }
+
+    /**
+     * Sends one record and waits no longer than the time left in this relay pass.
+     */
+    private void sendWithinDeadline(String topic, String key, Object event, long deadline) {
+        long remaining = remainingNanos(deadline);
+        if (remaining <= 0L) {
+            throw new RelayDeadlineExceededException();
+        }
+        try {
+            kafkaTemplate.send(topic, key, event).get(remaining, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new CompletionException(interrupted);
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            throw new CompletionException(cause == null ? failed : cause);
+        } catch (TimeoutException timedOut) {
+            throw new RelayDeadlineExceededException();
+        }
+    }
+
+    /** Remaining nanoseconds before one pass must stop. */
+    private static long remainingNanos(long deadline) {
+        return deadline - System.nanoTime();
     }
 
     /**
@@ -364,6 +544,16 @@ public class OutboxRelay {
         return batchSize;
     }
 
+    /** Validates and converts the configured pass deadline. */
+    private static long requireMaxDurationNanos(long maxDurationMs) {
+        if (maxDurationMs < 1L || maxDurationMs > MAX_DURATION_MS) {
+            throw new IllegalArgumentException(
+                    "carddemo.outbox.relay.max-duration-ms must be between 1 and "
+                            + MAX_DURATION_MS);
+        }
+        return TimeUnit.MILLISECONDS.toNanos(maxDurationMs);
+    }
+
     /**
      * Checks one configured topic name and returns it trimmed. No failure message holds the value.
      *
@@ -395,5 +585,15 @@ public class OutboxRelay {
         return JsonMapper.builder()
                 .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
                 .build();
+    }
+
+    /** Stable type used when the pass deadline expires; it carries no event value. */
+    private static final class RelayDeadlineExceededException extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        private RelayDeadlineExceededException() {
+            super("outbox relay pass deadline exceeded");
+        }
     }
 }

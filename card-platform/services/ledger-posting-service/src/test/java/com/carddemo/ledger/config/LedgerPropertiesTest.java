@@ -1,5 +1,6 @@
 package com.carddemo.ledger.config;
 
+import java.time.Duration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -12,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Binds the shipped {@code application.yml} into {@link LedgerProperties} and reads the result back.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor. Each test builds a context holding one properties
+ * <p>This class has no COBOL ancestor. Each test builds a context holding one properties
  * bean and no auto-configuration, so no database and no message broker has to run.
  *
  * <p>The first test is the reachability check: a key that no component reads binds to nothing, and
@@ -49,10 +50,17 @@ class LedgerPropertiesTest {
                     .isEqualTo("transaction.declined");
             assertThat(properties.kafka().topics().deadLetter())
                     .isEqualTo("carddemo.dead-letter");
+            assertThat(properties.kafka().topics().deadLetterSuffix()).isEqualTo(".DLT");
             assertThat(properties.consumer().retry().maxAttempts()).isEqualTo(3);
             assertThat(properties.consumer().retry().backoffMs()).isEqualTo(1000L);
             assertThat(properties.outbox().relay().fixedDelayMs()).isEqualTo(500L);
             assertThat(properties.outbox().relay().batchSize()).isEqualTo(100);
+            assertThat(properties.outbox().relay().instanceId()).isNotBlank();
+            assertThat(properties.outbox().relay().claimTimeout())
+                    .isEqualTo(java.time.Duration.ofMinutes(2L));
+            assertThat(properties.outbox().publishedRetentionHours()).isEqualTo(168L);
+            assertThat(properties.processedEvent().markerRetentionHours()).isEqualTo(168L);
+            assertThat(properties.retention().sweepIntervalMs()).isEqualTo(3_600_000L);
         });
     }
 
@@ -64,6 +72,17 @@ class LedgerPropertiesTest {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
                             .hasStackTraceContaining("kafka.topics.deadLetter");
+                });
+    }
+
+    @Test
+    @DisplayName("a blank dead-letter suffix stops start-up")
+    void aBlankDeadLetterSuffixStopsStartUp() {
+        shipped.withPropertyValues("carddemo.kafka.topics.dead-letter-suffix=")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("kafka.topics.deadLetterSuffix");
                 });
     }
 
@@ -100,6 +119,16 @@ class LedgerPropertiesTest {
                 });
     }
 
+    @Test
+    @DisplayName("a relay claim timeout of zero stops start-up")
+    void aZeroRelayClaimTimeoutStopsStartUp() {
+        shipped.withPropertyValues("carddemo.outbox.relay.claim-timeout=PT0S")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("claimTimeout");
+                });
+    }
 
     @Test
     @DisplayName("the bound record is the only properties bean and it is immutable")

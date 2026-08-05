@@ -30,7 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Asserts the four authored JSON Schema documents behave as one contract.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor. The CardDemo source holds no Java and no test of
+ * <p>This class has no COBOL ancestor. The CardDemo source holds no Java and no test of
  * any kind, so nothing here is a translation. The locators below fix the widths, the texts, and the
  * codes the documents reproduce.
  *
@@ -65,13 +65,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class EventSchemaContractTest {
 
     /** The classpath resource holding the approved authorization contract. */
-    private static final String AUTHORIZED = "schemas/transaction-authorized-v1.json";
+    private static final String AUTHORIZED = "schemas/transaction-authorized-v2.json";
 
     /** The classpath resource holding the declined authorization contract. */
     private static final String DECLINED = "schemas/transaction-declined-v1.json";
 
     /** The classpath resource holding the ledger posting contract. */
-    private static final String POSTED = "schemas/transaction-posted-v1.json";
+    private static final String POSTED = "schemas/transaction-posted-v2.json";
 
     /** The classpath resource holding the flagged risk assessment contract. */
     private static final String FLAGGED = "schemas/fraud-flagged-v1.json";
@@ -129,6 +129,7 @@ class EventSchemaContractTest {
     /** The masked card number pattern: twelve mask characters then four digits. */
     private static final String MASKED_CARD_PATTERN = "^\\*{12}[0-9]{4}$";
 
+
     /** The reason code property on the declined document. */
     private static final String DECLINE_CODE_PROPERTY = "declineReasonCode";
 
@@ -141,11 +142,22 @@ class EventSchemaContractTest {
     /** The four reason codes paired with the text the source moves beside each one. */
     private static final Map<String, String> DECLINE_PAIRS = declinePairs();
 
+    /** The property name the card token travels under, on the two documents that carry a card. */
+    private static final String CARD_TOKEN_PROPERTY = "cardToken";
+
+    /**
+     * A card token at the width and case the two documents declare.
+     *
+     * <p>Additive. No source field exists. Sixty-four lower-case hexadecimal characters, which is
+     * what {@code com.carddemo.cobol.PanMasker#cardToken(String)} produces.
+     */
+    private static final String CARD_TOKEN = "3324c413b2885b5af5349a132c1113bd86241de92e00cb657dc6f77afbdece7e";
+
     /** The required-property count each document declares. */
     private static final Map<String, Integer> REQUIRED_COUNTS = Map.of(
-            AUTHORIZED, 19,
+            AUTHORIZED, 20,
             DECLINED, 11,
-            POSTED, 11,
+            POSTED, 21,
             FLAGGED, 10);
 
     /**
@@ -626,7 +638,7 @@ class EventSchemaContractTest {
         assertEquals(Set.of("eventId", "eventType", "schemaVersion", "occurredAt", "aggregateId",
                         "transactionId", "transactionTypeCode", "merchantCategoryCode", "source",
                         "description", "amount", "merchantId", "merchantName", "merchantCity",
-                        "merchantZip", "maskedCardNumber", "authorizedAt",
+                        "merchantZip", "maskedCardNumber", CARD_TOKEN_PROPERTY, "authorizedAt",
                         PAYLOAD_ACCOUNT_PROPERTY, "currency"),
                 requiredSet(AUTHORIZED), AUTHORIZED + " changed its required set");
 
@@ -637,7 +649,9 @@ class EventSchemaContractTest {
 
         assertEquals(Set.of("eventId", "eventType", "schemaVersion", "occurredAt", "aggregateId",
                         "transactionId", PAYLOAD_ACCOUNT_PROPERTY, "newBalance", "postedAt",
-                        "amount", "maskedCardNumber"),
+                        "amount", "maskedCardNumber", CARD_TOKEN_PROPERTY, "transactionTypeCode",
+                        "merchantCategoryCode", "source", "description", "merchantId",
+                        "merchantName", "merchantCity", "merchantZip", "originTimestamp"),
                 requiredSet(POSTED), POSTED + " changed its required set");
 
         assertEquals(Set.of("eventId", "eventType", "schemaVersion", "occurredAt", "aggregateId",
@@ -645,13 +659,20 @@ class EventSchemaContractTest {
                         PAYLOAD_ACCOUNT_PROPERTY),
                 requiredSet(FLAGGED), FLAGGED + " changed its required set");
 
+        Map<String, Integer> expectedVersions = Map.of(
+                AUTHORIZED, 2,
+                DECLINED, 1,
+                POSTED, 2,
+                FLAGGED, 1);
         for (String document : DOCUMENTS) {
             JsonNode tree = readDocument(document);
-            assertEquals(1, tree.get("properties").get("schemaVersion").get("const").asInt(),
+            int expectedVersion = expectedVersions.get(document);
+            assertEquals(expectedVersion,
+                    tree.get("properties").get("schemaVersion").get("const").asInt(),
                     document + " changed its version constant");
-            assertTrue(tree.get("$id").asString().endsWith("-v1.json"),
+            assertTrue(tree.get("$id").asString().endsWith("-v" + expectedVersion + ".json"),
                     document + " lost the version suffix in its $id");
-            assertTrue(document.endsWith("-v1.json"),
+            assertTrue(document.endsWith("-v" + expectedVersion + ".json"),
                     document + " lost the version suffix in its file name");
         }
 
@@ -677,7 +698,8 @@ class EventSchemaContractTest {
             JsonNode properties = readDocument(document).get("properties");
 
             for (String envelopeProperty : envelopeProperties()) {
-                if ("eventType".equals(envelopeProperty)) {
+                if ("eventType".equals(envelopeProperty)
+                        || "schemaVersion".equals(envelopeProperty)) {
                     continue;
                 }
                 assertEquals(constraintsOf(reference.get(envelopeProperty)),
@@ -951,7 +973,8 @@ class EventSchemaContractTest {
         ObjectNode instance = MAPPER.createObjectNode();
         instance.put("eventId", "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418");
         instance.put("eventType", readDocument(resource).get("title").asString());
-        instance.put("schemaVersion", 1);
+        instance.put("schemaVersion",
+                readDocument(resource).get("properties").get("schemaVersion").get("const").asInt());
         instance.put("occurredAt", "2022-06-10T19:27:53.412Z");
         instance.put(ENVELOPE_ACCOUNT_PROPERTY, ACCOUNT_IDENTIFIER);
         instance.put("transactionId", "0000000000683580");
@@ -975,6 +998,7 @@ class EventSchemaContractTest {
             instance.put("merchantCity", "North Enoshaven");
             instance.put("merchantZip", "72112");
             instance.put(MASKED_CARD_PROPERTY, MASKED_CARD_NUMBER);
+            instance.put(CARD_TOKEN_PROPERTY, CARD_TOKEN);
             instance.put("authorizedAt", "2022-06-10 19:27:53.000000");
             instance.put("currency", "USD");
         } else if (DECLINED.equals(resource)) {
@@ -989,6 +1013,16 @@ class EventSchemaContractTest {
             instance.put("postedAt", "2022-07-19-23.16.01.470000");
             instance.put(AMOUNT_PROPERTY, "504.77");
             instance.put(MASKED_CARD_PROPERTY, MASKED_CARD_NUMBER);
+            instance.put(CARD_TOKEN_PROPERTY, CARD_TOKEN);
+            instance.put("transactionTypeCode", "01");
+            instance.put("merchantCategoryCode", "0001");
+            instance.put("source", "POS TERM");
+            instance.put("description", "Purchase at Abshire-Lowe");
+            instance.put("merchantId", "800000000");
+            instance.put("merchantName", "Abshire-Lowe");
+            instance.put("merchantCity", "North Enoshaven");
+            instance.put("merchantZip", "72112");
+            instance.put("originTimestamp", "2022-06-10 19:27:53.000000");
         } else {
             instance.put("riskScore", 82);
             instance.putArray("triggeredRules").add("VELOCITY").add("AMOUNT_ANOMALY");

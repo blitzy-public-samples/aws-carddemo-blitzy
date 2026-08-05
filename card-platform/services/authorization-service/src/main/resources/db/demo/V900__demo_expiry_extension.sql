@@ -31,7 +31,6 @@
 -- ten characters of text and compares lexically, so a four-digit year sorts correctly
 -- against any timestamp a caller sends.
 --
--- Design decisions: card-platform/docs/decision-log.md (planned)
 
 UPDATE account_credit_snapshot
    SET account_expiration_date = '2099-12-31';

@@ -45,6 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>The comment at app/cpy/CSLKPCDY.cpy:L1011 reads {@code *Search list of valid Phone area codes}
  * and sits directly above the state host field at L1012. The phone band that comment names ends at
  * app/cpy/CSLKPCDY.cpy:L1010.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("UsStateCodeValidator, the state-code edit at COACTUPC paragraph 1270")
 class UsStateCodeValidatorTest {
@@ -241,10 +243,10 @@ class UsStateCodeValidatorTest {
         assertThat(UsStateCodeValidator.validate(STATE_LABEL, "AL ").valid()).isTrue();
         assertThat(UsStateCodeValidator.validate(STATE_LABEL, "AL   ").valid()).isTrue();
 
-        // ADDITIVE. A caller of this edit can supply a wider value. The membership list holds
-        // two-character codes alone, so a wider value fails it and takes the message the source
-        // writes at app/cbl/COACTUPC.cbl:L2501-L2506. The edit passes no verdict on the first two
-        // characters of a longer value.
+        // No COBOL ancestor. A caller of this edit can supply a wider value. The membership list
+        // holds two-character codes alone, so a wider value fails it and takes the message the
+        // source writes at app/cbl/COACTUPC.cbl:L2501-L2506. The edit passes no verdict on the
+        // first two characters of a longer value.
         assertThat(UsStateCodeValidator.validate(STATE_LABEL, "ALX").valid()).isFalse();
         assertThat(UsStateCodeValidator.validate(STATE_LABEL, "ALX").message())
                 .isEqualTo(STATE_LABEL + SOURCE_FAILURE_LITERAL);

@@ -3,10 +3,12 @@ package com.carddemo.notification.config;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.notification.config.SecurityConfig.SecurityIdentities;
 import com.carddemo.notification.config.SecurityConfig.SecurityIdentities.Identity;
 import java.lang.reflect.Method;
@@ -57,8 +59,11 @@ class SecurityConfigTest {
     /** Account identifier the stub caller does not own. */
     private static final String OTHER_ACCOUNT = "00000000002";
 
-    /** Masked card the stub caller owns, from record 1 of app/data/ASCII/cardxref.txt. */
-    private static final String OWNED_CARD = "************5740";
+    /**
+     * Card token the stub caller owns, the token of record 1 of app/data/ASCII/cardxref.txt as
+     * PanMasker.tokenOf renders it.
+     */
+    private static final String OWNED_CARD = "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b";
 
     /** An encoded password, which is the only form a configured identity carries. */
     private static final String ENCODED_PASSWORD =
@@ -210,23 +215,25 @@ class SecurityConfigTest {
         }
 
         @Test
-        @DisplayName("a card is owned by its masked form, never by a card number")
-        void cardOwnershipUsesTheMaskedForm() {
+        @DisplayName("a card is owned by its token, never by a card number in any form")
+        void cardOwnershipUsesTheToken() {
             AuthorizationManager<RequestAuthorizationContext> rule =
-                    SecurityConfig.ownsPathVariable(SecurityConfig.CARD_SCOPE, "maskedCardNumber");
+                    SecurityConfig.ownsPathVariable(SecurityConfig.CARD_SCOPE, "cardToken");
             assertAll(
                     () -> assertTrue(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("maskedCardNumber", OWNED_CARD)).isGranted(),
+                                    pathContext("cardToken", OWNED_CARD)).isGranted(),
                             "the identity carries SCOPE_CARD_" + OWNED_CARD),
                     () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("maskedCardNumber", "************9999"))
+                                    pathContext("cardToken", "f8da0217fb8bd2e172d427a2ef66d54656a59baa9fe8f9bc2ce9d383b90e1173"))
                                     .isGranted(),
-                            "another card sharing no last four digits is refused"),
+                            "the token of another card is refused"),
                     () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("maskedCardNumber", "0500024453765740"))
-                                    .isGranted(),
-                            "a full card number matches no scope, so a caller cannot substitute "
-                                    + "one for the masked form the route declares"));
+                                    pathContext("cardToken", "************5740")).isGranted(),
+                            "a masked card number matches no scope, so a caller cannot substitute "
+                                    + "one for the token the route declares"),
+                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
+                                    pathContext("cardToken", "0500024453765740")).isGranted(),
+                            "a full card number matches no scope either"));
         }
 
         @Test

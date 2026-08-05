@@ -57,7 +57,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>Two properties fall outside this class. No test asserts a scale, which {@link PicClause}
  * carries. No test asserts a validation message, which the account service holds.
-
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 class NumvalParserTest {
 

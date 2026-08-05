@@ -23,7 +23,7 @@ import com.networknt.schema.SchemaRegistry;
  * The one table that maps an {@code eventType} to the schema document governing it, shared by the
  * serializer and the deserializer of this package.
  *
- * <p>ADDITIVE IN FULL. No COBOL program and no copybook defines this class.
+ * <p>No COBOL program and no copybook defines this class.
  *
  * <p>Every event this platform publishes passes through one of the two serde classes, and both read
  * this table, so a single gate decides which documents exist and what each one is called. A new
@@ -42,9 +42,6 @@ import com.networknt.schema.SchemaRegistry;
  * validates but does not bind, because the record belongs to the service that owns the aggregate.
  * That service supplies its own record class to
  * {@link JsonSchemaValidatingDeserializer#JsonSchemaValidatingDeserializer(Map)}.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned). Event paths:
- * {@code card-platform/docs/event-flow.md} (planned).
  */
 public final class EventSchemas {
 
@@ -60,10 +57,9 @@ public final class EventSchemas {
     /**
      * One event type at one contract version, and the key that selects a schema document.
      *
-     * <p>An event type is not enough on its own. {@code TransactionDeclined} ships two documents: a
-     * decline whose account the card cross-reference resolved, and a decline where it did not. A
-     * gate that selected on the event type alone would validate one against the other's document and
-     * report a violation that names the wrong contract.
+     * <p>An event type is not enough on its own. A gate reads the version the event itself carries,
+     * so an event published under an earlier document stays valid under that document once a later
+     * one ships.
      *
      * @param eventType     the routing discriminator each event carries
      * @param schemaVersion the contract version each event carries
@@ -93,27 +89,46 @@ public final class EventSchemas {
      * services. The two mutation events travel from the account and card services, whose records
      * live in those modules and whose contracts are governed here.
      *
-     * <p>{@code TransactionDeclined} is the one event type with two versions. Version 1 governs a
-     * decline whose account the cross-reference resolved. Version 2 governs reject reason
-     * {@code 0100}, which {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns when the keyed read of the
-     * cross-reference file misses; that document declares no account identifier, because none exists
-     * that the platform established itself. Both are compiled and both remain readable, which is
-     * what lets a consumer of resolved declines carry on unchanged.
+     * <p>Three event types carry two versions each, and in every case version 1 stays compiled and
+     * readable so an existing consumer carries on unchanged.
+     *
+     * <p>{@code TransactionDeclined} version 1 governs a decline whose account the cross-reference
+     * resolved. Version 2 governs reject reason {@code 0100}, which
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns when the keyed read of the cross-reference file
+     * misses; that document declares no account identifier, because none exists that the platform
+     * established itself.
+     *
+     * <p>{@code TransactionDeclined} version 2 is the one contract that is not keyed on an account:
+     * a card that resolves to no account has no account identifier to key on, so that decline is keyed
+     * on its transaction identifier and carries no {@code accountId}. Version 1 is unchanged, so a
+     * consumer reading only version 1 keeps working.
+     *
+     * <p>{@code TransactionAuthorized} version 2 adds the card token, the card identity a masked
+     * card number cannot supply. {@code TransactionPosted} version 2 adds that token and the nine
+     * remaining fields of the posted transaction record, so a card-keyed consumer stores facts
+     * rather than blanks. A producer publishes version 2 of both.
      */
     public static final Map<SchemaKey, String> SCHEMA_DOCUMENTS = Map.ofEntries(
             Map.entry(new SchemaKey("TransactionAuthorized", 1),
                     "schemas/transaction-authorized-v1.json"),
+            Map.entry(new SchemaKey("TransactionAuthorized", 2),
+                    "schemas/transaction-authorized-v2.json"),
             Map.entry(new SchemaKey("TransactionDeclined", 1),
                     "schemas/transaction-declined-v1.json"),
             Map.entry(new SchemaKey("TransactionDeclined", 2),
                     "schemas/transaction-declined-v2.json"),
             Map.entry(new SchemaKey("TransactionPosted", 1),
                     "schemas/transaction-posted-v1.json"),
+            Map.entry(new SchemaKey("TransactionPosted", 2),
+                    "schemas/transaction-posted-v2.json"),
             Map.entry(new SchemaKey("FraudFlagged", 1), "schemas/fraud-flagged-v1.json"),
             Map.entry(new SchemaKey("FraudCleared", 1), "schemas/fraud-cleared-v1.json"),
             Map.entry(new SchemaKey("AccountStateChanged", 1),
                     "schemas/account-state-changed-v1.json"),
+            Map.entry(new SchemaKey("CustomerContextChanged", 1),
+                    "schemas/customer-context-changed-v1.json"),
             Map.entry(new SchemaKey("CardUpdated", 1), "schemas/card-updated-v1.json"),
+            Map.entry(new SchemaKey("CardUpdated", 2), "schemas/card-updated-v2.json"),
             Map.entry(new SchemaKey(DeadLetterEnvelope.EVENT_TYPE, 1),
                     DeadLetterEnvelope.SCHEMA_RESOURCE));
 

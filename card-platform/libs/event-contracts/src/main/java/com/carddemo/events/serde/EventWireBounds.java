@@ -5,15 +5,14 @@ import tools.jackson.core.StreamReadConstraints;
 /**
  * The size limits every event on this platform is held to, on the way out and on the way in.
  *
- * <p>ADDITIVE IN FULL. No COBOL program and no copybook defines these limits. The source has a
+ * <p>No COBOL program and no copybook defines these limits. The source has a
  * different answer to the same question: every record it reads or writes is fixed width, declared by
  * a Picture clause, so a 350-byte daily transaction record cannot arrive at 350 kilobytes. A JSON
  * document carries no such ceiling of its own, so one is declared here and applied at both ends.
  *
  * <p>Both serde classes of this package read these constants, so a producer cannot publish a
  * document a consumer would refuse, and a consumer cannot be made to allocate a document no
- * producer of this platform could have written. The reasoning behind each number sits in
- * {@code card-platform/docs/decision-log.md} (planned).
+ * producer of this platform could have written.
  *
  * <p>{@link #MAX_EVENT_BYTES} is also the width of the {@code payload} column of every
  * {@code outbox_event} table, so an event that serializes cannot fail to persist and a row that

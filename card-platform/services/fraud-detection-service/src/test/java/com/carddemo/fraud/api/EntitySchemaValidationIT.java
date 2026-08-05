@@ -1,10 +1,12 @@
 package com.carddemo.fraud.api;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.fraud.entity.FraudAssessmentEntity;
@@ -12,6 +14,8 @@ import com.carddemo.fraud.entity.OutboxEventEntity;
 import com.carddemo.fraud.entity.ProcessedEventEntity;
 import com.carddemo.fraud.entity.VelocityWindowEntity;
 import com.carddemo.fraud.repository.FraudAssessmentRepository;
+import com.carddemo.fraud.repository.ProcessedEventRepository;
+import com.carddemo.fraud.repository.VelocityWindowRepository;
 import jakarta.persistence.AttributeConverter;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
@@ -28,18 +32,27 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.Environment;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -98,6 +111,10 @@ class EntitySchemaValidationIT {
     private static final String PK_PROCESSED_EVENT = "pk_processed_event";
     private static final String IX_FRAUD_ASSESSMENT_ACCOUNT = "ix_fraud_assessment_account";
     private static final String IX_FRAUD_ASSESSMENT_ASSESSED_AT = "ix_fraud_assessment_assessed_at";
+
+    /** The composite index the collection route of the controller reads its page from. */
+    private static final String IX_FRAUD_ASSESSMENT_ACCOUNT_ASSESSED_AT =
+            "ix_fraud_assessment_account_assessed_at";
     private static final String IX_VELOCITY_WINDOW_START = "ix_velocity_window_start";
     private static final String IX_PROCESSED_EVENT_PROCESSED_AT = "ix_processed_event_processed_at";
 
@@ -190,6 +207,21 @@ class EntitySchemaValidationIT {
     private static final UUID MARKER_EVENT_ID =
             UUID.fromString("2f8a1b74-5c6d-4e3f-8a2b-7c4d5e6f7a8b");
 
+    /** Schema Flyway migrates into, which every unqualified statement resolves against. */
+    private static final String MIGRATED_SCHEMA = "fraud_service";
+
+    /** Topic the claimed markers of this class record. */
+    private static final String CONSUMED_TOPIC = "transaction.authorized";
+
+    /** What the marker statement reports when this caller took the event. */
+    private static final int CLAIMED = 1;
+
+    /** What the marker statement reports when the event was already taken. */
+    private static final int ALREADY_CLAIMED = 0;
+
+    /** Rows the window statement writes on either of its arms. */
+    private static final int ONE_ROW = 1;
+
     private static final Instant MARKER_PROCESSED_AT = Instant.parse("2026-02-14T08:45:30Z");
     /** Inclusive lower bound of a fixed-width bucket, which is keyed by its start instant. */
     private static final Instant FIRST_WINDOW_START = Instant.parse("2026-02-14T08:00:00Z");
@@ -238,6 +270,18 @@ class EntitySchemaValidationIT {
     @Autowired
     private FraudAssessmentRepository assessments;
 
+    @Autowired
+    private ProcessedEventRepository markers;
+
+    @Autowired
+    private VelocityWindowRepository windows;
+
+    @Autowired
+    private TransactionTemplate transactionTemplate;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
     /**
      * Points the datasource at the container and the broker client at a port with no listener.
      *
@@ -245,10 +289,16 @@ class EntitySchemaValidationIT {
      */
     @DynamicPropertySource
     static void containerProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", EntitySchemaValidationIT::jdbcUrlOnServiceSchema);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.kafka.bootstrap-servers", () -> UNREACHABLE_BROKER);
+    }
+
+    /** Returns the container URL with the service schema on the connection search path. */
+    private static String jdbcUrlOnServiceSchema() {
+        String url = POSTGRES.getJdbcUrl();
+        return url + (url.contains("?") ? "&" : "?") + "currentSchema=fraud_service";
     }
 
     /** Empties the three tables a test writes to, so no row reaches the next test. */
@@ -261,8 +311,7 @@ class EntitySchemaValidationIT {
 
     /**
      * A refresh under schema validation matches all four entity mappings against the migrated
-     * schema, the outbox entity included. {@code card-platform/docs/data-model.md} draws the four
-     * table shapes.
+     * schema, the outbox entity included.
      */
     @Test
     @DisplayName("the context refreshes with schema validation on, which matches all four entity "
@@ -450,6 +499,61 @@ class EntitySchemaValidationIT {
     }
 
     @Test
+    @DisplayName("the marker statement claims one event once and reports the second delivery")
+    void theMarkerStatementClaimsOneEventOnce() {
+        Integer first = transactionTemplate.execute(status ->
+                markers.claimEvent(MARKER_EVENT_ID, MARKER_PROCESSED_AT, CONSUMED_TOPIC));
+        Integer second = transactionTemplate.execute(status ->
+                markers.claimEvent(MARKER_EVENT_ID, MARKER_PROCESSED_AT, CONSUMED_TOPIC));
+        Integer rows = jdbc.queryForObject("SELECT count(*) FROM " + qualified(PROCESSED_EVENT)
+                + " WHERE event_id = ?", Integer.class, MARKER_EVENT_ID);
+
+        assertAll(
+                () -> assertEquals(Integer.valueOf(CLAIMED), first,
+                        "the first claim of an event reports no insert"),
+                () -> assertEquals(Integer.valueOf(ALREADY_CLAIMED), second,
+                        "the second claim of one event reports an insert"),
+                () -> assertEquals(Integer.valueOf(1), rows,
+                        "one event left another row count than one in " + PROCESSED_EVENT));
+    }
+
+    @Test
+    @DisplayName("the window statement opens a window at the amount, then raises count and total")
+    void theWindowStatementOpensThenRaisesOneWindow() {
+        Integer opened = transactionTemplate.execute(status -> windows.addAuthorization(
+                ACCOUNT_ID, FIRST_WINDOW_START, STORED_TOTAL, WINDOW_UPDATED_AT));
+        Integer raised = transactionTemplate.execute(status -> windows.addAuthorization(
+                ACCOUNT_ID, FIRST_WINDOW_START, ADDED_TOTAL, WINDOW_UPDATED_AT));
+        Map<String, Object> stored = jdbc.queryForMap("SELECT " + COLUMN_AUTHORIZATION_COUNT + ", "
+                + COLUMN_TOTAL_AMOUNT + " FROM " + qualified(VELOCITY_WINDOW) + " WHERE "
+                + COLUMN_ACCOUNT_ID + " = ? AND " + COLUMN_WINDOW_START + " = ?",
+                ACCOUNT_ID, atUtc(FIRST_WINDOW_START));
+        BigDecimal total = (BigDecimal) stored.get(COLUMN_TOTAL_AMOUNT);
+
+        assertAll(
+                () -> assertEquals(Integer.valueOf(ONE_ROW), opened,
+                        "the insert arm reported another row count"),
+                () -> assertEquals(Integer.valueOf(ONE_ROW), raised,
+                        "the conflict arm reported another row count"),
+                () -> assertEquals(Integer.valueOf(2), stored.get(COLUMN_AUTHORIZATION_COUNT),
+                        "two authorizations left another count"),
+                () -> assertEquals(TOTAL_AMOUNT_SCALE, total.scale(),
+                        COLUMN_TOTAL_AMOUNT + " scale"),
+                () -> assertEquals(0, RAISED_TOTAL.compareTo(total),
+                        "the two amounts summed to another total"));
+    }
+
+    @Test
+    @DisplayName("a second assessment of one transaction is refused rather than replacing the first")
+    void aSecondAssessmentOfOneTransactionIsRefused() {
+        saveAssessment(TRANSACTION_ID, CLEARED_RISK_SCORE, List.of());
+
+        assertThrows(DataIntegrityViolationException.class,
+                () -> saveAssessment(TRANSACTION_ID, FLAGGED_RISK_SCORE, List.of(VELOCITY)),
+                "a second verdict for one transaction reached the table");
+    }
+
+    @Test
     @DisplayName("velocity_window keeps two windows of one account and returns 504.77 at scale 2")
     void velocityWindowKeepsTwoWindowsOfOneAccount() {
         insertWindow(FIRST_WINDOW_START, STORED_TOTAL);
@@ -482,6 +586,57 @@ class EntitySchemaValidationIT {
                 () -> assertEquals(0, RAISED_TOTAL.compareTo(stored), COLUMN_TOTAL_AMOUNT),
                 () -> assertEquals(TOTAL_AMOUNT_SCALE, computed.scale(), "the computed scale"),
                 () -> assertEquals(0, RAISED_TOTAL.compareTo(computed), "the computed total"));
+    }
+
+    @Test
+    @DisplayName("velocity_window refuses a negative total because refunds are stored by magnitude")
+    void velocityWindowRefusesANegativeTotal() {
+        assertThrows(DataIntegrityViolationException.class,
+                () -> insertWindow(FIRST_WINDOW_START, new BigDecimal("-0.01")),
+                "the database accepted a refund that could lower the velocity total");
+    }
+
+    @Test
+    @DisplayName("the velocity upsert keeps every concurrent count and amount increment")
+    void velocityUpsertKeepsConcurrentIncrements() throws Exception {
+        int workers = 8;
+        BigDecimal perAuthorization = new BigDecimal("10.00");
+        CountDownLatch ready = new CountDownLatch(workers);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<Integer>> updates = new ArrayList<>();
+        String searchPath = schema();
+
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int index = 0; index < workers; index++) {
+                updates.add(executor.submit(() -> {
+                    ready.countDown();
+                    start.await();
+                    Integer changed = new TransactionTemplate(transactionManager).execute(status -> {
+                        jdbc.execute("SET LOCAL search_path TO " + searchPath);
+                        return windows.addAuthorization(
+                                ACCOUNT_ID, FIRST_WINDOW_START, perAuthorization, WINDOW_UPDATED_AT);
+                    });
+                    return changed == null ? 0 : changed;
+                }));
+            }
+
+            assertTrue(ready.await(5, TimeUnit.SECONDS), "workers did not reach the start gate");
+            start.countDown();
+            for (Future<Integer> update : updates) {
+                assertEquals(Integer.valueOf(1), update.get(10, TimeUnit.SECONDS),
+                        "one atomic upsert changed an unexpected row count");
+            }
+        }
+
+        Integer count = jdbc.queryForObject("SELECT " + COLUMN_AUTHORIZATION_COUNT + " FROM "
+                        + qualified(VELOCITY_WINDOW) + " WHERE " + COLUMN_ACCOUNT_ID + " = ?"
+                        + " AND " + COLUMN_WINDOW_START + " = ?",
+                Integer.class, ACCOUNT_ID, atUtc(FIRST_WINDOW_START));
+        BigDecimal total = totalAt(FIRST_WINDOW_START);
+        assertAll(
+                () -> assertEquals(Integer.valueOf(workers), count, "authorization count"),
+                () -> assertEquals(0, new BigDecimal("80.00").compareTo(total),
+                        "amount magnitude total"));
     }
 
     @Test
@@ -529,17 +684,24 @@ class EntitySchemaValidationIT {
     }
 
     @Test
-    @DisplayName("fraud_assessment carries its primary-key index, the account index the controller "
-            + "reads and the range index its purge reads, and no other")
-    void fraudAssessmentCarriesItsThreeIndexesAndNoOther() {
+    @DisplayName("fraud_assessment carries its primary-key index, the account index, the composite "
+            + "index the collection route reads and the range index its purge reads, and no other")
+    void fraudAssessmentCarriesItsFourIndexesAndNoOther() {
         assertAll(
                 () -> assertEquals(List.of(IX_FRAUD_ASSESSMENT_ACCOUNT,
+                                IX_FRAUD_ASSESSMENT_ACCOUNT_ASSESSED_AT,
                                 IX_FRAUD_ASSESSMENT_ASSESSED_AT, PK_FRAUD_ASSESSMENT),
                         indexNames(FRAUD_ASSESSMENT), FRAUD_ASSESSMENT + " indexes"),
                 () -> assertTrue(indexDefinition(IX_FRAUD_ASSESSMENT_ACCOUNT)
                                 .contains("(" + COLUMN_ACCOUNT_ID + ")"),
                         () -> IX_FRAUD_ASSESSMENT_ACCOUNT + " covers another column: "
-                                + indexDefinition(IX_FRAUD_ASSESSMENT_ACCOUNT)));
+                                + indexDefinition(IX_FRAUD_ASSESSMENT_ACCOUNT)),
+                () -> assertTrue(indexDefinition(IX_FRAUD_ASSESSMENT_ACCOUNT_ASSESSED_AT)
+                                .contains("(" + COLUMN_ACCOUNT_ID + ", " + COLUMN_ASSESSED_AT
+                                        + " DESC)"),
+                        () -> IX_FRAUD_ASSESSMENT_ACCOUNT_ASSESSED_AT
+                                + " covers other columns or another order: "
+                                + indexDefinition(IX_FRAUD_ASSESSMENT_ACCOUNT_ASSESSED_AT)));
     }
 
     @Test
@@ -603,14 +765,12 @@ class EntitySchemaValidationIT {
     }
 
     @Test
-    @DisplayName("triggered_rules keeps a repeated identifier and returns both occurrences")
-    void triggeredRulesKeepARepeatedIdentifier() {
+    @DisplayName("triggered_rules refuses a repeated identifier")
+    void triggeredRulesRefuseARepeatedIdentifier() {
         String repeated = "[\"" + VELOCITY + "\",\"" + VELOCITY + "\"]";
-        insertAssessment(TRANSACTION_ID, repeated, true);
-        assertAll(
-                () -> assertEquals(repeated, storedRules(TRANSACTION_ID), COLUMN_TRIGGERED_RULES),
-                () -> assertEquals(List.of(VELOCITY, VELOCITY), reloadRules(TRANSACTION_ID),
-                        "the occurrences read back"));
+        assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
+                () -> insertAssessment(TRANSACTION_ID, repeated, true));
+        assertEquals(0, assessments.count(), "the invalid row reached the table");
     }
 
     @Test
@@ -624,6 +784,37 @@ class EntitySchemaValidationIT {
                 () -> assertEquals(NO_RULES_STORED, stored, COLUMN_TRIGGERED_RULES),
                 () -> assertNotNull(read, "the list read back holds nothing at all"),
                 () -> assertEquals(List.of(), read, "the list read back"));
+    }
+
+    /**
+     * The database half of the flag threshold. {@code RiskScoringService} flags on the score reaching
+     * {@code carddemo.fraud.risk.flag-threshold}, so a rule worth less than the threshold triggering
+     * alone produces exactly this row. While the constraint was a biconditional this insert failed,
+     * which meant applying the threshold at all would have failed here rather than in a rule.
+     */
+    @Test
+    @DisplayName("fraud_assessment accepts a rule list with no flag, which is the below-threshold row")
+    void fraudAssessmentAcceptsRulesWithoutAFlag() {
+        assertDoesNotThrow(() -> insertAssessment(TRANSACTION_ID, "[\"" + VELOCITY + "\"]", false),
+                "a rule that triggered below the threshold has to be storable, or the threshold "
+                        + "cannot be applied");
+        assertEquals("[\"" + VELOCITY + "\"]", storedRules(TRANSACTION_ID),
+                COLUMN_TRIGGERED_RULES);
+    }
+
+    /**
+     * The half of the old constraint that is still true, and is still enforced. Every rule scores
+     * above zero and the threshold is at least one, so a score that reached it must name a rule.
+     */
+    @Test
+    @DisplayName("fraud_assessment still refuses a flag that names no rule")
+    void fraudAssessmentStillRefusesAFlagWithNoRule() {
+        DataIntegrityViolationException refused =
+                assertThrows(DataIntegrityViolationException.class,
+                        () -> insertAssessment(TRANSACTION_ID, NO_RULES_STORED, true),
+                        "a flagged row naming no rule states a conclusion with no reason behind it");
+        assertTrue(refused.getMessage().contains("ck_fraud_assessment_verdict"),
+                "the failure names the constraint: " + refused.getMessage());
     }
 
     @Test
@@ -807,7 +998,7 @@ class EntitySchemaValidationIT {
      *
      * @param transactionId key of the row, sixteen characters
      * @param storedRules   value the rule-list column takes verbatim
-     * @param flagged       verdict the row carries, which the schema holds to the rule list
+     * @param flagged       threshold-based verdict the row carries
      */
     private void insertAssessment(String transactionId, String storedRules, boolean flagged) {
         jdbc.update("INSERT INTO " + qualified(FRAUD_ASSESSMENT) + " (" + COLUMN_TRANSACTION_ID
@@ -907,6 +1098,160 @@ class EntitySchemaValidationIT {
         assertEquals(1, converted.size(),
                 () -> "fields of the assessment entity naming a converter: " + converted);
         return converted.get(0);
+    }
+
+
+    /** A moment far enough back that every retention horizon below follows it. */
+    private static final Instant RETENTION_EXPIRED_AT = Instant.parse("2020-01-01T00:00:00Z");
+
+    /** The horizon the retention checks apply, which every expired row above precedes. */
+    private static final Instant RETENTION_HORIZON = Instant.parse("2021-01-01T00:00:00Z");
+
+    /** Rows the bounded retention delete removes per statement when a check wants them all. */
+    private static final int RETENTION_BATCH_SIZE = 1000;
+
+    /**
+     * Runs the bounded marker delete against the migrated schema, then reads the result back.
+     *
+     * <p>{@code ddl-auto: validate} reads no {@code @Query} text, so a native statement is unchecked
+     * until it runs. {@code outbox/RetentionSweeper} owns this call.
+     */
+    @Test
+    @DisplayName("The marker retention delete takes the expired marker and keeps the newer one")
+    void markerRetentionDeleteTakesOnlyExpiredMarkers() {
+        UUID expired = UUID.fromString("00000000-0000-4000-8000-0000000000a1");
+        UUID recent = UUID.fromString("00000000-0000-4000-8000-0000000000a2");
+        jdbc.update("DELETE FROM " + qualified(PROCESSED_EVENT));
+        transactionTemplate.executeWithoutResult(status -> {
+            markers.claimEvent(expired, RETENTION_EXPIRED_AT, CONSUMED_TOPIC);
+            markers.claimEvent(recent, RETENTION_HORIZON.plusSeconds(60), CONSUMED_TOPIC);
+        });
+        assertEquals(2L, markerRowsCarrying(expired) + markerRowsCarrying(recent),
+                "both markers are present before the delete, so the counts below read the delete "
+                        + "and not the set-up");
+
+        int removed = transactionTemplate.execute(status ->
+                markers.deleteMarkersProcessedBefore(RETENTION_HORIZON, RETENTION_BATCH_SIZE));
+
+        assertAll("the bounded marker delete",
+                () -> assertEquals(1, removed, "one marker precedes the horizon"),
+                () -> assertEquals(0L, markerRowsCarrying(expired), "the expired marker is gone"),
+                () -> assertEquals(1L, markerRowsCarrying(recent),
+                        "a marker inside the horizon stays, so its redelivery is still refused"));
+    }
+
+    /**
+     * Runs the bounded outbox delete against the migrated schema.
+     *
+     * <p>The rows are written through the driver: the physical contract of the outbox table belongs
+     * to {@code OutboxAtomicityIT}, and no assertion here repeats it.
+     */
+    @Test
+    @DisplayName("The outbox retention delete takes a published row past the horizon and never an "
+            + "unpublished one")
+    void outboxRetentionDeleteTakesOnlyPublishedRowsPastTheHorizon() {
+        UUID expired = UUID.fromString("00000000-0000-4000-8000-0000000000c1");
+        UUID recent = UUID.fromString("00000000-0000-4000-8000-0000000000c2");
+        UUID unpublished = UUID.fromString("00000000-0000-4000-8000-0000000000c3");
+        jdbc.update("DELETE FROM " + qualified("outbox_event"));
+        storePublishedOutboxRow(expired, RETENTION_EXPIRED_AT);
+        storePublishedOutboxRow(recent, RETENTION_HORIZON.plusSeconds(60));
+        storeUnpublishedOutboxRow(unpublished);
+
+        int removed = transactionTemplate.execute(status ->
+                context.getBean(com.carddemo.fraud.repository.OutboxEventRepository.class)
+                        .deletePublishedBefore(RETENTION_HORIZON, RETENTION_BATCH_SIZE));
+
+        assertAll("the bounded outbox delete",
+                () -> assertEquals(1, removed, "one published row precedes the horizon"),
+                () -> assertEquals(0L, outboxRowsCarrying(expired), "the expired row is gone"),
+                () -> assertEquals(1L, outboxRowsCarrying(recent),
+                        "a published row inside the horizon stays"),
+                () -> assertEquals(1L, outboxRowsCarrying(unpublished),
+                        "the relay has not published this row, so retention must not take it"));
+        jdbc.update("DELETE FROM " + qualified("outbox_event"));
+    }
+
+    /**
+     * Writes one published outbox row through the driver.
+     *
+     * @param eventId     the row key
+     * @param publishedAt the publication instant, which the row also records as its creation
+     */
+    private void storePublishedOutboxRow(UUID eventId, Instant publishedAt) {
+        jdbc.update("INSERT INTO " + qualified("outbox_event")
+                        + " (event_id, event_type, aggregate_id, payload, created_at, "
+                        + "next_attempt_at, published, published_at, relay_state) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, TRUE, ?, 'PUBLISHED')",
+                eventId, "FraudFlagged", ACCOUNT_ID, "{}", atUtc(publishedAt), atUtc(publishedAt),
+                atUtc(publishedAt));
+    }
+
+    /**
+     * Writes one unpublished outbox row through the driver.
+     *
+     * @param eventId the row key
+     */
+    private void storeUnpublishedOutboxRow(UUID eventId) {
+        jdbc.update("INSERT INTO " + qualified("outbox_event")
+                        + " (event_id, event_type, aggregate_id, payload, created_at, "
+                        + "next_attempt_at) VALUES (?, ?, ?, ?, ?, ?)",
+                eventId, "FraudFlagged", ACCOUNT_ID, "{}", atUtc(RETENTION_EXPIRED_AT),
+                atUtc(RETENTION_EXPIRED_AT));
+    }
+
+    /**
+     * Counts marker rows carrying one identifier, read through the driver so no persistence-context
+     * copy can answer instead of the table.
+     *
+     * @param eventId the identifier to count
+     * @return 1 when the marker is present, and 0 when it is not
+     */
+    private long markerRowsCarrying(UUID eventId) {
+        return jdbc.queryForObject("SELECT count(*) FROM " + qualified(PROCESSED_EVENT)
+                + " WHERE event_id = ?", Long.class, eventId);
+    }
+
+    /**
+     * Counts outbox rows carrying one identifier.
+     *
+     * @param eventId the identifier to count
+     * @return 1 when the row is present, and 0 when it is not
+     */
+    private long outboxRowsCarrying(UUID eventId) {
+        return jdbc.queryForObject("SELECT count(*) FROM " + qualified("outbox_event")
+                + " WHERE event_id = ?", Long.class, eventId);
+    }
+
+    /**
+     * Runs the bounded velocity delete against the migrated schema. The statement names a composite
+     * key, which is the shape most likely to be rejected by a dialect.
+     */
+    @Test
+    @DisplayName("The velocity retention delete takes the expired window and honours its limit")
+    void velocityRetentionDeleteTakesExpiredWindowsWithinItsLimit() {
+        jdbc.update("DELETE FROM " + qualified(VELOCITY_WINDOW));
+        transactionTemplate.executeWithoutResult(status -> {
+            windows.save(new VelocityWindowEntity(ACCOUNT_ID, RETENTION_EXPIRED_AT, 1,
+                    new BigDecimal("10.00"), RETENTION_EXPIRED_AT));
+            windows.save(new VelocityWindowEntity(ACCOUNT_ID, RETENTION_EXPIRED_AT.plusSeconds(1), 1,
+                    new BigDecimal("10.00"), RETENTION_EXPIRED_AT.plusSeconds(1)));
+            windows.save(new VelocityWindowEntity(ACCOUNT_ID, RETENTION_HORIZON.plusSeconds(60), 1,
+                    new BigDecimal("10.00"), RETENTION_HORIZON.plusSeconds(60)));
+        });
+
+        int firstStatement = transactionTemplate.execute(status ->
+                windows.deleteWindowsStartedBefore(RETENTION_HORIZON, 1));
+        int secondStatement = transactionTemplate.execute(status ->
+                windows.deleteWindowsStartedBefore(RETENTION_HORIZON, RETENTION_BATCH_SIZE));
+        int thirdStatement = transactionTemplate.execute(status ->
+                windows.deleteWindowsStartedBefore(RETENTION_HORIZON, RETENTION_BATCH_SIZE));
+
+        assertEquals(1, firstStatement, "the limit bounds one statement");
+        assertEquals(1, secondStatement, "the remaining expired window follows");
+        assertEquals(0, thirdStatement,
+                "the sweeper stops on a count below the batch size, and the live window stays");
+        assertEquals(1L, windows.count(), "the window inside the horizon is untouched");
     }
 
     /**

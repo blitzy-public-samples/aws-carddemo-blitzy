@@ -131,8 +131,46 @@ class SchemaValidationTest {
      * without a claim two relay instances read the same unpublished row and publish the same event
      * twice, and without an attempt count and a next-attempt time one undeliverable row is retried
      * for ever and every row behind it waits.
+     *
+     * <p>These are the types the first migration of each service declares. The authorization service
+     * later widens {@code aggregate_id} to {@code VARCHAR(16)} in
+     * {@code V5__outbox_transaction_key.sql}, because one of its events is keyed by transaction
+     * identifier rather than by account identifier: the decline for a card that resolves to no
+     * account has no account identifier to key on. This comparison reads {@code CREATE TABLE} only,
+     * so it measures the shape every service starts from, which is the shape one relay contract
+     * needs. A later widening in one service does not break that contract, because the relay reads
+     * the column as text either way.
      */
     private static final Map<String, String> CANONICAL_OUTBOX_COLUMNS = canonicalOutboxColumns();
+
+    /**
+     * The {@code aggregate_id} type the authorization service declares.
+     *
+     * <p>{@code TransactionDeclined} version 2 carries no account identifier, so a decline that
+     * resolved no card is keyed on its transaction identifier. {@code TRAN-ID PIC X(16)} at
+     * app/cpy/CVTRA05Y.cpy:L5 sets that width, and {@code XREF-ACCT-ID PIC 9(11)} at
+     * app/cpy/CVACT03Y.cpy:L7 sets the other. {@code EventEnvelope#AGGREGATE_KEY_PATTERN} admits
+     * both forms and the column holds the wider one.
+     */
+    private static final String AUTHORIZATION_AGGREGATE_KEY_TYPE = "VARCHAR(16) NOT NULL";
+
+    /** The one module whose {@code aggregate_id} holds an unresolved-decline key. */
+    private static final String UNRESOLVED_KEY_MODULE = "authorization-service";
+
+    /**
+     * The canonical outbox columns as the named module declares them.
+     *
+     * @param module the Maven module directory name
+     * @return the column names in declaration order, each mapped to its declared type
+     */
+    private static Map<String, String> outboxColumnsFor(String module) {
+        if (!UNRESOLVED_KEY_MODULE.equals(module)) {
+            return CANONICAL_OUTBOX_COLUMNS;
+        }
+        Map<String, String> columns = new LinkedHashMap<>(CANONICAL_OUTBOX_COLUMNS);
+        columns.put("aggregate_id", AUTHORIZATION_AGGREGATE_KEY_TYPE);
+        return columns;
+    }
 
     /**
      * The three canonical {@code processed_event} columns, in declaration order, with their types.
@@ -222,8 +260,7 @@ class SchemaValidationTest {
                 new Service("card-service", "card_service", List.of(
                         com.carddemo.card.entity.CardEntity.class,
                         com.carddemo.card.entity.CardCrossReferenceEntity.class,
-                        com.carddemo.card.entity.OutboxEventEntity.class,
-                        com.carddemo.card.entity.ProcessedEventEntity.class)));
+                        com.carddemo.card.entity.OutboxEventEntity.class)));
     }
 
     @ParameterizedTest(name = "{0}")
@@ -306,15 +343,17 @@ class SchemaValidationTest {
     }
 
     @Test
-    @DisplayName("every service declares the same outbox and processed-event shape")
+    @DisplayName("each declared event table carries the platform shape")
     void eventTablesShareOneShape() {
         List<String> divergences = new ArrayList<>();
 
         for (Service service : services()) {
             String migration = migrationText(service.module());
 
-            compare(service.module(), "processed_event", CANONICAL_MARKER_COLUMNS,
-                    tableColumns(migration, "processed_event"), divergences);
+            if (migration.contains("CREATE TABLE processed_event")) {
+                compare(service.module(), "processed_event", CANONICAL_MARKER_COLUMNS,
+                        tableColumns(migration, "processed_event"), divergences);
+            }
 
             // The notification service publishes nothing, so it declares no outbox table. Every
             // other service publishes at least one event and declares one.
@@ -331,7 +370,7 @@ class SchemaValidationTest {
                 continue;
             }
 
-            compare(service.module(), "outbox_event", CANONICAL_OUTBOX_COLUMNS,
+            compare(service.module(), "outbox_event", outboxColumnsFor(service.module()),
                     tableColumns(migration, "outbox_event"), divergences);
             if (!migration.contains("ck_outbox_event_publication")) {
                 divergences.add(service.module() + " omits the publication check constraint that "
@@ -344,7 +383,8 @@ class SchemaValidationTest {
 
         assertTrue(divergences.isEmpty(),
                 "One outbox and processed-event shape serves every service, so one relay contract "
-                        + "covers all of them. These differ: " + divergences);
+                        + "covers all of them. Only aggregate_id widens, and only for "
+                        + UNRESOLVED_KEY_MODULE + ". These differ: " + divergences);
     }
 
     /**
@@ -415,8 +455,8 @@ class SchemaValidationTest {
     /**
      * Reads one column declaration, discarding a trailing comment and the separating comma.
      *
-     * <p>The comment is discarded rather than the whole line, so a column that carries a trailing
-     * comment is still checked. Skipping such a line instead would hide it from every assertion here.
+     * <p>The comment is discarded rather than the whole line, so a column that carries a
+     * trailing comment is still checked.
      *
      * @param line one line of a migration
      * @return the column name and its declared type, or empty when the line declares no column

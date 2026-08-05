@@ -26,16 +26,20 @@ package com.carddemo.account.api.dto;
  * {@code WS-EDIT-VARIABLE-NAME PIC X(25)} at {@code app/cbl/COACTUPC.cbl:L53}, so a message built
  * from that name opens {@code Current Cycle Credit Limi}.
  *
- * <p>Rationale for the shape of this record: {@code card-platform/docs/decision-log.md}. Field
- * mapping and the source constructs that reach no component:
- * {@code card-platform/docs/traceability-matrix.md}. Source findings behind the message text:
- * {@code card-platform/docs/business-rule-flags.md}.
- *
  * @param message the one message a validation pass produced, up to 75 characters wide, from
  *                {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COACTUPC.cbl:L479}. An empty
  *                message marks the update accepted, matching
  *                {@code WS-RETURN-MSG-OFF VALUE SPACES} at {@code app/cbl/COACTUPC.cbl:L480}.
  *                Nullable.
+ * <p>Two properties of the components are worth stating, because both are decisions rather than
+ * defaults. The one message is the whole error contract: {@link AccountUpdateRequest} declares no
+ * constraint and no cascade so that the ordered pass in
+ * {@code domain/AccountUpdateService.editMapInputs} is the only validator, and it stops at the first
+ * failure. A second, unordered pass would produce a set of messages this component cannot carry. And
+ * every monetary value of the embedded {@link AccountView} reaches the wire as a two-decimal string
+ * rather than as a JavaScript Object Notation number, so a balance cannot lose its scale to a binary
+ * floating-point type in a caller's parser.
+ *
  * @param account the resulting account state, as {@link AccountView}. Populated on an accepted
  *                update. Nullable.
  */

@@ -1,6 +1,7 @@
 package com.carddemo.account.repository;
 
 import com.carddemo.account.entity.ProcessedEventEntity;
+import com.carddemo.account.entity.OutboxEventEntity;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -15,13 +16,23 @@ import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.repository.Repository;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
@@ -29,28 +40,28 @@ import static org.assertj.core.api.Assertions.within;
 /**
  * Tests {@link ProcessedEventRepository} against the migrated {@code processed_event} table.
  *
- * <p>ADDITIVE. No copybook and no program declares this marker.
+ * <p>No COBOL ancestor. No copybook and no program declares this marker.
  * {@code app/cbl/CBTRN02C.cbl:L562-L579} writes each posted transaction in the paragraph
  * {@code 2900-WRITE-TRANSACTION-FILE}, performs no duplicate check, and routes every file status
  * other than {@code '00'} to {@code 9999-ABEND-PROGRAM}.
  *
  * <p>The account service registers no listener, so no component writes a marker here today. The
- * tests below cover the three operations a listener added to this service would call: the existence
- * check, the write, and the retention purge.
+ * tests below cover the operations a listener added to this service would call: existence,
+ * atomic claim, write and retention purge.
  *
  * <p>Three tests reach no row. Two read the declared method surface and the identifier type
  * argument, a Universally Unique Identifier (UUID), by reflection. One reads the Jakarta Persistence
  * metamodel for the persistent attributes. A method or an attribute added later makes one of the
  * three fail, which keeps the addition deliberate.
  *
- * <p>Five tests reach the table, and the four that write carry {@code @Transactional}. Spring rolls
- * those rows back, so the table returns to the state the migrations leave.
- * {@link AbstractAccountPostgresTest} owns the one PostgreSQL container and the Spring context, and
- * this class declares neither.
+ * <p>The simultaneous-claim test opens two transactions and writes one outbox side effect.
+ * Its cleanup removes both committed rows. Other writing tests carry {@code @Transactional}
+ * and roll back as they return. {@link AbstractAccountPostgresTest} owns the PostgreSQL
+ * container and Spring context.
  *
- * <p>{@code card-platform/docs/decision-log.md} (planned) records the idempotent-consumer decision,
- * and {@code card-platform/docs/traceability-matrix.md} (planned) carries the mapping.
- * {@code card-platform/docs/event-flow.md} (planned) draws the publish and consume paths.
+ * <p>{@code card-platform/docs/decision-log.md} records the idempotent-consumer decision,
+ * and {@code card-platform/docs/traceability-matrix.md} carries the mapping.
+ * {@code card-platform/docs/event-flow.md} draws the publish and consume paths.
  */
 @DisplayName("ProcessedEventRepository over the migrated processed_event table")
 class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
@@ -73,7 +84,7 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
     private static final UUID READ_BACK_EVENT_ID =
             UUID.fromString("2d4f6b8a-3c5e-4b7d-9a1c-4e6f8b0d2a3c");
 
-    /** Identifier the duplicate-write test saves twice. */
+    /** Identifier both simultaneous deliveries try to claim. */
     private static final UUID REPLAYED_EVENT_ID =
             UUID.fromString("3e5a7c9b-4d6f-4c8a-b0d2-5f7a9c1e3b4d");
 
@@ -91,8 +102,18 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
      */
     private static final Instant MARKER_PROCESSED_AT = Instant.parse("2026-02-17T09:41:22.123456Z");
 
-    /** Processing time the second write of one identifier carries. */
-    private static final Instant REPLAY_PROCESSED_AT = Instant.parse("2026-02-17T11:07:33.654321Z");
+    /** Topic recorded on the marker claimed by the concurrent delivery. */
+    private static final String CONSUMED_TOPIC = "account.state-changed";
+
+    /** Identifier of the one outbox side effect the winning claim writes. */
+    private static final UUID SIDE_EFFECT_EVENT_ID =
+            UUID.fromString("6b8d0f2a-7c9e-4f1b-a3d5-8c0e2f4b6d7a");
+
+    /** Account identifier carried by the side-effect row. */
+    private static final String SIDE_EFFECT_ACCOUNT_ID = "00000000042";
+
+    /** Event type carried by the side-effect row. */
+    private static final String SIDE_EFFECT_EVENT_TYPE = "AccountStateChanged";
 
     /** Processing time of the marker that sits before the purge horizon. */
     private static final Instant OLDER_PROCESSED_AT = Instant.parse("2026-01-04T00:00:00.000000Z");
@@ -107,12 +128,34 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
     @Autowired
     private ProcessedEventRepository repository;
 
+    /** Store of the business side effect written by the winning claim. */
+    @Autowired
+    private OutboxEventRepository outboxEvents;
+
+    /** Opens the two independent claim transactions. */
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
     /**
      * Flushes a write to the row, empties the persistence context, and counts rows. The metamodel
      * assertions read it too.
      */
     @PersistenceContext
     private EntityManager entityManager;
+
+    /** Removes committed rows written by the concurrent claim test. */
+    @AfterEach
+    void removeConcurrentClaimRows() {
+        inTransaction(() -> {
+            outboxEvents.deleteById(SIDE_EFFECT_EVENT_ID);
+            entityManager.createQuery(
+                            "DELETE FROM ProcessedEventEntity marker "
+                                    + "WHERE marker.eventId = :eventId")
+                    .setParameter("eventId", REPLAYED_EVENT_ID)
+                    .executeUpdate();
+            return null;
+        });
+    }
 
     @Test
     @DisplayName("the interface declares existsById, save, claimEvent and "
@@ -205,18 +248,30 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
     }
 
     @Test
-    @Transactional
-    @DisplayName("saving one identifier twice leaves one row")
-    void savingOneIdentifierTwiceLeavesOneRow() {
-        repository.save(new ProcessedEventEntity(REPLAYED_EVENT_ID, MARKER_PROCESSED_AT));
-        entityManager.flush();
+    @DisplayName("simultaneous claimEvent calls leave one marker and one business side effect")
+    void simultaneousClaimsLeaveOneMarkerAndOneSideEffect() throws Exception {
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+        try {
+            Future<Integer> first =
+                    workers.submit(() -> claimWithSideEffect(ready, start));
+            Future<Integer> second =
+                    workers.submit(() -> claimWithSideEffect(ready, start));
 
-        repository.save(new ProcessedEventEntity(REPLAYED_EVENT_ID, REPLAY_PROCESSED_AT));
-        entityManager.flush();
+            assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
 
-        assertThat(markersCarrying(REPLAYED_EVENT_ID))
-                .withFailMessage("a second write of one event identifier left more than one row")
-                .isEqualTo(1L);
+            assertThat(List.of(first.get(5, TimeUnit.SECONDS),
+                    second.get(5, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder(0, 1);
+        } finally {
+            start.countDown();
+            workers.shutdownNow();
+        }
+
+        assertThat(markersCarrying(REPLAYED_EVENT_ID)).isEqualTo(1L);
+        assertThat(outboxEvents.findById(SIDE_EFFECT_EVENT_ID)).isPresent();
     }
 
     @Test
@@ -247,6 +302,37 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
                                 + "WHERE marker.eventId = :eventId", Long.class)
                 .setParameter("eventId", eventId)
                 .getSingleResult();
+    }
+
+    /** Claims the shared event and writes one outbox row only for the winning transaction. */
+    private int claimWithSideEffect(CountDownLatch ready, CountDownLatch start) {
+        ready.countDown();
+        try {
+            if (!start.await(5, TimeUnit.SECONDS)) {
+                throw new AssertionError("the simultaneous claim did not start");
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("the simultaneous claim was interrupted", interrupted);
+        }
+
+        return inTransaction(() -> {
+            int claimed = repository.claimEvent(
+                    REPLAYED_EVENT_ID, MARKER_PROCESSED_AT, CONSUMED_TOPIC);
+            if (claimed == 1) {
+                outboxEvents.save(new OutboxEventEntity(
+                        SIDE_EFFECT_EVENT_ID, SIDE_EFFECT_EVENT_TYPE, "{}",
+                        SIDE_EFFECT_ACCOUNT_ID, MARKER_PROCESSED_AT));
+            }
+            return claimed;
+        });
+    }
+
+    /** Runs one callback in a new transaction. */
+    private <T> T inTransaction(Supplier<T> callback) {
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        return transaction.execute(status -> callback.get());
     }
 
     /**

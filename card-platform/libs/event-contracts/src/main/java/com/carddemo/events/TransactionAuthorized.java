@@ -7,6 +7,8 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import tools.jackson.databind.annotation.JsonSerialize;
 import tools.jackson.databind.ser.std.ToStringSerializer;
 
@@ -21,17 +23,27 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * {@code app/cbl/CBTRN02C.cbl:L425-L436} moves those twelve fields from the feed record onto the
  * posted record.
  *
- * <p>The wire form is flat. A serialized event holds nineteen properties in one JavaScript Object
- * Notation (JSON) object: the five envelope fields declared first below and the fourteen payload
- * fields that follow them. No {@code envelope} key reaches a topic. The contract is
- * {@code schemas/transaction-authorized-v1.json}, which lists all nineteen names in one
- * {@code required} array and sets {@code additionalProperties} to {@code false}. Both ends validate
- * against it.
+ * <p>The wire form is flat. A serialized event holds its properties in one JavaScript Object
+ * Notation (JSON) object: the five envelope fields declared first below and the payload fields that
+ * follow them. No {@code envelope} key reaches a topic. Two contracts govern the event, one per
+ * version. {@code schemas/transaction-authorized-v1.json} lists nineteen names and
+ * {@code schemas/transaction-authorized-v2.json} lists twenty, adding {@link #cardToken()}. Each
+ * document names every field of its version in one {@code required} array and sets
+ * {@code additionalProperties} to {@code false}. Both ends validate against the document the
+ * {@code schemaVersion} of the event selects.
  *
- * <p>Two components are ADDITIVE. {@link #maskedCardNumber()} takes its width and position from
+ * <p>Version 2 is the version a producer stamps, and {@link #CARD_TOKEN_SCHEMA_VERSION} names it.
+ * Version 1 stays governed and readable, so a consumer written against it is not broken by the
+ * addition. A version 1 event carries no card token and {@link #cardToken()} answers {@code null}
+ * for it.
+ *
+ * <p>Three components are ADDITIVE. {@link #maskedCardNumber()} takes its width and position from
  * {@code TRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L15}. No source program masks a
  * card number, and {@code app/bms/COCRDSL.bms:L96-L99} defines the card detail field at the full
  * sixteen characters. A producer supplies the masked value, and this record masks nothing.
+ * {@link #cardToken()} is the card identity a masked card number cannot supply: twelve of its
+ * sixteen characters are the mask, so two cards ending in the same four digits mask alike. A
+ * consumer that keys rows on a card keys them on the token.
  * {@link #currency()} is ADDITIVE in full and always holds {@link #CURRENCY}.
  *
  * <p>Two source fields have no component here. The trailing {@code FILLER PIC X(20)} at
@@ -64,8 +76,8 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * @param eventId              the idempotency key each consumer records before it applies side
  *                             effects, a Universally Unique Identifier (UUID)
  * @param eventType            the routing discriminator, always {@link #EVENT_TYPE}
- * @param schemaVersion        the contract version, always
- *                             {@link EventEnvelope#SCHEMA_VERSION}
+ * @param schemaVersion        the contract version, either {@link EventEnvelope#SCHEMA_VERSION} or
+ *                             {@link #CARD_TOKEN_SCHEMA_VERSION}. A producer stamps the second
  * @param occurredAt           the moment the producer wrote the event, in Coordinated Universal
  *                             Time
  * @param aggregateId          the eleven-digit account identifier, and the Kafka message key. From
@@ -104,7 +116,15 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  *                             {@code app/cpy/CVTRA05Y.cpy:L14}
  * @param maskedCardNumber     twelve asterisks then the last four digits, sixteen characters in
  *                             all. ADDITIVE. Width and position from
- *                             {@code TRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L15}
+ *                             {@code TRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L15}.
+ *                             Display data, and never an identity: two cards ending alike share one
+ *                             masked value
+ * @param cardToken            the card identity, {@value #CARD_TOKEN_LENGTH} lower-case
+ *                             hexadecimal characters derived from the full card number. ADDITIVE.
+ *                             No source field exists. Required under
+ *                             {@link #CARD_TOKEN_SCHEMA_VERSION} and absent under
+ *                             {@link EventEnvelope#SCHEMA_VERSION}. A consumer keys a card-scoped
+ *                             row, route or authority on this value
  * @param authorizedAt         the authorization timestamp, twenty-six characters shaped
  *                             {@code YYYY-MM-DD HH:MM:SS.ffffff}. From
  *                             {@code TRAN-ORIG-TS PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L16}
@@ -131,6 +151,7 @@ public record TransactionAuthorized(
         String merchantCity,
         String merchantZip,
         String maskedCardNumber,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String cardToken,
         String authorizedAt,
         String accountId,
         String currency) {
@@ -152,6 +173,33 @@ public record TransactionAuthorized(
      * to this text with {@code "const"}. The canonical constructor accepts no other value.
      */
     public static final String CURRENCY = "USD";
+
+    /**
+     * The contract version that carries {@link #cardToken()}, and the version a producer stamps.
+     *
+     * <p>{@code schemas/transaction-authorized-v2.json} pins {@code schemaVersion} to this number.
+     * Version {@link EventEnvelope#SCHEMA_VERSION} stays governed by
+     * {@code schemas/transaction-authorized-v1.json} and carries no card token, so a consumer
+     * written against version 1 keeps reading version 1 events unchanged.
+     */
+    public static final int CARD_TOKEN_SCHEMA_VERSION = 2;
+
+    /**
+     * The characters {@link #cardToken()} holds: the hexadecimal rendering of a SHA-256 digest.
+     *
+     * <p>{@code PanMasker.cardToken} in {@code card-platform/libs/cobol-compat} derives the value,
+     * and this module declares the width rather than depending on that module.
+     */
+    public static final int CARD_TOKEN_LENGTH = 64;
+
+    /**
+     * The form {@link #cardToken()} takes: exactly {@value #CARD_TOKEN_LENGTH} lower-case
+     * hexadecimal characters.
+     *
+     * <p>The same pattern constrains {@code cardToken} in
+     * {@code schemas/transaction-authorized-v2.json}.
+     */
+    public static final String CARD_TOKEN_PATTERN = "^[0-9a-f]{64}$";
 
     /**
      * The fractional digits {@link #amount()} always carries.
@@ -285,6 +333,9 @@ public record TransactionAuthorized(
     /** {@link #AUTHORIZED_AT_PATTERN} compiled. */
     private static final Pattern AUTHORIZED_AT_MATCHER = Pattern.compile(AUTHORIZED_AT_PATTERN);
 
+    /** {@link #CARD_TOKEN_PATTERN} compiled. */
+    private static final Pattern CARD_TOKEN_MATCHER = Pattern.compile(CARD_TOKEN_PATTERN);
+
     /**
      * {@link EventEnvelope#AGGREGATE_ID_PATTERN} compiled, and the check both account identifiers
      * run.
@@ -293,13 +344,17 @@ public record TransactionAuthorized(
             Pattern.compile(EventEnvelope.AGGREGATE_ID_PATTERN);
 
     /**
-     * Checks all nineteen components and rejects a value
-     * {@code schemas/transaction-authorized-v1.json} would reject.
+     * Checks every component and rejects a value the schema document of its version would reject.
      *
      * <p>Every exception message names the component that failed. The checks match the schema
      * document. A component it caps by length accepts any shorter value, including an empty one. A
      * component it constrains by pattern must match. Nothing here is stricter than the document, so
      * every event the document accepts deserializes.
+     *
+     * <p>{@code cardToken} is the one component whose rule depends on the version. Under
+     * {@link #CARD_TOKEN_SCHEMA_VERSION} it must match {@link #CARD_TOKEN_PATTERN}, and under
+     * {@link EventEnvelope#SCHEMA_VERSION} it must be absent, because version 1 declares no such
+     * property and closes its property set.
      *
      * <p>{@code amount} is the one component this constructor changes. The amount arrives at any
      * scale and is stored at {@link #AMOUNT_SCALE} using {@link #AMOUNT_ROUNDING}, so
@@ -310,14 +365,17 @@ public record TransactionAuthorized(
      * <p>A failure on {@code maskedCardNumber} reports the length of the rejected value and never
      * the value, so no card number reaches a log through a failure.
      *
-     * @throws NullPointerException     when any component is {@code null}
+     * @throws NullPointerException     when any component other than {@code cardToken} is
+     *                                 {@code null}
      * @throws IllegalArgumentException when {@code eventType} is not {@link #EVENT_TYPE}, when
-     *                                 {@code schemaVersion} is not
-     *                                 {@link EventEnvelope#SCHEMA_VERSION}, when either account
+     *                                 {@code schemaVersion} is neither
+     *                                 {@link EventEnvelope#SCHEMA_VERSION} nor
+     *                                 {@link #CARD_TOKEN_SCHEMA_VERSION}, when either account
      *                                 identifier is not eleven decimal digits, when the two account
      *                                 identifiers differ, when a text component breaks its width,
-     *                                 when a component breaks its pattern, or when
-     *                                 {@code currency} is not {@link #CURRENCY}
+     *                                 when a component breaks its pattern, when {@code cardToken}
+     *                                 disagrees with the version, or when {@code currency} is not
+     *                                 {@link #CURRENCY}
      */
     public TransactionAuthorized {
         Objects.requireNonNull(eventId, "eventId must be present");
@@ -328,9 +386,11 @@ public record TransactionAuthorized(
             throw new IllegalArgumentException("eventType must be \"" + EVENT_TYPE
                     + "\" and the supplied value is \"" + eventType + "\"");
         }
-        if (schemaVersion != EventEnvelope.SCHEMA_VERSION) {
+        if (schemaVersion != EventEnvelope.SCHEMA_VERSION
+                && schemaVersion != CARD_TOKEN_SCHEMA_VERSION) {
             throw new IllegalArgumentException("schemaVersion must be "
-                    + EventEnvelope.SCHEMA_VERSION + " and the supplied value is " + schemaVersion);
+                    + EventEnvelope.SCHEMA_VERSION + " or " + CARD_TOKEN_SCHEMA_VERSION
+                    + " and the supplied value is " + schemaVersion);
         }
 
         requireAccountIdentifier(aggregateId, "aggregateId");
@@ -367,6 +427,7 @@ public record TransactionAuthorized(
         requirePrintable(merchantCity, "merchantCity");
         requirePrintable(merchantZip, "merchantZip");
         requireMaskedForm(maskedCardNumber);
+        requireCardTokenOfVersion(cardToken, schemaVersion);
         requireExactLength(authorizedAt, AUTHORIZED_AT_LENGTH, "authorizedAt");
         requirePattern(authorizedAt, AUTHORIZED_AT_MATCHER, AUTHORIZED_AT_PATTERN, "authorizedAt");
 
@@ -408,12 +469,14 @@ public record TransactionAuthorized(
     }
 
     /**
-     * Builds an event, stamping the envelope and the currency a producer never chooses by hand.
+     * Builds an event, stamping the envelope, the version and the currency a producer never chooses
+     * by hand.
      *
-     * <p>The envelope comes from {@link EventEnvelope#of(String, String)} carrying
-     * {@link #EVENT_TYPE}, so {@code eventId}, {@code schemaVersion} and {@code occurredAt} are
-     * stamped here. {@code currency} takes {@link #CURRENCY}. The account identifier is supplied
-     * once and becomes both {@code aggregateId} and {@code accountId}.
+     * <p>The envelope comes from {@link EventEnvelope#of(String, String, int)} carrying
+     * {@link #EVENT_TYPE} and {@link #CARD_TOKEN_SCHEMA_VERSION}, so {@code eventId},
+     * {@code schemaVersion} and {@code occurredAt} are stamped here. {@code currency} takes
+     * {@link #CURRENCY}. The account identifier is supplied once and becomes both
+     * {@code aggregateId} and {@code accountId}.
      *
      * @param accountId            the eleven-digit account identifier, and the Kafka message key
      * @param transactionId        the transaction identifier, sixteen characters
@@ -426,26 +489,63 @@ public record TransactionAuthorized(
      * @param merchantName         the merchant name
      * @param merchantCity         the merchant city
      * @param merchantZip          the merchant postal code
-     * @param maskedCardNumber     twelve asterisks then the last four digits
+     * @param maskedCardNumber     twelve asterisks then the last four digits, display data only
+     * @param cardToken            the card identity, {@value #CARD_TOKEN_LENGTH} lower-case
+     *                             hexadecimal characters
      * @param authorizedAt         the authorization timestamp, shaped
      *                             {@code YYYY-MM-DD HH:MM:SS.ffffff}
-     * @return an event carrying the thirteen supplied values, a stamped envelope, the account
-     *         identifier under both names, and {@link #CURRENCY}
+     * @return an event carrying the fourteen supplied values, a stamped envelope at
+     *         {@link #CARD_TOKEN_SCHEMA_VERSION}, the account identifier under both names, and
+     *         {@link #CURRENCY}
      * @throws NullPointerException     when any argument is {@code null}
      * @throws IllegalArgumentException when an argument breaks its width or its pattern
      */
     public static TransactionAuthorized of(String accountId, String transactionId,
             String transactionTypeCode, String merchantCategoryCode, String source,
             String description, BigDecimal amount, String merchantId, String merchantName,
-            String merchantCity, String merchantZip, String maskedCardNumber,
+            String merchantCity, String merchantZip, String maskedCardNumber, String cardToken,
             String authorizedAt) {
-        EventEnvelope envelope = EventEnvelope.of(EVENT_TYPE, accountId);
+        EventEnvelope envelope =
+                EventEnvelope.of(EVENT_TYPE, accountId, CARD_TOKEN_SCHEMA_VERSION);
 
         return new TransactionAuthorized(envelope.eventId(), envelope.eventType(),
                 envelope.schemaVersion(), envelope.occurredAt(), envelope.aggregateId(),
                 transactionId, transactionTypeCode, merchantCategoryCode, source, description,
                 amount, merchantId, merchantName, merchantCity, merchantZip, maskedCardNumber,
-                authorizedAt, envelope.aggregateId(), CURRENCY);
+                cardToken, authorizedAt, envelope.aggregateId(), CURRENCY);
+    }
+
+    /**
+     * Checks {@code cardToken} against the version that carries it.
+     *
+     * <p>Under {@link #CARD_TOKEN_SCHEMA_VERSION} the token is required and must match
+     * {@link #CARD_TOKEN_PATTERN}. Under {@link EventEnvelope#SCHEMA_VERSION} it must be absent,
+     * because {@code schemas/transaction-authorized-v1.json} declares no such property and sets
+     * {@code additionalProperties} to {@code false}.
+     *
+     * <p>The failure message reports the length of a rejected value and never the value, matching
+     * the discipline every card-bearing component of this record follows.
+     *
+     * @param cardToken     the token to check, or {@code null}
+     * @param schemaVersion the version the event carries
+     * @throws IllegalArgumentException when the token disagrees with the version
+     */
+    private static void requireCardTokenOfVersion(String cardToken, int schemaVersion) {
+        if (schemaVersion == CARD_TOKEN_SCHEMA_VERSION) {
+            if (cardToken == null || !CARD_TOKEN_MATCHER.matcher(cardToken).matches()) {
+                throw new IllegalArgumentException("cardToken must match " + CARD_TOKEN_PATTERN
+                        + " under schemaVersion " + CARD_TOKEN_SCHEMA_VERSION
+                        + " and the supplied value " + (cardToken == null ? "is null"
+                                : "holds " + cardToken.length() + " characters"));
+            }
+            return;
+        }
+
+        if (cardToken != null) {
+            throw new IllegalArgumentException("cardToken must be absent under schemaVersion "
+                    + EventEnvelope.SCHEMA_VERSION + ", which declares no such property, and a"
+                    + " value of " + cardToken.length() + " characters was supplied");
+        }
     }
 
     /**
@@ -605,6 +705,7 @@ public record TransactionAuthorized(
                 + EventEnvelope.WITHHELD + ", merchantName=" + EventEnvelope.WITHHELD
                 + ", merchantCity=" + EventEnvelope.WITHHELD + ", merchantZip="
                 + EventEnvelope.WITHHELD + ", maskedCardNumber=" + EventEnvelope.WITHHELD
+                + ", cardToken=" + EventEnvelope.WITHHELD
                 + ", authorizedAt=" + EventEnvelope.WITHHELD + ", accountId="
                 + EventEnvelope.WITHHELD + ", currency=" + currency + "]";
     }

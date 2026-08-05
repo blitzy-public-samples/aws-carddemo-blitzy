@@ -1,9 +1,11 @@
 package com.carddemo.authorization.api;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -11,12 +13,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.carddemo.authorization.domain.AuthenticatedActor;
 import com.carddemo.authorization.domain.AuthorizationService;
 import com.carddemo.events.DeclineReason;
 import java.math.BigDecimal;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -77,7 +81,7 @@ final class AuthorizationControllerTest {
     /** Asserts an approval answers 200 carrying the decision. */
     @Test
     void anApprovalAnswersTwoHundredCarryingTheDecision() throws Exception {
-        when(authorizations.authorize(any()))
+        when(authorizations.authorize(any(), any()))
                 .thenReturn(AuthorizationService.Outcome.approved(new BigDecimal("00000000077"),
                         "0000001000000001"));
 
@@ -96,7 +100,7 @@ final class AuthorizationControllerTest {
      */
     @Test
     void aDeclineAnswersTwoHundredCarryingTheRejectCode() throws Exception {
-        when(authorizations.authorize(any())).thenReturn(AuthorizationService.Outcome.declined(
+        when(authorizations.authorize(any(), any())).thenReturn(AuthorizationService.Outcome.declined(
                 DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("00000000077"),
                 "0000001000000002"));
 
@@ -112,7 +116,7 @@ final class AuthorizationControllerTest {
     /** Asserts the one decline naming no account answers 200 with a null account identifier. */
     @Test
     void theDeclineNamingNoAccountAnswersTwoHundredWithNoAccountIdentifier() throws Exception {
-        when(authorizations.authorize(any()))
+        when(authorizations.authorize(any(), any()))
                 .thenReturn(AuthorizationService.Outcome.declined(
                         DeclineReason.INVALID_CARD_NUMBER, null, "0000001000000003"));
 
@@ -156,7 +160,7 @@ final class AuthorizationControllerTest {
                 .andExpect(jsonPath("$.messages",
                         Matchers.hasItem(AuthorizationRequest.SOURCE_EMPTY_MESSAGE)));
 
-        verify(authorizations, never()).authorize(any());
+        verify(authorizations, never()).authorize(any(), any());
     }
 
     /** Asserts a non-numeric category code answers 422 carrying its own verbatim text. */
@@ -207,10 +211,41 @@ final class AuthorizationControllerTest {
                         .value(GlobalExceptionHandler.UNREADABLE_BODY_MESSAGE));
     }
 
+    /**
+     * Asserts the identity the request carries reaches the service, and that a call carrying none
+     * reads as the unauthenticated name rather than as an absence.
+     */
+    @Test
+    void theIdentityBehindTheCallReachesTheService() throws Exception {
+        when(authorizations.authorize(any(), any()))
+                .thenReturn(AuthorizationService.Outcome.approved(new BigDecimal("00000000077"),
+                        "0000001000000004"));
+
+        mockMvc.perform(post("/authorizations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(COMPLETE_BODY)
+                        .principal(() -> "user0001"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/authorizations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(COMPLETE_BODY))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<String> actors = ArgumentCaptor.forClass(String.class);
+        verify(authorizations, times(2)).authorize(any(), actors.capture());
+
+        assertEquals("user0001", actors.getAllValues().get(0),
+                "ADDITIVE. app/cbl/COMEN01C.cbl:L149-L150 disabled the statements that would have "
+                        + "carried the signed-on identifier forward; this endpoint carries it");
+        assertEquals(AuthenticatedActor.UNAUTHENTICATED_ACTOR, actors.getAllValues().get(1),
+                "a call carrying no principal still names an actor the audit column accepts");
+    }
+
     /** Asserts a fault inside the service answers 500 carrying no value from the request. */
     @Test
     void aFaultInsideTheServiceAnswersFiveHundredWithNoRequestValue() throws Exception {
-        when(authorizations.authorize(any()))
+        when(authorizations.authorize(any(), any()))
                 .thenThrow(new IllegalStateException("the datasource holds " + CARD_NUMBER));
 
         String body = mockMvc.perform(post("/authorizations")

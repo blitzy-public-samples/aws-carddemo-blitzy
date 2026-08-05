@@ -53,23 +53,19 @@ import org.junit.jupiter.api.function.Executable;
  * starts, no container starts and no socket opens. {@code mvn test} therefore runs the class on a
  * machine with no database and no message broker.</p>
  *
- * <p>ADDITIVE with zero provenance: no Common Business Oriented Language (COBOL) program and no
- * copybook declares an equivalent record. CardDemo detects no duplicate delivery at all. A second
- * write of one transaction reaches {@code PERFORM 9999-ABEND-PROGRAM} at
- * {@code app/cbl/CBTRN02C.cbl:L562-L579}, and every Customer Information Control System (CICS)
- * file definition at {@code app/csd/CARDDEMO.CSD:L3-L9} specifies {@code RECOVERY(NONE)} and
- * {@code JOURNAL(NO)}. The three notification sources {@code app/cbl/CBSTM03A.CBL},
- * {@code app/cpy/COSTM01.CPY} and {@code app/jcl/CREASTMT.JCL} declare no marker record either,
- * and {@code card-platform/docs/business-rule-flags.md} carries that finding.</p>
+ * <p>No COBOL provenance: no Common Business Oriented Language (COBOL) program and no copybook
+ * declares an equivalent record. CardDemo detects no duplicate delivery at all. A second write of
+ * one transaction reaches {@code PERFORM 9999-ABEND-PROGRAM} at {@code
+ * app/cbl/CBTRN02C.cbl:L562-L579}, and every Customer Information Control System (CICS) file
+ * definition at {@code app/csd/CARDDEMO.CSD:L3-L9} specifies {@code RECOVERY(NONE)} and {@code
+ * JOURNAL(NO)}.
  *
  * <p>Three columns carry one marker, and the tests pin all three as a closed set. A fourth field
  * fails them, as does a change to either mapped type.
- * {@code card-platform/docs/decision-log.md} documents the shape.
- * {@code card-platform/docs/traceability-matrix.md} records the net-new status.</p>
  *
- * <p>Two consumer groups share one table with no discriminator column. The notification service
- * reads {@code transaction.posted} under one group and {@code fraud.assessed} under another, and a
- * marker names the event alone.</p>
+ * <p>Three consumer groups share one table. The notification service reads
+ * {@code transaction.posted}, {@code fraud.assessed}, and {@code customer.context-changed} under
+ * separate groups, while each marker names the event and its consumed topic.</p>
  *
  * <p>Boundary: the mapped shape is under test here. Catalogue reads, repository queries and
  * listener transactions belong to their own test packages.</p>
@@ -652,7 +648,7 @@ final class ProcessedEventEntityTest {
         }
 
         @Test
-        @DisplayName("no discriminator and no inheritance: two consumer groups share one table")
+        @DisplayName("no discriminator and no inheritance: every consumer group shares one table")
         void declaresNoDiscriminatorOrInheritance() {
             List<Executable> checks = new ArrayList<>();
             for (Class<? extends Annotation> forbidden : FORBIDDEN_CLASS_ANNOTATIONS) {

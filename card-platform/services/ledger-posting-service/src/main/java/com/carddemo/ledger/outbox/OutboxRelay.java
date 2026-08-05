@@ -2,31 +2,36 @@ package com.carddemo.ledger.outbox;
 
 import com.carddemo.events.TransactionDeclined;
 import com.carddemo.events.TransactionPosted;
+import com.carddemo.ledger.config.LedgerProperties;
+import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
 import com.carddemo.ledger.entity.OutboxEventEntity;
+import com.carddemo.ledger.entity.OutboxEventEntity.RelayState;
 import com.carddemo.ledger.repository.OutboxEventRepository;
 import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.domain.Limit;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Publishes the unpublished rows of {@code outbox_event} on a fixed delay, then marks each one
  * sent.
  *
- * <p>ADDITIVE. The one ancestor construct is the Customer Information Control System (CICS)
- * transient data queue write at {@code app/cbl/CORPT00C.cbl:L517-L518}, whose record a separate job
- * picks up later. That write is the single asynchronous handoff of the CardDemo source. The
- * {@code outbox_event} row this relay reads is ADDITIVE, and so is the processed-event marker each
- * consumer writes.
+ * <p>No COBOL ancestor. The one ancestor construct is the Customer Information Control System
+ * (CICS) transient data queue write at {@code app/cbl/CORPT00C.cbl:L517-L518}, whose record a
+ * separate job picks up later. That write is the single asynchronous handoff of the CardDemo
+ * source. Neither the {@code outbox_event} row this relay reads nor the processed-event marker
+ * each consumer writes has any counterpart there.
  *
  * <p>{@code outbox/OutboxWriter} stores those rows in its caller's transaction. The relay opens a
  * transaction of its own and publishes through the {@link KafkaTemplate} that
@@ -34,13 +39,19 @@ import tools.jackson.databind.json.JsonMapper;
  * identifier of {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}, as text, so a
  * leading zero survives.
  *
- * <p>Rationale: {@code card-platform/docs/decision-log.md} (planned).
+ * <p>Rationale: {@code card-platform/docs/decision-log.md}.
  */
 @Component
 public class OutboxRelay {
 
     /** Diagnostic output of this class. */
     private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
+
+    /** Reason recorded on a row whose claiming instance died before it finished. */
+    private static final String CLAIM_EXPIRED = "ClaimExpired";
+
+    /** Reason recorded on a row whose event type has no ledger destination. */
+    private static final String UNKNOWN_EVENT_TYPE = "UnknownEventType";
 
     /** Holds the rows to publish, and records each publication. */
     private final OutboxEventRepository outboxEvents;
@@ -57,6 +68,21 @@ public class OutboxRelay {
     /** Each event type this service publishes, mapped to its destination. */
     private final Map<String, Destination> destinations;
 
+    /** The boundary one sweep runs inside, so the claim holds and no counter joins it. */
+    private final TransactionTemplate transactionTemplate;
+
+    /** The recording surface, used after a sweep commits. */
+    private final LedgerMeters meters;
+
+    /** Base of the retry backoff, from {@code carddemo.outbox.relay.fixed-delay-ms}. */
+    private final Duration sweepDelay;
+
+    /** How long a claim may stand before another sweep recovers it, and the backoff ceiling. */
+    private final Duration claimTimeout;
+
+    /** What this instance writes into {@code claimed_by}. */
+    private final String instanceId;
+
     /** Stamps {@code published_at}, in Coordinated Universal Time. */
     private final Clock clock = Clock.systemUTC();
 
@@ -66,75 +92,138 @@ public class OutboxRelay {
      * @param outboxEvents             store of unpublished events
      * @param ledgerEventKafkaTemplate the template {@code config/KafkaProducerConfig} declares
      * @param jsonMapper               the framework-supplied mapper that reads a stored payload
-     * @param batchSize                rows one sweep claims, from
-     *                                 {@code carddemo.outbox.relay.batch-size}
-     * @param transactionPostedTopic   topic of the posted event, from
-     *                                 {@code carddemo.kafka.topics.transaction-posted}
-     * @param transactionDeclinedTopic topic of the declined event, from
-     *                                 {@code carddemo.kafka.topics.transaction-declined}
+     * @param transactionTemplate      boundary one sweep runs inside
+     * @param properties               the bound {@code carddemo} settings
+     * @param meters                   the recording surface of this service
      * @throws NullPointerException if a collaborator or a topic name is {@code null}
      */
     public OutboxRelay(OutboxEventRepository outboxEvents,
-            KafkaTemplate<String, Object> ledgerEventKafkaTemplate, JsonMapper jsonMapper,
-            @Value("${carddemo.outbox.relay.batch-size}") int batchSize,
-            @Value("${carddemo.kafka.topics.transaction-posted}")
-            String transactionPostedTopic,
-            @Value("${carddemo.kafka.topics.transaction-declined}")
-            String transactionDeclinedTopic) {
+            @Qualifier("ledgerEventKafkaTemplate")
+            KafkaTemplate<String, Object> ledgerEventKafkaTemplate,
+            JsonMapper jsonMapper, TransactionTemplate transactionTemplate,
+            LedgerProperties properties, LedgerMeters meters) {
         this.outboxEvents = Objects.requireNonNull(outboxEvents, "outboxEvents must be present");
         this.ledgerEventTemplate = Objects.requireNonNull(ledgerEventKafkaTemplate,
                 "ledgerEventKafkaTemplate must be present");
         this.jsonMapper = Objects.requireNonNull(jsonMapper, "jsonMapper must be present");
-        this.batchSize = batchSize;
+        this.transactionTemplate =
+                Objects.requireNonNull(transactionTemplate, "transactionTemplate must be present");
+        this.meters = Objects.requireNonNull(meters, "meters must be present");
+
+        LedgerProperties checked = Objects.requireNonNull(properties, "properties must be present");
+        LedgerProperties.Outbox.Relay relay = checked.outbox().relay();
+        LedgerProperties.Kafka.Topics topics = checked.kafka().topics();
+        this.batchSize = relay.batchSize();
+        this.sweepDelay = Duration.ofMillis(relay.fixedDelayMs());
+        this.claimTimeout = relay.claimTimeout();
+        this.instanceId = relay.instanceId();
         this.destinations = Map.of(
                 TransactionPosted.EVENT_TYPE,
-                new Destination(transactionPostedTopic, TransactionPosted.class),
+                new Destination(topics.transactionPosted(), TransactionPosted.class),
                 TransactionDeclined.EVENT_TYPE,
-                new Destination(transactionDeclinedTopic, TransactionDeclined.class));
+                new Destination(topics.transactionDeclined(), TransactionDeclined.class));
+    }
+
+    /** Runs one claimed sweep and records its failures after the transaction commits. */
+    @Scheduled(fixedDelayString = "${carddemo.outbox.relay.fixed-delay-ms}")
+    public void publishPendingEvents() {
+        SweepResult result;
+        try {
+            result = transactionTemplate.execute(status -> sweepOnce());
+        } catch (RuntimeException failure) {
+            meters.recordFailure(LedgerMeters.PUBLISH_STAGE);
+            log.warn("The ledger outbox sweep failed after {} and will run again",
+                    rootCause(failure).getClass().getSimpleName());
+            return;
+        }
+        Objects.requireNonNull(result, "the sweep must answer with a result").record(meters);
     }
 
     /**
-     * Publishes every row of one claimed batch, oldest first, and marks each row the broker took.
+     * Recovers stranded claims, claims due rows and publishes them in order.
      *
-     * <p>The sweep runs in one transaction. {@link OutboxEventRepository#claimPendingBatch(Limit)}
-     * takes a row lock on each row it returns, and a lock lives only as long as the transaction
-     * that took it. The same claim reads unpublished rows alone, so a marked row is never
-     * published a second time.
-     *
-     * <p>A failed publish leaves its row unpublished and ends the sweep, so a later event of one
-     * account cannot overtake an earlier one. The next sweep claims that row again. A row whose
-     * event type this service publishes to no topic stays unpublished as well.
+     * @return the work this committed sweep completed
      */
-    @Scheduled(fixedDelayString = "${carddemo.outbox.relay.fixed-delay-ms}")
-    @Transactional
-    public void publishPendingEvents() {
-        List<OutboxEventEntity> claimed = outboxEvents.claimPendingBatch(Limit.of(batchSize));
+    private SweepResult sweepOnce() {
+        Instant now = clock.instant();
+        int failed = recoverStrandedClaims(now);
         int published = 0;
 
+        List<OutboxEventEntity> claimed = outboxEvents.claimDueRows(now, Limit.of(batchSize));
         for (OutboxEventEntity row : claimed) {
+            row.claim(instanceId, now);
             Destination destination = destinations.get(row.getEventType());
 
             if (destination == null) {
-                log.error("Outbox row {} carries the event type {}, which this service publishes to"
-                        + " no topic, so the row stays unpublished", row.getEventId(),
-                        row.getEventType());
-                return;
+                row.recordFailure(UNKNOWN_EVENT_TYPE, now,
+                        now.plus(backoffAfter(row.getAttemptCount())));
+                outboxEvents.save(row);
+                failed++;
+                log.error("A ledger outbox row carries the unconfigured event type {}. "
+                                + "Attempt {} of {}.", row.getEventType(), row.getAttemptCount(),
+                        OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+                continue;
             }
             try {
                 publishAndMark(row, destination);
             } catch (RuntimeException failure) {
-                log.warn("Outbox row {} did not reach topic {}, so it stays unpublished and the"
-                        + " next sweep claims it again. Rows published ahead of it: {}."
-                        + " Failure: {}", row.getEventId(), destination.topic(), published,
-                        failure.getClass().getSimpleName());
-                return;
+                recordRefusedRow(row, failure, now);
+                return new SweepResult(published, failed + 1);
             }
             published++;
         }
-        if (published > 0) {
-            log.debug("Published {} of the {} outbox rows this sweep claimed", published,
-                    claimed.size());
+        return new SweepResult(published, failed);
+    }
+
+    /**
+     * Returns claims left by a stopped instance to {@link RelayState#PENDING}.
+     *
+     * @param now the moment this sweep started
+     * @return the number of recovered rows
+     */
+    private int recoverStrandedClaims(Instant now) {
+        List<OutboxEventEntity> stranded =
+                outboxEvents.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
+                        RelayState.CLAIMED, now.minus(claimTimeout), Limit.of(batchSize));
+        for (OutboxEventEntity row : stranded) {
+            row.recordFailure(CLAIM_EXPIRED, now, now);
+            outboxEvents.save(row);
+            log.warn("A ledger outbox claim expired for event type {}. Attempt {} of {}.",
+                    row.getEventType(), row.getAttemptCount(),
+                    OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
         }
+        return stranded.size();
+    }
+
+    /**
+     * Schedules another attempt for a row the broker refused.
+     *
+     * @param row     the refused row
+     * @param failure the publish failure
+     * @param now     the moment this sweep started
+     */
+    private void recordRefusedRow(OutboxEventEntity row, RuntimeException failure, Instant now) {
+        String failureClass = rootCause(failure).getClass().getSimpleName();
+        row.recordFailure(failureClass, now, now.plus(backoffAfter(row.getAttemptCount())));
+        outboxEvents.save(row);
+        log.warn("A ledger outbox row of type {} stays unpublished after {}. "
+                        + "Attempt {} of {}; the sweep stops here.",
+                row.getEventType(), failureClass, row.getAttemptCount(),
+                OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+    }
+
+    /**
+     * Returns the configured exponential wait before another attempt.
+     *
+     * @param attemptsSoFar attempts recorded before the failure being scheduled
+     * @return a wait no longer than the claim timeout
+     */
+    private Duration backoffAfter(int attemptsSoFar) {
+        Duration doubled = sweepDelay;
+        for (int step = 0; step < attemptsSoFar && doubled.compareTo(claimTimeout) < 0; step++) {
+            doubled = doubled.multipliedBy(2L);
+        }
+        return doubled.compareTo(claimTimeout) > 0 ? claimTimeout : doubled;
     }
 
     /**
@@ -153,6 +242,28 @@ public class OutboxRelay {
         ledgerEventTemplate.send(destination.topic(), row.getAggregateId(), event).join();
         row.markPublished(clock.instant());
         outboxEvents.save(row);
+    }
+
+    /** Returns the deepest cause of one failure. */
+    private static Throwable rootCause(Throwable failure) {
+        Throwable cause = failure;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause;
+    }
+
+    /** What one sweep committed, carried outside the transaction for recording. */
+    private record SweepResult(int published, int failed) {
+
+        void record(LedgerMeters meters) {
+            if (published > 0) {
+                log.debug("Published {} ledger outbox rows", published);
+            }
+            for (int failure = 0; failure < failed; failure++) {
+                meters.recordFailure(LedgerMeters.PUBLISH_STAGE);
+            }
+        }
     }
 
     /**

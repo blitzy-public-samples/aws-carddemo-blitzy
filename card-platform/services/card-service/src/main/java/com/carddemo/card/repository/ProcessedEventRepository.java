@@ -1,8 +1,12 @@
 package com.carddemo.card.repository;
 
 import com.carddemo.card.entity.ProcessedEventEntity;
+import java.time.Instant;
 import java.util.UUID;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.ListCrudRepository;
+import org.springframework.data.repository.query.Param;
 
 /**
  * Reads and writes {@code processed_event}, the table naming every event identifier this service
@@ -29,20 +33,48 @@ import org.springframework.data.repository.ListCrudRepository;
  * implements it nowhere, opening each of its four datasets for input at
  * {@code app/cbl/CBSTM03B.CBL:L136}, L160, L184 and L209.
  *
- * <p>ADDITIVE: no Common Business Oriented Language (COBOL) program detects a duplicate delivery.
- * Paragraph {@code 2900-WRITE-TRANSACTION-FILE} at {@code app/cbl/CBTRN02C.cbl:L562-L579} writes
- * each posted transaction, and a duplicate key fails its status test at L566. That failure reaches
- * {@code PERFORM 9999-ABEND-PROGRAM} at L577, whose routine at L707-L711 holds four statements and
- * cleans nothing up. Each of the eight file definitions in {@code app/csd/CARDDEMO.CSD} carries
- * {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
+ * <p>No COBOL ancestor: no Common Business Oriented Language (COBOL) program detects a duplicate
+ * delivery. Paragraph {@code 2900-WRITE-TRANSACTION-FILE} at {@code app/cbl/CBTRN02C.cbl:L562-L579}
+ * writes each posted transaction, and a duplicate key fails its status test at L566. That failure
+ * reaches {@code PERFORM 9999-ABEND-PROGRAM} at L577, whose routine at L707-L711 holds four
+ * statements and cleans nothing up. Each of the eight file definitions in {@code
+ * app/csd/CARDDEMO.CSD} carries {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
  *
  * <p>The card service consumes no topic today. Every service of this platform declares the same
  * marker over its own schema. A consumer added here inherits that table and the discipline the
  * method below describes.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 public interface ProcessedEventRepository extends ListCrudRepository<ProcessedEventEntity, UUID> {
+
+    /**
+     * Deletes at most {@code limit} markers written before the given instant, and returns how many
+     * it removed.
+     *
+     * <p>A marker matters only while a redelivery of its event is still possible. Past that horizon
+     * it is dead weight on a table that otherwise grows for the life of the service.
+     * {@code carddemo.retention.marker-retention} in {@code src/main/resources/application.yml}
+     * supplies the horizon, and {@code ix_processed_event_processed_at} serves both the subquery and
+     * the delete.
+     *
+     * <p>{@code limit} bounds one statement, and {@code domain/RetentionSweep} names the bound. A
+     * horizon shorter than the broker's own retention lets a redelivery arrive after its marker is
+     * gone, and the delivery is then applied a second time.
+     *
+     * @param horizon the instant before which a marker is removed
+     * @param limit   the most markers one statement removes, at least one
+     * @return the number of markers removed, and 0 when none is past the horizon
+     */
+    @Modifying
+    @Query(value = """
+            DELETE FROM processed_event
+            WHERE event_id IN (SELECT event_id
+                                 FROM processed_event
+                                WHERE processed_at < :horizon
+                                ORDER BY processed_at
+                                LIMIT :limit)
+            """, nativeQuery = true)
+    int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon,
+            @Param("limit") int limit);
 
     /**
      * Answers whether one event identifier has already been processed.

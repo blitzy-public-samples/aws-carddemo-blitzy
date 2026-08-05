@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Reads back what {@link StreamNameReport} would write for the fraud detection service.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor.
+ * <p>This class has no COBOL ancestor.
  *
  * <p>The first test is the coverage check: every name the shipped {@code application.yml} carries
  * must appear in the report, and with the value the shipped file documents. A name missing here is a

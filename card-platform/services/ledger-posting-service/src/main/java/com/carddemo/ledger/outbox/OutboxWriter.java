@@ -10,13 +10,15 @@ import java.time.Clock;
 import java.util.List;
 import java.util.Objects;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Inserts one row into {@code outbox_event} for one ledger event, in the transaction its caller
  * already opened.
  *
- * <p>ADDITIVE. No CardDemo program stores an event. The one asynchronous handoff in the source
+ * <p>No CardDemo program stores an event. The one asynchronous handoff in the source
  * writes a Job Control Language (JCL) record to a Customer Information Control System (CICS)
  * transient data queue at {@code app/cbl/CORPT00C.cbl:L517-L518}. The internal reader picks that
  * record up and submits the batch job it holds. The write is the only one of its kind in the 28
@@ -26,13 +28,10 @@ import tools.jackson.databind.json.JsonMapper;
  * {@code app/cbl/CBTRN02C.cbl:L440-L442} performs three updates in fixed order with no rollback,
  * and all eight file definitions in {@code app/csd/CARDDEMO.CSD} carry {@code RECOVERY(NONE)} and
  * {@code JOURNAL(NO)}. {@code app/cbl/COACTUPC.cbl} rewrites two files in one unit of work, at
- * L4066 and L4086, under those same attributes. The outbox row and the processed-event marker are
- * both ADDITIVE.
+ * L4066 and L4086, under those same attributes.
  *
  * <p>This writer opens no transaction of its own and publishes nothing.
  * {@code outbox/OutboxRelay} reads the rows it inserts.
- *
- * <p>Rationale: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 public class OutboxWriter {
@@ -86,6 +85,7 @@ public class OutboxWriter {
      *                                  publishes, if that type has no contract, or if the written
      *                                  payload breaks the contract its type names
      */
+    @Transactional(propagation = Propagation.MANDATORY)
     public OutboxEventEntity write(Object event) {
         EventEnvelope envelope = envelopeOf(event);
         String eventType = envelope.eventType();

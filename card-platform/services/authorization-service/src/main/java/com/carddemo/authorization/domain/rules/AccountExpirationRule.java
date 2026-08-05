@@ -23,8 +23,7 @@ import org.springframework.stereotype.Component;
  * that is not a well-formed date, which is why the column stays {@code VARCHAR(10)}.
  *
  * <p>The source field name carries a transposed word. The target spells it
- * {@code accountExpirationDate}, and the rename is recorded in
- * {@code card-platform/docs/traceability-matrix.md} (planned).
+ * {@code accountExpirationDate}.
  *
  * <p>This rule runs last of the four and its answer wins. {@code app/cbl/CBTRN02C.cbl:L407-L420}
  * holds no gate between the credit test and this one, so a transaction failing both carries this

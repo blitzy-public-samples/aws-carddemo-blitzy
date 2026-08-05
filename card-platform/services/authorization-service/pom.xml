@@ -4,6 +4,8 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
+  <!-- Rationale for the choices in this file: card-platform/docs/decision-log.md -->
+
   <!-- The aggregator sits two levels up. services/ holds no descriptor of its own. -->
   <parent>
     <groupId>com.carddemo</groupId>
@@ -46,10 +48,10 @@
          appears in this file. -->
 
     <!-- The web surface, persistence, bean constraints, and the health and metrics
-         endpoints. spring-boot-starter-web also supplies RestClient, which reads
-         the account and card endpoints named by carddemo.services.account.base-url
-         and carddemo.services.card.base-url in src/main/resources/application.yml.
-         Both reads are synchronous and neither writes. -->
+         endpoints. The web surface is inbound only: this service reads card_xref
+         and account_credit_snapshot, two tables of its own kept current by the
+         account service's state changes, and calls no other service. No address
+         of another service appears in src/main/resources/application.yml. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
@@ -68,14 +70,14 @@
     </dependency>
 
     <!-- Request authentication and authorization. config/SecurityConfig declares two
-         filter chains: one over the actuator surface, leaving health open for a probe
-         and requiring ROLE_MONITORING for metrics and the Prometheus scrape, and one
-         over the API, denying by default and scoping each route to the identity that
-         owns the identifier it names. The starter also installs the response headers
-         that keep a financial or personal-data answer out of every cache, and the
-         delegating password encoder that reads the algorithm prefix of a configured
-         password, so no plaintext password is stored or compared. The version comes
-         from the Spring Boot bill of materials imported by the parent. -->
+         filter chains. Over the actuator surface, health stays open for a probe and
+         metrics and the Prometheus scrape require ROLE_MONITORING. Over the API, the
+         default is deny, and each route is scoped to the identity that owns the
+         identifier it names. The starter also installs the response headers that keep
+         a financial or personal-data answer out of every cache. It installs the
+         delegating password encoder too, which reads the algorithm prefix of a
+         configured password, so no plaintext password is stored or compared. The
+         version comes from the Spring Boot bill of materials imported by the parent. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-security</artifactId>
@@ -181,6 +183,15 @@
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+      <!-- Runs the container-backed checks in src/test/java named *IT. Surefire selects *Test and
+           leaves those alone, so without this declaration NativeStatementIT is compiled and never
+           executed. The parent supplies the version, the execution and the classesDirectory in
+           pluginManagement; a module activates it by naming it here, which is how
+           fraud-detection-service and equivalence-tests activate the same plugin. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
       </plugin>
     </plugins>
   </build>

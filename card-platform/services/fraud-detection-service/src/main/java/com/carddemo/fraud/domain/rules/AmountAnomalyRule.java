@@ -14,15 +14,14 @@ import org.springframework.stereotype.Component;
  * Triggers when the transaction amount reaches the configured threshold, and reports
  * {@code AMOUNT_ANOMALY}.
  *
- * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. The class shape follows
+ * <p>No COBOL ancestor. The class shape follows
  * {@code 1500-VALIDATE-TRAN} at {@code app/cbl/CBTRN02C.cbl:L370-L378}, whose {@code :L377} comment
  * marks the extension point. Shape only, no logic: this class copies no reject code, no reject text
  * and no balance arithmetic from that program.
  *
- * <p>A negative amount is compared as-is, and never reaches a threshold of zero or more. Negative
- * amounts are ordinary traffic: 50 of the 300 records in {@code app/data/ASCII/dailytran.txt} carry
- * one, and {@code card-platform/docs/business-rule-flags.md} (planned) records their sign
- * convention.
+ * <p>Risk is based on transaction magnitude. A refund therefore uses its absolute amount instead of
+ * clearing this rule by carrying a negative sign. This service is net new, so that fraud-specific
+ * treatment does not alter the ledger's source-compatible refund arithmetic.
  */
 @Component
 @Order(20)
@@ -66,7 +65,7 @@ public class AmountAnomalyRule implements RiskRule {
     }
 
     /**
-     * Compares the event amount against the configured threshold.
+     * Compares the absolute event amount against the configured threshold.
      *
      * @param event the authorized transaction to score
      * @return a contribution carrying {@link #TRIGGERED_POINTS} when the amount reaches the
@@ -77,7 +76,7 @@ public class AmountAnomalyRule implements RiskRule {
     public Contribution evaluate(TransactionAuthorized event) {
         Objects.requireNonNull(event, "event must be present");
 
-        if (event.amount().compareTo(threshold) >= 0) {
+        if (event.amount().abs().compareTo(threshold) >= 0) {
             return Contribution.triggeredWith(TRIGGERED_POINTS);
         }
         return Contribution.notTriggered();

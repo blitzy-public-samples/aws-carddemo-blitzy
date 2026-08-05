@@ -1,6 +1,6 @@
 # Runtime configuration for the authorization service.
 #
-# Rationale for every value here: card-platform/docs/decision-log.md (planned)
+# Rationale for every value here: card-platform/docs/decision-log.md
 
 server:
   # The container listens on 8080. docker-compose.yml publishes a host port.
@@ -8,15 +8,14 @@ server:
 
   # Transport Layer Security for the Representational State Transfer surface, off in the
   # shipped file and on in the cluster. The compose stack runs every service on one
-  # Docker bridge on one machine and publishes each port on the loopback address alone,
-  # so there is no network path there for a third party to read. A cluster pod network is
-  # a shared path, so deploy/k8s/30-configmap.yaml sets SERVER_SSL_ENABLED to true and
-  # names the keystore deploy/k8s/31-secret.example.yaml templates.
+  # Docker bridge on one machine and publishes each port on the loopback address alone.
+  # A cluster pod network is a shared path, so deploy/k8s/30-configmap.yaml sets
+  # SERVER_SSL_ENABLED to true and names the keystore deploy/k8s/31-secret.example.yaml
+  # templates.
   #
-  # Every value below carries a default, and the default of the keystore password is
-  # empty rather than absent: a shipped file that stopped start-up over a keystore
-  # nothing has asked for would be a file nobody could run. Enabling the first key
-  # without the other three is what fails, loudly, at start-up.
+  # Every value below carries a default, and the keystore password defaults to empty
+  # rather than absent. Enabling the first key without the other three is what fails,
+  # loudly, at start-up.
   ssl:
     enabled: "${SERVER_SSL_ENABLED:false}"
     key-store: "${SERVER_SSL_KEYSTORE:}"
@@ -32,24 +31,24 @@ spring:
   # card-platform/.env.example documents each login and its password.
   datasource:
     # sslmode=require encrypts this connection and stops the driver from falling back to
-    # cleartext. It does not verify the certificate, because a direct run has no
-    # certificate authority to verify against; the compose stack overrides this whole URL
-    # with the same mode against a server that presents a certificate it generated for
-    # itself, and deploy/k8s/30-configmap.yaml overrides it with verify-full, because a
-    # cluster has an authority and a network path worth protecting.
+    # cleartext. It does not verify the certificate, since a direct run has no
+    # certificate authority to verify against. The compose stack overrides this whole URL
+    # with the same mode, against a server presenting a certificate it generated for
+    # itself. deploy/k8s/30-configmap.yaml overrides it with verify-full, because a
+    # cluster has an authority.
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://${POSTGRES_HOST:postgres}:${POSTGRES_PORT:5432}/${AUTHORIZATION_DB_NAME:carddemo_authorization}?currentSchema=${AUTHORIZATION_DB_SCHEMA:authorization_service}&sslmode=require}
-    # This service's own login, which owns one database on the compose path and one schema on
-    # the cluster path. The superuser is deliberately not the default here: a shared login
-    # would mean the private schema this service claims to own was a convention rather than a
-    # control, and a compromise of any service could read and alter every other service's
-    # card, customer, balance, fraud and event data. A login name is not a credential and
-    # carries a default; the password below carries none.
+    # This service's own login, which owns one database on the compose path and one
+    # schema on the cluster path. The superuser is not the default here. A login name is
+    # not a credential and carries a default; the password below carries none.
     username: ${SPRING_DATASOURCE_USERNAME:${AUTHORIZATION_DB_USER:carddemo_authorization_svc}}
     # No fallback. An unset password stops start-up rather than signing on under a
     # password this repository publishes. docker-compose.yml sets
     # SPRING_DATASOURCE_PASSWORD; a direct run sets POSTGRES_PASSWORD.
     password: ${SPRING_DATASOURCE_PASSWORD:${POSTGRES_PASSWORD}}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      connection-timeout: ${SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT:3000}
+      validation-timeout: ${SPRING_DATASOURCE_HIKARI_VALIDATION_TIMEOUT:2000}
 
   flyway:
     enabled: true
@@ -82,28 +81,35 @@ spring:
       ddl-auto: validate
     properties:
       hibernate:
-        default_schema: ${SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA:${AUTHORIZATION_DB_SCHEMA:authorization}}
+        # One schema name, three places: the currentSchema of the datasource URL above,
+        # spring.flyway.schemas below, and this. All three read AUTHORIZATION_DB_SCHEMA and
+        # all three fall back to the same authorization_service, so a deployment that sets
+        # nothing still migrates and validates the one schema. A different fallback here
+        # would have Flyway create authorization_service while Hibernate validated a schema
+        # holding no tables, and only a deployment that set the variable would hide it.
+        default_schema: ${SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA:${AUTHORIZATION_DB_SCHEMA:authorization_service}}
         # Quotes identifiers that PostgreSQL reserves, a schema name included.
         auto_quote_keyword: true
 
   kafka:
     bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}}
+    admin:
+      operation-timeout: ${SPRING_KAFKA_ADMIN_OPERATION_TIMEOUT:3s}
 
     # Broker authentication. The broker requires a Simple Authentication and Security
     # Layer (SASL) identity on every client listener, and its authorizer refuses any
-    # operation no access control entry allows, so this service reaches exactly the
-    # topics and the consumer group its own configuration names and nothing else.
+    # operation no access control entry allows. This service therefore reaches exactly
+    # the topics and the consumer group its own configuration names.
     # docker-compose.yml installs that matrix at broker start and
     # deploy/k8s/10-kafka.yaml installs the same one.
     #
-    # SASL_PLAINTEXT authenticates without encrypting, which is the shipped default and
-    # what the compose stack runs: the broker publishes on the loopback address alone and
-    # every service reaches it across one Docker bridge on one machine.
+    # SASL_PLAINTEXT authenticates without encrypting, and is the shipped default the
+    # compose stack runs. The broker publishes on the loopback address alone, and every
+    # service reaches it across one Docker bridge on one machine.
     # deploy/k8s/30-configmap.yaml sets SASL_SSL instead, because a cluster pod network
-    # is a shared path, and supplies the truststore by environment as
+    # is a shared path. It supplies the truststore by environment as
     # SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_LOCATION and _PASSWORD. Those two keys are
-    # deliberately absent here: an empty truststore path in a shipped file reads like a
-    # setting that has been dealt with.
+    # absent here.
     security:
       protocol: "${KAFKA_SECURITY_PROTOCOL:SASL_PLAINTEXT}"
     properties:
@@ -115,33 +121,13 @@ spring:
         org.apache.kafka.common.security.plain.PlainLoginModule required
         username="${KAFKA_SASL_USERNAME:carddemo-authorization}"
         password="${KAFKA_SASL_PASSWORD}";
-    # messaging/EventPublisherPort.java passes a topic, a key and a payload, all strings.
-    # The key serializer below takes the account identifier as text, so
+    # Both serializers take text: the payload published here is the JSON already stored in
+    # outbox_event.payload, and the key is the account identifier as text so
     # XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7 keeps its leading zero.
-    #
-    # The value serializer takes text as well, because text is what this service
-    # publishes. outbox/OutboxWriter.java writes the event as JSON and checks that text
-    # against the document its event type names, through
-    # com.carddemo.events.serde.EventContracts, before the row commits; the payload
-    # column stores that text; and messaging/KafkaEventPublisher.java measures it against
-    # the same document once more before it reaches the broker. The value reaching the
-    # template is therefore a String, and a serializer that takes text carries no
-    # validation responsibility here. None is claimed for either serializer below.
-    #
-    # Naming com.carddemo.events.serde.JsonSchemaValidatingSerializer here would be
-    # wrong, and wrong in a way that fails silently to a reader of this file: that
-    # serializer writes one of the registered event records and refuses every other
-    # value, so a value serializer that took an event record would refuse this text
-    # outright, every publish would raise SerializationException, the outbox would
-    # retry for ever and the service would look healthy throughout. The one
-    # publish-side schema gate of this platform runs at write time inside OutboxWriter,
-    # where a rejected event can still roll back its own transaction.
-    # account-service and card-service carry the same reasoning in their own files.
-    #
-    # config/KafkaProducerConfig.java pins both serializers, acks and enable.idempotence
-    # on the producer factory it builds. Those four settings therefore hold even if an
-    # override changes the four keys below, and the keys are kept here so a reader sees
-    # every producer setting in one place.
+    # The publish-side schema gate runs in outbox/OutboxWriter.java at write time.
+    # config/KafkaProducerConfig.java pins these four settings on the factory it builds,
+    # so they hold even if the keys below are overridden.
+    # Why text and not a record serializer: card-platform/docs/decision-log.md.
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -152,21 +138,66 @@ spring:
         delivery.timeout.ms: 120000
         request.timeout.ms: 30000
         max.block.ms: 5000
-    # This service registers no listener. The two settings below hold the platform
-    # acknowledgement discipline every service carries, so the six files stay
-    # comparable: an offset is committed by hand, immediately after the side effects
-    # of its record commit.
+    # Two listeners keep the replicas current: messaging/AccountStateChangedConsumer and
+    # messaging/CardUpdatedConsumer. Neither sits on the authorization response path.
+    # An offset is committed by hand, immediately after the side effects of its record commit.
+    #
+    # The value deserializer validates each record against the document its eventType names and
+    # hands over the checked tree, because libs/event-contracts holds the document for these two
+    # events and names no class to build: each record belongs to the service that owns the
+    # aggregate. ErrorHandlingDeserializer keeps a refused payload from killing the container, and
+    # config/KafkaConsumerConfig routes it to the dead-letter topic instead.
     consumer:
+      group-id: "${SPRING_KAFKA_CONSUMER_GROUP_ID:${GROUP_AUTHORIZATION:authorization}}"
       enable-auto-commit: false
+      auto-offset-reset: ${SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: com.carddemo.events.serde.JsonSchemaValidatingDeserializer
     listener:
       ack-mode: manual_immediate
 
 carddemo:
+  # Request surface bounds. config/RequestBodyCeilingFilter refuses a request that declares a
+  # body larger than max-request-body-bytes, and config/JsonReadCeilingConfig bounds the
+  # parser for a request that declares no length at all. The widest legitimate body is one
+  # authorization request, whose largest component is DALYTRAN-DESC PIC X(100) at
+  # app/cpy/CVTRA06Y.cpy:L9, so the value below is generous and still bounds the parser.
+  api:
+    max-request-body-bytes: ${API_MAX_REQUEST_BODY_BYTES:65536}
+  authorization:
+    # Capture-moment window. Reject reason 0103 at app/cbl/CBTRN02C.cbl:L414-L420 approves
+    # whenever the account expiry is at or after the first ten characters of
+    # DALYTRAN-ORIG-TS, and a synchronous caller supplies that value. A caller naming a
+    # moment far enough in the past would authorize against an account that expired years
+    # ago, so domain/OriginTimestampWindow refuses a moment outside this window with 422.
+    #
+    # The batch program compares a value the nightly feed owns, so the source has no window
+    # to reproduce and both bounds are additive. An equivalence run that replays the 2022
+    # records of app/data/ASCII/dailytran.txt widens max-age-minutes, which is configuration
+    # rather than a code path.
+    origin-timestamp:
+      max-age-minutes: ${ORIGIN_TIMESTAMP_MAX_AGE_MINUTES:1440}
+      max-future-minutes: ${ORIGIN_TIMESTAMP_MAX_FUTURE_MINUTES:5}
   kafka:
     topics:
+      # Published by this service, one event per authorization call.
       transaction-authorized: ${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}
       transaction-declined: ${TOPIC_TRANSACTION_DECLINED:transaction.declined}
+      # Consumed by this service to keep account_credit_snapshot and card_xref current.
+      # Both tables are replicas of data another service owns, and every decline rule reads
+      # them, so a name here that reaches no topic leaves those rules answering from
+      # whatever the replica last knew.
+      account-state-changed: ${TOPIC_ACCOUNT_STATE_CHANGED:account.state-changed}
+      card-updated: ${TOPIC_CARD_UPDATED:card.updated}
+      # Where a record this service can never apply is routed, after its attempts run out.
       dead-letter: ${TOPIC_DEAD_LETTER:carddemo.dead-letter}
+    # One consumer group per listener, so the two streams lag, rebalance and reset
+    # independently of each other.
+    groups:
+      account-state-changed: ${GROUP_AUTHORIZATION_ACCOUNT:authorization-account-state}
+      card-updated: ${GROUP_AUTHORIZATION_CARD:authorization-card-updated}
   outbox:
     relay:
       fixed-delay-ms: ${OUTBOX_RELAY_INTERVAL_MS:500}
@@ -178,59 +209,55 @@ carddemo:
       # returned to PENDING. Comfortably longer than one publish attempt, comfortably shorter than
       # a demo.
       claim-timeout: ${OUTBOX_RELAY_CLAIM_TIMEOUT:PT2M}
+      # Longest one send waits for the broker before messaging/KafkaEventPublisher reports the
+      # publish failed. The row then stays unpublished and the next sweep claims it again, so a
+      # slow broker delays an event and never loses one.
+      publish-timeout: ${OUTBOX_RELAY_PUBLISH_TIMEOUT:PT10S}
     # Retention. A published row has done its work and stays only for diagnosis, and a
     # processed-event marker matters only while a redelivery of its event is still
-    # possible. The purge methods on the two repositories delete rows past these
-    # horizons, and ix_outbox_event_published_at and ix_processed_event_processed_at
-    # serve those deletes. Both tables grow without bound if nothing calls them.
+    # possible. domain/RetentionSweep calls the two repository purge methods on the
+    # configured interval, and ix_outbox_event_published_at plus
+    # ix_processed_event_processed_at serve those deletes.
     published-retention-hours: ${OUTBOX_PUBLISHED_RETENTION_HOURS:168}
   processed-event:
     marker-retention-hours: ${PROCESSED_EVENT_RETENTION_HOURS:168}
+  retention:
+    sweep-interval-ms: ${RETENTION_SWEEP_INTERVAL_MS:3600000}
+    # Days a row of authorization_decision and of unresolved_card_attempt remains. Each row is the
+    # attribution record of a financial decision, so it outlives the outbox row that decision
+    # published. domain/RetentionSweep removes older rows in bounded batches.
+    decision-retention-days: ${DECISION_RETENTION_DAYS:365}
 
-  # Replica freshness. This service authorizes against card_xref and account_credit_snapshot,
-  # which are copies kept current by state-change events. app/cbl/CBTRN02C.cbl:L382 and :L395 read
-  # the datasets themselves, so the source has nothing that can go stale; a copy does, and it goes
-  # stale quietly. A stale credit limit does not raise an error, it approves a transaction the
-  # current limit would have declined.
-  #
-  # max-staleness is the window entity.CardCrossReferenceEntity#isFreshAt and
-  # domain.DeclineRule.Context#isReplicaDataFresh compare against. The default is deliberately a
-  # whole day rather than minutes: the demo runs without an account or card mutation for its whole
-  # length, so a short window would decline every transaction after a few minutes and the operator
-  # would read it as a broken demo rather than as the control working. A deployment that receives
-  # real state-change traffic should shorten it to minutes.
+  # Replica freshness. max-staleness is how old the observation on a card_xref or
+  # account_credit_snapshot row may be and still be authorized against. Past it,
+  # domain/AuthorizationService refuses the call as an infrastructure fault rather than
+  # declining it, and counts carddemo.authorization.failures{stage="replica"}.
+  # A deployment receiving real state-change traffic should shorten it to minutes.
+  # Why a day by default, and why a fault and not a fifth reject reason:
+  # card-platform/docs/decision-log.md.
   replica:
     max-staleness: ${REPLICA_MAX_STALENESS:P1D}
 
-  # Addresses of the two supporting services, bound by config/AuthorizationProperties
-  # and validated at start-up. The decline rules themselves read no other service:
-  # they resolve a card in the card_xref table of the private schema above and read
-  # the credit limit, both cycle accumulators and the expiry date from
-  # account_credit_snapshot in the same schema, which is what stops one
-  # authorization call from waiting on two more services. Inside the compose network
-  # a service answers on its own name and port 8080; docker-compose.yml and
-  # card-platform/.env.example carry the values, and a deployment outside compose
-  # overrides them.
-  services:
-    account:
-      base-url: ${ACCOUNT_SERVICE_BASE_URL:http://account-service:8080}
-    card:
-      base-url: ${CARD_SERVICE_BASE_URL:http://card-service:8080}
+  # No supporting-service address appears here, and none is read. A decline rule resolves a
+  # card in the card_xref table of the private schema above and reads the credit limit, both
+  # cycle accumulators and the expiry date from account_credit_snapshot in the same schema, so
+  # one authorization call waits on no other service. The two listeners above are what keep
+  # those tables current.
+  # Why replication rather than a synchronous read: card-platform/docs/decision-log.md.
   consumer:
     retry:
       max-attempts: ${CONSUMER_MAX_RETRY_ATTEMPTS:3}
       backoff-ms: ${CONSUMER_RETRY_BACKOFF_MS:1000}
 
   # Request identities. config/SecurityConfig maps each entry onto one Spring Security
-  # user, and start-up fails when this list is empty: a service that runs with no
-  # identity would either refuse every request or invite a default one.
+  # user. Start-up fails when this list is empty, rather than running with no identity
+  # at all.
   #
   # password holds an ALREADY-ENCODED value carrying its algorithm prefix, for example
-  # {bcrypt}$2a$10$... A plaintext value authenticates nothing, which is how this
-  # platform declines to reproduce the plaintext comparison at
-  # app/cbl/COSGN00C.cbl:L223. card-platform/.env.example documents the three variables
-  # and how to generate a hash, and none of them holds a usable default: an unset
-  # variable stops start-up rather than admitting a password this repository publishes.
+  # {bcrypt}$2a$10$... A plaintext value authenticates nothing, so this platform does
+  # not reproduce the plaintext comparison at app/cbl/COSGN00C.cbl:L223.
+  # card-platform/.env.example documents the three variables and how to generate a
+  # hash. None of them holds a usable default, so an unset variable stops start-up.
   #
   # role is ADMIN, USER or MONITORING. ADMIN and USER are the two outcomes of the
   # SEC-USR-TYPE fork at app/cbl/COSGN00C.cbl:L232-L236. MONITORING is additive: it
@@ -239,8 +266,9 @@ carddemo:
   #
   # scopes carries what an ordinary identity owns, one authority per entitlement:
   # SCOPE_ACCOUNT_<eleven digits>, SCOPE_CUSTOMER_<nine digits> or
-  # SCOPE_CARD_<masked card number>. Each identifier is written exactly as its column
-  # holds it, leading zeros and mask characters included. An ADMIN entry needs none: it
+  # SCOPE_CARD_<card token>. Each identifier is written exactly as its column holds
+  # it, leading zeros included, and a card token is the 64 lower-case hexadecimal
+  # characters PanMasker.tokenOf produces for that card number. An ADMIN entry needs none: it
   # passes every ownership check by role.
   security:
     users:
@@ -262,24 +290,32 @@ management:
   server:
     port: ${MANAGEMENT_PORT:9080}
     # The management port carries the same posture as the service port above, declared
-    # rather than inherited: a monitoring credential travelling to a collector deserves
-    # the same protection as a cardholder identifier travelling to a client. A Kubernetes
-    # probe against an encrypted management port needs scheme HTTPS, which
+    # rather than inherited. A monitoring credential travelling to a collector deserves
+    # the protection a cardholder identifier gets. A Kubernetes probe against an
+    # encrypted management port needs scheme HTTPS, which
     # deploy/k8s/40-authorization-service.yaml sets.
     ssl:
       enabled: "${MANAGEMENT_SSL_ENABLED:${SERVER_SSL_ENABLED:false}}"
       key-store: "${SERVER_SSL_KEYSTORE:}"
       key-store-type: "${SERVER_SSL_KEYSTORE_TYPE:PKCS12}"
       key-store-password: "${SERVER_SSL_KEYSTORE_PASSWORD:}"
-  # config/SecurityConfig secures this surface: /actuator/health answers without a
-  # credential because a container health check and a Kubernetes probe carry none, and
-  # every other endpoint below requires ROLE_MONITORING. An anonymous caller receives
-  # 401 and an identity holding a business role receives 403, so exposing metrics and
-  # the Prometheus scrape here discloses nothing to a pod that merely reaches the port.
+  # config/SecurityConfig secures this surface. /actuator/health answers without a
+  # credential, because a container health check and a Kubernetes probe carry none.
+  # Every other endpoint below requires ROLE_MONITORING. An anonymous caller receives
+  # 401, and an identity holding a business role receives 403.
   endpoints:
     web:
       exposure:
         include: ${MANAGEMENT_ENDPOINTS:health,metrics,prometheus}
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db,kafka,listeners,outbox
   prometheus:
     metrics:
       export:

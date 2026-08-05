@@ -29,10 +29,9 @@ import static org.junit.jupiter.api.Assertions.fail;
 /**
  * Runs {@link CardUpdated} through the publish path and the consume path this service uses.
  *
- * <p>ADDITIVE. No COBOL program publishes an event, so nothing here translates a source construct.
+ * <p>No COBOL program publishes an event, so nothing here translates a source construct.
  * The card fields the event carries come from {@code app/cpy/CVACT02Y.cpy}:
- * {@code CARD-NUM PIC X(16)} at {@code :L5}, {@code CARD-EMBOSSED-NAME PIC X(50)} at {@code :L8},
- * {@code CARD-EXPIRAION-DATE PIC X(10)} at {@code :L9} and
+ * {@code CARD-NUM PIC X(16)} at {@code :L5}, {@code CARD-EXPIRAION-DATE PIC X(10)} at {@code :L9} and
  * {@code CARD-ACTIVE-STATUS PIC X(01)} at {@code :L10}. The account identifier is
  * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} and is the Kafka message key.
  *
@@ -44,11 +43,9 @@ import static org.junit.jupiter.api.Assertions.fail;
  * cross-reference read on all sixteen characters, and masking happens at the serialization boundary
  * afterwards, so the wire form carries twelve mask characters and the last four digits.
  *
- * <p>{@code schemas/card-updated-v1.json} ships in the event-contracts module and is the
+ * <p>{@code schemas/card-updated-v2.json} ships in the event-contracts module and is the
  * contract this service publishes against. The serializer validates the bytes before returning them,
  * so a call that returns bytes is a call whose payload satisfied that document.
- *
- * <p>{@code card-platform/docs/decision-log.md} (planned) holds the rationale for these choices.
  *
  * <p>Versions in use: Java 25, Apache Maven 3.9.16, junit-jupiter 6.0.3,
  * spring-boot-starter-test 4.1.0, json-schema-validator 3.0.6 and jackson-databind 3.1.4.
@@ -57,7 +54,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 class CardUpdatedPublishPathTest {
 
     /** The contract this service publishes against, on the classpath from event-contracts. */
-    private static final String DOCUMENT = "schemas/card-updated-v1.json";
+    private static final String DOCUMENT = "schemas/card-updated-v2.json";
 
     /** The topic the card service publishes a card mutation to. */
     private static final String TOPIC = "card.updated";
@@ -71,7 +68,7 @@ class CardUpdatedPublishPathTest {
     /** An eleven-digit account identifier, from {@code app/data/ASCII/cardxref.txt}. */
     private static final String ACCOUNT_ID = "00000000001";
 
-    /** A cardholder name inside the fifty characters of {@code CARD-EMBOSSED-NAME PIC X(50)}. */
+    /** A cardholder name the event must not persist or publish. */
     private static final String EMBOSSED_NAME = "PAULA A CHRISTOFFERSEN";
 
     /** A ten-character expiry text, from {@code CARD-EXPIRAION-DATE PIC X(10)}. */
@@ -82,7 +79,8 @@ class CardUpdatedPublishPathTest {
 
     /** Property names no event may carry, each one the guard refuses. */
     private static final List<String> FORBIDDEN_PROPERTIES =
-            List.of("cvv", "cardVerificationValue", "cardNumber", "pan", "password", "ssn");
+            List.of("cvv", "cardVerificationValue", "cardNumber", "pan", "embossedName",
+                    "password", "ssn");
 
     /** Reads and writes JSON trees. Jackson 3 only. */
     private static final ObjectMapper MAPPER = new ObjectMapper();
@@ -155,6 +153,8 @@ class CardUpdatedPublishPathTest {
                         + "at the serialization boundary");
         assertFalse(rendered.contains("\"" + CARD_VERIFICATION_VALUE + "\""),
                 "the wire form carries a value the card verification field could hold");
+        assertFalse(rendered.contains(EMBOSSED_NAME),
+                "the wire form carries an embossed cardholder name no consumer needs");
     }
 
     /**
@@ -249,7 +249,7 @@ class CardUpdatedPublishPathTest {
      */
     private static CardUpdated event() {
         return CardUpdated.ofUnmaskedCardNumber(UNMASKED_CARD_NUMBER, ACCOUNT_ID,
-                EMBOSSED_NAME, EXPIRATION_DATE, CardUpdated.ACTIVE_STATUS_ACTIVE);
+                EXPIRATION_DATE, CardUpdated.ACTIVE_STATUS_ACTIVE);
     }
 
     /**

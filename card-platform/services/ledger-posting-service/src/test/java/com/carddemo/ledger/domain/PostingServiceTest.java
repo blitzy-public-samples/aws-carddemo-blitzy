@@ -1,23 +1,13 @@
 package com.carddemo.ledger.domain;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.inOrder;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
-import static org.mockito.Mockito.when;
-
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionPosted;
 import com.carddemo.ledger.entity.OutboxEventEntity;
 import com.carddemo.ledger.entity.TransactionEntity;
+import com.carddemo.ledger.outbox.OutboxRelay;
 import com.carddemo.ledger.outbox.OutboxWriter;
 import com.carddemo.ledger.repository.OutboxEventRepository;
 import com.carddemo.ledger.repository.TransactionRepository;
@@ -27,13 +17,12 @@ import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestMethodOrder;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -46,6 +35,17 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -69,12 +69,11 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>Thirteen values reach one row: the twelve copies and the stamp. The trailing
  * {@code FILLER PIC X(20)} at {@code app/cpy/CVTRA05Y.cpy:L18} owns no field and no column.</p>
  *
- * <p>Three behaviours here are ADDITIVE and carry no COBOL ancestor. Single-transaction atomicity is
- * the first: the source runs the three writes above with no rollback, and all eight file definitions
- * in {@code app/csd/CARDDEMO.CSD} specify {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}. The masked
- * card number is the second, and {@code app/data/ASCII/dailytran.txt} holds zero mask characters
- * across its 300 records. The currency constant is the third. Rationale for all three sits in
- * {@code card-platform/docs/decision-log.md}.</p>
+ * <p>Three behaviours here have no COBOL ancestor. Single-transaction
+ * atomicity is the first: the source runs the three writes above with no rollback, and all eight
+ * file definitions in {@code app/csd/CARDDEMO.CSD} specify {@code RECOVERY(NONE)} and {@code
+ * JOURNAL(NO)}. The masked card number is the second, and {@code app/data/ASCII/dailytran.txt}
+ * holds zero mask characters across its 300 records. The currency constant is the third.
  *
  * <p>Each group stubs the four collaborators and starts no application context, except
  * {@link TransactionBoundary}, which runs the shipped wiring over PostgreSQL.</p>
@@ -101,8 +100,8 @@ final class PostingServiceTest {
      * 504.77: the fixture holds the eleven bytes 0000005047G, whose trailing byte overpunches the
      * sign and the last digit as plus seven. DALYTRAN-ORIG-TS is the one distinct value all 300
      * records carry, with a space at position eleven and colons between the time parts. The masked
-     * card number is ADDITIVE: twelve mask characters ahead of the last four digits of the Primary
-     * Account Number (PAN), and the fixture holds zero mask characters.
+     * card number has no COBOL ancestor: twelve mask characters ahead of the last four digits of
+     * the Primary Account Number (PAN), and the fixture holds zero mask characters.
      */
     private static final String ACCOUNT_ID = "00000000007";
     private static final String TRANSACTION_ID = "00000000" + "00683580";
@@ -116,7 +115,12 @@ final class PostingServiceTest {
     private static final String MERCHANT_CITY = "North Enoshaven";
     private static final String MERCHANT_ZIP = "72112";
     private static final String MASKED_CARD_NUMBER = "************7065";
+
+    /** Card token the authorized event carries, and the identity the read model keys on. */
+    private static final String CARD_TOKEN =
+            "7f14b6ce02a9385d1cbe470f28a6d915c34b70e8fa1259d603ba8e47c1f0d269";
     private static final String AUTHORIZED_AT = "2022-06-10 19:27:53.000000";
+
 
     /*
      * Balances. Account row 7 stores 193.00 in ACCT-CURR-BAL PIC S9(10)V99 at
@@ -132,10 +136,19 @@ final class PostingServiceTest {
     /** A run of twelve or more decimal digits, which no published money or card value holds. */
     private static final String LONG_DIGIT_RUN = "[0-9]{12,}";
 
-    /** The eleven property names one serialized {@link TransactionPosted} carries. */
+    /**
+     * The twenty-one property names one serialized {@link TransactionPosted} carries.
+     *
+     * <p>Sixteen payload names sit beside the five envelope ones. Eleven of the sixteen are the
+     * fields the card-keyed read model at {@code app/cpy/COSTM01.CPY:L20-L36} stores, which
+     * paragraph {@code 2000-POST-TRANSACTION} at {@code app/cbl/CBTRN02C.cbl:L425-L436} moves onto
+     * the posted record.
+     */
     private static final List<String> WIRE_PROPERTIES = List.of("eventId", "eventType",
             "schemaVersion", "occurredAt", "aggregateId", "transactionId", "accountId",
-            "newBalance", "postedAt", "amount", "maskedCardNumber");
+            "newBalance", "postedAt", "amount", "maskedCardNumber", "cardToken",
+            "transactionTypeCode", "merchantCategoryCode", "source", "description", "merchantId",
+            "merchantName", "merchantCity", "merchantZip", "originTimestamp");
 
     /** Writes one event to JavaScript Object Notation (JSON) text and reads that text back. */
     private static final JsonMapper WIRE_MAPPER = JsonMapper.builder().build();
@@ -161,7 +174,7 @@ final class PostingServiceTest {
             BigDecimal amount) {
         return TransactionAuthorized.of(accountId, transactionId, TYPE_CODE, CATEGORY_CODE, SOURCE,
                 DESCRIPTION, amount, MERCHANT_ID, MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP,
-                MASKED_CARD_NUMBER, AUTHORIZED_AT);
+                MASKED_CARD_NUMBER, CARD_TOKEN, AUTHORIZED_AT);
     }
 
     /** Stubs the second update to yield one balance. */
@@ -206,7 +219,7 @@ final class PostingServiceTest {
         void allTwelveValuesLandOnTheirOwnField() {
             yieldBalance(POSTED_BALANCE);
 
-            postingService.postTransaction(authorized(AMOUNT));
+            postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
 
             TransactionEntity row = insertedRow();
             assertThat(row.getTransactionId()).isEqualTo(TRANSACTION_ID);
@@ -240,7 +253,7 @@ final class PostingServiceTest {
         void onlyTheMaskedCardNumberReachesTheRow() {
             yieldBalance(POSTED_BALANCE);
 
-            postingService.postTransaction(authorized(AMOUNT));
+            postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
 
             TransactionEntity row = insertedRow();
             assertThat(row.getCardNumber()).matches(TransactionEntity.MASKED_CARD_NUMBER_PATTERN)
@@ -260,7 +273,7 @@ final class PostingServiceTest {
         void oneStampReachesBothTheRowAndTheEvent() {
             yieldBalance(POSTED_BALANCE);
 
-            postingService.postTransaction(authorized(AMOUNT));
+            postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
 
             String stamped = insertedRow().getProcessedTimestamp();
             assertThat(stamped).isSameAs(enqueuedEvent().postedAt())
@@ -275,7 +288,7 @@ final class PostingServiceTest {
         void theProcessingTimestampTakesTheStampAndNoInboundValue() {
             yieldBalance(POSTED_BALANCE);
 
-            postingService.postTransaction(authorized(AMOUNT));
+            postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
 
             TransactionEntity row = insertedRow();
             assertThat(row.getProcessedTimestamp()).isNotBlank()
@@ -300,7 +313,7 @@ final class PostingServiceTest {
         void theThreeUpdatesRunInSourceOrder() {
             yieldBalance(POSTED_BALANCE);
 
-            postingService.postTransaction(authorized(AMOUNT));
+            postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
 
             InOrder ordered = inOrder(categoryBalances, accountBalances, postedRows, outboxWriter);
             ordered.verify(categoryBalances)
@@ -316,7 +329,7 @@ final class PostingServiceTest {
         void oneCallDrivesOneOfEachUpdate() {
             yieldBalance(POSTED_BALANCE);
 
-            postingService.postTransaction(authorized(AMOUNT));
+            postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
 
             verify(categoryBalances, times(1)).updateCategoryBalance(any(), any(), any(), any());
             verify(accountBalances, times(1)).updateBalances(any(), any());
@@ -332,7 +345,8 @@ final class PostingServiceTest {
             doThrow(storeFailure).when(categoryBalances)
                     .updateCategoryBalance(ACCOUNT_ID, TYPE_CODE, CATEGORY_CODE, AMOUNT);
 
-            assertThatThrownBy(() -> postingService.postTransaction(authorized(AMOUNT)))
+            assertThatThrownBy(() ->
+                    postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID))
                     .isSameAs(storeFailure);
 
             verifyNoInteractions(accountBalances, postedRows, outboxWriter);
@@ -344,7 +358,8 @@ final class PostingServiceTest {
             when(accountBalances.updateBalances(ACCOUNT_ID, AMOUNT)).thenThrow(
                     new AccountBalanceUpdater.AccountBalanceRowMissingException(ACCOUNT_ID));
 
-            assertThatThrownBy(() -> postingService.postTransaction(authorized(AMOUNT)))
+            assertThatThrownBy(() ->
+                    postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID))
                     .isInstanceOf(AccountBalanceUpdater.AccountBalanceRowMissingException.class);
 
             verify(categoryBalances)
@@ -356,11 +371,27 @@ final class PostingServiceTest {
         @DisplayName("app/cbl/CBTRN02C.cbl:L444 yields nothing, and a null event runs no update")
         void theMethodYieldsNothingAndRefusesANullEvent() throws NoSuchMethodException {
             assertThat(PostingService.class
-                    .getMethod("postTransaction", TransactionAuthorized.class).getReturnType())
+                    .getMethod("postTransaction", TransactionAuthorized.class, String.class)
+                    .getReturnType())
                     .isEqualTo(void.class);
 
-            assertThatThrownBy(() -> postingService.postTransaction(null))
+            assertThatThrownBy(() -> postingService.postTransaction(null, ACCOUNT_ID))
                     .isInstanceOf(NullPointerException.class);
+
+            verifyNoInteractions(categoryBalances, accountBalances, postedRows, outboxWriter);
+        }
+
+        @Test
+        @DisplayName("a missing or mismatched message key runs no posting side effect")
+        void aMessageKeyMustNameThePayloadAggregate() {
+            TransactionAuthorized event = authorized(AMOUNT);
+
+            assertThatThrownBy(() -> postingService.postTransaction(event, null))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("message key");
+            assertThatThrownBy(() -> postingService.postTransaction(event, "00000000099"))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("aggregate identifier");
 
             verifyNoInteractions(categoryBalances, accountBalances, postedRows, outboxWriter);
         }
@@ -376,7 +407,7 @@ final class PostingServiceTest {
         void theTwoMoneyWidthsStayDistinct() {
             yieldBalance(WIDEST_BALANCE);
 
-            postingService.postTransaction(authorized(AMOUNT));
+            postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
 
             TransactionPosted posted = enqueuedEvent();
             assertThat(posted.newBalance().toPlainString())
@@ -389,11 +420,12 @@ final class PostingServiceTest {
         }
 
         @Test
-        @DisplayName("the six payload values arrive from the event, :L547 and the stamp at :L438")
-        void theSixPayloadValuesComeFromTheirSources() {
+        @DisplayName("the sixteen payload values arrive from the event, :L547 and the stamp at "
+                + ":L438")
+        void theSixteenPayloadValuesComeFromTheirSources() {
             yieldBalance(POSTED_BALANCE);
 
-            postingService.postTransaction(authorized(AMOUNT));
+            postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
 
             TransactionPosted posted = enqueuedEvent();
             assertThat(posted.transactionId()).isEqualTo(TRANSACTION_ID);
@@ -404,19 +436,40 @@ final class PostingServiceTest {
             assertThat(posted.postedAt()).matches(TransactionPosted.POSTED_AT_PATTERN);
             assertThat(posted.amount()).isEqualTo(AMOUNT);
             assertThat(posted.maskedCardNumber()).isEqualTo(MASKED_CARD_NUMBER);
+            assertThat(posted.cardToken()).isEqualTo(CARD_TOKEN);
+            assertThat(posted.transactionTypeCode()).isEqualTo(TYPE_CODE);
+            assertThat(posted.merchantCategoryCode()).isEqualTo(CATEGORY_CODE);
+            assertThat(posted.source()).isEqualTo(SOURCE);
+            assertThat(posted.description()).isEqualTo(DESCRIPTION);
+            assertThat(posted.merchantId()).isEqualTo(MERCHANT_ID);
+            assertThat(posted.merchantName()).isEqualTo(MERCHANT_NAME);
+            assertThat(posted.merchantCity()).isEqualTo(MERCHANT_CITY);
+            assertThat(posted.merchantZip()).isEqualTo(MERCHANT_ZIP);
+            assertThat(posted.originTimestamp()).isEqualTo(AUTHORIZED_AT);
             assertThat(posted.accountId()).isEqualTo(ACCOUNT_ID);
             assertThat(posted.aggregateId()).isEqualTo(posted.accountId())
                     .matches(EventEnvelope.AGGREGATE_ID_PATTERN)
                     .startsWith("0");
-            assertThat(posted.envelope().carriesAccountKey()).isTrue();
+            assertThat(posted.envelope().aggregateId())
+                    .matches(EventEnvelope.AGGREGATE_ID_PATTERN);
+            assertThat(posted.cardToken()).isEqualTo(CARD_TOKEN);
+            assertThat(posted.transactionTypeCode()).isEqualTo(TYPE_CODE);
+            assertThat(posted.merchantCategoryCode()).isEqualTo(CATEGORY_CODE);
+            assertThat(posted.source()).isEqualTo(SOURCE);
+            assertThat(posted.description()).isEqualTo(DESCRIPTION);
+            assertThat(posted.merchantId()).isEqualTo(MERCHANT_ID);
+            assertThat(posted.merchantName()).isEqualTo(MERCHANT_NAME);
+            assertThat(posted.merchantCity()).isEqualTo(MERCHANT_CITY);
+            assertThat(posted.merchantZip()).isEqualTo(MERCHANT_ZIP);
+            assertThat(posted.originTimestamp()).isEqualTo(AUTHORIZED_AT);
         }
 
         @Test
-        @DisplayName("the serialized event is one flat object of eleven properties, no envelope key")
+        @DisplayName("the serialized event is one flat object of every property, no envelope key")
         void theSerializedEventIsOneFlatObject() {
             yieldBalance(POSTED_BALANCE);
 
-            postingService.postTransaction(authorized(AMOUNT));
+            postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
 
             JsonNode wire = wireForm(enqueuedEvent());
             assertThat(wire.propertyNames()).containsExactlyInAnyOrderElementsOf(WIRE_PROPERTIES);
@@ -424,9 +477,42 @@ final class PostingServiceTest {
             assertThat(wire.get("envelope")).isNull();
             assertThat(wire.get("eventType").stringValue()).isEqualTo(TransactionPosted.EVENT_TYPE);
             assertThat(wire.get("schemaVersion").intValue())
-                    .isEqualTo(EventEnvelope.SCHEMA_VERSION);
+                    .isEqualTo(TransactionPosted.TRANSACTION_DETAIL_SCHEMA_VERSION);
             assertThat(wire.get("newBalance").isString()).isTrue();
             assertThat(wire.get("amount").isString()).isTrue();
+        }
+
+        /**
+         * Asserts the payload carries no property another record owns, and no run of twelve or more
+         * digits beyond its two identifiers.
+         *
+         * <p>{@code authorizedAt} is not on the forbidden list. Paragraph
+         * {@code 2000-POST-TRANSACTION} at {@code app/cbl/CBTRN02C.cbl:L425-L436} moves
+         * {@code DALYTRAN-ORIG-TS} onto the posted record, and the statement row at
+         * {@code app/cpy/COSTM01.CPY:L20-L36} stores it, so the posted event carries it. The two
+         * billing-cycle accumulators and the credit limit stay on the account record at
+         * {@code app/cpy/CVACT01Y.cpy:L8,L12-L13} and no consumer of this event reads them.
+         */
+        @Test
+        @DisplayName("the ten transaction values come from the authorized event, not from blanks")
+        void theTenTransactionValuesComeFromTheAuthorizedEvent() {
+            yieldBalance(POSTED_BALANCE);
+            TransactionAuthorized source = authorized(AMOUNT);
+
+            postingService.postTransaction(source, ACCOUNT_ID);
+
+            TransactionPosted posted = enqueuedEvent();
+            assertThat(posted.cardToken()).isEqualTo(source.cardToken());
+            assertThat(posted.transactionTypeCode()).isEqualTo(source.transactionTypeCode());
+            assertThat(posted.merchantCategoryCode()).isEqualTo(source.merchantCategoryCode());
+            assertThat(posted.source()).isEqualTo(source.source());
+            assertThat(posted.description()).isEqualTo(source.description());
+            assertThat(posted.merchantId()).isEqualTo(source.merchantId());
+            assertThat(posted.merchantName()).isEqualTo(source.merchantName());
+            assertThat(posted.merchantCity()).isEqualTo(source.merchantCity());
+            assertThat(posted.merchantZip()).isEqualTo(source.merchantZip());
+            assertThat(posted.originTimestamp()).isEqualTo(source.authorizedAt());
+            assertThat(posted.originTimestamp()).isNotEqualTo(posted.postedAt());
         }
 
         @Test
@@ -434,18 +520,19 @@ final class PostingServiceTest {
         void noForbiddenPropertyJoinsThePayload() {
             yieldBalance(POSTED_BALANCE);
 
-            postingService.postTransaction(authorized(AMOUNT));
+            postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
 
             TransactionPosted posted = enqueuedEvent();
             JsonNode wire = wireForm(posted);
             assertThat(wire.propertyNames()).doesNotContain("cycleCredit", "cycleDebit",
-                    "categoryBalance", "authorizedAt", "originalTimestamp", "cardStatus",
-                    "accountStatus", "filler", "currency", "declineReasonCode");
+                    "categoryBalance", "creditLimit", "cardStatus", "accountStatus", "filler",
+                    "currency", "declineReasonCode", "cardNumber", "cvv");
             assertThat(wire.get("postedAt").stringValue()).doesNotContain("T").doesNotEndWith("Z");
 
             String beyondIdentifiers = WIRE_MAPPER.writeValueAsString(posted)
                     .replace(posted.eventId().toString(), "")
-                    .replace(posted.transactionId(), "");
+                    .replace(posted.transactionId(), "")
+                    .replace(posted.merchantId(), "");
             assertThat(beyondIdentifiers).doesNotContainPattern(LONG_DIGIT_RUN);
         }
     }
@@ -481,7 +568,7 @@ final class PostingServiceTest {
         void theTransactionIdentifierArrivesFromTheEvent() {
             yieldBalance(POSTED_BALANCE);
 
-            postingService.postTransaction(authorized(AMOUNT));
+            postingService.postTransaction(authorized(AMOUNT), ACCOUNT_ID);
 
             assertThat(insertedRow().getTransactionId()).isEqualTo(TRANSACTION_ID)
                     .hasSize(PicClause.TRAN_ID_WIDTH);
@@ -494,7 +581,7 @@ final class PostingServiceTest {
         void aNegativeAmountPosts() {
             yieldBalance(REFUNDED_BALANCE);
 
-            postingService.postTransaction(authorized(REFUND_AMOUNT));
+            postingService.postTransaction(authorized(REFUND_AMOUNT), ACCOUNT_ID);
 
             assertThat(insertedRow().getAmount()).isEqualTo(REFUND_AMOUNT);
             TransactionPosted posted = enqueuedEvent();
@@ -510,7 +597,8 @@ final class PostingServiceTest {
             String syntheticAccount = "00000000099";
             yieldBalance(POSTED_BALANCE);
 
-            postingService.postTransaction(authorized(syntheticAccount, TRANSACTION_ID, AMOUNT));
+            postingService.postTransaction(
+                    authorized(syntheticAccount, TRANSACTION_ID, AMOUNT), syntheticAccount);
 
             verify(categoryBalances)
                     .updateCategoryBalance(syntheticAccount, TYPE_CODE, CATEGORY_CODE, AMOUNT);
@@ -526,28 +614,34 @@ final class PostingServiceTest {
      *
      * <p>{@code postTransaction} carries {@link Transactional} at default propagation, so the three
      * updates and the outbox row join the transaction the caller opened and settle together.
-     * Single-transaction atomicity is ADDITIVE, and {@code app/cbl/CBTRN02C.cbl:L440-L442} runs its
-     * three writes with no rollback at all.</p>
+     * Single-transaction atomicity has no COBOL ancestor, and {@code
+     * app/cbl/CBTRN02C.cbl:L440-L442} runs its three writes with no rollback at all.</p>
      *
      * <p>Flyway owns each schema object and {@code ddl-auto} stays {@code validate}, so a drift
      * between an entity and a migration stops start-up. No broker is reached: the one message
-     * template bean is replaced with a stand-in, and this service declares no listener and no relay.
-     * Account {@code 00000000007} arrives through {@code V2__seed.sql}, which seeds neither the
-     * {@code transaction} table nor {@code outbox_event}, so both counts open at zero. The alternate
-     * index {@code KEYS(26 304)} at {@code app/jcl/TRANIDX.jcl:L27} becomes the secondary index over
-     * the processing timestamp.</p>
+     * template bean is replaced with a stand-in, and the listener of
+     * {@code messaging/TransactionAuthorizedConsumer} does not start. Account {@code 00000000007}
+     * arrives through {@code V2__seed.sql}, which seeds neither the {@code transaction} table nor
+     * {@code outbox_event}. The alternate index {@code KEYS(26 304)} at
+     * {@code app/jcl/TRANIDX.jcl:L27} becomes the secondary index over the processing
+     * timestamp.</p>
+     *
+     * <p>Each case here writes under its own transaction identifier, asserts on that
+     * identifier, and empties the two tables it wrote afterwards, so no case depends on
+     * another having run first.</p>
      */
     @Nested
     @DisplayName("The transaction boundary over PostgreSQL")
     @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
+            "spring.kafka.listener.auto-startup=false",
             "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
             "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
             "USER_PASSWORD_HASH={noop}not-a-real-user-password",
             "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+            "TOPIC_DEAD_LETTER_SUFFIX=.DLT",
             "spring.jpa.hibernate.ddl-auto=validate"
     })
     @Testcontainers
-    @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
     class TransactionBoundary {
 
         /** The login this group's database server accepts, and the name of its database. */
@@ -558,6 +652,20 @@ final class PostingServiceTest {
 
         /** The sixteen-character key of the posting this group commits. */
         private static final String COMMITTED_ID = "SLICE-COMMIT-001";
+
+        /** The schema Flyway migrates into, which every statement resolves against. */
+        private static final String MIGRATED_SCHEMA = "ledger_service";
+
+        /** A publication instant far enough back that every retention horizon here precedes it. */
+        private static final java.time.Instant RETENTION_EXPIRED_AT =
+                java.time.Instant.parse("2020-01-01T00:00:00Z");
+
+        /** The horizon the retention tests apply, which every expired row above precedes. */
+        private static final java.time.Instant RETENTION_HORIZON =
+                java.time.Instant.parse("2021-01-01T00:00:00Z");
+
+        /** Rows the bounded retention delete removes per statement when a test wants them all. */
+        private static final int RETENTION_BATCH_SIZE = 1000;
 
         /** The database server this group runs against, started once for the group. */
         private static final PostgreSQLContainer POSTGRES =
@@ -574,6 +682,10 @@ final class PostingServiceTest {
         @MockitoBean
         private org.springframework.kafka.core.KafkaTemplate<String, Object> publishChannel;
 
+        /** Prevents the scheduled publisher from consuming rows this boundary test inspects. */
+        @MockitoBean
+        private OutboxRelay relay;
+
         /** The subject, wired by the context. */
         private PostingService postings;
 
@@ -586,47 +698,80 @@ final class PostingServiceTest {
         /** The boundary a caller opens around one posting. */
         private TransactionTemplate callerTransaction;
 
-        /** Points the datasource at the started server. */
+        /**
+         * The statement channel this group empties {@code transaction} through.
+         *
+         * <p>{@link TransactionRepository} declares {@code save}, {@code findById},
+         * {@code existsById} and {@code count} and no delete.
+         */
+        private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
+        /** The private schema this service owns, which the shipped connection string names. */
+        private static final String SERVICE_SCHEMA = "ledger_service";
+
+        /** Points the datasource at the started server, on the schema the shipped URL names. */
         @DynamicPropertySource
         static void datasourceProperties(DynamicPropertyRegistry registry) {
-            registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+            registry.add("spring.datasource.url", TransactionBoundary::jdbcUrlOnTheServiceSchema);
             registry.add("spring.datasource.username", POSTGRES::getUsername);
             registry.add("spring.datasource.password", POSTGRES::getPassword);
         }
 
-        /** Reads the four beans this group drives out of the started context. */
+        /**
+         * The container's connection string, carrying the {@code currentSchema} parameter the
+         * shipped {@code spring.datasource.url} carries.
+         *
+         * <p>{@code hibernate.default_schema} qualifies the statements Hibernate writes and
+         * leaves a statement written by hand unqualified, so the search path decides where an
+         * unqualified name resolves.
+         */
+        private static String jdbcUrlOnTheServiceSchema() {
+            String url = POSTGRES.getJdbcUrl();
+            return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        }
+
+        /** Reads the five beans this group drives out of the started context. */
         @BeforeEach
         void resolveBeans(ApplicationContext context) {
             postings = context.getBean(PostingService.class);
             storedRows = context.getBean(TransactionRepository.class);
             storedEvents = context.getBean(OutboxEventRepository.class);
             callerTransaction = context.getBean(TransactionTemplate.class);
+            jdbc = context.getBean(org.springframework.jdbc.core.JdbcTemplate.class);
+        }
+
+        /** Empties the two tables this group writes, so each case arranges its own state. */
+        @AfterEach
+        void emptyTheTablesThisGroupWrites() {
+            storedEvents.deleteAll();
+            jdbc.update("DELETE FROM \"transaction\"");
         }
 
         @Test
-        @Order(1)
         @DisplayName("a rolled-back caller transaction leaves no posted row and no outbox event")
         void aRolledBackCallerTransactionLeavesNothing() {
             callerTransaction.executeWithoutResult(status -> {
-                postings.postTransaction(authorized(ACCOUNT_ID, ROLLED_BACK_ID, AMOUNT));
+                postings.postTransaction(
+                        authorized(ACCOUNT_ID, ROLLED_BACK_ID, AMOUNT), ACCOUNT_ID);
                 status.setRollbackOnly();
             });
 
-            assertThat(storedRows.count()).isZero();
-            assertThat(storedEvents.count()).isZero();
             assertThat(storedRows.findById(ROLLED_BACK_ID)).isEmpty();
+            assertThat(storedEvents.findAll())
+                    .noneMatch(row -> row.getPayload().contains(ROLLED_BACK_ID));
         }
 
         @Test
-        @Order(2)
         @DisplayName("a committed posting leaves one row and one unpublished outbox event")
         void aCommittedPostingLeavesOneRowAndOneUnpublishedEvent() {
-            postings.postTransaction(authorized(ACCOUNT_ID, COMMITTED_ID, AMOUNT));
+            postings.postTransaction(
+                    authorized(ACCOUNT_ID, COMMITTED_ID, AMOUNT), ACCOUNT_ID);
 
-            assertThat(storedRows.count()).isEqualTo(1L);
             assertThat(storedRows.findById(COMMITTED_ID)).isPresent();
 
-            List<OutboxEventEntity> enqueued = storedEvents.findAll();
+            List<OutboxEventEntity> enqueued = storedEvents.findAll().stream()
+                    .filter(row -> row.getPayload().contains(COMMITTED_ID))
+                    .toList();
             assertThat(enqueued).hasSize(1);
             OutboxEventEntity row = enqueued.getFirst();
             assertThat(row.isPublished()).isFalse();
@@ -636,16 +781,69 @@ final class PostingServiceTest {
         }
 
         @Test
-        @Order(3)
         @DisplayName("postTransaction carries default propagation and opens no transaction of its own")
         void postTransactionCarriesDefaultPropagation() throws NoSuchMethodException {
             Transactional boundary = PostingService.class
-                    .getMethod("postTransaction", TransactionAuthorized.class)
+                    .getMethod("postTransaction", TransactionAuthorized.class, String.class)
                     .getAnnotation(Transactional.class);
 
             assertThat(boundary).isNotNull();
             assertThat(boundary.propagation()).isEqualTo(Propagation.REQUIRED)
                     .isNotEqualTo(Propagation.REQUIRES_NEW);
+        }
+
+        @Test
+        @Order(4)
+        @DisplayName("the retention delete takes the published row past the horizon and leaves the "
+                + "unpublished one this group wrote")
+        void retentionDeleteTakesOnlyPublishedRowsPastTheHorizon() {
+            OutboxEventEntity unpublished = new OutboxEventEntity(
+                    java.util.UUID.fromString("00000000-0000-4000-8000-0000000000f0"),
+                    TransactionPosted.EVENT_TYPE, ACCOUNT_ID, "{}", RETENTION_EXPIRED_AT);
+            OutboxEventEntity expired = new OutboxEventEntity(
+                    java.util.UUID.fromString("00000000-0000-4000-8000-0000000000f1"),
+                    TransactionPosted.EVENT_TYPE, ACCOUNT_ID, "{}", RETENTION_EXPIRED_AT);
+            expired.markPublished(RETENTION_EXPIRED_AT);
+            callerTransaction.executeWithoutResult(status -> {
+                storedEvents.save(unpublished);
+                storedEvents.save(expired);
+            });
+
+            int removed = callerTransaction.execute(status ->
+                    storedEvents.deletePublishedBefore(RETENTION_HORIZON, RETENTION_BATCH_SIZE));
+
+            assertThat(removed).isEqualTo(1);
+            assertThat(storedEvents.findById(expired.getEventId())).isEmpty();
+            assertThat(storedEvents.findById(unpublished.getEventId()))
+                    .describedAs("the relay has not published this row, so retention must not take it")
+                    .isPresent();
+        }
+
+        @Test
+        @Order(5)
+        @DisplayName("the retention delete honours its row limit and reports zero when nothing is due")
+        void retentionDeleteHonoursItsLimitAndReportsZero() {
+            for (int row = 0; row < 3; row++) {
+                OutboxEventEntity expired = new OutboxEventEntity(
+                        java.util.UUID.fromString("00000000-0000-4000-8000-0000000000e" + row),
+                        TransactionPosted.EVENT_TYPE, ACCOUNT_ID, "{}",
+                        RETENTION_EXPIRED_AT.plusSeconds(row));
+                expired.markPublished(RETENTION_EXPIRED_AT.plusSeconds(row));
+                callerTransaction.executeWithoutResult(status -> storedEvents.save(expired));
+            }
+
+            int firstStatement = callerTransaction.execute(status ->
+                    storedEvents.deletePublishedBefore(RETENTION_HORIZON, 2));
+            int secondStatement = callerTransaction.execute(status ->
+                    storedEvents.deletePublishedBefore(RETENTION_HORIZON, 2));
+            int thirdStatement = callerTransaction.execute(status ->
+                    storedEvents.deletePublishedBefore(RETENTION_HORIZON, 2));
+
+            assertThat(firstStatement).describedAs("the limit bounds one statement").isEqualTo(2);
+            assertThat(secondStatement).describedAs("the remainder follows").isEqualTo(1);
+            assertThat(thirdStatement)
+                    .describedAs("outbox/RetentionSweeper stops on a count below the batch size")
+                    .isZero();
         }
     }
 }

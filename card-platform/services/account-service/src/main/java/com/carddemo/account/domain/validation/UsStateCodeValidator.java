@@ -21,9 +21,6 @@ import com.carddemo.cobol.reference.UsStateCodes;
  * <p>The caller owns the edits that surround this one, including the character-class
  * edit at app/cbl/COACTUPC.cbl:L1595 and the state-and-zip edit
  * {@code 1280-EDIT-US-STATE-ZIP-CD} at app/cbl/COACTUPC.cbl:L2536.</p>
- *
- * <p>Every deviation this class carries from paragraph behaviour is labelled ADDITIVE below and
- * recorded in {@code card-platform/docs/decision-log.md} (planned).
  */
 public final class UsStateCodeValidator {
 
@@ -90,7 +87,7 @@ public final class UsStateCodeValidator {
      * <p>A one-character value, an empty value, and {@code null} fill the positions that remain
      * with spaces. Letter case survives, and no space leaves either end.</p>
      *
-     * <p>ADDITIVE. A longer value keeps every character here. The membership test at
+     * <p>No COBOL ancestor. A longer value keeps every character here. The membership test at
      * app/cpy/CSLKPCDY.cpy:L1012 lists two-character codes alone, so a longer value fails it and
      * takes the message the source writes at app/cbl/COACTUPC.cbl:L2501-L2506.</p>
      *
@@ -140,7 +137,7 @@ public final class UsStateCodeValidator {
     /**
      * Reports whether the state code carries a character other than a space past the host width.
      *
-     * <p>ADDITIVE. Trailing spaces past the second position are the padding the source
+     * <p>No COBOL ancestor. Trailing spaces past the second position are the padding the source
      * {@code PIC X(02)} field itself holds, and any other character there is content the edit does
      * not read.</p>
      *

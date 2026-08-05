@@ -35,8 +35,12 @@ class DeadLetterMetadataEnvelopeTest {
     /** Row one of {@code app/data/ASCII/cardxref.txt}, the account identifier it resolves to. */
     private static final String AGGREGATE_ID = "00000000050";
 
-    /** A sentinel that stands for a payload value, so a leak is unmistakable. */
-    private static final String PAYLOAD_VALUE = "0500024453765740";
+    /**
+     * A sentinel that stands for a payload value, so a leak is unmistakable. Its four leading
+     * digits are {@code 9999}, and no card of {@code app/data/ASCII/carddata.txt} begins with
+     * them.
+     */
+    private static final String PAYLOAD_VALUE = "9999" + "024453765740";
 
     /** The topic the failing record arrived on. */
     private static final String SOURCE_TOPIC = "transaction.authorized";

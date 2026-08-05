@@ -12,14 +12,14 @@ import org.springframework.stereotype.Component;
 /**
  * Writes the stream and group names this service resolved, and says where each one came from.
  *
- * <p>ADDITIVE. {@code app/jcl/CREASTMT.JCL} names the sorted file this service's streams replace, and
- * it names it in the job rather than in {@code app/cbl/CBSTM03A.CBL}, so the program could not
- * resolve a name at run time at all.
+ * <p>No COBOL ancestor. {@code app/jcl/CREASTMT.JCL} names the sorted file this service's streams
+ * replace, and it names it in the job rather than in {@code app/cbl/CBSTM03A.CBL}, so the program
+ * could not resolve a name at run time at all.
  *
  * <h2>The problem this solves</h2>
  *
- * <p>This module registers two listeners, and each is decided by two configured names: the topic it
- * reads and the consumer group it reads under. Both arrive with an in-image default, for example
+ * <p>This module registers three listeners, and each is decided by two configured names: the topic
+ * it reads and the consumer group it reads under. Both arrive with an in-image default, for example
  * {@code ${TOPIC_TRANSACTION_POSTED:transaction.posted}} and
  * {@code ${GROUP_NOTIFICATION_POSTED:notification-posted}}. That is deliberate: a service has to
  * start on a developer machine with nothing set. It also means a dropped, renamed or mistyped key in
@@ -42,8 +42,6 @@ import org.springframework.stereotype.Component;
  *
  * <p>No credential is reported here, and no card number: a topic name and a group name are neither,
  * and the class reads nothing else.
- *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 public class StreamNameReport implements ApplicationListener<ApplicationReadyEvent> {
@@ -98,6 +96,14 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
                         "consumer group the risk-assessment listener reads under",
                         "GROUP_NOTIFICATION_FRAUD",
                         groups.fraudAssessed()),
+                new ReportedName(
+                        "topic this service consumes cardholder context from",
+                        "TOPIC_CUSTOMER_CONTEXT_CHANGED",
+                        topics.customerContextChanged()),
+                new ReportedName(
+                        "consumer group the cardholder-context listener reads under",
+                        "GROUP_NOTIFICATION_CUSTOMER",
+                        groups.customerContextChanged()),
                 new ReportedName(
                         "topic an unprocessable record is routed to",
                         "TOPIC_DEAD_LETTER",

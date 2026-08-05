@@ -29,9 +29,6 @@ import tools.jackson.databind.json.JsonMapper;
  * serializes it into any event or log, section 0.6.4 repeats the rule and states that a test
  * asserts it, and section 0.2.2 places payment-card industry controls beyond the one documented
  * masking deviation out of scope. This is that test.
- * {@code card-platform/docs/business-rule-flags.md} (planned) carries the item for a human decision
- * on
- * whether to drop the column outright.
  *
  * <p>Four exits exist from a Java object, and each one is closed here. A public accessor returns
  * the value directly, so the class declares none. A Jackson rendering walks the fields, so the
@@ -145,7 +142,8 @@ class CardholderDataExposureTest {
     class Renderings {
 
         @Test
-        @DisplayName("toString withholds the card number, the value, the name and the expiry")
+        @DisplayName("toString withholds the number, the value, the name, the expiry and the"
+                + " account")
         void toStringWithholdsCardholderData() {
             String rendered = fixtureRow().toString();
             assertAll(
@@ -157,8 +155,9 @@ class CardholderDataExposureTest {
                             "the embossed cardholder name must not appear: " + rendered),
                     () -> assertFalse(rendered.contains(EXPIRATION_DATE.toString()),
                             "the expiration date must not appear: " + rendered),
-                    () -> assertTrue(rendered.contains(ACCOUNT_ID),
-                            "the account identifier names the row a reader needs: " + rendered),
+                    () -> assertFalse(rendered.contains(ACCOUNT_ID),
+                            "the account identifier is stable and identifies one cardholder, so "
+                                    + "it must not appear either: " + rendered),
                     () -> assertTrue(rendered.contains(EventEnvelope.WITHHELD),
                             "a withheld value reads as withheld rather than absent: " + rendered));
         }

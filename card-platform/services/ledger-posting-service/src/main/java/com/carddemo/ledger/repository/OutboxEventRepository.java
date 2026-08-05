@@ -11,7 +11,6 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.jpa.repository.QueryHints;
-import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.ListCrudRepository;
 import org.springframework.data.repository.query.Param;
 
@@ -30,6 +29,8 @@ import org.springframework.data.repository.query.Param;
  * {@code app/cbl/CORPT00C.cbl:L517-L518}. That Customer Information Control System (CICS) write is
  * the only transient-data queue write in the 28 programs of {@code app/cbl/}, and the one
  * asynchronous handoff the CardDemo source performs.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEntity, UUID> {
 
@@ -40,50 +41,6 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      * milliseconds, and zero would fail immediately on a locked row.
      */
     String SKIP_LOCKED_TIMEOUT = "-2";
-
-    /**
-     * Claims the oldest pending rows for this caller alone, and returns them.
-     *
-     * <p>Two properties matter here, and the plain derived finder this method replaces had neither.
-     *
-     * <p>The order is total. Rows come back by {@code createdAt} ascending and then by
-     * {@code eventId} ascending. The writer sets {@code createdAt}, so two rows can carry one value,
-     * and the primary key completes the order. Two relay instances therefore agree on which row
-     * comes next.
-     *
-     * <p>The claim is exclusive. {@link LockModeType#PESSIMISTIC_WRITE} with a lock timeout of
-     * {@value #SKIP_LOCKED_TIMEOUT} renders on PostgreSQL as {@code FOR NO KEY UPDATE ... SKIP
-     * LOCKED}: the query takes a row lock on each row it returns and passes over any row another
-     * transaction already holds. A
-     * second relay running at the same moment receives the next unlocked rows instead of the same
-     * ones, so no row is published twice. Producer idempotence does not give this, because it
-     * deduplicates one producer's retries of one send rather than two producers sending one payload.
-     *
-     * <p>The query is written in the Jakarta Persistence Query Language rather than in Structured
-     * Query Language (SQL), because {@code hibernate.default_schema} in
-     * {@code src/main/resources/application.yml} qualifies a mapped query and leaves a native one
-     * unqualified. A native statement would look for the table on the connection search path and
-     * not find it.
-     *
-     * <p>The caller must run inside a transaction that stays open until it has marked each returned
-     * row published, because a row lock lasts as long as the transaction that took it.
-     * {@code carddemo.outbox.relay.batch-size} supplies the row cap.
-     *
-     * <p>The partial index {@code ix_outbox_event_pending} in
-     * {@code src/main/resources/db/migration/V1__schema.sql} covers exactly the rows this query
-     * reads, in exactly the order it reads them.
-     *
-     * @param limit greatest number of rows to claim
-     * @return the claimed rows, oldest first, and empty when no row awaits publication
-     */
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = SKIP_LOCKED_TIMEOUT))
-    @Query("""
-            SELECT row FROM OutboxEventEntity row
-            WHERE row.published = FALSE
-            ORDER BY row.createdAt ASC, row.eventId ASC
-            """)
-    List<OutboxEventEntity> claimPendingBatch(Limit limit);
 
     /**
      * Deletes published rows whose publication is older than the given instant, and returns how
@@ -109,9 +66,34 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     int deletePublishedBefore(@Param("horizon") Instant horizon);
 
     /**
+     * Deletes at most {@code limit} published rows older than the horizon, and returns how many it
+     * removed.
+     *
+     * <p>The bound keeps one retention pass from producing a single very large statement on a schema
+     * that has been idle for a long time. A caller repeats the call until it returns zero.
+     *
+     * @param horizon the instant before which a published row is removed
+     * @param limit   the largest number of rows one statement removes
+     * @return the number of rows removed
+     */
+    @Modifying
+    @Query(value = """
+            DELETE FROM outbox_event
+            WHERE event_id IN (SELECT event_id
+                               FROM outbox_event
+                               WHERE published = TRUE AND published_at < :horizon
+                               ORDER BY published_at
+                               LIMIT :limit)
+            """, nativeQuery = true)
+    int deletePublishedBefore(@Param("horizon") Instant horizon, @Param("limit") int limit);
+
+    /** Reports whether any row reached the terminal abandoned state. */
+    boolean existsByRelayState(OutboxEventEntity.RelayState relayState);
+
+    /**
      * Returns unpublished rows in write order, taking no lock.
      *
-     * <p>This is the reading counterpart of {@link #claimPendingBatch(Limit)}: a diagnostic view of
+     * <p>This is the reading counterpart of {@link #claimDueRows(Instant, Limit)}: a diagnostic view of
      * the backlog, and the finder a test uses to assert what a write left behind. A relay never uses
      * it, because two relay instances reading the same unlocked rows would publish every one twice.
      *
@@ -126,8 +108,8 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      *
      * <p>{@code FOR UPDATE SKIP LOCKED} is what makes this safe to run from more than one instance.
      * The lock is taken as the rows are read, and a row another transaction has locked is skipped
-     * rather than waited for, so two relays working the same table return disjoint batches and
-     * neither blocks the other. A plain finder cannot do this: two instances read the same
+     * rather than waited for. Two relays working the same table therefore return disjoint batches,
+     * and neither blocks the other. A plain finder cannot do this: two instances read the same
      * unpublished rows and publish every one of them twice.
      *
      * <p>The filter is {@code relay_state = 'PENDING'} and {@code next_attempt_at <= now}, so a row
@@ -148,14 +130,16 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      * @return the claimed rows, longest-waiting first, at most {@code limit} of them, and empty
      *         when no row is due
      */
-    @Query(value = """
-            SELECT * FROM outbox_event
-            WHERE relay_state = 'PENDING' AND next_attempt_at <= :now
-            ORDER BY next_attempt_at
-            LIMIT :limit
-            FOR UPDATE SKIP LOCKED
-            """, nativeQuery = true)
-    List<OutboxEventEntity> claimDueRows(@Param("now") Instant now, @Param("limit") int limit);
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = SKIP_LOCKED_TIMEOUT))
+    @Query("""
+            SELECT row FROM OutboxEventEntity row
+            WHERE row.relayState =
+                    com.carddemo.ledger.entity.OutboxEventEntity.RelayState.PENDING
+              AND row.nextAttemptAt <= :now
+            ORDER BY row.nextAttemptAt ASC, row.eventId ASC
+            """)
+    List<OutboxEventEntity> claimDueRows(@Param("now") Instant now, Limit limit);
 
     /**
      * Returns rows left in {@link OutboxEventEntity.RelayState#CLAIMED} since before
@@ -170,6 +154,8 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      * @param limit         how many rows to return
      * @return stranded rows, longest-claimed first, and empty when none is stranded
      */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = SKIP_LOCKED_TIMEOUT))
     List<OutboxEventEntity> findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
             OutboxEventEntity.RelayState relayState, Instant claimedBefore, Limit limit);
 }

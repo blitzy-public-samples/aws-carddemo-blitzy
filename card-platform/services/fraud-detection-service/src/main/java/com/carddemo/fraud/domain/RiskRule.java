@@ -6,7 +6,7 @@ import com.carddemo.events.TransactionAuthorized;
  * The extension seam for risk scoring. One implementation scores one pattern and returns one
  * {@link Contribution}.
  *
- * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. The CardDemo source holds no risk scoring, no
+ * <p>No COBOL ancestor. The CardDemo source holds no risk scoring, no
  * pattern analysis and no rules engine.
  *
  * <p>The chain shape comes from {@code 1500-VALIDATE-TRAN} at

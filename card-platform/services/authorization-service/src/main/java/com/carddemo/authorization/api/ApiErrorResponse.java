@@ -7,7 +7,7 @@ import java.util.Objects;
 /**
  * Machine-readable error body of every failed authorization call.
  *
- * <p>ADDITIVE. The source has no error body to reproduce. It moves one text into
+ * <p>The source has no error body to reproduce. It moves one text into
  * {@code WS-MESSAGE} and redisplays the screen, as {@code app/cbl/COTRN02C.cbl:L254-L320} does eleven
  * times over. This record carries those same texts to a caller that has no screen.
  *

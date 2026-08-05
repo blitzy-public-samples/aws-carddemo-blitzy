@@ -38,6 +38,8 @@ import jakarta.persistence.Table;
  *
  * <p>This class holds no arithmetic, no format check and no status check. It declares no
  * association, no version column and no generated value.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "account")
@@ -50,11 +52,17 @@ public class AccountEntity {
      * <p>Several source programs compare an account identifier as text, and the column now keeps
      * the digits of the source key without change. {@code PIC 9(11)} is a display field, and every
      * record of {@code app/data/ASCII/acctdata.txt} fills all eleven positions: record one holds
-     * {@code 00000000001}. A numeric column stores that as one and returns {@code 1}, so every
-     * consumer of the value would have to re-pad it to reach the eleven-character key at
-     * {@code KEYS(11 0)} in {@code app/jcl/ACCTFILE.jcl:L40}, the account identifier the card
-     * service holds, or the aggregate identifier an event carries. The check constraint
-     * {@code ck_account_account_id_digits} holds the width and the digit class.</p>
+     * {@code 00000000001}. A numeric column stores that as one and returns {@code 1}. Every
+     * consumer would then have to re-pad it before use, to reach one of three destinations.
+     *
+     * <ul>
+     *   <li>the eleven-character key at {@code KEYS(11 0)} in {@code app/jcl/ACCTFILE.jcl:L40}</li>
+     *   <li>the account identifier the card service holds</li>
+     *   <li>the aggregate identifier an event carries</li>
+     * </ul>
+     *
+     * <p>The check constraint {@code ck_account_account_id_digits} holds the width and the digit
+     * class.</p>
      */
     @Id
     @Column(name = "account_id", nullable = false,
@@ -210,8 +218,8 @@ public class AccountEntity {
      * Sets the primary key.
      *
      * <p>The guard runs here rather than at flush time. A caller that passes {@code "1"} for the
-     * account the record writes as {@code 00000000001} learns so at the call site, instead of
-     * meeting a check-constraint violation from the database several statements later.</p>
+     * account the record writes as {@code 00000000001} learns so at the call site. The database
+     * would otherwise report a check-constraint violation several statements later.</p>
      *
      * @param accountId the account identifier, exactly {@value PicClause#ACCT_ID_WIDTH} digits
      * @throws IllegalArgumentException when the argument is absent, the wrong width, or holds a
@@ -367,9 +375,9 @@ public class AccountEntity {
      *
      * <p>A {@code PIC 9(n)} display field is exactly n characters wide and holds only digits, and
      * the column check constraint repeats both halves in the database. Neither message carries a
-     * character of the rejected value: the width message reports a length and the digit message
-     * reports a position, which keeps a Social Security Number out of any log line a caller writes
-     * from a failure.</p>
+     * character of the rejected value. The width message reports a length and the digit message
+     * reports a position, which keeps a Social Security Number out of any log line a caller
+     * writes from a failure.</p>
      *
      * @param field the field name the message reports
      * @param value the value under test

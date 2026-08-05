@@ -18,25 +18,25 @@ import org.springframework.beans.factory.annotation.Autowired;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Checks that the three Flyway migrations of the account service apply to an empty schema, and that
+ * Checks that the four Flyway migrations of the account service apply to an empty schema, and that
  * the seed loads the row counts its fixtures carry.
  *
  * <p>Every method here reads, and none writes. Other test classes in this package assert the same
  * seeded counts.</p>
  *
  * <p><b>What a started context already proves.</b> {@link AbstractAccountPostgresTest} boots one
- * Spring context against one PostgreSQL container. Hibernate checks the five Jakarta Persistence
+ * Spring context against one PostgreSQL container. Hibernate checks the six Jakarta Persistence
  * (JPA) entity classes against the migrated schema during that start, and a mapped column the
  * migrations never created stops the start. The methods below add what a mapping check cannot see:
  * how many migrations ran, in which order, which tables landed, and how many rows each seeded table
  * holds.</p>
  *
- * <p><b>Eight tables, five entity classes.</b> {@code V1__schema.sql} declares eight tables, and
- * this module maps five of them. The three validation tables {@code us_phone_area_code},
+ * <p><b>Nine tables, six entity classes.</b> The migrations declare nine tables, and this module
+ * maps six of them. The three validation tables {@code us_phone_area_code},
  * {@code us_state_code} and {@code us_state_zip_prefix} carry no entity class and no repository
  * interface. Every assertion below reads plain Structured Query Language (SQL) over a Java Database
  * Connectivity (JDBC) connection. {@code card-platform/docs/decision-log.md} records that decision,
- * and {@code card-platform/docs/data-model.md} draws the eight table shapes and the lookup path
+ * and {@code card-platform/docs/data-model.md} draws the table shapes and the lookup path
  * between them.</p>
  *
  * <p><b>Where the three seeded counts come from.</b> Each count equals the record count of one
@@ -62,15 +62,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * literal.</p>
  *
  * <p><b>What the sibling classes own.</b> Column types and scales, the reference-data counts, the
- * remaining absence checks and every repository method belong to other classes in this package. One
- * absence check stays here, and {@link #migratedSchemaDeclaresNoCardCrossReferenceTable()} carries
- * it.</p>
+ * remaining absence checks and every repository method belong to other classes in this
+ * package.</p>
  */
 @DisplayName("Flyway migrations and seeded row counts of the account schema")
 class SchemaMigrationTest extends AbstractAccountPostgresTest {
 
     // ------------------------------------------------------------------------------------------
-    // Table names. V1__schema.sql declares the first eight; Flyway creates the ninth.
+    // Table names. The migrations declare the first nine; Flyway creates the tenth.
     // ------------------------------------------------------------------------------------------
 
     /** The 300-byte account record of {@code app/cpy/CVACT01Y.cpy}. */
@@ -97,7 +96,10 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /** Additive duplicate-delivery marker table with no source-record ancestor. */
     private static final String PROCESSED_EVENT_TABLE = "processed_event";
 
-    /** The eight tables {@code V1__schema.sql} declares, in the order that file creates them. */
+    /** Service-local replica used to derive an account's customer identifier. */
+    private static final String CARD_CROSS_REFERENCE_TABLE = "card_xref";
+
+    /** The nine tables the migrations declare. */
     private static final String[] DECLARED_TABLES = {
             ACCOUNT_TABLE,
             CUSTOMER_TABLE,
@@ -106,38 +108,33 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
             STATE_CODE_TABLE,
             STATE_ZIP_PREFIX_TABLE,
             OUTBOX_EVENT_TABLE,
-            PROCESSED_EVENT_TABLE
+            PROCESSED_EVENT_TABLE,
+            CARD_CROSS_REFERENCE_TABLE
     };
 
     /**
      * Flyway creates and owns this bookkeeping table, and no migration of this module declares it.
-     * {@link #migratedSchemaHoldsTheEightDeclaredTables()} filters it out before comparing the
+     * {@link #migratedSchemaHoldsTheNineDeclaredTables()} filters it out before comparing the
      * table set.
      */
     private static final String FLYWAY_HISTORY_TABLE = "flyway_schema_history";
-
-    /**
-     * A table the authorization service and the card service each own. The account schema declares
-     * no such table, which {@link #migratedSchemaDeclaresNoCardCrossReferenceTable()} asserts.
-     */
-    private static final String FOREIGN_CROSS_REFERENCE_TABLE = "card_xref";
 
     // ------------------------------------------------------------------------------------------
     // Expected migration history: versions and script names. No checksum appears here, and no
     // assertion below reads one.
     // ------------------------------------------------------------------------------------------
 
-    /** Versions Flyway parses from the three migration file names, in installed order. */
-    private static final String[] MIGRATION_VERSIONS = {"1", "2", "3"};
+    /** Versions Flyway parses from the four migration file names, in installed order. */
+    private static final String[] MIGRATION_VERSIONS = {"1", "2", "3", "4"};
 
     /**
-     * The three files under {@code src/main/resources/db/migration}, in installed order. The third
-     * belongs to this module alone, and no other service ships one.
+     * The four files under {@code src/main/resources/db/migration}, in installed order.
      */
     private static final String[] MIGRATION_SCRIPTS = {
             "V1__schema.sql",
             "V2__seed.sql",
-            "V3__reference_data.sql"
+            "V3__reference_data.sql",
+            "V4__card_cross_reference_replica.sql"
     };
 
     // ------------------------------------------------------------------------------------------
@@ -156,6 +153,9 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /** Rows {@code V2__seed.sql} inserts across its three tables. */
     private static final long SEEDED_ROWS_TOTAL = 151L;
 
+    /** Rows the card cross-reference fixture carries. */
+    private static final long CARD_CROSS_REFERENCE_SEED_ROWS = 50L;
+
     /**
      * An unquoted lower-case PostgreSQL identifier. {@link #migratedSchema()} holds the reported
      * schema name to this form before {@link #qualify(String)} writes it into a statement.
@@ -165,7 +165,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /** Ordinal of the single column each counting query selects. */
     private static final int FIRST_COLUMN = 1;
 
-    /** The component that applied the three migrations, and the source of the schema name. */
+    /** The component that applied the four migrations, and the source of the schema name. */
     @Autowired
     private Flyway flyway;
 
@@ -188,7 +188,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /**
      * Returns the schema the Flyway bean reports, holding it to an unquoted lower-case identifier.
      *
-     * @return the schema the three migrations landed in
+     * @return the schema the four migrations landed in
      */
     private String migratedSchema() {
         String reported = flyway.getConfiguration().getDefaultSchema();
@@ -275,6 +275,32 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     /**
+     * Lists every column name of the migrated schema, in name order and without duplicates.
+     *
+     * @return each distinct column name the catalogue reports for the migrated schema
+     * @throws SQLException when the query fails
+     */
+    private List<String> columnNames() throws SQLException {
+        String sql = """
+                SELECT DISTINCT column_name
+                  FROM information_schema.columns
+                 WHERE table_schema = ?
+                 ORDER BY column_name
+                """;
+        List<String> names = new ArrayList<>();
+        try (Connection connection = openConnection();
+                PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, migratedSchema());
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    names.add(rows.getString(FIRST_COLUMN));
+                }
+            }
+        }
+        return names;
+    }
+
+    /**
      * Reads the versioned rows of the Flyway history table in installed-rank order. A repeatable
      * migration carries no version and would not appear; this module ships none.
      *
@@ -301,19 +327,20 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     // ------------------------------------------------------------------------------------------
-    // The three migrations applied, and applied in order
+    // The four migrations applied, and applied in order
     // ------------------------------------------------------------------------------------------
 
     /**
      * Reads the history table in installed-rank order and compares the version sequence. Version 1
-     * therefore installed before version 2, and version 2 before version 3.
+     * therefore installed before version 2, version 2 before version 3, and version 3 before
+     * version 4.
      *
      * @throws SQLException when the history query fails
      */
     @Test
-    @DisplayName("flyway_schema_history holds three versioned rows, versions 1, 2 and 3 in "
+    @DisplayName("flyway_schema_history holds four versioned rows, versions 1 through 4 in "
             + "installed-rank order")
-    void historyHoldsTheThreeVersionsInInstalledRankOrder() throws SQLException {
+    void historyHoldsTheFourVersionsInInstalledRankOrder() throws SQLException {
         List<AppliedMigration> applied = appliedMigrations();
         List<Integer> ranks = applied.stream().map(AppliedMigration::installedRank).toList();
 
@@ -338,56 +365,48 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     /**
-     * Asserts the three script names in installed-rank order. The reference-data migration belongs
-     * to this module alone.
+     * Asserts the four script names in installed-rank order.
      *
      * @throws SQLException when the history query fails
      */
     @Test
-    @DisplayName("the three versioned rows name V1__schema.sql, V2__seed.sql and "
-            + "V3__reference_data.sql")
-    void historyNamesTheThreeMigrationScripts() throws SQLException {
+    @DisplayName("the four versioned rows name all account migration scripts in order")
+    void historyNamesTheFourMigrationScripts() throws SQLException {
         assertThat(appliedMigrations()).extracting(AppliedMigration::script)
                 .as("scripts under src/main/resources/db/migration, read in installed-rank order")
                 .containsExactly(MIGRATION_SCRIPTS);
     }
 
     // ------------------------------------------------------------------------------------------
-    // Eight tables, and exactly eight
+    // Nine tables, and exactly nine
     // ------------------------------------------------------------------------------------------
 
     /**
-     * Compares the base-table set of the migrated schema against the eight tables
-     * {@code V1__schema.sql} declares.
+     * Compares the base-table set of the migrated schema against the nine declared tables.
      *
      * @throws SQLException when the catalogue query fails
      */
     @Test
-    @DisplayName("the migrated schema holds the eight declared tables and no ninth")
-    void migratedSchemaHoldsTheEightDeclaredTables() throws SQLException {
+    @DisplayName("the migrated schema holds the nine declared tables and no tenth")
+    void migratedSchemaHoldsTheNineDeclaredTables() throws SQLException {
         List<String> declared = baseTableNames().stream()
                 .filter(name -> !FLYWAY_HISTORY_TABLE.equals(name))
                 .toList();
 
         assertThat(declared)
-                .as("base tables of schema %s that V1__schema.sql declares, with the "
+                .as("base tables of schema %s that the account migrations declare, with the "
                         + "Flyway-owned %s filtered out of the catalogue result",
                         migratedSchema(), FLYWAY_HISTORY_TABLE)
                 .containsExactlyInAnyOrder(DECLARED_TABLES);
     }
 
-    /**
-     * Asserts the account schema declares no card cross-reference table. The authorization service
-     * and the card service each own one.
-     *
-     * @throws SQLException when the catalogue query fails
-     */
     @Test
-    @DisplayName("the migrated schema declares no card_xref table")
-    void migratedSchemaDeclaresNoCardCrossReferenceTable() throws SQLException {
-        assertThat(baseTableNames())
-                .as("base tables of schema %s, which holds no card table", migratedSchema())
-                .doesNotContain(FOREIGN_CROSS_REFERENCE_TABLE);
+    @DisplayName("card_xref holds the 50 account-to-customer relationships of cardxref.txt")
+    void cardCrossReferenceHoldsFiftySeededRows() throws SQLException {
+        assertThat(countRows(CARD_CROSS_REFERENCE_TABLE))
+                .as("rows V4__card_cross_reference_replica.sql inserts from "
+                        + "app/data/ASCII/cardxref.txt")
+                .isEqualTo(CARD_CROSS_REFERENCE_SEED_ROWS);
     }
 
     // ------------------------------------------------------------------------------------------
@@ -473,7 +492,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the counting query fails
      */
     @Test
-    @DisplayName("outbox_event holds no row after the three migrations")
+    @DisplayName("outbox_event holds no row after the four migrations")
     void outboxEventHoldsNoRowAfterMigration() throws SQLException {
         assertThat(countRows(OUTBOX_EVENT_TABLE))
                 .as("rows in %s, which no migration of this module inserts into",
@@ -488,7 +507,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the counting query fails
      */
     @Test
-    @DisplayName("processed_event holds no row after the three migrations")
+    @DisplayName("processed_event holds no row after the four migrations")
     void processedEventHoldsNoRowAfterMigration() throws SQLException {
         assertThat(countRows(PROCESSED_EVENT_TABLE))
                 .as("rows in %s, which no migration of this module inserts into",

@@ -52,6 +52,8 @@ import org.junit.jupiter.api.Test;
  *
  * <p>Mapping a source outcome onto a status code is orchestration and sits outside this record,
  * so no test in this file asserts that mapping.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 final class ApiErrorResponseTest {
 
@@ -144,8 +146,8 @@ final class ApiErrorResponseTest {
     private static final String SUPPLIED_ROUTE = "/cards";
 
     /**
-     * Route template of the card detail endpoint. No route of this service takes a card number as a
-     * path variable: the detail route is a {@code POST} whose body carries the card number, so a
+     * Route template of the card detail endpoint. No route of this service takes a card number as
+     * a path variable. The detail route is a {@code POST} whose body carries the card number, so a
      * full Primary Account Number reaches no access log, proxy log, trace or browser history.
      */
     private static final String CARD_NUMBER_ROUTE = "/cards/detail";

@@ -12,10 +12,10 @@ import org.springframework.stereotype.Component;
 /**
  * Writes the stream names this service resolved, and says where each one came from.
  *
- * <p>ADDITIVE. The card programs {@code app/cbl/COCRDLIC.cbl}, {@code app/cbl/COCRDSLC.cbl} and
- * {@code app/cbl/COCRDUPC.cbl} read no configuration file, so this class has no COBOL ancestor.
- * Its nearest relative is the source habit of displaying what a program is about to work on, as
- * {@code app/cbl/CBTRN02C.cbl} does before it posts.
+ * <p>No COBOL ancestor. The card programs {@code app/cbl/COCRDLIC.cbl}, {@code
+ * app/cbl/COCRDSLC.cbl} and {@code app/cbl/COCRDUPC.cbl} read no configuration file, so this class
+ * has no COBOL ancestor. Its nearest relative is the source habit of displaying what a program is
+ * about to work on, as {@code app/cbl/CBTRN02C.cbl} does before it posts.
  *
  * <h2>The problem this solves</h2>
  *
@@ -43,8 +43,6 @@ import org.springframework.stereotype.Component;
  *
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else.
- *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 public class StreamNameReport implements ApplicationListener<ApplicationReadyEvent> {

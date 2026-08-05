@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://carddemo.example.com/schemas/card-updated-v1.json",
   "title": "CardUpdated",
-  "description": "The card service publishes one CardUpdated event whenever card state changes, and publishes nothing on a card list or a card read. Six payload fields carry the card after the change, with widths from the 150-byte card record at app/cpy/CVACT02Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. Evolution is additive only, and it is bounded. additionalProperties is false and maxProperties is declared, so an unknown top-level property is refused and a producer cannot hide a Primary Account Number, a card verification value or any other undeclared field inside a known event type. Additive evolution inside this version travels in the optional extensions object, whose property names, property count and value lengths are all bounded, so a consumer validating against this version still accepts an event a later version enriched. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
+  "description": "CardUpdated version 1 is retained so an older event remains readable under the contract it was published with. It carries the embossed cardholder name. Current producers publish version 2, which removes that unnecessary field. Five envelope fields precede five payload fields. additionalProperties is false and maxProperties is declared.",
   "$comment": "CARD-CVV-CD PIC 9(03) at app/cpy/CVACT02Y.cpy:L7 is stored by the card service and appears in no property of this document, no log line and no response body. The 59-byte trailing FILLER at app/cpy/CVACT02Y.cpy:L11 carries no data and no field here maps to it.",
   "type": "object",
   "properties": {
@@ -59,7 +59,7 @@
     "embossedName": {
       "type": "string",
       "maxLength": 50,
-      "description": "The name embossed on the card. From CARD-EMBOSSED-NAME PIC X(50) at app/cpy/CVACT02Y.cpy:L8.",
+      "description": "The name embossed on the card. Retained only for compatibility with CardUpdated version 1.",
       "examples": ["JOHN Q PUBLIC"]
     },
     "expirationDate": {

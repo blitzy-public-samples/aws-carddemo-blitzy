@@ -7,7 +7,6 @@ import com.carddemo.fraud.config.ObservabilityConfig.FraudMeters;
 import com.carddemo.fraud.domain.RiskScoringService;
 import com.carddemo.fraud.domain.RiskScoringService.RiskAssessment;
 import com.carddemo.fraud.entity.FraudAssessmentEntity;
-import com.carddemo.fraud.entity.ProcessedEventEntity;
 import com.carddemo.fraud.outbox.OutboxWriter;
 import com.carddemo.fraud.repository.FraudAssessmentRepository;
 import com.carddemo.fraud.repository.ProcessedEventRepository;
@@ -31,7 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
  * acknowledges the message once that work commits.
  *
  * <p>No COBOL (Common Business Oriented Language) program under {@code app/cbl/} scores risk,
- * counts authorization velocity or reads an event. ADDITIVE IN FULL: net new; no COBOL ancestor.
+ * counts authorization velocity or reads an event. No COBOL ancestor.
  * Two widths are borrowed from the source records the event carries: {@code TRAN-ID PIC X(16)}
  * through {@code TRAN-ORIG-TS PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L5-L16}, and
  * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}.
@@ -44,22 +43,23 @@ import org.springframework.transaction.annotation.Transactional;
  * consumer group rebalance, a restart mid-batch, or a crash after side effects and before the
  * offset commit.
  *
- * <p>The wire form is flat. One serialized {@link TransactionAuthorized} holds nineteen properties
- * in one JavaScript Object Notation (JSON) object: five envelope properties beside fourteen payload
+ * <p>The wire form is flat. One serialized {@link TransactionAuthorized} holds twenty properties
+ * in one JavaScript Object Notation (JSON) object: five envelope properties beside fifteen payload
  * properties. A nested {@code envelope} property fails the contract. Acknowledgement follows the
  * commit: automatic commit is off, the acknowledgement mode is manual and immediate, and
  * {@link Acknowledgment#acknowledge()} is the last statement of the listener.
  *
- * <p>{@link #assessOneEvent} performs the marker check, the scoring call, the assessment row, the
- * outbox row and the marker insert, in that order, inside one local transaction. The single
+ * <p>{@link #assessOneEvent} claims the marker, then scores, then writes the assessment row, then
+ * writes the outbox row, in that order, inside one local transaction. The single
  * {@code velocity_window} update belongs to {@link RiskScoringService}. {@link OutboxWriter} joins
  * this transaction and opens none, so the assessment row and the event row commit together or not
  * at all. Nothing here publishes: {@code OutboxRelay} in the sibling {@code outbox} package reads
  * the rows written here.
  *
- * <p>Exactly one event leaves per event read. At least one triggered rule produces a
- * {@link FraudFlagged}, and no triggered rule produces a {@link FraudCleared}. Both travel topic
- * {@code fraud.assessed}, where a reader routes on {@code eventType}.
+ * <p>Exactly one event leaves per event read. A score that reached
+ * {@code carddemo.fraud.risk.flag-threshold} produces a {@link FraudFlagged}, and any score below it
+ * produces a {@link FraudCleared} — including one where a rule triggered and scored too little to
+ * flag. Both travel topic {@code fraud.assessed}, where a reader routes on {@code eventType}.
  *
  * <p>A failure message names the failing field by its JSON pointer, for example
  * {@code /maskedCardNumber}, and carries no field value and no payload. The event arrives with its
@@ -71,8 +71,6 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>The three tables written here are {@code fraud_assessment}, {@code outbox_event} and
  * {@code processed_event} on PostgreSQL 18.4, reached through the Jakarta Persistence API (JPA).
  * Spring Kafka 4.1.0 registers the listener from its annotation alone.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 public class TransactionAuthorizedConsumer {
@@ -89,13 +87,21 @@ public class TransactionAuthorizedConsumer {
      */
     private static final String CONTAINER_FACTORY = "kafkaListenerContainerFactory";
 
+    /**
+     * What {@link ProcessedEventRepository#claimEvent} reports when the event was already taken.
+     *
+     * <p>The statement writes one row for a new event and none for an event a marker already
+     * covers.
+     */
+    private static final int ALREADY_CLAIMED = 0;
+
     /** Scores one event against every risk rule and owns the one velocity window update. */
     private final RiskScoringService riskScoring;
 
     /** Stores one assessment row per transaction identifier. */
     private final FraudAssessmentRepository assessments;
 
-    /** Answers whether an event identifier has been handled, and stores the marker. */
+    /** Claims one event identifier, so a redelivered event writes nothing. */
     private final ProcessedEventRepository processedEvents;
 
     /** Writes the outbox row {@code OutboxRelay} later publishes. */
@@ -152,10 +158,16 @@ public class TransactionAuthorizedConsumer {
      * acknowledgement below is unreachable on that path, so a duplicate delivery is the expected
      * outcome and the marker written by {@link #assessOneEvent} is what makes it harmless.
      *
+     * <p>A record whose payload no deserializer could read never reaches this method: the container
+     * raises the deserialization failure before invoking a listener, and
+     * {@code config/KafkaConsumerConfig} counts it there. The null check below therefore covers only
+     * a genuine tombstone, which this topic does not carry, and it counts nothing.
+     *
      * @param consumerRecord the delivery, carrying one validated event and the topic it arrived on
      * @param acknowledgment the offset commit, invoked once the transaction has committed
      * @throws NullPointerException     if either argument is null
-     * @throws IllegalArgumentException if the delivery carries no payload
+     * @throws IllegalArgumentException if the delivery carries no payload, no key, or a key that
+     *                                  differs from the payload aggregate identifier
      */
     @KafkaListener(
             topics = "${carddemo.kafka.topics.transaction-authorized:transaction.authorized}",
@@ -169,9 +181,13 @@ public class TransactionAuthorizedConsumer {
 
         TransactionAuthorized event = consumerRecord.value();
         if (event == null) {
-            meters.recordDeserializeFailure();
+            throw new IllegalArgumentException("transaction.authorized carries no tombstone, and a"
+                    + " record with no payload names no transaction to assess");
+        }
+        String messageKey = consumerRecord.key();
+        if (messageKey == null || !messageKey.equals(event.aggregateId())) {
             throw new IllegalArgumentException(
-                    "the delivery carries no payload, so no event could be assessed");
+                    "the delivery key must equal the payload aggregate identifier");
         }
 
         meters.recordEventConsumed();
@@ -197,10 +213,15 @@ public class TransactionAuthorizedConsumer {
     /**
      * Applies one event inside one local transaction, in a fixed order.
      *
-     * <p>The marker check comes first, and an event whose identifier already carries a marker
-     * leaves every table untouched. The scoring call follows, then the assessment row, then the
-     * outbox row, then the marker insert. Every one of those writes joins this transaction, so the
-     * marker and the effects it guards commit together or not at all.
+     * <p>The marker claim comes first, and an event whose identifier is already claimed leaves
+     * every table untouched. The scoring call follows, then the assessment row, then the outbox
+     * row. Every one of those writes joins this transaction, so the marker and the effects it
+     * guards commit together or not at all.
+     *
+     * <p>The claim is one conditional insert whose row count reports whether this delivery is the
+     * first. A read followed by a later insert has a window in which two deliveries of one event
+     * both read nothing and both apply their effects; the primary key of {@code processed_event}
+     * closes that window inside the statement.
      *
      * <p>The envelope's {@code eventId} is the idempotency key. The velocity window is updated once
      * per event, inside {@link RiskScoringService#assess(TransactionAuthorized)}, so a redelivered
@@ -223,8 +244,9 @@ public class TransactionAuthorizedConsumer {
     public Optional<String> assessOneEvent(TransactionAuthorized event, String consumedTopic) {
         Objects.requireNonNull(event, "event must be present");
         UUID eventId = event.eventId();
+        int claimed = processedEvents.claimEvent(eventId, Instant.now(), consumedTopic);
 
-        if (processedEvents.existsById(eventId)) {
+        if (claimed == ALREADY_CLAIMED) {
             LOG.debug("Event {} carries a marker already, so this delivery writes nothing.",
                     eventId);
             return Optional.empty();
@@ -233,7 +255,6 @@ public class TransactionAuthorizedConsumer {
         RiskAssessment assessment = riskScoring.assess(event);
         assessments.save(assessmentRow(assessment));
         outboxWriter.write(assessmentEvent(assessment));
-        processedEvents.save(marker(eventId, consumedTopic));
 
         return Optional.of(
                 assessment.flagged() ? FraudFlagged.EVENT_TYPE : FraudCleared.EVENT_TYPE);
@@ -256,10 +277,12 @@ public class TransactionAuthorizedConsumer {
     /**
      * Maps one assessment onto the one event it produces.
      *
-     * <p>A triggered rule list holding at least one entry produces a {@link FraudFlagged}, which
-     * its contract requires to name a rule. An empty list produces a {@link FraudCleared}, which
-     * carries the transaction identifier, the account identifier and the assessment time and
-     * nothing else. Both stamp a fresh envelope keyed on the account identifier.
+     * <p>A score at or above the configured flag threshold produces a {@link FraudFlagged}, which
+     * its contract requires to name a rule; the threshold is at least one and every rule scores
+     * above zero, so a flagged assessment always names one. Anything below the threshold produces a
+     * {@link FraudCleared}, which carries the transaction identifier, the account identifier and the
+     * assessment time and nothing else — including where a rule did trigger and scored too little to
+     * flag. Both stamp a fresh envelope keyed on the account identifier.
      *
      * @param assessment the score, the verdict and the rules that triggered
      * @return one {@link FraudFlagged} or one {@link FraudCleared}, never both and never neither
@@ -274,20 +297,8 @@ public class TransactionAuthorizedConsumer {
     }
 
     /**
-     * Builds the duplicate-delivery marker for one handled event.
-     *
-     * @param eventId       the identifier the producing service assigned, and the idempotency key
-     * @param consumedTopic the topic the delivery arrived on, or null to record none
-     * @return the marker to store
-     */
-    private static ProcessedEventEntity marker(UUID eventId, String consumedTopic) {
-        ProcessedEventEntity marker = new ProcessedEventEntity(eventId, Instant.now());
-        marker.setConsumedTopic(consumedTopic);
-        return marker;
-    }
-
-    /**
-     * Counts one published assessment under the outcome its event type names.
+     * Counts one assessment event written to the outbox, under the outcome its event type names.
+     * The publish itself belongs to {@code OutboxRelay} and is counted nowhere here.
      *
      * @param eventType the {@code eventType} written to the outbox
      */

@@ -1,0 +1,263 @@
+name: Card platform continuous integration
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: card-platform-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: "true"
+  JAVA_VERSION: "25"
+  MAVEN_VERSION: "3.9.16"
+  MAVEN_OPTS: "-Xmx2g"
+
+defaults:
+  run:
+    shell: bash
+    working-directory: card-platform
+
+jobs:
+  compile:
+    name: Compile all modules
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          cache-dependency-path: card-platform/**/pom.xml
+
+      - name: Install the pinned Maven release
+        run: |
+          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
+          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
+          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
+          (cd /tmp && sha512sum --check "${archive}.sha512")
+          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
+          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+
+      - name: Compile at Java release 25
+        run: mvn -B -ntp -DskipTests compile
+
+      - name: Verify Java class-file release
+        run: |
+          class_file="$(find libs services -path '*/target/classes/*.class' -o -path '*/target/classes/**/*.class' | head -n 1)"
+          test -n "${class_file}"
+          javap -verbose "${class_file}" | grep --fixed-strings "major version: 69"
+
+  unit-tests:
+    name: Unit and contract tests
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          cache-dependency-path: card-platform/**/pom.xml
+
+      - name: Install the pinned Maven release
+        run: |
+          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
+          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
+          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
+          (cd /tmp && sha512sum --check "${archive}.sha512")
+          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
+          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+
+      - name: Run unit and source-contract tests
+        run: mvn -B -ntp -pl equivalence-tests -am test
+
+  integration-tests:
+    name: Service integration tests
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          cache-dependency-path: card-platform/**/pom.xml
+
+      - name: Install the pinned Maven release
+        run: |
+          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
+          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
+          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
+          (cd /tmp && sha512sum --check "${archive}.sha512")
+          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
+          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+
+      - name: Prepare non-production CI configuration
+        run: cp .env.example .env
+
+      - name: Start PostgreSQL and Kafka
+        run: docker compose up --detach --wait postgres kafka
+
+      - name: Run every service integration suite
+        run: |
+          modules="services/authorization-service,services/ledger-posting-service,services/fraud-detection-service,services/notification-service,services/account-service,services/card-service"
+          mvn -B -ntp -pl "${modules}" -am verify
+
+      - name: Stop integration infrastructure
+        if: always()
+        run: docker compose down --volumes
+
+  equivalence-tests:
+    name: COBOL behavior equivalence
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          cache-dependency-path: card-platform/**/pom.xml
+
+      - name: Install the pinned Maven release
+        run: |
+          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
+          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
+          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
+          (cd /tmp && sha512sum --check "${archive}.sha512")
+          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
+          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+
+      - name: Prepare non-production CI configuration
+        run: cp .env.example .env
+
+      - name: Start PostgreSQL and Kafka
+        run: docker compose up --detach --wait postgres kafka
+
+      - name: Run the complete equivalence module
+        run: mvn -B -ntp -pl equivalence-tests -am verify
+
+      - name: Stop equivalence infrastructure
+        if: always()
+        run: docker compose down --volumes
+
+  schema-compatibility:
+    name: Event schema compatibility
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          cache-dependency-path: card-platform/**/pom.xml
+
+      - name: Install the pinned Maven release
+        run: |
+          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
+          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
+          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
+          (cd /tmp && sha512sum --check "${archive}.sha512")
+          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
+          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+
+      - name: Enforce schema compatibility and round trips
+        run: >
+          mvn -B -ntp
+          -pl libs/event-contracts
+          -Dtest=SchemaBackwardCompatibilityTest,EventRoundTripTest
+          test
+
+  container-builds:
+    name: Build six service containers
+    needs:
+      - unit-tests
+      - integration-tests
+      - equivalence-tests
+      - schema-compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+          cache-dependency-path: card-platform/**/pom.xml
+
+      - name: Install the pinned Maven release
+        run: |
+          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
+          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
+          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
+          (cd /tmp && sha512sum --check "${archive}.sha512")
+          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
+          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+
+      - name: Package executable service jars
+        run: mvn -B -ntp -DskipTests package
+
+      - name: Prepare non-production CI configuration
+        run: cp .env.example .env
+
+      - name: Validate Compose interpolation
+        run: docker compose config --quiet
+
+      - name: Build every service image
+        run: |
+          services=(
+            authorization-service
+            ledger-posting-service
+            fraud-detection-service
+            notification-service
+            account-service
+            card-service
+          )
+          for service in "${services[@]}"; do
+            docker build \
+              --file "services/${service}/Dockerfile" \
+              --tag "carddemo/${service}:ci" \
+              "services/${service}"
+          done

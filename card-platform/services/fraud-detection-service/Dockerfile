@@ -1,12 +1,11 @@
-# Container image for the CardDemo fraud detection service. It consumes one topic and publishes another.
+# Container image for the CardDemo fraud detection service. It consumes one topic and
+# publishes another.
 #
 # The build context is this module directory, so every COPY path below resolves
 # inside card-platform/services/fraud-detection-service/. The archive under target/ arrives from
 # `mvn -f card-platform/pom.xml package`, which runs ahead of this image build.
 #
 # Net new capability. No program in app/cbl/ is an ancestor of this service.
-#
-# Rationale for every version and exclusion: card-platform/docs/decision-log.md (planned)
 
 # The one runtime image every service in this mono-repo shares. A Java Runtime
 # Environment (JRE) 25.0.4 runs the archive. The digest pins the layer, and the

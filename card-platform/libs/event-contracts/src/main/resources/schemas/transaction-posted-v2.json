@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carddemo.example.com/schemas/transaction-posted-v2.json",
+  "title": "TransactionPosted",
+  "description": "The ledger publishes one TransactionPosted event after it applies one posting. Sixteen payload fields carry the new account balance and the whole posted transaction record, with widths from app/cpy/CVACT01Y.cpy and app/cpy/CVTRA05Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. This document is version 2. It adds cardToken and the nine remaining fields of the posted record to version 1 and changes nothing else, so transaction-posted-v1.json stays valid for a consumer written against it. The addition exists because app/jcl/CREASTMT.JCL builds its card-keyed copy from the whole record, so the consumer that replaces that job needs the whole record rather than a field it would otherwise store blank. Evolution and version policy: card-platform/docs/event-flow.md.",
+  "$comment": "aggregateId and accountId carry one account identifier, and the Kafka message key is that value, so the key and the payload cannot disagree.",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. A consumer checks this identifier against its own processed_event table before it acts. It then writes its side effects and the marker row in one local transaction, and acknowledges the message only after that transaction commits. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
+      "examples": ["3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"]
+    },
+    "eventType": {
+      "type": "string",
+      "const": "TransactionPosted",
+      "description": "The routing discriminator. A consumer reads this field to learn which payload arrived. Additive. No source field exists.",
+      "examples": ["TransactionPosted"]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 2,
+      "description": "The contract version. This file is version 2, matching the -v2 suffix in its name. Version 2 adds cardToken and the nine remaining fields of the posted transaction record. Additive. No source field exists.",
+      "examples": [2]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
+      "description": "The publish timestamp, in Coordinated Universal Time. The ledger stamps it when it writes the event, and postedAt carries the time the posting happened. Additive. No source field exists.",
+      "examples": ["2022-06-10T19:27:53.412Z"]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. The Kafka message key, this field and the payload field accountId all carry one value, so account identity has a single source. A publisher compares the key against both fields and rejects the message on any difference.",
+      "examples": ["00000000007"]
+    },
+    "transactionId": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "description": "The transaction identifier, sixteen characters. From TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5.",
+      "examples": ["0000000000683580"]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits, and the same value aggregateId carries. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. A text field keeps a leading zero, and a consumer maps this field onto its own account column.",
+      "examples": ["00000000007"]
+    },
+    "newBalance": {
+      "type": "string",
+      "pattern": "^-?\\d{1,10}\\.\\d{2}$",
+      "description": "The account balance after posting, as a decimal string with two fractional digits. From ACCT-CURR-BAL PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L7, so ten digits sit before the point. A leading minus is valid: adding a negative amount can drive the balance below zero.",
+      "$comment": "app/cbl/CBTRN02C.cbl:L547 adds the transaction amount to ACCT-CURR-BAL, and newBalance carries the result.",
+      "examples": ["1250.75", "-43.10"]
+    },
+    "postedAt": {
+      "type": "string",
+      "minLength": 26,
+      "maxLength": 26,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000$",
+      "description": "The posting timestamp, twenty-six characters shaped YYYY-MM-DD-HH.MM.SS.NN0000 with a dash between the date and the hour. From TRAN-PROC-TS PIC X(26) at app/cpy/CVTRA05Y.cpy:L17. The feed fixture leaves this field blank: all 300 records of app/data/ASCII/dailytran.txt carry 26 spaces at DALYTRAN-PROC-TS. app/cbl/CBTRN02C.cbl populates the field on the posted record and hard-codes the final four digits to zero.",
+      "$comment": "Precision is hundredths of a second, from DB2-MIL PIC 9(002) at app/cbl/CBTRN02C.cbl:L173 and the '0000' move at app/cbl/CBTRN02C.cbl:L701, so a consumer truncates to hundredths before any byte-for-byte comparison.",
+      "examples": ["2022-07-19-23.16.01.470000"]
+    },
+    "amount": {
+      "type": "string",
+      "pattern": "^-?\\d{1,9}\\.\\d{2}$",
+      "description": "The transaction amount as a decimal string with two fractional digits. From TRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA05Y.cpy:L10, so nine digits sit before the point. A leading minus is valid. 50 of the 300 records in app/data/ASCII/dailytran.txt hold a negative amount.",
+      "examples": ["50.47", "-125.00"]
+    },
+    "maskedCardNumber": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 16,
+      "pattern": "^\\*{12}[0-9]{4}$",
+      "description": "The card number with twelve asterisks in place of the leading digits and the last four digits left visible. Position and width from TRAN-CARD-NUM PIC X(16) at app/cpy/CVTRA05Y.cpy:L15. The masking is additive: no source program masks a Primary Account Number (PAN), and app/bms/COCRDSL.bms:L96-L99 defines the card detail field at the full sixteen characters. Masking happens where the event is serialized.",
+      "examples": ["************7065"]
+    },
+    "cardToken": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "The card identity: sixty-four lower-case hexadecimal characters, the SHA-256 digest of a fixed label followed by the full card number. Additive in full. No source field exists, and the source key is the card number itself: KEYS(32 0) at app/jcl/CREASTMT.JCL:L30 opens with TRNX-CARD-NUM PIC X(16) at app/cpy/COSTM01.CPY:L22. A card-keyed consumer stores, routes on and authorizes against this value. maskedCardNumber cannot serve: twelve of its sixteen characters are the mask, so two cards ending in the same four digits share one masked value. No character of the card number survives into the token, so a token is safe in a route, an access log and a stored key. PanMasker.cardToken in card-platform/libs/cobol-compat derives it.",
+      "$comment": "The authorization service derives the token from the full Primary Account Number and puts it on TransactionAuthorized; the ledger copies it here, so no consumer needs a card number to key a card-scoped row.",
+      "examples": ["9e2f0c8b6d4a1e7350c9b28fa146d5e0b73c48915af62d0e3b871c5a4f92d6b8"]
+    },
+    "transactionTypeCode": {
+      "type": "string",
+      "maxLength": 2,
+      "description": "The transaction type code. From TRAN-TYPE-CD PIC X(02) at app/cpy/CVTRA05Y.cpy:L6. app/data/ASCII/trantype.txt carries seven two-character codes.",
+      "examples": ["01"]
+    },
+    "merchantCategoryCode": {
+      "type": "string",
+      "pattern": "^[0-9]{4}$",
+      "description": "The merchant category code, four digits. From TRAN-CAT-CD PIC 9(04) at app/cpy/CVTRA05Y.cpy:L7. The value keeps its leading zeros: the eighteen codes of app/data/ASCII/trancatg.txt read 0001 through 0016.",
+      "examples": ["0001"]
+    },
+    "source": {
+      "type": "string",
+      "maxLength": 10,
+      "description": "The channel that captured the transaction. From TRAN-SOURCE PIC X(10) at app/cpy/CVTRA05Y.cpy:L8.",
+      "examples": ["POS TERM"]
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 100,
+      "description": "The transaction description, free text. From TRAN-DESC PIC X(100) at app/cpy/CVTRA05Y.cpy:L9. A cardholder alert prints this text, so a blank value would render an alert that describes nothing.",
+      "examples": ["Purchase at Abshire-Lowe"]
+    },
+    "merchantId": {
+      "type": "string",
+      "pattern": "^[0-9]{9}$",
+      "description": "The merchant identifier, nine digits. From TRAN-MERCHANT-ID PIC 9(09) at app/cpy/CVTRA05Y.cpy:L11.",
+      "examples": ["800000000"]
+    },
+    "merchantName": {
+      "type": "string",
+      "maxLength": 50,
+      "description": "The merchant name. From TRAN-MERCHANT-NAME PIC X(50) at app/cpy/CVTRA05Y.cpy:L12.",
+      "examples": ["Abshire-Lowe"]
+    },
+    "merchantCity": {
+      "type": "string",
+      "maxLength": 50,
+      "description": "The merchant city. From TRAN-MERCHANT-CITY PIC X(50) at app/cpy/CVTRA05Y.cpy:L13.",
+      "examples": ["North Enoshaven"]
+    },
+    "merchantZip": {
+      "type": "string",
+      "maxLength": 10,
+      "description": "The merchant postal code. From TRAN-MERCHANT-ZIP PIC X(10) at app/cpy/CVTRA05Y.cpy:L14. Records in app/data/ASCII/dailytran.txt hold both five-digit and hyphenated nine-digit forms.",
+      "examples": ["72112", "78487-7965"]
+    },
+    "originTimestamp": {
+      "type": "string",
+      "minLength": 26,
+      "maxLength": 26,
+      "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{6}$",
+      "description": "The moment the transaction originated, twenty-six characters shaped YYYY-MM-DD HH:MM:SS.ffffff with a space between the date and the time. From TRAN-ORIG-TS PIC X(26) at app/cpy/CVTRA05Y.cpy:L16. All 300 records in app/data/ASCII/dailytran.txt carry that one layout, which is not the layout postedAt carries.",
+      "$comment": "A consumer that derived this value from postedAt by swapping separators would report the posting time as the origin time, which is a different fact.",
+      "examples": ["2022-06-10 19:27:53.000000"]
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction: at most 16 members, each name a short identifier, each value a string of at most 256 characters, and no nested object or array. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "examples": [{"replayOf": "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"}]
+    }
+  },
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "aggregateId",
+    "transactionId",
+    "accountId",
+    "newBalance",
+    "postedAt",
+    "amount",
+    "maskedCardNumber",
+    "cardToken",
+    "transactionTypeCode",
+    "merchantCategoryCode",
+    "source",
+    "description",
+    "merchantId",
+    "merchantName",
+    "merchantCity",
+    "merchantZip",
+    "originTimestamp"
+  ],
+  "maxProperties": 22,
+  "additionalProperties": false
+}

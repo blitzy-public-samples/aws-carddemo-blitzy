@@ -65,7 +65,7 @@ class AccountStateChangedGateTest {
     void everyMonetaryValueTravelsAsADecimalString() {
         String json = accountUpdated().toValidatedJson();
 
-        for (String property : new String[] {"creditLimit", "currentCycleCredit",
+        for (String property : new String[] {"currentBalance", "creditLimit", "currentCycleCredit",
                 "currentCycleDebit"}) {
             assertTrue(json.contains("\"" + property + "\":\""),
                     property + " travels as a JSON number, which returns binary floating point to a "
@@ -79,8 +79,9 @@ class AccountStateChangedGateTest {
     @DisplayName("a cycle close reports both accumulators at zero, which the rules then read")
     void aCycleCloseReportsBothAccumulatorsAtZero() {
         AccountStateChanged closed = AccountStateChanged.of(ACCOUNT_ID,
-                AccountStateChanged.ChangeKind.BILLING_CYCLE_CLOSED, new BigDecimal("5000.00"),
-                BigDecimal.ZERO.setScale(2), BigDecimal.ZERO.setScale(2), "2024-12-31");
+                AccountStateChanged.ChangeKind.BILLING_CYCLE_CLOSED, new BigDecimal("1250.75"),
+                new BigDecimal("5000.00"), BigDecimal.ZERO.setScale(2),
+                BigDecimal.ZERO.setScale(2), "2024-12-31");
 
         String json = closed.toValidatedJson();
         EventJsonValidator.shared().validate(json);
@@ -109,8 +110,8 @@ class AccountStateChangedGateTest {
     void theSharedGateRefusesAMalformedIdentifier() {
         assertThrows(IllegalArgumentException.class,
                 () -> AccountStateChanged.of("7", AccountStateChanged.ChangeKind.ACCOUNT_UPDATED,
-                        new BigDecimal("5000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
-                        "2024-12-31"),
+                        new BigDecimal("1250.75"), new BigDecimal("5000.00"),
+                        new BigDecimal("0.00"), new BigDecimal("0.00"), "2024-12-31"),
                 "an account identifier of one digit was accepted, so an event could reach the "
                         + "partition of an account it does not name");
     }
@@ -118,7 +119,7 @@ class AccountStateChangedGateTest {
     /** One account field update, the change the online update path performs. */
     private static AccountStateChanged accountUpdated() {
         return AccountStateChanged.of(ACCOUNT_ID, AccountStateChanged.ChangeKind.ACCOUNT_UPDATED,
-                new BigDecimal("5000.00"), new BigDecimal("250.00"), new BigDecimal("-75.25"),
-                "2024-12-31");
+                new BigDecimal("1250.75"), new BigDecimal("5000.00"), new BigDecimal("250.00"),
+                new BigDecimal("-75.25"), "2024-12-31");
     }
 }

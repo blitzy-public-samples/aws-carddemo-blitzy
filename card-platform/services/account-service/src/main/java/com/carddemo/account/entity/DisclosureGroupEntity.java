@@ -30,6 +30,8 @@ import java.util.Objects;
  * {@code src/main/resources/db/migration/V1__schema.sql}. Flyway applies that Data Definition
  * Language (DDL), and Jakarta Persistence validates this mapping against the applied schema at
  * start-up.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "disclosure_group")
@@ -139,8 +141,8 @@ public class DisclosureGroupEntity {
          * the 18 codes of {@code app/data/ASCII/trancatg.txt} read {@code 0001} through
          * {@code 0016}, and the ledger service holds the same source code as text in
          * {@code transaction_category.category_code}. A numeric column here would hold {@code 1}
-         * for the code the ledger holds as {@code 0001}, and the two services would stop comparing
-         * equal on a value that comes from one source record. The check constraint
+         * for the code the ledger holds as {@code 0001}. The two services would then stop
+         * comparing equal on a value that comes from one source record. The check constraint
          * {@code ck_disclosure_group_category_digits} holds the width and the digit class.</p>
          */
         @Column(name = "transaction_category_code", nullable = false,

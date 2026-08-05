@@ -12,8 +12,8 @@ import org.springframework.stereotype.Component;
 /**
  * Writes the stream names this service resolved, and says where each one came from.
  *
- * <p>ADDITIVE. {@code app/cbl/COACTVWC.cbl} and {@code app/cbl/COACTUPC.cbl} read no configuration
- * file, so this class has no COBOL ancestor.
+ * <p>No COBOL ancestor. {@code app/cbl/COACTVWC.cbl} and {@code app/cbl/COACTUPC.cbl} read no
+ * configuration file, so this class has no COBOL ancestor.
  *
  * <h2>The problem this solves</h2>
  *
@@ -37,8 +37,6 @@ import org.springframework.stereotype.Component;
  *
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else.
- *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 public class StreamNameReport implements ApplicationListener<ApplicationReadyEvent> {
@@ -79,6 +77,10 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
                         "topic an account state change travels on",
                         "TOPIC_ACCOUNT_STATE_CHANGED",
                         topics.accountStateChanged()),
+                new ReportedName(
+                        "topic a change to a cardholder field travels on",
+                        "TOPIC_CUSTOMER_CONTEXT_CHANGED",
+                        topics.customerContextChanged()),
                 new ReportedName(
                         "topic an unprocessable record is routed to",
                         "TOPIC_DEAD_LETTER",

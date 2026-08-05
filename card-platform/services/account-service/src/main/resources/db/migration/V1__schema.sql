@@ -1,4 +1,4 @@
--- Account service schema, first of three migrations.
+-- Account service schema, first of four migrations.
 
 -- app/cpy/CVACT01Y.cpy, the 300-byte account record. Key width and record size come from
 -- app/jcl/ACCTFILE.jcl:L40 KEYS(11 0) and app/jcl/ACCTFILE.jcl:L41 RECORDSIZE(300 300).
@@ -54,10 +54,9 @@ CREATE TABLE customer (
     phone_number_2                  VARCHAR(15)  NOT NULL,
     -- Neither social_security_number nor government_issued_id leaves this service in an event,
     -- a log line or a response payload.
-    -- CUST-SSN PIC 9(09) at app/cpy/CVCUS01Y.cpy:L17 is a nine-character display field, and
-    -- offset (280,9) of record one of app/data/ASCII/custdata.txt holds 020973888. A numeric
-    -- column stores 20973888 and returns eight digits, which is a different Social Security
-    -- Number. Text keeps all nine characters, and the CHECK constraint holds the width.
+    -- CUST-SSN is stored as CHAR(9) so leading zeros round-trip; a numeric column would change
+    -- the identifier. CUST-SSN PIC 9(09) at app/cpy/CVCUS01Y.cpy:L17 is a nine-character display
+    -- field, and the CHECK constraint holds that width and the digit class.
     social_security_number          CHAR(9)      NOT NULL,
     government_issued_id            VARCHAR(20)  NOT NULL,
     date_of_birth                   VARCHAR(10)  NOT NULL,
@@ -117,7 +116,7 @@ CREATE TABLE us_state_zip_prefix (
 -- bound and the published bound are one bound. Before this it was an unbounded TEXT column,
 -- which meant a document the wire gate would have refused could still be stored.
 --
--- The seven relay-state columns are ADDITIVE with no COBOL ancestor: without a claim, two
+-- The seven relay-state columns have no COBOL ancestor: without a claim, two
 -- relay instances read the same unpublished row and publish it twice, and without an attempt
 -- count and a next-attempt time one undeliverable row is retried forever and blocks the rows
 -- behind it.
@@ -187,11 +186,11 @@ CREATE TABLE outbox_event (
 CREATE INDEX ix_outbox_event_pending
     ON outbox_event (created_at, event_id) WHERE published = FALSE;
 
--- The claim query filters on relay_state and orders by next_attempt_at, so both columns are
--- covered. This index is also the purge path for rows in a terminal state.
+-- The claim query filters on relay_state and orders by next_attempt_at first, so both columns
+-- are covered; created_at and event_id break a tie and cost a sort of at most one batch. This
+-- index is also the purge path for rows in a terminal state.
 CREATE INDEX ix_outbox_event_claimable
     ON outbox_event (relay_state, next_attempt_at);
-
 
 -- Retention. A published row has done its work and stays only for diagnosis. This index
 -- serves the purge that deletes published rows past the retention horizon.
@@ -212,7 +211,6 @@ CREATE TABLE processed_event (
     CONSTRAINT pk_processed_event PRIMARY KEY (event_id)
 );
 
-
 -- ============================================================================
 -- Retention and erasure
 -- ============================================================================
@@ -226,28 +224,32 @@ CREATE TABLE processed_event (
 --
 -- Each COMMENT below reads as four fields followed by a sentence, so an operator can
 -- read the policy out of the catalogue rather than out of a document:
---   retention=<window>      how long a row may stay, or the word relationship for a business
---                           record whose life is the customer relationship
+--   retention=<window>      how long a row may stay, or the word relationship for a
+--                           business record whose life is the customer relationship
 --   purge_key=<column>      the column a purge job ranges over, or 'none'
---   personal_data=<yes|no>  whether the row describes an identifiable person
+--   personal_data=<value>   one of three values:
+--                             yes           direct identifiers such as a name or government id
+--                             pseudonymous  linkable account or event data without a direct id
+--                             no            reference or operational data not linked to a person
 -- Read them back with:
 --   SELECT relname, obj_description(oid, 'pg_class') FROM pg_class
 --    WHERE relkind = 'r' ORDER BY relname;
 --
 -- The windows below are the demo baseline this platform ships with. No requirement in
--- scope fixes a legal retention period, and card-platform/docs/suggested-next-tasks.md (planned)
--- carries the task of replacing them with the periods a deployment's jurisdiction
--- requires. The purge job itself is out of scope for the same reason: nothing in the
--- Agent Action Plan schedules one, and a job that deletes financial records is not
--- something to add without an owner. The columns and indexes it needs are here.
+-- scope fixes a legal retention period, so a deployment replaces them with the periods
+-- its own jurisdiction requires. The purge job itself is out of scope for the same
+-- reason: nothing in the Agent Action Plan schedules one, and a job that deletes
+-- financial records is not something to add without an owner. The columns and indexes
+-- it needs are here.
 
 -- The range a purge job scans.
 CREATE INDEX ix_processed_event_processed_at ON processed_event (processed_at);
 
 COMMENT ON TABLE account IS
-    'retention=relationship; purge_key=none; personal_data=no. The account record.
-     app/cpy/CVACT01Y.cpy:L6 carries an active status the source never tests, so a closed
-     account still holds a row; closing is not erasing.';
+    'retention=relationship; purge_key=none; personal_data=pseudonymous. The account identifier,
+     balances and credit limits describe one customer and are linked to that person through the
+     card_xref replica. app/cpy/CVACT01Y.cpy:L6 carries an active status the source never tests,
+     so a closed account still holds a row; closing is not erasing.';
 
 COMMENT ON TABLE customer IS
     'retention=relationship, erase on request; purge_key=none; personal_data=yes. The only
@@ -256,8 +258,8 @@ COMMENT ON TABLE customer IS
      and electronic funds transfer account. Erasure is a deliberate act on a named customer
      and never a timer. Erasing one customer means deleting this row; account rows carry no
      customer identifier at all (app/cpy/CVACT01Y.cpy:L4-L17 declares none), so the link runs
-     only through card_xref in the authorization and card services, and an erasure has to
-     reach those two services as well.';
+     through the card_xref replicas in the account, authorization and card services, and an
+     erasure has to reach all three services.';
 
 COMMENT ON TABLE disclosure_group IS
     'retention=reference; purge_key=none; personal_data=no. Seeded interest-rate lookup from
@@ -276,13 +278,13 @@ COMMENT ON TABLE us_state_zip_prefix IS
      app/cpy/CSLKPCDY.cpy.';
 
 COMMENT ON TABLE outbox_event IS
-    'retention=7 days after published; purge_key=occurred_at; personal_data=no. One account
-     or cycle-close event awaiting publication. Purge rows where published is true and
-     occurred_at is older than 7 days.';
+    'retention=7 days after published; purge_key=published_at; personal_data=pseudonymous. One
+     account-keyed event whose payload carries financial state and can be linked to a customer
+     through card_xref. Purge rows where published is true and published_at is older than 7 days.';
 
 COMMENT ON TABLE processed_event IS
-    'retention=30 days; purge_key=processed_at; personal_data=no. Duplicate-delivery marker,
-     kept longer than broker topic retention.';
+    'retention=carddemo.processed-event.marker-retention-hours; purge_key=processed_at;
+     personal_data=no. Duplicate-delivery marker.';
 
 COMMENT ON COLUMN customer.social_security_number IS
     'personal_data=yes. Held because app/cpy/CVCUS01Y.cpy:L17 declares it and the edit at

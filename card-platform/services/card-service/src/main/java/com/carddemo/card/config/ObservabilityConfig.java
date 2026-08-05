@@ -10,25 +10,19 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Registers the six meters the card service measures its work through. This class records nothing;
+ * Registers the three meters the card service measures its work through. This class records nothing;
  * each bean below is injected by name into the class that performs the work.
  *
- * <p>ADDITIVE. No COBOL program and no copybook declares a meter. The nearest source construct is
+ * <p>No COBOL program and no copybook declares a meter. The nearest source construct is
  * the job log. {@code app/cbl/CBTRN02C.cbl} holds 53 lines carrying {@code DISPLAY}, and it formats
  * a two-byte file status into four digits at {@code app/cbl/CBTRN02C.cbl:L714-L727}.
  *
- * <p>Four counters and two timers cover the three metric families. Applied updates and published
- * events carry throughput, the two timers carry processing latency, and one counter carries the
- * failure count. Each counter is a bean of its own, and the two timers arrive behind
+ * <p>Two counters and one timer cover the published-event, processing-latency, and failure
+ * families. Each counter is a bean of its own, and the timer arrives behind
  * {@link CardLatencyTimers}.
  *
  * <p>This service reads no topic and registers no listener, so no meter counts a consumed event.
  * {@link #METRIC_CARD_EVENTS_PUBLISHED} is the family it reports on.
- *
- * <p>A refused update and a failed update are separate counters. The batch posting program counts a
- * rejection as a normal outcome at {@code app/cbl/CBTRN02C.cbl:L230}, and
- * {@code app/cbl/COCRDUPC.cbl} sets the two conditions at two sites, {@code :L1511} and
- * {@code :L1491}.
  *
  * <p>No meter name and no tag holds a card number, an account identifier, a customer identifier, a
  * transaction identifier, an event identifier or a timestamp. A card number reaches a log in its
@@ -36,7 +30,7 @@ import org.springframework.context.annotation.Configuration;
  * meter and no log. Masking the Primary Account Number (PAN) is additive: the card detail map
  * carried all sixteen digits at {@code app/bms/COCRDSL.bms:L99}.
  *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
+ * <p>Decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
 public class ObservabilityConfig {
@@ -62,6 +56,25 @@ public class ObservabilityConfig {
      * {@code app/cbl/COCRDUPC.cbl:L1491} sets that condition.
      */
     public static final String METRIC_CARD_FAILURES = "carddemo.card.failures";
+
+    /**
+     * Card updates whose row disagreed with the {@code card_xref} replica about the account.
+     *
+     * <p>ADDITIVE, with no card program ancestor, because the source has no replica to disagree
+     * with: {@code app/cbl/COCRDSLC.cbl} reads the cross-reference dataset itself, and
+     * {@code app/cbl/COCRDUPC.cbl:L356} reads {@code *COPY CVACT03Y.} commented out.
+     *
+     * <p>This service holds both values, and it is the only service that does.
+     * {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6} carries the account of the
+     * card row and is what a published event keys on, while
+     * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} carries the account the
+     * authorization decision resolves the same card to at
+     * {@code app/cbl/CBTRN02C.cbl:L383-L387}. A disagreement puts an event on one account's
+     * partition while the decision for that card reads another, which loses the per-account
+     * ordering this platform rests on. The counter is how that becomes visible instead of silent.
+     */
+    public static final String METRIC_CARD_XREF_DIVERGENCE =
+            "carddemo.card.xref.divergence";
 
     /** Wall time of one card update, from request entry to commit. */
     public static final String METRIC_CARD_UPDATE_LATENCY = "carddemo.card.update.latency";
@@ -124,10 +137,8 @@ public class ObservabilityConfig {
 
     /**
      * Counts card work that failed on infrastructure. This counter stays separate from
-     * {@link #cardUpdateConflictCounter}, which holds a business outcome the source treats as
-     * normal traffic at {@code app/cbl/CBTRN02C.cbl:L230}. Its source condition sits at
-     * {@code app/cbl/COCRDUPC.cbl:L1491}, and the source answer was the abend routine at
-     * {@code :L1531-L1537}.
+     * business refusal. Its source answer was the abend routine at
+     * {@code app/cbl/COCRDUPC.cbl:L1531-L1537}.
      *
      * @param registry the meter registry Spring Boot supplies
      * @return the registered counter, named {@link #METRIC_CARD_FAILURES}
@@ -137,6 +148,35 @@ public class ObservabilityConfig {
         Objects.requireNonNull(registry, "registry");
         return Counter.builder(METRIC_CARD_FAILURES)
                 .description("Card work that failed on infrastructure")
+                .register(registry);
+    }
+
+    /**
+     * Counts card updates whose row and cross-reference replica named different accounts.
+     *
+     * <p>{@code domain/CardUpdateService} increments it inside the writing transaction, after the
+     * row is locked and before the event row is written, and it changes no outcome: the update
+     * commits exactly as it would have. The source performs no such comparison, so refusing an
+     * update here would answer a text no card program writes. Recording it is what transformation
+     * rule T7 asks for, which is to reproduce behaviour and surface what looks wrong rather than
+     * silently correct it.
+     *
+     * <p>The counter is expected to stay at zero. Both copies are loaded from
+     * {@code app/data/ASCII/cardxref.txt}, and no operation this platform serves changes a
+     * cross-reference row: the card update edits the embossed name, the expiry and the active status
+     * alone, from {@code CCUP-NEW-CARDDATA} at {@code app/cbl/COCRDUPC.cbl:L307}, and none of those
+     * three is a cross-reference column. A non-zero reading therefore means an out-of-band change,
+     * which is exactly the case a demonstration cannot otherwise see.
+     *
+     * @param registry the meter registry Spring Boot supplies
+     * @return the registered counter, named {@link #METRIC_CARD_XREF_DIVERGENCE}
+     */
+    @Bean
+    public Counter cardCrossReferenceDivergenceCounter(MeterRegistry registry) {
+        Objects.requireNonNull(registry, "registry");
+        return Counter.builder(METRIC_CARD_XREF_DIVERGENCE)
+                .description("Card updates whose row and cross-reference replica named different"
+                        + " accounts")
                 .register(registry);
     }
 
@@ -152,8 +192,7 @@ public class ObservabilityConfig {
     }
 
     /**
-     * The two latency timers of this service, {@link #METRIC_CARD_UPDATE_LATENCY} and
-     * {@link #METRIC_CARD_PUBLISH_LATENCY}.
+     * The outbox publish latency timer of this service.
      *
      * <p>A timer arrives behind this holder and never as a bean of its own. Spring reads the
      * declared fields of every bean it creates. The Micrometer timer implementations extend a base
@@ -211,11 +250,9 @@ public class ObservabilityConfig {
     @Bean
     public MeterRegistryCustomizer<MeterRegistry> cardServiceCommonTags(
             @Value("${spring.application.name:card-service}") String applicationName) {
-
-        String serviceName = (applicationName == null || applicationName.isBlank())
-                ? SERVICE_TAG_VALUE
-                : applicationName;
-
-        return registry -> registry.config().commonTags(TAG_SERVICE, serviceName);
+        if (applicationName == null || applicationName.isBlank()) {
+            throw new IllegalStateException("spring.application.name must hold a value");
+        }
+        return registry -> registry.config().commonTags(TAG_SERVICE, applicationName);
     }
 }

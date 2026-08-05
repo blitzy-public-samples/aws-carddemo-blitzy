@@ -1,18 +1,29 @@
 package com.carddemo.notification.repository;
 
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.notification.entity.StatementTransactionEntity;
 import java.util.List;
+import org.springframework.data.domain.Limit;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.ListCrudRepository;
+import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Reads and writes the card-keyed statement read model this service builds from the events it
+ * Reads and writes the account-keyed statement read model this service builds from the events it
  * consumes, held in the table {@code statement_transaction}.
  *
  * <p>The composite key is the group {@code 05 TRNX-KEY.} at {@code app/cpy/COSTM01.CPY:L21}:
  * {@code TRNX-CARD-NUM PIC X(16)} at L22 then {@code TRNX-ID PIC X(16)} at L23. The cluster
  * definition declares it {@code KEYS(32 0)} at {@code app/jcl/CREASTMT.JCL:L30}, and the group key
  * {@code FD-TRNXS-ID} at {@code app/cbl/CBSTM03B.CBL:L59-L62} carries the same two parts in the
- * same order.
+ * same order. The card half is the card token, not a card number: a masked number identifies no
+ * single card and a full one belongs in no index.
+ *
+ * <p>Every finder below takes a limit. A card accumulates one row per posted transaction and nothing
+ * removes a row, so an unbounded finder would grow without ceiling and load a whole card history into
+ * memory to serve one bounded response.
  *
  * <p>The one-interface-per-aggregate shape comes from the generic parameter area
  * {@code 01 LK-M03B-AREA} at {@code app/cbl/CBSTM03B.CBL:L100-L112}, whose operation code
@@ -27,13 +38,56 @@ public interface StatementTransactionRepository
                                    StatementTransactionEntity.StatementTransactionId> {
 
     /**
-     * Returns one card's transactions in ascending transaction-identifier order.
+     * Returns at most {@code limit} of one card's transactions, in ascending transaction-identifier
+     * order.
      *
-     * <p>The argument is the card number as stored, in masked form: twelve mask characters then the
-     * last four digits, sixteen characters in the {@code CHAR(16)} key column.
+     * <p>The first argument is the card token as stored: {@value PanMasker#CARD_TOKEN_LENGTH}
+     * lower-case hexadecimal characters in the {@code CHAR(64)} key column. The order is the one
+     * {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} at {@code app/jcl/CREASTMT.JCL:L53} produced, and
+     * the primary key of {@code statement_transaction} serves it as a range scan.
      *
-     * @param cardNumber the stored, masked card number
-     * @return the card's rows in that order, and empty when the read model holds none for the card
+     * <p>The limit reaches the database as a row count on the statement, so a card holding more rows
+     * than the limit costs one page and not a whole history. The caller supplies the ceiling:
+     * {@code NotificationRenderer.MAXIMUM_STATEMENT_ROWS} fixes the one every caller in this service
+     * uses, and {@code StatementRowCapTest} holds that constant and the interface description to the
+     * same number.
+     *
+     * @param cardToken the stored card token
+     * @param limit the greatest number of rows to return
+     * @return the card's first {@code limit} rows in that order, and empty when the read model holds
+     *         none for the card
      */
-    List<StatementTransactionEntity> findByIdCardNumberOrderByIdTransactionIdAsc(String cardNumber);
+    List<StatementTransactionEntity> findByIdCardTokenOrderByIdTransactionIdAsc(String cardToken,
+            Limit limit);
+
+    /**
+     * Deletes at most {@code limit} read-model rows whose processing timestamp precedes
+     * {@code horizon}, and returns how many it removed.
+     *
+     * <p>The horizon is text, not an instant. {@code processing_timestamp} is {@code CHAR(26)},
+     * carrying {@code TRNX-PROC-TS PIC X(26)} of {@code app/cpy/COSTM01.CPY}, and
+     * {@code app/cbl/CBTRN02C.cbl:L414-L420} compares such a field as characters rather than as a
+     * date. Comparing it as text here keeps that behaviour and matches
+     * {@code ix_statement_transaction_processing_timestamp}, whose order is lexical.
+     *
+     * <p>{@code limit} bounds one statement, and {@code domain/RetentionSweeper} repeats the call
+     * until it removes fewer rows than it asked for. This table gains one row per posted
+     * transaction and backs {@code GET /notifications/&#123;cardToken&#125;}, so its horizon is the
+     * longest this service applies.
+     *
+     * @param horizon the timestamp text before which a row is removed, in the source's own
+     *                twenty-six character form
+     * @param limit   the most rows one statement removes, at least one
+     * @return the number of rows removed, and 0 when none is past the horizon
+     */
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query(value = """
+            DELETE FROM statement_transaction
+            WHERE (card_token, transaction_id) IN (SELECT card_token, transaction_id
+                                                     FROM statement_transaction
+                                                    WHERE processing_timestamp < :horizon
+                                                    ORDER BY processing_timestamp
+                                                    LIMIT :limit)
+            """, nativeQuery = true)
+    int deleteProcessedBefore(@Param("horizon") String horizon, @Param("limit") int limit);
 }

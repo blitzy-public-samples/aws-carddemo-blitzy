@@ -47,15 +47,8 @@ import jakarta.validation.constraints.Size;
  * no character of the value, matching the messages at
  * {@code app/cbl/COACTUPC.cbl:L2431-L2487}.</p>
  *
- * <p>A log line is the one path a record cannot close by construction, because a caller may pass the
- * whole object to a logger. {@link #toString()} therefore overrides the compiler-generated
- * rendering and names no component value, so a logged instance carries nothing sensitive.
- * {@code CustomerDataRequestTest} asserts that. Reading one accessor and logging the result stays a
- * caller's own responsibility, and no code in this module does it.</p>
- *
- * <p>card-platform/docs/decision-log.md (planned) records four deviations this record takes part
- * in: the two date shapes, the three-part Social Security Number model, the unreachable label, and
- * the zip width.</p>
+ * <p>{@link #toString()} names no component value, so a logged instance carries nothing
+ * sensitive. {@code CustomerDataRequestTest} asserts that.</p>
  *
  * @param customerId                 customer identifier, from
  *                                   {@code ACUP-NEW-CUST-ID-X PIC X(09)} at
@@ -541,17 +534,17 @@ public record CustomerDataRequest(
      * <p>The guard is declared only on the components whose edit does not already exclude a control
      * character. An alphabetic edit accepts letters and spaces, and a numeric edit accepts digits,
      * so a control character fails those edits already. The address lines, the telephone numbers,
-     * the three parts of the social security number and the government identifier take no such edit
-     * in the source, and this guard is what bounds their character set.
+     * the three parts of the social security number and the government identifier take no such
+     * edit in the source. This guard is what bounds their character set.
      *
-     * <p>ADDITIVE. The source reads each field from a fixed-width map area, which no control
-     * character can reach, so it needs no equivalent.
+     * <p>No COBOL ancestor. The source reads each field from a fixed-width map area, which no
+     * control character can reach, so it needs no equivalent.
      */
     public static final String PRINTABLE_TEXT_PATTERN = "^[ -~]*$";
 
     /**
      * Message a caller reads when a component carries a character outside
-     * {@value #PRINTABLE_TEXT_PATTERN}. ADDITIVE, for the reason that pattern records.
+     * {@value #PRINTABLE_TEXT_PATTERN}. No source counterpart, for the reason that pattern records.
      */
     public static final String CONTROL_CHARACTER_MESSAGE =
             "Text fields must hold printable characters only.";
@@ -560,8 +553,8 @@ public record CustomerDataRequest(
      * Position of the first digit of the area code inside a stored telephone number.
      *
      * <p>{@code WS-EDIT-US-PHONE-NUM-X} redefines the fifteen-character field at
-     * {@code app/cbl/COACTUPC.cbl:L83-L96}: one filler character holding {@code (}, three
-     * characters of area code, one filler holding {@code )}, three characters of prefix, one filler
+     * {@code app/cbl/COACTUPC.cbl:L83-L96}. One filler character holds {@code (}, then three
+     * characters of area code, a filler holding {@code )}, three characters of prefix, a filler
      * holding {@code -}, then the line number. All fifty records of
      * {@code app/data/ASCII/custdata.txt} carry that shape.
      */
@@ -592,9 +585,9 @@ public record CustomerDataRequest(
      * Reports whether the state code names one of the fifty-six codes the source lists.
      *
      * <p>{@code app/cbl/COACTUPC.cbl:L1599-L1602} runs this table lookup only when the alphabetic
-     * edit of the same field passed, so this method answers {@code true} while that edit is failing
-     * and lets the alphabetic message reach the caller on its own. The gate is the source's, not a
-     * convenience: two messages for one field is not what the source reports.
+     * edit of the same field passed. This method therefore answers {@code true} while that edit is
+     * failing, and the alphabetic message reaches the caller on its own. The gate is the source's,
+     * not a convenience: two messages for one field is not what the source reports.
      *
      * @return {@code true} when the code is listed, or when the alphabetic edit has not passed
      */
@@ -635,9 +628,9 @@ public record CustomerDataRequest(
      * Reports whether the three parts of the social security number pass their edit together.
      *
      * <p>Paragraph {@code 1265-EDIT-US-SSN} at {@code app/cbl/COACTUPC.cbl:L2431} edits all three
-     * parts on one pass and labels each part on its own at {@code app/cbl/COACTUPC.cbl:L2439},
-     * {@code app/cbl/COACTUPC.cbl:L2469} and {@code app/cbl/COACTUPC.cbl:L2481}, so the edit cannot
-     * be declared on any one component.
+     * parts on one pass. It labels each part on its own at {@code app/cbl/COACTUPC.cbl:L2439},
+     * {@code app/cbl/COACTUPC.cbl:L2469} and {@code app/cbl/COACTUPC.cbl:L2481}, so the edit
+     * cannot be declared on any one component.
      *
      * @return {@code true} when the three parts pass, and when none of them was supplied
      */
@@ -651,8 +644,8 @@ public record CustomerDataRequest(
      * Reports whether the first telephone number passes the source's edit.
      *
      * <p>{@code app/cbl/COACTUPC.cbl:L1632-L1637} moves the whole fifteen-character field and lets
-     * the redefinition at {@code app/cbl/COACTUPC.cbl:L83-L96} split it, so the three parts are
-     * sliced here at the same offsets rather than carried as three components.
+     * the redefinition at {@code app/cbl/COACTUPC.cbl:L83-L96} split it. The three parts are
+     * therefore sliced here at the same offsets, rather than carried as three components.
      *
      * @return {@code true} when the number passes, and when it was not supplied
      */
@@ -724,13 +717,6 @@ public record CustomerDataRequest(
 
     /**
      * Renders this request with every customer value withheld.
-     *
-     * <p>This override replaces the representation the compiler generates for a record. That
-     * generated form prints every component, and these components carry the three parts of a social
-     * security number, a government issued identifier, a date of birth, three address lines, two
-     * telephone numbers, an electronic funds transfer account identifier and a credit score. A
-     * framework, an exception, a debugger or a structured log line that renders a request would
-     * publish all of it.
      *
      * <p>No component value appears. Each is named and reported as {@value #WITHHELD} or
      * {@value #ABSENT}, so a reader can tell which values arrived without reading one of them. The

@@ -42,6 +42,8 @@ import org.springframework.data.repository.query.Param;
  * 'O'    M03B-OPEN        L103      none
  * 'C'    M03B-CLOSE       L104      none
  * </pre>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public interface CardCrossReferenceRepository
         extends ListCrudRepository<CardCrossReferenceEntity, String> {
@@ -67,11 +69,10 @@ public interface CardCrossReferenceRepository
      * <p>A missing row yields an empty {@link Optional} and throws nothing. Both paragraphs that
      * read this dataset agree: {@code app/cbl/CBTRN02C.cbl:L384} takes its {@code INVALID KEY}
      * branch and {@code app/cbl/COTRN02C.cbl:L624} takes its {@code DFHRESP(NOTFND)} branch, and
-     * neither one ends the run. The planned cross-reference rule under
-     * {@code com.carddemo.authorization.domain.rules} is to turn the empty result into decline
-     * reason 100, assigned at {@code app/cbl/CBTRN02C.cbl:L385} with the text
-     * {@code INVALID CARD NUMBER FOUND} at {@code app/cbl/CBTRN02C.cbl:L386-L387}. That rule class
-     * is not authored yet.
+     * neither one ends the run. {@code CardCrossReferenceRule} under
+     * {@code com.carddemo.authorization.domain.rules} converts the empty {@link Optional} into
+     * decline reason 0100, assigned at {@code app/cbl/CBTRN02C.cbl:L385} with the text
+     * {@code INVALID CARD NUMBER FOUND} at {@code app/cbl/CBTRN02C.cbl:L386-L387}.
      *
      * @param cardNumber the full card number, sixteen characters left-padded with zeros
      * @return the matching row, or an empty {@link Optional} when the table holds none
@@ -94,8 +95,8 @@ public interface CardCrossReferenceRepository
      * constraint. One account holds many cards, and the result may hold more than one row.
      *
      * <p>Rows arrive ordered by card number, ascending. A query with no {@code ORDER BY} lets the
-     * database return rows in any order, and that order can change between two runs of the same
-     * query after a vacuum, an index rebuild or a plan change. A caller that reads the first row
+     * database return rows in any order. That order can change between two runs of one query,
+     * after a vacuum, an index rebuild or a plan change. A caller that reads the first row
      * would then resolve one card today and another tomorrow for one unchanged account. The order is
      * therefore part of this contract, and {@code card_number} is the column that fixes it because
      * it is the primary key and holds one value per row.
@@ -137,6 +138,13 @@ public interface CardCrossReferenceRepository
      * {@code app/cbl/COTRN02C.cbl:L588-L593} takes its {@code DFHRESP(NOTFND)} branch for the same
      * condition and reports {@code Account ID NOT found...} without ending the run.
      *
+     * <p>No authorization decision calls this method, and none may. The source paragraph it mirrors
+     * fills a screen field for an operator who already named the account; a decision that resolved a
+     * card this way would authorize against whichever card of that account happens to sort lowest,
+     * which is a card the caller never presented. {@code domain/AuthorizationService} therefore reads
+     * {@link #findByCardNumber(String)} only, and a test in {@code domain/AuthorizationServiceTest}
+     * asserts this method is never reached from a decision.
+     *
      * @param accountId the account identifier, exactly eleven digits with leading zeros
      * @return the row carrying the lowest card number of that account, or an empty {@link Optional}
      *         when the table holds none
@@ -149,9 +157,9 @@ public interface CardCrossReferenceRepository
      *
      * <p>One statement rather than read-then-write, for two reasons. It is idempotent: a duplicate
      * delivery of the same event finds {@code source_occurred_at} already at or past its own and
-     * updates nothing, so replaying the topic converges on the same rows. And it is ordered: the
+     * updates nothing, so replaying the topic converges on the same rows. And it is ordered. The
      * {@code WHERE} clause on the conflict path discards an event that did not occur after the one
-     * already recorded, so a redelivery arriving behind a newer event cannot move the replica
+     * already recorded. A redelivery arriving behind a newer event cannot move the replica
      * backwards. A read followed by a write has a window between the two in which both of those
      * guarantees fail.
      *
@@ -196,4 +204,49 @@ public interface CardCrossReferenceRepository
      * @return how many rows were last observed before {@code cutoff}
      */
     long countByObservedAtBefore(Instant cutoff);
+
+    /**
+     * Records that a card-update event confirmed the rows of one account whose card number ends in
+     * the digits the event left visible, and writes no mapping field.
+     *
+     * <p>Why this is a refresh and not an upsert. A {@code CardUpdated} message carries a masked card
+     * number, because no full card number travels on a topic in this platform. This table is keyed by
+     * the full sixteen-character number, so the message cannot name a key and cannot create a row.
+     * What it does carry is the account identifier, so it confirms that the service owning the card
+     * has just written that account's card data, which is exactly the mapping this table holds.
+     *
+     * <p>The {@code SET} list is therefore the three observation columns and nothing else.
+     * {@code card_number}, {@code customer_id} and {@code account_id} are untouched, which is what
+     * makes the statement safe when two cards of one account share their last four digits: both rows
+     * are refreshed, no mapping moves, and no authorization can be misrouted by it. Confirming a
+     * sibling row alongside the one the event named is the cost of the masked contract, and it is
+     * bounded to rows that already name this account.
+     *
+     * <p>The {@code WHERE} clause carries the same newer-wins guard as
+     * {@link #applyStateChange}, so a redelivery arriving behind a newer event changes nothing.
+     *
+     * @param accountId          the account the event named, eleven digits
+     * @param cardNumberSuffix   a {@code LIKE} pattern matching the visible digits, from
+     *                           {@code CardUpdated.visibleDigitsSuffix()}
+     * @param sourceEventId      the event that carried the confirmation
+     * @param sourceOccurredAt   when that event occurred, from its envelope
+     * @param observedAt         when this service applied it
+     * @return how many rows were refreshed, which is zero when the account has no row with those
+     *         visible digits or when a newer event was already recorded
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE card_xref
+               SET source_event_id    = :sourceEventId,
+                   source_occurred_at = :sourceOccurredAt,
+                   observed_at        = :observedAt
+             WHERE account_id = :accountId
+               AND card_number LIKE :cardNumberSuffix
+               AND (source_occurred_at IS NULL OR source_occurred_at < :sourceOccurredAt)
+            """, nativeQuery = true)
+    int refreshObservation(@Param("accountId") String accountId,
+            @Param("cardNumberSuffix") String cardNumberSuffix,
+            @Param("sourceEventId") UUID sourceEventId,
+            @Param("sourceOccurredAt") Instant sourceOccurredAt,
+            @Param("observedAt") Instant observedAt);
 }

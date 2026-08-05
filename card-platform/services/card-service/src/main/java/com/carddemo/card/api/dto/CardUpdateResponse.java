@@ -38,6 +38,8 @@ import java.util.Objects;
  *        constructor requires one for
  *        {@link UpdateOutcome#CHANGED_BEFORE_UPDATE} and rejects one for every
  *        other outcome.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record CardUpdateResponse(
         UpdateOutcome outcome,
@@ -194,8 +196,8 @@ public record CardUpdateResponse(
      *
      * <p>The outcome and the message are safe to print. Every message this record carries is one
      * of the fixed texts {@link UpdateOutcome#requiredMessage()} names or the text of a failing
-     * edit, and none of those quotes the value that failed. The snapshot is a different matter, so
-     * it is reported as present or absent rather than expanded; a reader who needs its contents
+     * edit, and none of those quotes the value that failed. The snapshot is a different matter,
+     * and is reported as present or absent rather than expanded. A reader who needs its contents
      * has {@link RefreshedCard#toString()}, which withholds the four cardholder values in turn.
      *
      * @return one line naming the class, the outcome, the message and whether a snapshot is present
@@ -391,11 +393,11 @@ public record CardUpdateResponse(
         /**
          * Returns a rendering that keeps the status flag and withholds the cardholder values.
          *
-         * <p>This snapshot exists to tell a caller that somebody else changed the row first, and
-         * it carries the row as it now stands: the cardholder's embossed name and the expiry date
-         * in three parts. A caller that needs to show the reader what changed reads the
-         * components; a log line does not, and the rendering a record carries by default would put
-         * all four in one.
+         * <p>This snapshot exists to tell a caller that somebody else changed the row first. It
+         * carries the row as it now stands: the cardholder's embossed name and the expiry date in
+         * three parts. A caller that needs to show the reader what changed reads the components.
+         * A log line does not, and the rendering a record carries by default would put all four
+         * in one.
          *
          * @return one line naming the class and the status, with the four cardholder values
          *         withheld

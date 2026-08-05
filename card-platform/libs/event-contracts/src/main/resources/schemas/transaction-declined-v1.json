@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://carddemo.example.com/schemas/transaction-declined-v1.json",
   "title": "TransactionDeclined",
-  "description": "One declined authorization call publishes one TransactionDeclined event. Six payload fields name the attempt and the reason it failed, shaped after the 80-byte validation trailer at app/cbl/CBTRN02C.cbl:L180-L182 and the 350-byte daily transaction record at app/cpy/CVTRA06Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. Evolution and version policy: card-platform/docs/event-flow.md (planned).",
+  "description": "A declined authorization call whose card the cross-reference resolved to an account publishes one TransactionDeclined event under this version. Six payload fields name the attempt and the reason it failed, shaped after the 80-byte validation trailer at app/cbl/CBTRN02C.cbl:L180-L182 and the 350-byte daily transaction record at app/cpy/CVTRA06Y.cpy. Five envelope fields precede them, and no source record carries an envelope. A decline whose card resolved no account is governed by transaction-declined-v2.json.",
   "$comment": "app/cbl/CBTRN02C.cbl:L370-L378 runs the card cross-reference check first and the account check only while the reason code is still zero, so one event carries one code. The oneOf block below pins each reason code to the one description the source writes beside it, so a code paired with another code's text fails validation. aggregateId and accountId carry one account identifier, and the Kafka message key is that value, so the key and the payload cannot disagree.",
   "type": "object",
   "properties": {
@@ -12,7 +12,7 @@
       "minLength": 36,
       "maxLength": 36,
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. A consumer checks this identifier against its own processed_event table before it acts. It then writes its side effects and the marker row in one local transaction, and acknowledges the message only after that transaction commits. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
+      "description": "The idempotency key, a lower-case canonical Universally Unique Identifier (UUID) of thirty-six characters. A consumer checks this identifier against its own processed_event table before it acts. It then commits its side effects and the marker row in one local transaction, marker after effects, and acknowledges the message only after that transaction commits. The pattern is asserted directly, so validation does not depend on the validator enabling the optional format-assertion vocabulary. Additive. No source field exists.",
       "examples": ["3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"]
     },
     "eventType": {
@@ -90,7 +90,7 @@
     },
     "extensions": {
       "type": "object",
-      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction: at most 16 members, each name a short identifier, each value a string of at most 256 characters, and no nested object or array. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction. It holds at most 16 members. Each name is a short identifier and each value a string of at most 256 characters. No nested object or array is allowed. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
       "propertyNames": {
         "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
       },

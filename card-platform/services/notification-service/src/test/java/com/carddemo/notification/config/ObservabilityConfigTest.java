@@ -37,10 +37,15 @@ import org.springframework.core.env.PropertySource;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Asserts the notification service registers five meters under one prefix, and asserts the
+ * Asserts the notification service registers six meters under one prefix, and asserts the
  * observability properties {@code src/main/resources/application.yml} declares. Every test starts a
  * bare application context holding one {@link SimpleMeterRegistry}, so {@code mvn test} runs with no
  * database, no message broker and no container.
+ *
+ * <p>Counting units. {@code carddemo.notification.failures} counts one failed attempt, and a record
+ * the container retries contributes one to it per attempt.
+ * {@code carddemo.notification.records.dead.lettered} counts one record whose attempts ran out, so
+ * the two never share a unit and neither one can be read as the other.</p>
  *
  * <p>Meter provenance. {@code app/cbl/CBTRN02C.cbl:L185-L186} declares
  * {@code WS-TRANSACTION-COUNT} and {@code WS-REJECT-COUNT}, both counting up from zero.
@@ -57,29 +62,33 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Metrics and structured logging are additive. The source answers an infrastructure fault with
  * the abend routine at {@code app/cbl/CBTRN02C.cbl:L707-L711} and formats a two-byte file status by
  * hand at {@code app/cbl/CBTRN02C.cbl:L714-L727}.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
-@DisplayName("ObservabilityConfig, five meters under one prefix and the observability properties of"
+@DisplayName("ObservabilityConfig, six meters under one prefix and the observability properties of"
         + " the notification service")
 class ObservabilityConfigTest {
 
     /** Prefix every meter of this module carries. No meter sits outside it. */
     private static final String METER_PREFIX = "carddemo.notification";
 
-    /** The five meter names, each read verbatim from {@link ObservabilityConfig}. */
+    /** The six meter names, each read verbatim from {@link ObservabilityConfig}. */
     private static final String EVENTS_CONSUMED = "carddemo.notification.events.consumed";
     private static final String PROCESSING_LATENCY = "carddemo.notification.processing.latency";
     private static final String FAILURES = "carddemo.notification.failures";
+    private static final String DEAD_LETTERED = "carddemo.notification.records.dead.lettered";
     private static final String NOTIFICATIONS_RENDERED =
             "carddemo.notification.notifications.rendered";
     private static final String DUPLICATES_SKIPPED = "carddemo.notification.duplicates.skipped";
 
-    /** The five names as one set. A sixth meter name fails the set comparison. */
+    /** The six names as one set. A seventh meter name fails the set comparison. */
     private static final Set<String> DECLARED_METER_NAMES = Set.of(EVENTS_CONSUMED,
-            PROCESSING_LATENCY, FAILURES, NOTIFICATIONS_RENDERED, DUPLICATES_SKIPPED);
+            PROCESSING_LATENCY, FAILURES, DEAD_LETTERED, NOTIFICATIONS_RENDERED,
+            DUPLICATES_SKIPPED);
 
-    /** The four meter names a {@link Counter} carries. */
-    private static final List<String> COUNTER_NAMES =
-            List.of(EVENTS_CONSUMED, FAILURES, NOTIFICATIONS_RENDERED, DUPLICATES_SKIPPED);
+    /** The five meter names a {@link Counter} carries. */
+    private static final List<String> COUNTER_NAMES = List.of(EVENTS_CONSUMED, FAILURES,
+            DEAD_LETTERED, NOTIFICATIONS_RENDERED, DUPLICATES_SKIPPED);
 
     /** The three tag keys, one per tagged meter. */
     private static final String EVENT_TYPE_TAG = "event.type";
@@ -89,9 +98,14 @@ class ObservabilityConfigTest {
     /** Tag value every tagged meter registers for input outside its own set. */
     private static final String FALLBACK_TAG_VALUE = "unknown";
 
-    /** Tag values the {@code event.type} dimension carries, four event types and the fallback. */
-    private static final Set<String> EVENT_TYPE_VALUES = Set.of("TransactionAuthorized",
-            "TransactionPosted", "FraudFlagged", "FraudCleared", FALLBACK_TAG_VALUE);
+    /**
+     * Tag values the {@code event.type} dimension carries, three consumed event types and the
+     * fallback. This service reads {@code transaction.posted} and {@code fraud.assessed}, which is
+     * exactly what its broker entries grant it. It registers no {@code TransactionAuthorized}
+     * series, because a series that can only ever read zero states a topology that is not true.
+     */
+    private static final Set<String> EVENT_TYPE_VALUES =
+            Set.of("TransactionPosted", "FraudFlagged", "FraudCleared", FALLBACK_TAG_VALUE);
 
     /** Tag values the {@code format} dimension carries, one per renderer and the fallback. */
     private static final Set<String> FORMAT_VALUES = Set.of("text", "html", FALLBACK_TAG_VALUE);
@@ -120,10 +134,10 @@ class ObservabilityConfigTest {
      * constant fails.
      */
     private static final Map<String, String> DECLARED_TAG_VALUE_CONSTANTS = Map.ofEntries(
-            Map.entry("EVENT_TRANSACTION_AUTHORIZED", "TransactionAuthorized"),
             Map.entry("EVENT_TRANSACTION_POSTED", "TransactionPosted"),
             Map.entry("EVENT_FRAUD_FLAGGED", "FraudFlagged"),
             Map.entry("EVENT_FRAUD_CLEARED", "FraudCleared"),
+            Map.entry("EVENT_CUSTOMER_CONTEXT_CHANGED", "CustomerContextChanged"),
             Map.entry("FAILURE_SCHEMA_VALIDATION", "schema_validation"),
             Map.entry("FAILURE_DESERIALIZATION", "deserialization"),
             Map.entry("FAILURE_PERSISTENCE", "persistence"),
@@ -187,7 +201,7 @@ class ObservabilityConfigTest {
      *
      * <p>The listeners that call these lookups arrive with
      * {@code messaging/TransactionPostedConsumer.java} and
-     * {@code messaging/FraudFlaggedConsumer.java}, and the renderer counters with
+     * {@code messaging/FraudAssessedConsumer.java}, and the renderer counters with
      * {@code domain/NotificationService.java}. Every lookup below already returns a live meter.</p>
      */
     @Test
@@ -197,7 +211,7 @@ class ObservabilityConfigTest {
             NotificationMetrics metrics = context.getBean(NotificationMetrics.class);
             MeterRegistry registry = context.getBean(MeterRegistry.class);
 
-            metrics.eventsConsumed(NotificationMetrics.EVENT_TRANSACTION_AUTHORIZED).increment();
+            metrics.eventsConsumed(NotificationMetrics.EVENT_FRAUD_CLEARED).increment();
             metrics.processingLatency(NotificationMetrics.EVENT_TRANSACTION_POSTED)
                     .record(Duration.ofMillis(7));
             metrics.failures(NotificationMetrics.FAILURE_RENDERING).increment();
@@ -205,7 +219,7 @@ class ObservabilityConfigTest {
             metrics.duplicatesSkipped().increment();
 
             assertThat(counterCount(registry, EVENTS_CONSUMED, EVENT_TYPE_TAG,
-                    NotificationMetrics.EVENT_TRANSACTION_AUTHORIZED)).isEqualTo(1.0D);
+                    NotificationMetrics.EVENT_FRAUD_CLEARED)).isEqualTo(1.0D);
             assertThat(counterCount(registry, EVENTS_CONSUMED, EVENT_TYPE_TAG,
                     NotificationMetrics.EVENT_TRANSACTION_POSTED)).isZero();
             assertThat(timerCount(registry, PROCESSING_LATENCY, EVENT_TYPE_TAG,
@@ -262,8 +276,8 @@ class ObservabilityConfigTest {
     }
 
     @Test
-    @DisplayName("the registry holds five meter names, all under one prefix")
-    void theFiveDeclaredMeterNamesAreTheOnlyOnesInTheRegistry() {
+    @DisplayName("the registry holds six meter names, all under one prefix")
+    void theSixDeclaredMeterNamesAreTheOnlyOnesInTheRegistry() {
         RUNNER.run(context -> {
             assertThat(context).hasNotFailed();
             Set<String> names = meterNamesOf(context.getBean(MeterRegistry.class));
@@ -271,13 +285,13 @@ class ObservabilityConfigTest {
             assertThat(names)
                     .as("meter names this module registers")
                     .containsExactlyInAnyOrderElementsOf(DECLARED_METER_NAMES)
-                    .hasSize(5)
+                    .hasSize(6)
                     .allSatisfy(name -> assertThat(name).startsWith(METER_PREFIX + "."));
         });
     }
 
     @Test
-    void fourMetersAreCountersAndProcessingLatencyIsATimer() {
+    void fiveMetersAreCountersAndProcessingLatencyIsATimer() {
         RUNNER.run(context -> {
             MeterRegistry registry = context.getBean(MeterRegistry.class);
 
@@ -302,6 +316,7 @@ class ObservabilityConfigTest {
                     EVENTS_CONSUMED, EVENT_TYPE_TAG,
                     PROCESSING_LATENCY, EVENT_TYPE_TAG,
                     FAILURES, FAILURE_KIND_TAG,
+                    DEAD_LETTERED, FAILURE_KIND_TAG,
                     NOTIFICATIONS_RENDERED, FORMAT_TAG);
 
             keyByMeter.forEach((name, tagKey) -> assertThat(tagKeysOf(registry, name))
@@ -311,16 +326,15 @@ class ObservabilityConfigTest {
     }
 
     /**
-     * Asserts the {@code event.type} dimension carries the four consumed event types and the
-     * fallback series. This service reads {@code transaction.authorized},
-     * {@code transaction.posted} and {@code fraud.assessed}. {@code FraudFlagged} and
-     * {@code FraudCleared} share the last of those, and the envelope event type separates them.
-     * An authorization event tagged {@code unknown} would mean this series lost a type it consumes.
+     * Asserts the {@code event.type} dimension carries the three consumed event types and the
+     * fallback series. This service reads {@code transaction.posted} and {@code fraud.assessed}.
+     * {@code FraudFlagged} and {@code FraudCleared} share the second of those, and the envelope
+     * event type separates them. A fourth series would claim a topic this service cannot read.
      */
     @Test
-    @DisplayName("event.type carries TransactionAuthorized, TransactionPosted, FraudFlagged, "
-            + "FraudCleared and the fallback")
-    void theEventTypeTagCarriesFourConsumedTypesAndTheFallbackSeries() {
+    @DisplayName("event.type carries TransactionPosted, FraudFlagged, FraudCleared and the "
+            + "fallback")
+    void theEventTypeTagCarriesThreeConsumedTypesAndTheFallbackSeries() {
         RUNNER.run(context -> {
             MeterRegistry registry = context.getBean(MeterRegistry.class);
 
@@ -784,8 +798,8 @@ class ObservabilityConfigTest {
     /**
      * Runs one recording and asserts exactly one series moved, by the expected amount.
      *
-     * <p>The reading of a counter is its count and the reading of a timer is its recording count,
-     * so one increment and one timed recording both move their series by one.</p>
+     * <p>The reading of a counter is its count. The reading of a timer is its recording count.
+     * One increment and one timed recording each move their series by one.</p>
      *
      * @param registry the registry holding every series
      * @param recording the recording to run

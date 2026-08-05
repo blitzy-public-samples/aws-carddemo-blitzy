@@ -2,6 +2,7 @@ package com.carddemo.fraud.domain;
 
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
+import com.carddemo.fraud.config.FraudProperties;
 import com.carddemo.fraud.domain.rules.MerchantCategoryRule;
 import com.carddemo.fraud.repository.VelocityWindowRepository;
 import java.lang.reflect.Constructor;
@@ -10,6 +11,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -36,18 +38,31 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit tests for {@link MerchantCategoryRule}: how it registers, how it scores a merchant category
  * code, and which property keys it binds.
  *
- * <p>ADDITIVE IN FULL. The CardDemo Common Business Oriented Language (COBOL) source holds no fraud
- * module, so this rule is net new; no COBOL ancestor. Event values come from record one of the
- * daily transaction fixture, as inline literals. No test opens a file, a context, a container or a
- * connection. Decisions: {@code card-platform/docs/decision-log.md}.
+ * <p>The CardDemo Common Business Oriented Language (COBOL) source holds no fraud module, so this
+ * rule is net new; no COBOL ancestor. Event values come from record one of the daily transaction
+ * fixture, as inline literals. No test opens a file, a context, a container or a connection.
  */
 @DisplayName("MerchantCategoryRule, the rule that scores a merchant category code")
 class MerchantCategoryRuleTest {
+
+    /**
+     * Card token of the fixture card number, sixty-four lower-case hexadecimal characters.
+     *
+     * <p>Additive. No source field exists. {@code com.carddemo.cobol.PanMasker#tokenOf} writes this
+     * value from the full card number {@code 4859452612877065}, and the width and case are that
+     * method's.</p>
+     */
+    private static final String CARD_TOKEN =
+            "f8da0217fb8bd2e172d427a2ef66d54656a59baa9fe8f9bc2ce9d383b90e1173";
 
     /** The eleven-digit account identifier the event carries, and its message key. */
     private static final String ACCOUNT_ID = "00000000007";
@@ -199,6 +214,30 @@ class MerchantCategoryRuleTest {
     }
 
     @Nested
+    @DisplayName("The scorer's configured verdict boundary")
+    class ScorerVerdictBoundary {
+
+        @ParameterizedTest
+        @CsvSource({"49, false", "50, true", "51, true"})
+        @DisplayName("The real scorer clears below 50 and flags at or above 50")
+        void scorerHonorsTheConfiguredBoundary(int score, boolean flagged) {
+            VelocityWindowRepository repository = mock(VelocityWindowRepository.class);
+            when(repository.addAuthorization(eq(ACCOUNT_ID), any(), any(), any())).thenReturn(1);
+            RiskRule scoredRule = fixedContribution("VELOCITY", score);
+            RiskScoringService scorer = new RiskScoringService(
+                    List.of(scoredRule), repository, propertiesWithFlagThreshold(50));
+
+            RiskScoringService.RiskAssessment assessment =
+                    scorer.assess(eventWithCategory("0003"));
+
+            assertAll("score " + score + " at the configured boundary",
+                    () -> assertEquals(score, assessment.riskScore(), "score"),
+                    () -> assertEquals(flagged, assessment.flagged(), "flagged"),
+                    () -> assertEquals(List.of("VELOCITY"), assessment.triggeredRules(), "rules"));
+        }
+    }
+
+    @Nested
     @DisplayName("The risk-threshold property keys the rule binds")
     class RiskThresholdPropertyKeys {
 
@@ -239,8 +278,8 @@ class MerchantCategoryRuleTest {
         return new TransactionAuthorized(EVENT_ID, TransactionAuthorized.EVENT_TYPE,
                 EventEnvelope.SCHEMA_VERSION, OCCURRED_AT, ACCOUNT_ID, TRANSACTION_ID, "01",
                 categoryCode, "POS TERM", "Purchase at Abshire-Lowe", AMOUNT, "800000000",
-                "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER, AUTHORIZED_AT,
-                ACCOUNT_ID, TransactionAuthorized.CURRENCY);
+                "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER, null,
+                AUTHORIZED_AT, ACCOUNT_ID, TransactionAuthorized.CURRENCY);
     }
 
     /** Returns the one constructor {@link MerchantCategoryRule} declares. */
@@ -257,4 +296,52 @@ class MerchantCategoryRuleTest {
         return Stream.concat(onParameters, onFields).filter(Objects::nonNull)
                 .map(Value::value).toList();
     }
+
+    /**
+     * Builds a rule that always contributes {@code score} points under {@code identifier}.
+     *
+     * <p>The scorer's verdict is what these assertions measure, so the rule that feeds it is a stub
+     * rather than one of the real rules.
+     *
+     * @param identifier the rule identifier a triggered contribution reports
+     * @param score      the points the rule contributes on every event
+     * @return a rule that triggers with {@code score} points
+     */
+    private static RiskRule fixedContribution(String identifier, int score) {
+        return new RiskRule() {
+            @Override
+            public Contribution evaluate(TransactionAuthorized event) {
+                return Contribution.triggeredWith(score);
+            }
+
+            @Override
+            public String ruleId() {
+                return identifier;
+            }
+        };
+    }
+
+    /**
+     * Builds the bound settings the scorer reads, carrying one flag threshold.
+     *
+     * <p>Every other value is the one the shipped {@code application.yml} carries, because none of
+     * them takes part in the verdict these assertions measure.
+     *
+     * @param threshold the score at or above which an assessment is flagged
+     * @return settings whose risk block names {@code threshold}
+     */
+    private static FraudProperties propertiesWithFlagThreshold(int threshold) {
+        return new FraudProperties(
+                new FraudProperties.Kafka(new FraudProperties.Kafka.Topics(
+                        "transaction.authorized", "fraud.assessed", "carddemo.dead-letter",
+                        ".DLT")),
+                new FraudProperties.Consumer(new FraudProperties.Consumer.Retry(3, 1_000L)),
+                new FraudProperties.Outbox(new FraudProperties.Outbox.Relay(
+                        500L, 100, "fraud-relay", Duration.ofMinutes(2L), 20_000L), 168L),
+                new FraudProperties.ProcessedEvent(168L),
+                new FraudProperties.Retention(3_600_000L),
+                new FraudProperties.Fraud(new FraudProperties.Fraud.Risk(
+                        threshold, 60, 5, new BigDecimal("500.00"))));
+    }
+
 }

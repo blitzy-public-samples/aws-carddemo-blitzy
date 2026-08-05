@@ -33,9 +33,7 @@ import tools.jackson.databind.json.JsonMapper;
  * Reads one event from Kafka bytes and checks those bytes against the event's schema before it
  * builds a record. A malformed message never becomes a domain object.
  *
- * <p>ADDITIVE IN FULL. No COBOL program and no copybook in this repository defines this class. The
- * reasoning behind the choices this class implements sits in
- * {@code card-platform/docs/decision-log.md} (planned).
+ * <p>No COBOL program and no copybook in this repository defines this class.
  *
  * <p>Schema selection reads the {@code eventType} property of the inbound JavaScript Object
  * Notation (JSON) document, and the same property selects the record class to build. A topic name
@@ -62,10 +60,8 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>A failure names the schema, counts the violations and lists each failing property as a JSON
  * pointer. No message carries the value that failed, so a full Primary Account Number (PAN) cannot
  * reach a log or a dead-letter record through a failure. This class writes no log line, records no
- * metric, retries nothing and publishes nothing. It throws
- * {@link SerializationException}, and the consumer of each service turns that into a route to the
- * {@code carddemo.dead-letter} topic. For the path each event travels from publish to consume, read
- * {@code card-platform/docs/event-flow.md} (planned).
+ * metric, retries nothing and publishes nothing. It throws {@link SerializationException}, and the
+ * consumer of each service turns that into a route to the {@code carddemo.dead-letter} topic.
  *
  * <p>A declined event is ordinary traffic and deserializes like any other. Nothing here treats a
  * decline as a failure.
@@ -283,6 +279,23 @@ public final class JsonSchemaValidatingDeserializer<T> implements Deserializer<T
         }
         if (!violations.isEmpty()) {
             throw new SerializationException(describe(eventType, schemaVersion, violations));
+        }
+
+        // The schema closes the top-level property set, and the two screens below cover what a
+        // pattern cannot: the extensions object is open by design, and a free-text property is
+        // bounded by length rather than by shape. A record either screen refuses reaches the
+        // dead-letter route and no consumer.
+        String forbidden = SensitiveEventProperties.firstForbiddenProperty(tree);
+        if (forbidden != null) {
+            throw new SerializationException("The JSON read from topic " + topic + " carries the "
+                    + "property \"" + forbidden + "\", which no event may carry. "
+                    + "See SensitiveEventProperties.");
+        }
+        String sensitive = SensitiveEventProperties.firstSensitiveValue(tree);
+        if (sensitive != null) {
+            throw new SerializationException("The JSON read from topic " + topic + " carries a card "
+                    + "number or a government identifier in the free-text property \"" + sensitive
+                    + "\". No event may carry either. See SensitiveEventProperties.");
         }
 
         Class<?> boundType = treeForm || treeResult ? JsonNode.class

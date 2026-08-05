@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * Checks that the serializers the shipped {@code application.yml} names can write what
  * {@link KafkaEventPublisher} hands the template.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor. It exists because a serializer that cannot write
+ * <p>This class has no COBOL ancestor. It exists because a serializer that cannot write
  * the published value fails in the one place nothing watches: the relay logs a warning, leaves the
  * row unpublished, retries on the next sweep and reports the service healthy throughout. A name
  * comparison alone would not have caught it either, because the wrong name reads like the careful

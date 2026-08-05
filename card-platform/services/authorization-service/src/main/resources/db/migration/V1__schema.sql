@@ -15,13 +15,14 @@
 -- the value no longer round-trips to the eleven characters the alternate-index key
 -- occupies at KEYS(11,25) in app/jcl/XREFFILE.jcl:L74. Text keeps every character. The
 -- CHECK constraints hold the width and the digit class the Picture clause declares.
--- The three freshness columns are ADDITIVE and have no COBOL ancestor, because the source
--- has no replica: app/cbl/CBTRN02C.cbl:L382 reads the cross-reference dataset itself, so it
--- cannot be stale. This table is a copy, and a copy that cannot say how old it is cannot be
--- refused when it is too old. source_event_id and source_occurred_at name the state-change
--- event that last wrote the row, so an out-of-order delivery is discarded rather than applied
--- (a delivery whose source_occurred_at is not after the stored one changes nothing).
--- observed_at is what a freshness check reads.
+-- The three freshness columns have no COBOL ancestor, because the source has no replica:
+-- app/cbl/CBTRN02C.cbl:L382 reads the cross-reference dataset itself, so it cannot be stale.
+-- This table is a copy, and a copy that cannot say how old it is cannot be refused when it is
+-- too old. source_event_id and source_occurred_at name the state-change event that last wrote
+-- the row, so an out-of-order delivery is discarded rather than applied (a delivery whose
+-- source_occurred_at is not after the stored one changes nothing). observed_at is what a
+-- freshness check reads. No listener writes this table today, so every row holds what
+-- V2__seed.sql loaded and both source_ columns are NULL.
 CREATE TABLE card_xref (
     card_number  VARCHAR(16) NOT NULL,
     customer_id  CHAR(9)     NOT NULL,
@@ -52,10 +53,16 @@ CREATE INDEX ix_card_xref_observed_at ON card_xref (observed_at);
 -- NONUNIQUEKEY: eleven bytes at offset 25, where the account identifier starts.
 -- app/cbl/COTRN02C.cbl:L208 reads through that path and :L222 reads the primary
 -- key.
-CREATE INDEX idx_card_xref_account_id ON card_xref (account_id);
+--
+-- card_number is the second key column. Every read through this path filters on account_id and
+-- takes the cross-references of that account in card-number order, which is the order
+-- app/cbl/COCRDLIC.cbl:L1247 browses in. Both columns in the key answer that read from the index
+-- alone, and the leading column still answers a lookup by account by itself.
+CREATE INDEX idx_card_xref_account_id ON card_xref (account_id, card_number);
 
 -- account_credit_snapshot: projection of the account record, read by the
--- decline rules. Account state-change events keep the rows current. Five of
+-- decline rules. An account state-change consumer is to keep the rows current; none is
+-- registered, so every row holds what V2__seed.sql loaded. Five of
 -- the thirteen fields in app/cpy/CVACT01Y.cpy appear below, the trailing
 -- FILLER PIC X(178) at L17 not among them. Primary key from KEYS(11 0) at
 -- app/jcl/ACCTFILE.jcl:L40, eleven bytes at offset zero, alongside
@@ -81,7 +88,7 @@ CREATE TABLE account_credit_snapshot (
     -- accumulator, and 50 of the 300 records in app/data/ASCII/dailytran.txt
     -- carry one.
     current_cycle_debit      NUMERIC(12,2) NOT NULL,
-    -- The three freshness columns are ADDITIVE with no COBOL ancestor. The source reads the
+    -- The three freshness columns have no COBOL ancestor. The source reads the
     -- account dataset directly at app/cbl/CBTRN02C.cbl:L396, so it has nothing to go stale.
     -- This table is a copy, and the credit-limit rule at app/cbl/CBTRN02C.cbl:L403-L407
     -- authorizes against its cycle accumulators, so a copy that has stopped being updated
@@ -111,7 +118,7 @@ CREATE INDEX ix_account_credit_snapshot_observed_at
 -- this table would refuse could never have been published, and one the wire gate would
 -- refuse can no longer be stored, so the two bounds cannot disagree.
 --
--- The seven relay-state columns are ADDITIVE and have no COBOL ancestor. The source runs
+-- The seven relay-state columns have no COBOL ancestor. The source runs
 -- its three writes at app/cbl/CBTRN02C.cbl:L440-L442 under no condition and follows them
 -- with no rollback, and every file definition in app/csd/CARDDEMO.CSD carries
 -- RECOVERY(NONE) JOURNAL(NO), so there is nothing here to reproduce. Without a claim, two
@@ -124,11 +131,16 @@ CREATE TABLE outbox_event (
     event_id     UUID                        NOT NULL,
     -- TransactionAuthorized and TransactionDeclined are the two values written.
     event_type    VARCHAR(50)   NOT NULL,
-    -- Account identifier, eleven characters, and the Kafka message key. Fixed-width
-    -- character storage keeps a leading zero, which XREF-ACCT-ID PIC 9(11) at
-    -- app/cpy/CVACT03Y.cpy:L7 carries in 50 of the 50 rows of
-    -- app/data/ASCII/cardxref.txt.
-    aggregate_id CHAR(11)                    NOT NULL,
+    -- The Kafka message key, in one of two forms. Almost every event keys on the account
+    -- identifier, eleven characters, from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7,
+    -- which 50 of the 50 rows of app/data/ASCII/cardxref.txt carry with leading zeros. One
+    -- contract keys on the sixteen-character transaction identifier, from DALYTRAN-ID PIC X(16)
+    -- at app/cpy/CVTRA06Y.cpy:L5: reject code 0100 at app/cbl/CBTRN02C.cbl:L385-L387 follows the
+    -- INVALID KEY branch of the cross-reference read at :L383, where no account identifier
+    -- exists to key on, and libs/event-contracts declares that key in
+    -- schemas/transaction-declined-v2.json. The column is variable-width because it holds two
+    -- widths, and ck_outbox_event_aggregate_key below admits no third.
+    aggregate_id VARCHAR(16)                 NOT NULL,
     -- One event payload as JavaScript Object Notation (JSON) text, envelope fields
     -- and payload fields at the same level. ck_outbox_event_payload_bytes below holds
     -- it to the same 8192-octet ceiling the wire applies, so the stored bound and the
@@ -154,6 +166,10 @@ CREATE TABLE outbox_event (
     published_at    TIMESTAMP(6) WITH TIME ZONE,
     CONSTRAINT pk_outbox_event PRIMARY KEY (event_id),
     CONSTRAINT ck_outbox_event_payload_bytes CHECK (octet_length(payload) <= 8192),
+    -- Eleven decimal digits, or sixteen printable characters with no space. The same union
+    -- constrains EventEnvelope.aggregateId, so the stored key and the published key are one key.
+    CONSTRAINT ck_outbox_event_aggregate_key CHECK (
+        aggregate_id ~ '^[0-9]{11}$' OR aggregate_id ~ '^[!-~]{16}$'),
     -- The flag and the timestamp move together. A row is either unpublished with no
     -- timestamp or published with one, and no third state reaches the table.
     CONSTRAINT ck_outbox_event_publication CHECK (
@@ -189,14 +205,15 @@ CREATE INDEX ix_outbox_event_published_at
 -- are covered. This index is also the purge path for rows in a terminal state.
 CREATE INDEX ix_outbox_event_claimable ON outbox_event (relay_state, next_attempt_at);
 
--- processed_event: one row per event identifier a consumer has already handled.
--- The primary key is the only access path, and it is the guard as well as the key: an
--- insert that collides is how a consumer learns the event was already handled, so the
--- guard cannot be checked and then raced past. The consumer inserts this row in the same
--- local transaction as its side effects and acknowledges the message only after that
--- transaction commits, which is why a crash between the two leaves no half-processed event.
--- consumed_topic exists so a replayed event can be traced to the delivery that first
--- handled it.
+-- processed_event: one row per event identifier a consumer has already handled. No listener
+-- in this service writes it today, so the table stays empty.
+-- The primary key is the guard as well as the key: an insert that collides is how a consumer
+-- learns the event was already handled, so the guard cannot be checked and then raced past.
+-- A retention index over processed_at follows the table. The consumer inserts this row in the
+-- same local transaction as its side effects, marker after effects, and acknowledges the
+-- message only after that transaction commits, which is why a crash between the two leaves no
+-- half-processed event. consumed_topic exists so a replayed event can be traced to the
+-- delivery that first handled it.
 CREATE TABLE processed_event (
     event_id      UUID                        NOT NULL,
     processed_at  TIMESTAMP(6) WITH TIME ZONE NOT NULL,
@@ -232,39 +249,42 @@ CREATE SEQUENCE transaction_id_seq START WITH 1000000000 INCREMENT BY 1 NO CYCLE
 --
 -- Each COMMENT below reads as four fields followed by a sentence, so an operator can
 -- read the policy out of the catalogue rather than out of a document:
---   retention=<window>      how long a row may stay, or the word relationship for a business
---                           record whose life is the customer relationship
+--   retention=<window>      how long a row may stay, or the word relationship for a
+--                           business record whose life is the customer relationship
 --   purge_key=<column>      the column a purge job ranges over, or 'none'
---   personal_data=<yes|no>  whether the row describes an identifiable person
+--   personal_data=<yes|pseudonymous|no>
+--                           whether the row directly identifies a person, can be linked through
+--                           a platform identifier, or carries no personal data
 -- Read them back with:
 --   SELECT relname, obj_description(oid, 'pg_class') FROM pg_class
 --    WHERE relkind = 'r' ORDER BY relname;
 --
 -- The windows below are the demo baseline this platform ships with. No requirement in
--- scope fixes a legal retention period, and card-platform/docs/suggested-next-tasks.md (planned)
--- carries the task of replacing them with the periods a deployment's jurisdiction
--- requires. The purge job itself is out of scope for the same reason: nothing in the
--- Agent Action Plan schedules one, and a job that deletes financial records is not
--- something to add without an owner. The columns and indexes it needs are here.
+-- scope fixes a legal retention period, so a deployment replaces them with the periods
+-- its own jurisdiction requires. The purge job itself is out of scope for the same
+-- reason: nothing in the Agent Action Plan schedules one, and a job that deletes
+-- financial records is not something to add without an owner. The columns and indexes
+-- it needs are here.
 
 COMMENT ON TABLE card_xref IS
-    'retention=relationship; purge_key=none; personal_data=no. Card-to-account cross-
+    'retention=relationship; purge_key=none; personal_data=pseudonymous. Card-to-account cross-
      reference, the first hop of every authorization. A row lives as long as the card it
-     names; erasure follows the card service deleting the card.';
+     names; card, customer and account identifiers link it to a cardholder, and erasure
+     follows the card service deleting the card.';
 
 COMMENT ON TABLE account_credit_snapshot IS
-    'retention=relationship; purge_key=none; personal_data=no. Credit projection the decline
-     rules read. A row lives as long as the account, and account state-change events keep it
-     current.';
+    'retention=relationship; purge_key=none; personal_data=pseudonymous. Credit projection
+     the decline rules read. The account identifier and financial values link it to a
+     cardholder. A row lives as long as the account, and account state-change events keep
+     it current.';
 
 COMMENT ON TABLE outbox_event IS
-    'retention=7 days after published; purge_key=created_at; personal_data=no. One decision
-     event awaiting publication. A published row is spent; purge rows where published is true
-     and created_at is older than 7 days. An unpublished row is work still owed and is never
-     purged by age.';
+    'retention=7 days after published; purge_key=published_at; personal_data=pseudonymous.
+     One decision event awaiting publication. Its payload carries account or transaction
+     identity, a masked card number and financial values. A published row is spent; purge
+     rows where published_at is older than 7 days. An unpublished row is work still owed
+     and is never purged by age.';
 
 COMMENT ON TABLE processed_event IS
-    'retention=30 days; purge_key=processed_at; personal_data=no. Duplicate-delivery marker.
-     The window must outlast the topic retention the broker itself applies, or a replayed
-     event finds no marker and is processed twice; 30 days clears the 7-day default with room
-     to spare.';
+    'retention=carddemo.processed-event.marker-retention-hours; purge_key=processed_at;
+     personal_data=no. Duplicate-delivery marker.';

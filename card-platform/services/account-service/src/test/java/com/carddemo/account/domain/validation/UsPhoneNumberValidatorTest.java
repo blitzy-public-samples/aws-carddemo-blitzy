@@ -63,6 +63,8 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  *
  * <p>Every input is a literal written in this class. The tests need no Spring context, no
  * container and no database.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("UsPhoneNumberValidator, the three part North American telephone number edit")
 class UsPhoneNumberValidatorTest {
@@ -540,9 +542,10 @@ class UsPhoneNumberValidatorTest {
         // nothing but padding.
         assertThat(UsPhoneAreaCodes.isValidGeneralPurposeCode("123")).isFalse();
 
-        // ADDITIVE. A caller of this edit can supply a wider value, and the edit refuses one that
-        // carries a character the field would not hold. The message is the source literal at
-        // app/cbl/COACTUPC.cbl:L2272, which reads that the area code must be a three digit number.
+        // No COBOL ancestor. A caller of this edit can supply a wider value, and the edit refuses
+        // one that carries a character the field would not hold. The message is the source literal
+        // at app/cbl/COACTUPC.cbl:L2272, which reads that the area code must be a three digit
+        // number.
         EditResult fourDigits = validateAreaCode("1234");
         EditResult threeDigitsAndAletter = validateAreaCode("410X");
         EditResult threeDigitsAndPadding = validateAreaCode("410  ");
@@ -561,9 +564,9 @@ class UsPhoneNumberValidatorTest {
     @Test
     @DisplayName("A prefix or line number wider than its field fails the digit-count check")
     void widerPrefixAndLineNumberFailTheDigitCountCheck() {
-        // ADDITIVE. Neither part can be wider in the source: app/cbl/COACTUPC.cbl:L92 declares the
-        // prefix PIC X(3) and L97 declares the line number PIC X(4). The messages are the source
-        // literals at app/cbl/COACTUPC.cbl:L2343 and L2396.
+        // No COBOL ancestor. Neither part can be wider in the source: app/cbl/COACTUPC.cbl:L92
+        // declares the prefix PIC X(3) and L97 declares the line number PIC X(4). The messages are
+        // the source literals at app/cbl/COACTUPC.cbl:L2343 and L2396.
         EditResult widePrefix = validatePrefix("1234");
         EditResult wideLineNumber = validateLineNumber("12345");
         EditResult paddedPrefix = validatePrefix("410  ");

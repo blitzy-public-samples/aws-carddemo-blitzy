@@ -17,40 +17,39 @@ import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
  * <p>Service-local. This record belongs to the card service and not to the shared
  * {@code com.carddemo.events} library, which closes at the transaction and fraud contracts.
  *
- * <p>Plan alignment. The plan names this contract {@code CardUpdated} and describes five payload
- * components written with plain Jackson against no schema. This record carries those five
- * components under that name, and it validates every payload against the shared versioned document
- * {@code schemas/card-updated-v1.json} before publishing rather than writing it unchecked. It
+ * <p>Plan alignment. The plan names this contract {@code CardUpdated}. This record carries four
+ * payload components under that name, and it validates every payload against the shared versioned document
+ * {@code schemas/card-updated-v2.json} before publishing rather than writing it unchecked. It
  * declares no mutation-kind component: the card service publishes on an update and on nothing
  * else, so a consumer needs no discriminator to tell one kind from another. The decision log this
- * platform still owes, {@code card-platform/docs/decision-log.md} (planned), is to record the move
- * to a shared schema.
+ * platform records in {@code card-platform/docs/decision-log.md}.
  *
  * <p>The card service publishes on a card update and publishes nothing on a card list or a card
- * read. Five payload components carry the card as it stands after the update, and every width
+ * read. Four payload components carry the non-name card state after the update, and every width
  * comes from the 150-byte card record at {@code app/cpy/CVACT02Y.cpy}.
  *
  * <p>The wire form is flat. The five fields {@link EventEnvelope} defines are declared first
- * below, beside the five payload fields, so one event travels as ten properties of a single
+ * below, beside the four payload fields, so one event travels as nine properties of a single
  * JavaScript Object Notation (JSON) object and no nesting key reaches a topic.
  *
- * <p>Those ten properties are the ten {@code required} properties of
- * {@code schemas/card-updated-v1.json}, the document {@link #toValidatedJson()} checks every
+ * <p>Those nine properties are the nine {@code required} properties of
+ * {@code schemas/card-updated-v2.json}, the document {@link #toValidatedJson()} checks every
  * payload against before it reaches a topic. That document closes its property set and declares
  * one bounded {@code extensions} object no record writes, so a field this record does not carry
  * cannot travel under this event type.
  *
- * <p>Two fields of the card record have no component here. The card verification value at
+ * <p>Three fields of the card record have no component here. The card verification value at
  * {@code app/cpy/CVACT02Y.cpy:L7} reaches no event, no log line and no response body. The trailing
- * filler at {@code app/cpy/CVACT02Y.cpy:L11} holds no data.
+ * filler at {@code app/cpy/CVACT02Y.cpy:L11} holds no data. The embossed cardholder name is used
+ * by the synchronous card update and detail surfaces but no event consumer needs it, so it is not
+ * persisted in the outbox payload or published.
  *
  * <p>{@link #ofUnmaskedCardNumber} masks the card number, and the canonical constructor rejects an
  * unmasked value. A card lookup keys on all sixteen characters, so a caller resolves the card first
  * and builds the event second.
  *
- * <p>The card service outbox writer turns this record into text and stores that text in an
- * {@code outbox_event} row, inside the one transaction that writes the card row. For the choices
- * this record carries, read {@code card-platform/docs/decision-log.md} (planned).
+ * <p>The card service outbox writer turns this record into text and stores that text in an {@code
+ * outbox_event} row, inside the one transaction that writes the card row.
  *
  * @param eventId          the identifier every consumer records to detect a duplicate delivery
  * @param eventType        the routing discriminator, always {@link #EVENT_TYPE}
@@ -58,8 +57,9 @@ import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
  * @param occurredAt       the moment the producer stamped the event
  * @param aggregateId      the eleven-digit account identifier, and the Kafka message key
  * @param maskedCardNumber twelve mask characters then the last four digits of the card number,
- *                         sixteen characters in all. ADDITIVE: no CardDemo program masks a Primary
- *                         Account Number (PAN), and {@code app/bms/COCRDSL.bms:L96-L100} defines
+ *                         sixteen characters in all. No COBOL ancestor: no CardDemo program
+ *                         masks a Primary Account Number (PAN), and
+ *                         {@code app/bms/COCRDSL.bms:L96-L100} defines
  *                         the card detail field unprotected at the full sixteen characters. Width
  *                         from {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}
  * @param accountId        the eleven-digit account identifier, equal to {@code aggregateId} and to
@@ -67,8 +67,6 @@ import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
  *                         {@code app/cpy/CVACT02Y.cpy:L6}, the width
  *                         {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} also
  *                         carries. A leading zero belongs to the value
- * @param embossedName     the name embossed on the card, at most fifty characters. From
- *                         {@code CARD-EMBOSSED-NAME PIC X(50)} at {@code app/cpy/CVACT02Y.cpy:L8}
  * @param expirationDate       the card expiry date, ten characters shaped {@code YYYY-MM-DD}. The
  *                         source field is {@code CARD-EXPIRAION-DATE PIC X(10)} at
  *                         {@code app/cpy/CVACT02Y.cpy:L9}, spelled with the transposed word; the
@@ -88,7 +86,6 @@ public record CardUpdated(
         String aggregateId,
         String maskedCardNumber,
         String accountId,
-        String embossedName,
         String expirationDate,
         String activeStatus) {
 
@@ -100,13 +97,17 @@ public record CardUpdated(
      */
     public static final String EVENT_TYPE = CardUpdated.class.getSimpleName();
 
-    /** The contract version every instance carries, from {@link EventEnvelope#SCHEMA_VERSION}. */
-    public static final int SCHEMA_VERSION = EventEnvelope.SCHEMA_VERSION;
+    /**
+     * Current contract version. Version 1 remains governed for old records and version 2 removes
+     * the embossed cardholder name from the event.
+     */
+    public static final int SCHEMA_VERSION = 2;
 
     /**
      * The form {@link #maskedCardNumber()} takes: twelve mask characters then four decimal digits.
      *
-     * <p>ADDITIVE. A card number opens with a digit, so an unmasked value fails this pattern.
+     * <p>No COBOL ancestor. A card number opens with a digit, so an unmasked value fails this
+     * pattern.
      */
     public static final String MASKED_CARD_NUMBER_PATTERN = "^\\*{12}[0-9]{4}$";
 
@@ -124,12 +125,6 @@ public record CardUpdated(
      * {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6}.
      */
     public static final String ACCOUNT_ID_PATTERN = EventEnvelope.AGGREGATE_ID_PATTERN;
-
-    /**
-     * Widest {@link #embossedName()} this record holds, from
-     * {@code CARD-EMBOSSED-NAME PIC X(50)} at {@code app/cpy/CVACT02Y.cpy:L8}.
-     */
-    public static final int EMBOSSED_NAME_MAX_LENGTH = 50;
 
     /**
      * Characters {@link #expirationDate()} holds, from {@code CARD-EXPIRAION-DATE PIC X(10)} at
@@ -164,7 +159,7 @@ public record CardUpdated(
     private static final Pattern ACCOUNT_ID_MATCHER = Pattern.compile(ACCOUNT_ID_PATTERN);
 
     /**
-     * Checks all ten components and changes no value it accepts.
+     * Checks all nine components and changes no value it accepts.
      *
      * <p>{@code eventType} must equal {@link #EVENT_TYPE}, {@code schemaVersion} must equal
      * {@link #SCHEMA_VERSION}, and {@code accountId} must equal {@code aggregateId}. One account
@@ -211,13 +206,6 @@ public record CardUpdated(
                     "accountId must equal aggregateId, and the two supplied values differ");
         }
 
-        Objects.requireNonNull(embossedName, "embossedName must be present");
-        if (embossedName.length() > EMBOSSED_NAME_MAX_LENGTH) {
-            throw new IllegalArgumentException("embossedName must hold at most "
-                    + EMBOSSED_NAME_MAX_LENGTH + " characters and the supplied value holds "
-                    + embossedName.length());
-        }
-
         Objects.requireNonNull(expirationDate, "expirationDate must be present");
         if (expirationDate.length() != EXPIRATION_DATE_LENGTH) {
             throw new IllegalArgumentException("expirationDate must hold " + EXPIRATION_DATE_LENGTH
@@ -249,7 +237,6 @@ public record CardUpdated(
      *
      * @param unmaskedCardNumber the card number as stored in {@code CARD-NUM}, at its full width
      * @param accountId          the eleven-digit account identifier, and the Kafka message key
-     * @param embossedName       the name embossed on the card after the update
      * @param expirationDate     the card expiry date after the update, ten characters
      * @param activeStatus       the one-character active status after the update
      * @return an event carrying the masked card number, the four supplied values and a fresh
@@ -259,12 +246,12 @@ public record CardUpdated(
      * @throws IllegalArgumentException when an argument misses the form this record states
      */
     public static CardUpdated ofUnmaskedCardNumber(String unmaskedCardNumber, String accountId,
-            String embossedName, String expirationDate, String activeStatus) {
-        EventEnvelope envelope = EventEnvelope.of(EVENT_TYPE, accountId);
+            String expirationDate, String activeStatus) {
+        EventEnvelope envelope = EventEnvelope.of(EVENT_TYPE, accountId, SCHEMA_VERSION);
 
         return new CardUpdated(envelope.eventId(), envelope.eventType(), envelope.schemaVersion(),
                 envelope.occurredAt(), envelope.aggregateId(),
-                PanMasker.maskCardNumber(unmaskedCardNumber), accountId, embossedName, expirationDate,
+                PanMasker.maskCardNumber(unmaskedCardNumber), accountId, expirationDate,
                 activeStatus);
     }
 
@@ -284,7 +271,7 @@ public record CardUpdated(
     /**
      * Builds one card event on an envelope the producer already holds.
      *
-     * <p>The five payload components arrive as supplied and the envelope contributes the five
+     * <p>The four payload components arrive as supplied and the envelope contributes the five
      * fields every platform event carries, so a caller that stamped an envelope once reuses it.
      * The canonical constructor still refuses an unmasked card number, a foreign event type and an
      * account identifier that differs from the envelope {@code aggregateId}.
@@ -294,7 +281,6 @@ public record CardUpdated(
      *                         {@link #MASKED_CARD_NUMBER_PATTERN}
      * @param accountId        the eleven-digit account identifier, equal to the envelope
      *                         {@code aggregateId}
-     * @param embossedName     the name embossed on the card after the update
      * @param expirationDate   the card expiry date after the update, ten characters
      * @param activeStatus     the one-character active status after the update
      * @return an event carrying the supplied envelope and payload
@@ -303,11 +289,11 @@ public record CardUpdated(
      * @throws IllegalArgumentException when a component misses the form this record states
      */
     public static CardUpdated from(EventEnvelope envelope, String maskedCardNumber,
-            String accountId, String embossedName, String expirationDate, String activeStatus) {
+            String accountId, String expirationDate, String activeStatus) {
         Objects.requireNonNull(envelope, "envelope must be present");
         return new CardUpdated(envelope.eventId(), envelope.eventType(), envelope.schemaVersion(),
                 envelope.occurredAt(), envelope.aggregateId(), maskedCardNumber, accountId,
-                embossedName, expirationDate, activeStatus);
+                expirationDate, activeStatus);
     }
 
     /**
@@ -323,16 +309,16 @@ public record CardUpdated(
      * Serializes this event through the one publish-side gate every event of this platform passes.
      *
      * <p>{@link JsonSchemaValidatingSerializer} does the work: it writes the flat wire form, checks
-     * the result against {@code schemas/card-updated-v1.json} in
+     * the result against {@code schemas/card-updated-v2.json} in
      * {@code com.carddemo:event-contracts}, and refuses a document wider than the platform ceiling.
      * The returned text is what a caller stores in the {@code payload} column of
      * {@code outbox_event} and what the relay later hands to the broker unchanged.
      *
      * <p>This method exists so that no publisher of this event can reach a topic without passing
-     * that gate. Before it existed, this service serialized its own event with its own conventions
-     * while the shared serializer governed only the five core events, so a mutation event's payload
-     * was never checked against the contract that describes it and the closed property set that
-     * keeps an undeclared field out of a known event type never applied to it.
+     * that gate. Before it existed, this service serialized its own event with its own conventions,
+     * and the shared serializer governed only the five core events. A mutation event's payload was
+     * therefore never checked against the contract describing it. The closed property set that
+     * keeps an undeclared field out of a known event type never applied to it either.
      *
      * @return this event as validated JavaScript Object Notation text, in UTF-8
      * @throws org.apache.kafka.common.errors.SerializationException when this event breaks its
@@ -352,9 +338,9 @@ public record CardUpdated(
      * Returns a rendering that names the event and withholds every card value it carries.
      *
      * <p>The compiler-generated rendering a record carries would print the account identifier, the
-     * embossed cardholder name, the expiry date and the last four digits of the card number on one
-     * line. That set names a cardholder, and one {@code log.info("published {}", event)} anywhere in
-     * this service would persist it. This rendering names the event and its type, and names no
+     * expiry date and the last four digits of the card number on one line. That set names a card,
+     * and one {@code log.info("published {}", event)} anywhere in this service would persist it.
+     * This rendering names the event and its type, and names no
      * value belonging to the card or the person holding it.
      *
      * @return the event identifier and the event type, with every card component withheld
@@ -366,7 +352,6 @@ public record CardUpdated(
                 + ", aggregateId=" + EventEnvelope.WITHHELD
                 + ", accountId=" + EventEnvelope.WITHHELD
                 + ", maskedCardNumber=" + EventEnvelope.WITHHELD
-                + ", embossedName=" + EventEnvelope.WITHHELD
                 + ", expirationDate=" + EventEnvelope.WITHHELD
                 + ", activeStatus=" + EventEnvelope.WITHHELD + "]";
     }

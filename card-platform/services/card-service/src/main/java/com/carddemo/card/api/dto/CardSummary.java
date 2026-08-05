@@ -1,6 +1,7 @@
 package com.carddemo.card.api.dto;
 
 import com.carddemo.cobol.PanMasker;
+import com.carddemo.events.EventEnvelope;
 import java.util.regex.Pattern;
 
 /**
@@ -28,6 +29,8 @@ import java.util.regex.Pattern;
  *                     eleven-character form appears in the {@code accountId} of every event schema
  *                     and in the Kafka message key.
  * @param activeStatus the one-character active status, carried through with no interpretation.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record CardSummary(String cardNumber, String accountId, String activeStatus) {
 
@@ -87,7 +90,8 @@ public record CardSummary(String cardNumber, String accountId, String activeStat
      *
      * <p>The override is not decoration. The canonical constructor admits only twelve mask
      * characters followed by four digits, the account identifier is an internal key, and the status
-     * is a single flag, so the rendering a record carries by default would already be safe. Writing
+     * is a single flag. The rendering a record carries by default would therefore already be safe.
+     * Writing
      * it out states that conclusion where a reader will find it, and makes a component added later a
      * visible decision rather than a silent disclosure through an inherited default.
      *
@@ -96,7 +100,7 @@ public record CardSummary(String cardNumber, String accountId, String activeStat
     @Override
     public String toString() {
         return "CardSummary[cardNumber=" + cardNumber
-                + ", accountId=" + accountId
+                + ", accountId=" + EventEnvelope.WITHHELD
                 + ", activeStatus=" + activeStatus + "]";
     }
 }

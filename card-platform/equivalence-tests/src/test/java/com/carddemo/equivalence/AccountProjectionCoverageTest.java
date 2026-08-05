@@ -49,7 +49,7 @@ class AccountProjectionCoverageTest {
     /**
      * The columns that record when this replica was last refreshed, rather than what it holds.
      *
-     * <p>ADDITIVE, with no COBOL ancestor: the source reads the account dataset directly at
+     * <p>with no COBOL ancestor: the source reads the account dataset directly at
      * {@code app/cbl/CBTRN02C.cbl:L396}, so it has nothing to go stale. No event component refreshes
      * these three, because the consumer writes them as it applies an event, so they are excluded
      * from the coverage comparison rather than listed in it.

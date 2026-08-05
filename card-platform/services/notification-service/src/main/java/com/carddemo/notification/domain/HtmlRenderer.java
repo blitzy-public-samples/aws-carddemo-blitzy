@@ -11,10 +11,9 @@ import org.springframework.stereotype.Component;
  * {@code app/cbl/CBSTM03A.CBL}.
  *
  * <p>The source writes 75 markup records, and a statement carrying one transaction row emits the
- * same 75. Four source regions supply them: the header at {@code app/cbl/CBSTM03A.CBL:L506-L552},
- * the name and address block at L558 through L669, the transaction rows at L681 through L721 and
- * the trailer at L439 through L454. {@code card-platform/docs/traceability-matrix.md} (planned)
- * carries the record-by-record mapping.</p>
+ * same 75. Four source regions supply them: the header at
+ * {@code app/cbl/CBSTM03A.CBL:L506-L552}, the name and address block at L558 through L669, the
+ * transaction rows at L681 through L721 and the trailer at L439 through L454.
  *
  * <p>{@link NotificationRenderer} defines the COBOL terms these methods use.</p>
  *
@@ -30,6 +29,8 @@ import org.springframework.stereotype.Component;
  * double-space form applied to an edited amount contributes no characters at all.</p>
  *
  * <p>The class holds no mutable state, so one instance serves every consumer thread.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Component
 public final class HtmlRenderer implements NotificationRenderer {
@@ -62,7 +63,7 @@ public final class HtmlRenderer implements NotificationRenderer {
     private static final int L23_NAME_WIDTH = 50;
 
     /**
-     * Field width the risk score renders at. ADDITIVE, with no COBOL ancestor.
+     * Field width the risk score renders at. with no COBOL ancestor.
      *
      * <p>{@code app/cbl/CBSTM03A.CBL} carries no fraud concept. The score renders at the width of
      * the nearest score field the source declares, {@code ST-FICO-SCORE PIC X(20)} at
@@ -71,7 +72,7 @@ public final class HtmlRenderer implements NotificationRenderer {
     private static final int FRAUD_RISK_SCORE_WIDTH = 20;
 
     /**
-     * Field width the triggered rule list renders at. ADDITIVE, with no COBOL ancestor.
+     * Field width the triggered rule list renders at. with no COBOL ancestor.
      *
      * <p>The list renders at the width of {@code ST-TRANDT PIC X(49)} at
      * {@code app/cbl/CBSTM03A.CBL:L135}, the widest detail field the source declares. A long list
@@ -108,7 +109,7 @@ public final class HtmlRenderer implements NotificationRenderer {
     private static final String TWO_SPACES_IN_FULL = "  ";
 
     /**
-     * Separator placed between triggered rule identifiers. ADDITIVE, with no COBOL ancestor.
+     * Separator placed between triggered rule identifiers. with no COBOL ancestor.
      */
     private static final String TRIGGERED_RULES_SEPARATOR = ", ";
 
@@ -355,7 +356,7 @@ public final class HtmlRenderer implements NotificationRenderer {
     private static final String FICO_SCORE_LABEL = "<p>FICO Score         : ";
 
     /**
-     * Centred heading of a fraud alert. ADDITIVE, with no COBOL ancestor.
+     * Centred heading of a fraud alert. with no COBOL ancestor.
      *
      * <p>{@code app/cbl/CBSTM03A.CBL} carries no fraud concept. The heading takes the form of
      * {@code HTML-L31} at {@code app/cbl/CBSTM03A.CBL:L179-L180} and {@code HTML-L43} at
@@ -365,19 +366,19 @@ public final class HtmlRenderer implements NotificationRenderer {
             "<p style=\"font-size:16px\">Fraud Alert</p>";
 
     /**
-     * Label of the transaction-identifier line of a fraud alert. ADDITIVE, with no COBOL
-     * ancestor. The label holds 24 characters, in the form of {@link #ACCOUNT_ID_LABEL}.
+     * Label of the transaction-identifier line of a fraud alert. No COBOL ancestor. The label
+     * holds 24 characters, in the form of {@link #ACCOUNT_ID_LABEL}.
      */
     private static final String TRANSACTION_ID_LABEL = "<p>Transaction ID     : ";
 
     /**
-     * Label of the risk-score line of a fraud alert. ADDITIVE, with no COBOL ancestor. The label
+     * Label of the risk-score line of a fraud alert. No COBOL ancestor. The label
      * holds 24 characters, in the form of {@link #ACCOUNT_ID_LABEL}.
      */
     private static final String RISK_SCORE_LABEL = "<p>Risk Score         : ";
 
     /**
-     * Label of the triggered-rule line of a fraud alert. ADDITIVE, with no COBOL ancestor. The
+     * Label of the triggered-rule line of a fraud alert. No COBOL ancestor. The
      * label holds 24 characters, in the form of {@link #ACCOUNT_ID_LABEL}.
      */
     private static final String TRIGGERED_RULES_LABEL = "<p>Triggered Rules    : ";
@@ -459,7 +460,7 @@ public final class HtmlRenderer implements NotificationRenderer {
     }
 
     /**
-     * Renders a fraud alert as markup. ADDITIVE, with no COBOL ancestor.
+     * Renders a fraud alert as markup. with no COBOL ancestor.
      *
      * <p>{@code app/cbl/CBSTM03A.CBL} carries no fraud concept, so no source paragraph writes
      * these records. Every literal and both assembly methods come from the statement path. The
@@ -611,8 +612,7 @@ public final class HtmlRenderer implements NotificationRenderer {
     }
 
     /**
-     * Appends the 3 detail records and the 2 closing records of a fraud alert. ADDITIVE, with no
-     * COBOL ancestor.
+     * Appends the 3 detail records and the 2 closing records of a fraud alert. No COBOL ancestor.
      *
      * <p>The block takes the shape of {@code app/cbl/CBSTM03A.CBL:L613-L637} and uses the same
      * asterisk delimiter, so each value reaches the record with its padding intact.</p>

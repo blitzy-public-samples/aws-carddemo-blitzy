@@ -12,6 +12,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
 
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -78,8 +80,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * path belongs to the account service. Each of those services asserts its own behaviour against its
  * own code. Where a statement below needs the shape of a branch, it reads that branch out of the
  * program at its locator rather than reimplementing it.
+ *
+ * <p>Two methods below pin behaviour the source produces and a corrected implementation does not.
+ * Each carries {@code @Tag("legacy-divergence")} and {@code @Tag("human-review")}, and each names a
+ * companion method that computes the intended target value and asserts the shipped value differs
+ * from it. AAP section 0.6.3 register item 6 holds the refund sign convention at
+ * {@code app/cbl/CBTRN02C.cbl:L551} and {@code app/cbl/CBTRN02C.cbl:L404} open. Register item 7
+ * holds the narrowed working field at {@code app/cbl/CBTRN02C.cbl:L187} open. Selecting either tag
+ * lists the two open decisions without the rest of this class.
  */
 class CobolDecimalTruncationTest {
+
+    // Markers on the two reproduced defects. No build setting excludes either tag.
+
+    /** Tag on a method that pins behaviour the source produces and a corrected one does not. */
+    private static final String LEGACY_DIVERGENCE_TAG = "legacy-divergence";
+
+    /** Tag on a method whose expected value stands open for a human decision. */
+    private static final String HUMAN_REVIEW_TAG = "human-review";
 
     // The source inventory this class reads. app/cbl holds the three programs.
 
@@ -261,6 +279,13 @@ class CobolDecimalTruncationTest {
     /** The working balance the overlimit formula yields once a refund is recorded. */
     private static final BigDecimal WORKING_BALANCE_WITH_REFUND = new BigDecimal("1050.00");
 
+    /** The working balance the intended target yields once a refund is recorded. */
+    private static final BigDecimal INTENDED_WORKING_BALANCE_WITH_REFUND =
+            new BigDecimal("950.00");
+
+    /** The gap between the shipped and the intended working balance, twice the refund. */
+    private static final BigDecimal REFUND_DIVERGENCE = new BigDecimal("100.00");
+
     // Sites 4 and 5. Category balance. app/cbl/CBTRN02C.cbl:L508 and L527.
 
     /** An amount carrying a third decimal digit, for the create branch at L508. */
@@ -372,6 +397,9 @@ class CobolDecimalTruncationTest {
 
     /** The nine low-order integer digits the narrowed field keeps. */
     private static final BigDecimal NARROWED_TEN_DISTINCT_DIGITS = new BigDecimal("234567890.99");
+
+    /** The weight of the one integer digit the narrowed field drops. */
+    private static final BigDecimal DROPPED_DIGIT_WEIGHT = new BigDecimal("1000000000.00");
 
     /** The negative counterpart of {@link #WORKING_BALANCE_PAST_ONE_BILLION}. */
     private static final BigDecimal NEGATIVE_BALANCE_PAST_ONE_BILLION =
@@ -587,6 +615,25 @@ class CobolDecimalTruncationTest {
     }
 
     /**
+     * Evaluates {@code ACCT-CURR-CYC-CREDIT + ACCT-CURR-CYC-DEBIT + DALYTRAN-AMT} exactly and
+     * stores the result once, at the width {@code app/cbl/CBTRN02C.cbl:L187} declares. The
+     * accumulator {@code app/cbl/CBTRN02C.cbl:L551} fills carries negative amounts, so this form
+     * lowers the working balance by a recorded refund. AAP section 0.6.3 register item 6 holds the
+     * choice between this form and the one the source writes open.
+     *
+     * @param cycleCredit {@code ACCT-CURR-CYC-CREDIT}, {@code app/cpy/CVACT01Y.cpy:L13}
+     * @param cycleDebit  {@code ACCT-CURR-CYC-DEBIT}, {@code app/cpy/CVACT01Y.cpy:L14}
+     * @param amount      {@code DALYTRAN-AMT}, {@code app/cpy/CVTRA06Y.cpy:L10}
+     * @return the value the intended target holds after the single store
+     */
+    private static BigDecimal intendedOverlimitWorkingBalance(BigDecimal cycleCredit,
+            BigDecimal cycleDebit, BigDecimal amount) {
+        return CobolDecimal.truncateToPictureField(
+                cycleCredit.add(cycleDebit).add(amount),
+                PicClause.WS_TEMP_BAL_PRECISION, PicClause.WS_TEMP_BAL_SCALE);
+    }
+
+    /**
      * Site 2. Asserts that {@code ADD DALYTRAN-AMT TO ACCT-CURR-BAL} at
      * {@code app/cbl/CBTRN02C.cbl:L547} truncates toward zero. Half-up rounding adds a cent the
      * source never adds.
@@ -686,24 +733,91 @@ class CobolDecimalTruncationTest {
     }
 
     /**
-     * Site 3. Asserts that a refund recorded in the cycle debit accumulator at
-     * {@code app/cbl/CBTRN02C.cbl:L551} raises the working balance the overlimit formula
-     * computes, since {@code app/cbl/CBTRN02C.cbl:L404} subtracts that accumulator. The source
-     * behaviour is reproduced here and carried unchanged.
+     * Site 3, legacy divergence. Asserts that a refund recorded in the cycle debit accumulator at
+     * {@code app/cbl/CBTRN02C.cbl:L551} raises the working balance the overlimit formula computes,
+     * since {@code app/cbl/CBTRN02C.cbl:L404} subtracts that accumulator. A refund therefore
+     * tightens the next authorization.
+     *
+     * <p>AAP section 0.6.3 register item 6 holds this open for a human decision. The value below is
+     * the one the source produces, and
+     * {@link #theIntendedRefundFormulaLowersTheWorkingBalanceAndTheShippedFormulaDiffers()} carries
+     * the intended target and measures the gap.
      */
     @Test
-    void refundInTheCycleDebitAccumulatorRaisesTheOverlimitWorkingBalance() {
+    @Tag(LEGACY_DIVERGENCE_TAG)
+    @Tag(HUMAN_REVIEW_TAG)
+    @DisplayName(
+            "Legacy divergence, register item 6: a refund raises the overlimit working balance")
+    void legacyDivergenceRefundInTheCycleDebitAccumulatorRaisesTheWorkingBalance() {
+        assertTrue(sourceLine(POSTING_PROGRAM, 551).contains("ADD DALYTRAN-AMT TO "
+                        + "ACCT-CURR-CYC-DEBIT"),
+                "app/cbl/CBTRN02C.cbl:L551 stopped adding a negative amount to the cycle debit "
+                        + "accumulator, and register item 6 rests on that add");
+        assertTrue(sourceLine(POSTING_PROGRAM, 404).contains("- ACCT-CURR-CYC-DEBIT"),
+                "app/cbl/CBTRN02C.cbl:L404 stopped subtracting the cycle debit accumulator, and "
+                        + "register item 6 rests on that operand sign");
+
         BigDecimal withoutRefund = overlimitWorkingBalance(CYCLE_CREDIT_ONE_THOUSAND,
                 ZERO_ACCUMULATOR, ZERO_ACCUMULATOR);
 
-        assertEquals(WORKING_BALANCE_WITHOUT_REFUND, withoutRefund);
+        assertEquals(WORKING_BALANCE_WITHOUT_REFUND, withoutRefund,
+                "the overlimit formula moved on operands carrying no refund");
 
         BigDecimal withRefund = overlimitWorkingBalance(CYCLE_CREDIT_ONE_THOUSAND,
                 CYCLE_DEBIT_AFTER_REFUND, ZERO_ACCUMULATOR);
 
-        assertEquals(WORKING_BALANCE_WITH_REFUND, withRefund);
+        assertEquals(WORKING_BALANCE_WITH_REFUND, withRefund,
+                "the value app/cbl/CBTRN02C.cbl:L404 produces moved, and register item 6 records "
+                        + "the shipped value");
         assertTrue(withRefund.compareTo(withoutRefund) > 0,
                 "the refund stopped raising the working balance: " + withRefund);
+        assertEquals(-1, CYCLE_DEBIT_AFTER_REFUND.signum(),
+                "the accumulator standing for a recorded refund stopped being negative, so it no "
+                        + "longer reaches the divergence app/cbl/CBTRN02C.cbl:L404 opens");
+    }
+
+    /**
+     * Site 3, intended target. Asserts that adding the cycle debit accumulator, which
+     * {@code app/cbl/CBTRN02C.cbl:L551} fills with negative amounts, lowers the working balance,
+     * and that the subtraction at {@code app/cbl/CBTRN02C.cbl:L404} returns a value twice the
+     * refund magnitude above it.
+     *
+     * <p>This method asserts arithmetic and pins no production behaviour. {@link CobolDecimal}
+     * keeps the shipped form while AAP section 0.6.3 register item 6 stands open, and
+     * {@link #legacyDivergenceRefundInTheCycleDebitAccumulatorRaisesTheWorkingBalance()} pins that
+     * form.
+     */
+    @Test
+    @Tag(HUMAN_REVIEW_TAG)
+    @DisplayName("Intended target, register item 6: a refund lowers the overlimit working balance")
+    void theIntendedRefundFormulaLowersTheWorkingBalanceAndTheShippedFormulaDiffers() {
+        BigDecimal intended = intendedOverlimitWorkingBalance(CYCLE_CREDIT_ONE_THOUSAND,
+                CYCLE_DEBIT_AFTER_REFUND, ZERO_ACCUMULATOR);
+
+        assertEquals(INTENDED_WORKING_BALANCE_WITH_REFUND, intended,
+                "the intended target stopped reaching the value a recorded refund leaves");
+        assertTrue(intended.compareTo(WORKING_BALANCE_WITHOUT_REFUND) < 0,
+                "the intended target stopped lowering the working balance: " + intended);
+
+        BigDecimal shipped = overlimitWorkingBalance(CYCLE_CREDIT_ONE_THOUSAND,
+                CYCLE_DEBIT_AFTER_REFUND, ZERO_ACCUMULATOR);
+
+        assertNotEquals(intended, shipped,
+                "the shipped and the intended forms agreed on a recorded refund, so register item "
+                        + "6 no longer describes app/cbl/CBTRN02C.cbl:L404");
+        assertEquals(REFUND_DIVERGENCE, shipped.subtract(intended),
+                "the gap between the two forms moved off twice the refund magnitude");
+        assertEquals(REFUND_DIVERGENCE,
+                CYCLE_DEBIT_AFTER_REFUND.abs().add(CYCLE_DEBIT_AFTER_REFUND.abs()),
+                "the operand standing for a recorded refund stopped accounting for the gap");
+
+        assertEquals(
+                overlimitWorkingBalance(CYCLE_CREDIT_ONE_THOUSAND, ZERO_ACCUMULATOR,
+                        ZERO_ACCUMULATOR),
+                intendedOverlimitWorkingBalance(CYCLE_CREDIT_ONE_THOUSAND, ZERO_ACCUMULATOR,
+                        ZERO_ACCUMULATOR),
+                "the two forms parted on operands carrying no refund, and register item 6 covers a "
+                        + "recorded refund only");
     }
 
     /**
@@ -957,18 +1071,38 @@ class CobolDecimalTruncationTest {
     }
 
     /**
-     * Asserts that a working balance past one billion loses its high-order digit, and that the
-     * comparison at {@code app/cbl/CBTRN02C.cbl:L407} then covers a value the full magnitude
-     * would exceed. The narrowing is reproduced at the width
-     * {@code app/cbl/CBTRN02C.cbl:L187} declares, and no method widens the field.
+     * Legacy divergence. Asserts that a working balance past one billion loses its high-order
+     * digit, and that the comparison at {@code app/cbl/CBTRN02C.cbl:L407} then covers a value the
+     * full magnitude exceeds. An overlimit transaction therefore authorizes.
+     *
+     * <p>The narrowing is reproduced at the width {@code app/cbl/CBTRN02C.cbl:L187} declares, and
+     * no method widens the field. AAP section 0.6.3 register item 7 holds that width open for a
+     * human decision, and
+     * {@link #theIntendedWorkingFieldWidthKeepsTheHighOrderDigitAndTheDecisionFlips()} carries the
+     * intended target and measures the gap.
      */
     @Test
-    void narrowedWorkingBalanceDropsTheHighOrderDigitPastOneBillion() {
+    @Tag(LEGACY_DIVERGENCE_TAG)
+    @Tag(HUMAN_REVIEW_TAG)
+    @DisplayName("Legacy divergence, register item 7: the narrowed field drops a high-order digit")
+    void legacyDivergenceNarrowedWorkingBalanceDropsTheHighOrderDigitPastOneBillion() {
+        assertTrue(sourceLine(POSTING_PROGRAM, 187).contains("WS-TEMP-BAL"),
+                "app/cbl/CBTRN02C.cbl:L187 stopped declaring the working balance field");
+        assertTrue(sourceLine(POSTING_PROGRAM, 187).contains("PIC S9(09)V99"),
+                "app/cbl/CBTRN02C.cbl:L187 stopped declaring nine integer digits, and register "
+                        + "item 7 rests on that width");
+        assertTrue(sourceLine(POSTING_PROGRAM, 407).contains("IF ACCT-CREDIT-LIMIT >= "
+                        + "WS-TEMP-BAL"),
+                "app/cbl/CBTRN02C.cbl:L407 stopped comparing the credit limit against the narrowed "
+                        + "field");
+
         BigDecimal narrowed = CobolDecimal.truncateToPictureField(
                 WORKING_BALANCE_PAST_ONE_BILLION, PicClause.WS_TEMP_BAL_PRECISION,
                 PicClause.WS_TEMP_BAL_SCALE);
 
-        assertEquals(NARROWED_WORKING_BALANCE, narrowed);
+        assertEquals(NARROWED_WORKING_BALANCE, narrowed,
+                "the value the width at app/cbl/CBTRN02C.cbl:L187 holds moved, and register item 7 "
+                        + "records the shipped value");
 
         assertFalse(CREDIT_LIMIT.compareTo(WORKING_BALANCE_PAST_ONE_BILLION) >= 0,
                 "the credit limit covered the full working balance: "
@@ -978,7 +1112,57 @@ class CobolDecimalTruncationTest {
 
         assertEquals(NARROWED_TEN_DISTINCT_DIGITS, CobolDecimal.truncateToPictureField(
                 WORKING_BALANCE_TEN_DISTINCT_DIGITS, PicClause.WS_TEMP_BAL_PRECISION,
-                PicClause.WS_TEMP_BAL_SCALE));
+                PicClause.WS_TEMP_BAL_SCALE),
+                "the digits the narrowed field keeps moved");
+    }
+
+    /**
+     * Intended target. Asserts that a working field declared at the width of the three account
+     * fields keeps every integer digit past one billion, and that the comparison at
+     * {@code app/cbl/CBTRN02C.cbl:L407} then declines a value the shipped width approves. Those
+     * three are {@code ACCT-CREDIT-LIMIT} at {@code app/cpy/CVACT01Y.cpy:L8},
+     * {@code ACCT-CURR-CYC-CREDIT} at {@code app/cpy/CVACT01Y.cpy:L13}, and
+     * {@code ACCT-CURR-CYC-DEBIT} at {@code app/cpy/CVACT01Y.cpy:L14}.
+     *
+     * <p>This method asserts arithmetic and pins no production width. The production width stays
+     * the one {@code app/cbl/CBTRN02C.cbl:L187} declares while AAP section 0.6.3 register item 7
+     * stands open, and
+     * {@link #legacyDivergenceNarrowedWorkingBalanceDropsTheHighOrderDigitPastOneBillion()} pins
+     * that width.
+     */
+    @Test
+    @Tag(HUMAN_REVIEW_TAG)
+    @DisplayName("Intended target, register item 7: the account width keeps the high-order digit")
+    void theIntendedWorkingFieldWidthKeepsTheHighOrderDigitAndTheDecisionFlips() {
+        BigDecimal intended = CobolDecimal.truncateToPictureField(
+                WORKING_BALANCE_PAST_ONE_BILLION, PicClause.ACCT_CURR_CYC_CREDIT_PRECISION,
+                PicClause.ACCT_CURR_CYC_CREDIT_SCALE);
+
+        assertEquals(WORKING_BALANCE_PAST_ONE_BILLION, intended,
+                "the account width stopped holding a working balance past one billion");
+
+        BigDecimal shipped = CobolDecimal.truncateToPictureField(
+                WORKING_BALANCE_PAST_ONE_BILLION, PicClause.WS_TEMP_BAL_PRECISION,
+                PicClause.WS_TEMP_BAL_SCALE);
+
+        assertNotEquals(intended, shipped,
+                "the two widths agreed past one billion, so register item 7 no longer describes "
+                        + "app/cbl/CBTRN02C.cbl:L187");
+        assertEquals(DROPPED_DIGIT_WEIGHT, intended.subtract(shipped),
+                "the gap between the two widths moved off the weight of one integer digit");
+
+        assertFalse(CREDIT_LIMIT.compareTo(intended) >= 0,
+                "the credit limit covered the intended working balance: " + intended);
+        assertTrue(CREDIT_LIMIT.compareTo(shipped) >= 0,
+                "the credit limit stopped covering the narrowed working balance: " + shipped);
+
+        assertEquals(WORKING_BALANCE_TEN_DISTINCT_DIGITS, CobolDecimal.truncateToPictureField(
+                WORKING_BALANCE_TEN_DISTINCT_DIGITS, PicClause.ACCT_CURR_CYC_CREDIT_PRECISION,
+                PicClause.ACCT_CURR_CYC_CREDIT_SCALE),
+                "the account width dropped a digit from a value carrying ten distinct ones");
+        assertEquals(DROPPED_DIGIT_WEIGHT, WORKING_BALANCE_TEN_DISTINCT_DIGITS.subtract(
+                NARROWED_TEN_DISTINCT_DIGITS),
+                "the digit the narrowed field drops stopped carrying the weight of one billion");
     }
 
     /**

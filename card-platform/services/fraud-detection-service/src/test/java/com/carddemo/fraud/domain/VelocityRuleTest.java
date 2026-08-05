@@ -1,25 +1,11 @@
 package com.carddemo.fraud.domain;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
-
 import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
+import com.carddemo.fraud.config.FraudProperties;
+import com.carddemo.fraud.domain.rules.MerchantCategoryRule;
 import com.carddemo.fraud.domain.rules.VelocityRule;
 import com.carddemo.fraud.entity.VelocityWindowEntity;
 import com.carddemo.fraud.repository.VelocityWindowRepository;
@@ -35,6 +21,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -50,19 +39,44 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Covers {@link VelocityRule}, which totals one account's recent authorization rows and reports
  * whether the count or the total reaches its threshold.
  *
- * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. COBOL expands to Common Business Oriented
- * Language. Decisions are recorded in {@code card-platform/docs/decision-log.md}.
+ * <p>No COBOL ancestor. COBOL expands to Common Business Oriented Language.
  *
  * <p>This class owns the truncation assertions. The source performs no rounded arithmetic store,
  * so a total truncates toward zero while half-up and floor rounding reach other values.
  */
 @DisplayName("VelocityRule, the count-and-total risk rule")
 class VelocityRuleTest {
+
+    /**
+     * Card token of the fixture card number, sixty-four lower-case hexadecimal characters.
+     *
+     * <p>Additive. No source field exists. {@code com.carddemo.cobol.PanMasker#tokenOf} writes this
+     * value from the full card number {@code 4859452612877065}, and the width and case are that
+     * method's.</p>
+     */
+    private static final String CARD_TOKEN =
+            "f8da0217fb8bd2e172d427a2ef66d54656a59baa9fe8f9bc2ce9d383b90e1173";
 
     // Measured in the first daily transaction fixture record and in the cross-reference row that
     // names this account. Identifiers stay text, and the card appears only in its masked form.
@@ -236,20 +250,45 @@ class VelocityRuleTest {
     @DisplayName("Totalling truncates toward zero")
     class TruncationTowardZero {
 
+        /** The derived finder this rule reads its span through. */
+        private static final String RULE_FINDER = "findByAccountIdAndWindowStartGreaterThanEqual";
+
+        /** The counting statement this rule raises a window through. */
+        private static final String COUNTING_STATEMENT = "addAuthorization";
+
+        /** The bounded retention delete domain/RetentionSweeper owns, which this rule never calls. */
+        private static final String RETENTION_STATEMENT = "deleteWindowsStartedBefore";
+
         @Test
-        @DisplayName("The repository declares one finder, with no aggregate name and no write marker")
-        void declaresOneFinderAndNoAggregate() {
-            Method[] declared = VelocityWindowRepository.class.getDeclaredMethods();
-            assertEquals(1, declared.length, "declared method count");
-            Method finder = declared[0];
-            assertAll("the single declared finder",
-                    () -> assertEquals("findByAccountIdAndWindowStartGreaterThanEqual",
-                            finder.getName(), "name"),
+        @DisplayName("The repository declares this rule's finder, the counting statement and the "
+                + "retention delete, and no other")
+        void declaresTheFinderTheCountingStatementAndTheRetentionDelete() {
+            Map<String, Method> declared = Arrays.stream(
+                            VelocityWindowRepository.class.getDeclaredMethods())
+                    .collect(Collectors.toMap(Method::getName, method -> method));
+            Method finder = declared.get(RULE_FINDER);
+            Method counter = declared.get(COUNTING_STATEMENT);
+            Query countingQuery = counter.getAnnotation(Query.class);
+
+            assertAll("the declared surface",
+                    () -> assertEquals(
+                            Set.of(RULE_FINDER, COUNTING_STATEMENT, RETENTION_STATEMENT),
+                            declared.keySet(), "declared methods"),
                     () -> assertEquals(List.of(), AGGREGATES.stream()
                             .filter(part -> finder.getName().contains(part)).toList(), "aggregates"),
-                    () -> assertNull(finder.getAnnotation(Query.class), "query marker"),
-                    () -> assertNull(finder.getAnnotation(Modifying.class), "write marker"),
-                    () -> assertNull(finder.getAnnotation(Transactional.class), "boundary marker"));
+                    () -> assertNull(finder.getAnnotation(Query.class), "finder query marker"),
+                    () -> assertNull(finder.getAnnotation(Modifying.class), "finder write marker"),
+                    () -> assertNull(finder.getAnnotation(Transactional.class),
+                            "finder boundary marker"),
+                    () -> assertNotNull(counter.getAnnotation(Modifying.class), "upsert marker"),
+                    () -> assertNull(counter.getAnnotation(Transactional.class),
+                            "counting statement boundary marker"),
+                    () -> assertNotNull(countingQuery, "upsert query"),
+                    () -> assertTrue(countingQuery.nativeQuery(), "native upsert"),
+                    () -> assertTrue(countingQuery.value().contains("ON CONFLICT"),
+                            "conflict-safe update"),
+                    () -> assertTrue(countingQuery.value().contains("authorization_count + 1"),
+                            "atomic count increment"));
         }
 
         @Test
@@ -269,40 +308,38 @@ class VelocityRuleTest {
         }
 
         @Test
-        @DisplayName("A negative sub-cent step truncates toward zero, and floor reaches a lower value")
-        void negativeSubCentStepTruncatesTowardZero() throws ReflectiveOperationException {
-            BigDecimal truncated = down(NEGATIVE_RUNNING_TOTAL);
-            BigDecimal floor = floor(NEGATIVE_RUNNING_TOTAL);
+        @DisplayName("Negative stored values contribute by magnitude and cannot lower the total")
+        void negativeStoredValuesContributeByMagnitude() throws ReflectiveOperationException {
+            BigDecimal debitMagnitude =
+                    new BigDecimal(NEGATIVE_WINDOW_TOTAL).abs()
+                            .add(new BigDecimal(SUB_CENT_DEBIT).abs())
+                            .setScale(SCALE, RoundingMode.DOWN);
             BigDecimal credit = new BigDecimal(CLOSING_CREDIT);
             BigDecimal threshold = decimalField("AMOUNT_THRESHOLD");
             VelocityWindowRepository repository = returning(List.of(
-                    storedRow(0, 1, NEGATIVE_WINDOW_TOTAL), subCentRow(1, SUB_CENT_DEBIT),
+                    subCentRow(1, NEGATIVE_WINDOW_TOTAL), subCentRow(1, SUB_CENT_DEBIT),
                     storedRow(30, 1, CLOSING_CREDIT)));
             RiskRule.Contribution contribution = ruleReading(repository).evaluate(authorization());
-            assertAll("one negative running total at scale three",
-                    () -> assertNotEquals(truncated, floor, "truncated against floor"),
-                    () -> assertTrue(truncated.add(credit).setScale(SCALE, RoundingMode.DOWN)
-                            .compareTo(threshold) >= 0, "truncated reaches the threshold"),
-                    () -> assertFalse(floor.add(credit).setScale(SCALE, RoundingMode.FLOOR)
-                            .compareTo(threshold) >= 0, "floor stays below"),
+            assertAll("two negative magnitudes and one credit",
+                    () -> assertEquals("975.77", debitMagnitude.toPlainString(), "debit magnitude"),
+                    () -> assertTrue(debitMagnitude.add(credit).compareTo(threshold) >= 0,
+                            "magnitudes reach the threshold"),
                     () -> assertTrue(contribution.triggered(), "verdict truncation carries"));
         }
 
         @Test
-        @DisplayName("Totalling equals the truncated candidate under equals, on both signs")
-        void totallingEqualsTheTruncatedCandidateUnderEquals() throws ReflectiveOperationException {
+        @DisplayName("Totalling truncates positive values and negative magnitudes toward zero")
+        void totallingEqualsTheTruncatedMagnitudeCandidate() throws ReflectiveOperationException {
             BigDecimal opening = decimalField("ZERO_AMOUNT");
             BigDecimal positive = CobolDecimal.add(opening, new BigDecimal(SUB_CENT_TOTAL), SCALE);
-            BigDecimal negative = CobolDecimal.add(
-                    CobolDecimal.add(opening, new BigDecimal(NEGATIVE_WINDOW_TOTAL), SCALE),
-                    new BigDecimal(SUB_CENT_DEBIT), SCALE);
+            BigDecimal magnitude = CobolDecimal.add(
+                    CobolDecimal.add(opening, new BigDecimal(NEGATIVE_WINDOW_TOTAL).abs(), SCALE),
+                    new BigDecimal(SUB_CENT_DEBIT).abs(), SCALE);
             assertAll("the totalling the rule performs",
                     () -> assertEquals(down(SUB_CENT_TOTAL), positive, "positive value"),
                     () -> assertNotEquals(halfUp(SUB_CENT_TOTAL), positive, "positive against half-up"),
                     () -> assertEquals("2499.99", positive.toPlainString(), "positive text"),
-                    () -> assertEquals(down(NEGATIVE_RUNNING_TOTAL), negative, "negative value"),
-                    () -> assertNotEquals(floor(NEGATIVE_RUNNING_TOTAL), negative, "against floor"),
-                    () -> assertEquals("-975.77", negative.toPlainString(), "negative text"));
+                    () -> assertEquals("975.77", magnitude.toPlainString(), "magnitude text"));
         }
 
         @Test
@@ -356,6 +393,33 @@ class VelocityRuleTest {
     }
 
     @Nested
+    @DisplayName("The complete scorer's verdict")
+    class CompleteScorerVerdict {
+
+        @Test
+        @DisplayName("One thirty-point rule clears and a second rule raises the score past 50")
+        void configuredThresholdControlsTheFinalVerdict() {
+            VelocityWindowRepository repository =
+                    returning(List.of(storedRow(0, COUNT_THRESHOLD, SMALL_TOTAL)));
+            when(repository.addAuthorization(eq(ACCOUNT_ID), any(), any(), any())).thenReturn(1);
+            VelocityRule velocity = ruleReading(repository);
+
+            RiskScoringService.RiskAssessment below = new RiskScoringService(
+                    List.of(velocity), repository, propertiesWithFlagThreshold(50))
+                    .assess(authorization());
+            RiskScoringService.RiskAssessment above = new RiskScoringService(
+                    List.of(velocity, new MerchantCategoryRule()), repository,
+                    propertiesWithFlagThreshold(50)).assess(authorization());
+
+            assertAll("the shipped threshold against one and two real rules",
+                    () -> assertEquals(30, below.riskScore(), "one-rule score"),
+                    () -> assertFalse(below.flagged(), "one-rule verdict"),
+                    () -> assertEquals(55, above.riskScore(), "two-rule score"),
+                    () -> assertTrue(above.flagged(), "two-rule verdict"));
+        }
+    }
+
+    @Nested
     @DisplayName("The configured property keys")
     class ConfiguredPropertyKeys {
 
@@ -397,6 +461,22 @@ class VelocityRuleTest {
         return new VelocityRule(repository, LOOKBACK_MINUTES, COUNT_THRESHOLD);
     }
 
+    /** Builds checked settings carrying one flag threshold. */
+    private static FraudProperties propertiesWithFlagThreshold(int threshold) {
+        return new FraudProperties(
+                new FraudProperties.Kafka(new FraudProperties.Kafka.Topics(
+                        "transaction.authorized", "fraud.assessed", "carddemo.dead-letter",
+                        ".DLT")),
+                new FraudProperties.Consumer(new FraudProperties.Consumer.Retry(3, 1_000L)),
+                new FraudProperties.Outbox(new FraudProperties.Outbox.Relay(
+                        500L, 100, "fraud-relay", Duration.ofMinutes(2L), 20_000L), 168L),
+                new FraudProperties.ProcessedEvent(168L),
+                new FraudProperties.Retention(3_600_000L),
+                new FraudProperties.Fraud(new FraudProperties.Fraud.Risk(
+                        threshold, LOOKBACK_MINUTES, COUNT_THRESHOLD,
+                        new BigDecimal("500.00"))));
+    }
+
     /** Builds a repository stub whose only finder returns {@code rows} for the span under test. */
     private static VelocityWindowRepository returning(List<VelocityWindowEntity> rows) {
         VelocityWindowRepository repository = mock(VelocityWindowRepository.class);
@@ -411,7 +491,7 @@ class VelocityRuleTest {
         return new TransactionAuthorized(stamped.eventId(), stamped.eventType(),
                 stamped.schemaVersion(), OCCURRED_AT, stamped.aggregateId(), "0000000000683580",
                 "01", "0001", "POS TERM", "Purchase at Abshire-Lowe", new BigDecimal("504.77"),
-                "800000000", "Abshire-Lowe", "North Enoshaven", "72112", "************7065",
+                "800000000", "Abshire-Lowe", "North Enoshaven", "72112", "************7065", null,
                 "2022-06-10 19:27:53.000000", ACCOUNT_ID, TransactionAuthorized.CURRENCY);
     }
 

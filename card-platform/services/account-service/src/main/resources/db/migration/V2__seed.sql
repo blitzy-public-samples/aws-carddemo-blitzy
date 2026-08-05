@@ -1,4 +1,4 @@
--- Account service seed data, second of three migrations. V1__schema.sql declares the
+-- Account service seed data, second of four migrations. V1__schema.sql declares the
 -- eight tables of this schema, and Flyway applies it first by version order.
 -- 151 rows land here: 50 into account, 50 into customer, 51 into disclosure_group.
 -- Every table name below stays unqualified, and spring.flyway.schemas in
@@ -11,25 +11,13 @@
 -- app/data/ASCII/acctdata.txt holds 00000001940{ at offset (13,12), which is 194.00.
 
 -- Every identifier below is a quoted digit string at the width its Picture clause
--- declares, never a bare integer: account_id nine zeros then 1 for record 1,
--- customer_id 000000001, social_security_number 020973888 and
--- transaction_category_code 0001. A bare integer literal lands in a numeric column and
--- returns without its leading zeros, and 020973888 comes back as 20973888, so the
--- Social Security Number no longer matches the nine characters CUST-SSN PIC 9(09) at
--- app/cpy/CVCUS01Y.cpy:L17 occupies at offset (280,9) of app/data/ASCII/custdata.txt.
+-- declares, never a bare integer. A bare integer literal lands in a numeric column and
+-- returns without its leading zeros, so an identifier no longer matches the width its
+-- Picture clause fixes: CUST-SSN PIC 9(09) at app/cpy/CVCUS01Y.cpy:L17 occupies nine
+-- characters at offset (280,9) of app/data/ASCII/custdata.txt.
 -- V1__schema.sql holds each of these columns as CHAR of the declared width under a
 -- CHECK constraint on the digit class, and every literal below was verified character
 -- for character against its fixture.
-
--- Field-by-field source mapping, the three dropped FILLER fields included:
---   card-platform/docs/traceability-matrix.md (planned)
--- Design decisions, the literal form of each column included:
---   card-platform/docs/decision-log.md (planned)
--- Flagged source rules these rows carry unchanged:
---   card-platform/docs/business-rule-flags.md (planned)
--- Table shapes and the lookup path between them:
---   card-platform/docs/data-model.md (planned)
-
 
 -- 50 rows from app/data/ASCII/acctdata.txt, 300 bytes per line.
 -- Fields in order: ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5 through

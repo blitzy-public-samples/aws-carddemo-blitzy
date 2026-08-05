@@ -6,8 +6,6 @@
 #
 # Read path: app/cbl/COACTVWC.cbl. Update path and concurrent-change detection:
 # app/cbl/COACTUPC.cbl. Cycle-counter reset: app/cbl/CBACT04C.cbl:L350-L356.
-#
-# Rationale for every version and exclusion: card-platform/docs/decision-log.md (planned)
 
 # The one runtime image every service in this mono-repo shares. A Java Runtime
 # Environment (JRE) 25.0.4 runs the archive. The digest pins the layer, and the

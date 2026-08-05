@@ -1,14 +1,13 @@
-# Deployment and Service for the card service, which serves the card list, the
-# card detail and the card update. The service publishes card.updated on a
+# Deployment and Service for the card service, which is to serve the card list,
+# the card detail and the card update. The service publishes card.updated on a
 # mutation only. No listener runs here, and no consumer group appears.
 #
 # Paged browse: app/cbl/COCRDLIC.cbl. Detail: app/cbl/COCRDSLC.cbl. Update
 # validation: app/cbl/COCRDUPC.cbl.
 #
-# The card endpoints and the outbox relay configured below are planned and
-# unauthored, so the container starts and answers /actuator only.
-#
-# Rationale for every choice in this folder: card-platform/docs/decision-log.md
+# CardQueryService, CardUpdateService, OutboxWriter and OutboxRelay are present.
+# The module registers no controller, so the container starts, migrates its schema,
+# publishes card.updated rows its relay finds and answers /actuator.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -57,12 +56,14 @@ spec:
           # Build and load the image before applying this file. The context is the module
           # directory, the one the Dockerfile header names:
           #
+          #   version=$(mvn -f card-platform/pom.xml help:evaluate \
+          #     -Dexpression=project.version -q -DforceStdout)
           #   mvn -f card-platform/pom.xml -pl services/card-service -am package
           #   docker build -f card-platform/services/card-service/Dockerfile \
-          #     -t carddemo/card-service:1.0.0 \
+          #     -t "carddemo/card-service:${version}" \
           #     card-platform/services/card-service
-          image: carddemo/card-service:1.0.0
-          imagePullPolicy: IfNotPresent
+          image: carddemo/card-service:1.0.0-SNAPSHOT
+          imagePullPolicy: Never
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -156,18 +157,16 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: CARD_KAFKA_USER
-            # The two passwords that open the mounted transport material. Each
-            # is named here rather than pulled with envFrom, because
-            # carddemo-tls-secret also holds keys whose names are file names.
+            # The server keystore is private to this service; trust material is shared.
             - name: SERVER_SSL_KEYSTORE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-tls-secret
+                  name: carddemo-card-tls-secret
                   key: SERVER_SSL_KEYSTORE_PASSWORD
             - name: SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-tls-secret
+                  name: carddemo-trust-secret
                   key: KAFKA_SSL_TRUSTSTORE_PASSWORD
           # Both probes read /actuator/health on the management port over HTTPS,
           # because 30-configmap.yaml encrypts that port too. Port 8080 answers
@@ -221,21 +220,26 @@ spec:
             medium: Memory
             sizeLimit: 64Mi
         - name: transport-security
-          secret:
-            secretName: carddemo-tls-secret
+          projected:
             defaultMode: 0640
-            items:
-              - key: keystore.p12
-                path: keystore.p12
-              - key: truststore.p12
-                path: truststore.p12
-              - key: ca.crt
-                path: ca.crt
+            sources:
+              - secret:
+                  name: carddemo-card-tls-secret
+                  items:
+                    - key: keystore.p12
+                      path: keystore.p12
+              - secret:
+                  name: carddemo-trust-secret
+                  items:
+                    - key: truststore.p12
+                      path: truststore.p12
+                    - key: ca.crt
+                      path: ca.crt
 ---
 # Pods reach the service at card-service:8080, a short name the Domain Name
-# System (DNS) resolves. CARD_SERVICE_BASE_URL in 30-configmap.yaml carries that
-# address, and the authorization service reads a card there while it applies the
-# decline rules.
+# System (DNS) resolves. No other service calls it: it publishes card.updated, and
+# the authorization service consumes that stream to keep the observation on its own
+# card_xref replica current.
 apiVersion: v1
 kind: Service
 metadata:
@@ -258,22 +262,22 @@ spec:
       targetPort: 8080
       protocol: TCP
 ---
-# Who may reach the card pod, at the network layer.
+# Network policy for the card pod. Ingress admits its business and management
+# surfaces. Egress admits only Domain Name System (DNS), PostgreSQL and Kafka.
 #
-# This is the other supporting service the authorization service reads, and it owns
-# the record that carries the full card number and the card verification value.
-# 30-configmap.yaml names the address it is reached at, CARD_SERVICE_BASE_URL, and
-# that call is https for the same reason this policy exists: a cluster pod network is
-# a path shared with every other workload on the cluster.
+# This service owns the record that carries the full card number and the card
+# verification value, and neither leaves it: card.updated carries a masked card number
+# and no verification value at all. Nothing calls this service from inside the platform,
+# and the policy below still exists because a cluster pod network is a path shared with
+# every other workload on the cluster.
 #
-# The request layer already answers both ports: config/SecurityConfig authenticates
-# every call to the card surface and checks ownership before a handler runs, and it
-# leaves /actuator/health open for probes while requiring ROLE_MONITORING for metrics
-# and the Prometheus scrape, so an anonymous caller receives 401 and an identity
-# holding a business role receives 403. This policy closes the same two gaps a second
-# time, at the network rather than the request layer.
-# 40-authorization-service.yaml carries the same shape and the note on kubelet probes,
-# which originate from the node and match neither selector below.
+# config/SecurityConfig authenticates every call to the card surface and checks
+# ownership before a handler runs. It leaves /actuator/health open for probes and
+# requires ROLE_MONITORING for metrics and the Prometheus scrape. An anonymous caller
+# receives 401; an identity holding a business role receives 403. This policy closes
+# the same two gaps at the network layer. 40-authorization-service.yaml carries the
+# same shape and the note on kubelet probes, which originate from the node and match
+# neither selector below.
 #
 # A cluster whose Container Network Interface plug-in does not implement
 # NetworkPolicy ignores this object. Confirm support before treating the service as
@@ -294,6 +298,7 @@ spec:
       app.kubernetes.io/part-of: card-platform
   policyTypes:
     - Ingress
+    - Egress
   ingress:
     # The card list, detail and update surface. Any pod of this platform may call it,
     # and Spring Security authenticates every request that arrives.
@@ -312,4 +317,33 @@ spec:
               app.kubernetes.io/component: monitoring
       ports:
         - port: 9080
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kafka
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 9092
           protocol: TCP

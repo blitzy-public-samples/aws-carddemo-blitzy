@@ -45,31 +45,26 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  *
  * <p>TWO CONTRACTS, ONE RECORD. Reject reason {@code 0100} fires precisely when the keyed read of
  * the cross-reference file misses at {@code app/cbl/CBTRN02C.cbl:L382-L387}, so at that moment the
- * platform holds no account identifier it established itself. Version 1 requires one. Publishing a
- * reason {@code 0100} decline under version 1 would therefore mean either trusting an identifier the
- * caller supplied beside the card number, which attributes one caller's declined attempt to another
- * caller's account, or inventing an identifier inside the real account key space. Neither is
- * acceptable, so that one decline travels under its own contract instead:
+ * platform holds no account identifier it established itself. Version 1 requires one. That one
+ * decline therefore travels under its own contract:
  *
- * <ul>
- *   <li>{@code schemas/transaction-declined-v1.json} governs a decline whose account the
- *       cross-reference resolved, which is reasons {@code 0101}, {@code 0102} and {@code 0103}. It
- *       is unchanged, so a consumer of resolved declines reads the same bytes it always read.</li>
- *   <li>{@code schemas/transaction-declined-v2.json} governs reason {@code 0100}. It declares no
- *       {@code accountId} and keys the event on {@code transactionId}, a deterministic value that
- *       names no cardholder, no account and no card.</li>
- * </ul>
+ * <p>Reject reason {@code 0100} fires when the keyed read of the cross-reference file misses at
+ * {@code app/cbl/CBTRN02C.cbl:L382-L387}, and at that moment no account identifier exists.
+ * {@link DeclineReason#resolvesAccount()} answers {@code false} for it, and the canonical
+ * constructor refuses it. The authorization service records that attempt in its own
+ * {@code unresolved_card_attempt} table and publishes no event, so no decline on a topic can name
+ * the wrong account and none can key on anything other than an account.
  *
- * <p>{@link #of(String, String, DeclineReason, BigDecimal, String)} builds the first and
- * {@link #ofUnresolvedAccount(String, BigDecimal, String)} builds the second. The canonical
- * constructor refuses every mixture of the two, so a misattributed decline is unrepresentable rather
- * than merely discouraged.
+ * <p>Only the first is on a publish path today. The authorization service records an unresolved
+ * card in {@code unresolved_card_attempt} and writes no outbox row for it, so {@link
+ * #ofUnresolvedAccount(String, BigDecimal, String)} and version 2 make that decline representable
+ * rather than published.
  *
- * <p>{@code maskedCardNumber} is ADDITIVE. No CardDemo program masks a Primary Account Number
- * (PAN), and {@code app/bms/COCRDSL.bms:L96-L99} defines the card detail field at the full sixteen
- * characters. The authorization decision runs on the full PAN, because the cross-reference read at
- * {@code app/cbl/CBTRN02C.cbl:L382-L383} keys on all sixteen characters. Masking happens where the
- * event is serialized, so a caller supplies a value that is already masked.
+ * <p>{@code maskedCardNumber} has no source ancestor. No CardDemo program masks a Primary Account
+ * Number (PAN), and {@code app/bms/COCRDSL.bms:L96-L99} defines the card detail field at the full
+ * sixteen characters. The authorization decision runs on the full PAN, because the cross-reference
+ * read at {@code app/cbl/CBTRN02C.cbl:L382-L383} keys on all sixteen characters. Masking happens
+ * where the event is serialized, so a caller supplies a value that is already masked.
  *
  * <p>Add a fifth reason as a new {@link DeclineReason} constant, not by changing this record. The
  * source marks the same extension point with the comment {@code * ADD MORE VALIDATIONS HERE} at
@@ -78,13 +73,11 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * <p>The authorization service publishes this event to the {@code transaction.declined} topic, and
  * no service consumes it in the demo topology.
  *
- * @param eventId                  the idempotency key each consumer records before it applies
- *                                 side effects, a Universally Unique Identifier (UUID)
+ * @param eventId                  the idempotency key each consumer commits alongside the side
+ *                                 effects it guards, a Universally Unique Identifier (UUID)
  * @param eventType                the routing discriminator, always {@link #EVENT_TYPE}
- * @param schemaVersion            the contract version: {@link EventEnvelope#SCHEMA_VERSION} for a
- *                                 decline whose account the cross-reference resolved, and
- *                                 {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION} for the one decline it
- *                                 could not
+ * @param schemaVersion            the contract version, always
+ *                                 {@link EventEnvelope#SCHEMA_VERSION}
  * @param occurredAt               the moment the producer wrote the event, in Coordinated
  *                                 Universal Time
  * @param aggregateId              the eleven-digit account identifier, and the Kafka message key.
@@ -100,8 +93,7 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  *                                 cross-reference row carried, never one a caller supplied, and
  *                                 always equal to the {@code aggregateId} of {@code envelope}, so
  *                                 the message key and the payload cannot disagree. Leading zeros
- *                                 belong to the value. Absent, and omitted from the serialized
- *                                 event, under {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}
+ *                                 belong to the value
  * @param declineReasonCode        the reason the authorization service rejected the transaction,
  *                                 serialized as four zero-padded digits
  * @param declineReasonDescription the reason text, character for character from the source, and
@@ -114,7 +106,7 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  *                                 decimal string. A negative amount is ordinary traffic: 50 of the
  *                                 300 records in {@code app/data/ASCII/dailytran.txt} carry one
  * @param maskedCardNumber         twelve mask characters then the last four digits of the card
- *                                 number, sixteen characters in all. ADDITIVE. Width from
+ *                                 number, sixteen characters in all. No COBOL ancestor. Width from
  *                                 {@code DALYTRAN-CARD-NUM PIC X(16)} at
  *                                 {@code app/cpy/CVTRA06Y.cpy:L15}
  */
@@ -188,8 +180,8 @@ public record TransactionDeclined(
      * The contract version a decline carries when the card cross-reference resolved no account: 2.
      *
      * <p>{@code schemas/transaction-declined-v2.json} governs it. That document declares no
-     * {@code accountId} at all and keys the event on {@code transactionId}, so a producer with no
-     * authoritative account identifier neither trusts the one a caller supplied nor invents one.
+     * {@code accountId} at all and keys the event on {@code transactionId}. A producer with no
+     * authoritative account identifier therefore neither trusts a supplied one nor invents one.
      *
      * <p>Version 1 is unchanged and remains the contract for every other decline, so a consumer
      * reading resolved declines sees the same bytes it always saw. A consumer that wants the
@@ -222,9 +214,9 @@ public record TransactionDeclined(
      * {@link EventEnvelope#AGGREGATE_KEY_PATTERN} compiled, and the check {@code aggregateId} runs
      * under {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}.
      *
-     * <p>That contract keys the event on the transaction identifier, which is sixteen printable
-     * characters rather than eleven digits, so the key check reads the wider of the two envelope
-     * patterns while {@code accountId} keeps reading the account one.
+     * <p>That contract keys the event on the transaction identifier, sixteen printable characters
+     * rather than eleven digits. The key check therefore reads the wider of the two envelope
+     * patterns, while {@code accountId} keeps reading the account one.
      */
     private static final Pattern AGGREGATE_KEY_MATCHER =
             Pattern.compile(EventEnvelope.AGGREGATE_KEY_PATTERN);
@@ -254,18 +246,12 @@ public record TransactionDeclined(
      *                                  {@code amount} is {@code null}
      * @throws IllegalArgumentException when a component fails its check. {@code eventType} must be
      *                                  {@link #EVENT_TYPE}, {@code schemaVersion} must be
-     *                                  {@link EventEnvelope#SCHEMA_VERSION} or
-     *                                  {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, and
+     *                                  {@link EventEnvelope#SCHEMA_VERSION}, and
      *                                  {@code transactionId} must hold
-     *                                  {@link #TRANSACTION_ID_LENGTH} characters. Under
-     *                                  {@link EventEnvelope#SCHEMA_VERSION} both account
+     *                                  {@link #TRANSACTION_ID_LENGTH} characters. Both account
      *                                  identifiers must be eleven digits and must hold the same
      *                                  value, and {@link DeclineReason#resolvesAccount()} must
-     *                                  answer {@code true} for {@code declineReasonCode}. Under
-     *                                  {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}
-     *                                  {@code accountId} must be absent, {@code aggregateId} must
-     *                                  equal {@code transactionId}, and {@code declineReasonCode}
-     *                                  must be {@link #UNRESOLVED_ACCOUNT_REASON}.
+     *                                  answer {@code true} for {@code declineReasonCode}.
      *                                  {@code declineReasonDescription} must be the
      *                                  {@link DeclineReason#description()} of
      *                                  {@code declineReasonCode}, within
@@ -310,9 +296,6 @@ public record TransactionDeclined(
                             : "holds " + transactionId.length() + " characters"));
         }
         if (schemaVersion == UNRESOLVED_ACCOUNT_SCHEMA_VERSION) {
-            // Version 2 is the contract for a decline whose account identity the card
-            // cross-reference could not resolve. It declares no account identifier, so there is
-            // nothing here to misattribute, and it keys the event on the transaction identifier.
             if (accountId != null) {
                 throw new IllegalArgumentException("accountId must be absent under schemaVersion "
                         + UNRESOLVED_ACCOUNT_SCHEMA_VERSION + ", the contract for a decline whose"
@@ -465,8 +448,9 @@ public record TransactionDeclined(
     /**
      * Builds the declined event for a card the cross-reference resolved no account for.
      *
-     * <p>This is the only path that publishes {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}. It takes
-     * no account identifier, because at this point none exists that the platform itself established:
+     * <p>This is the only path that builds {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, and no
+     * current producer calls it. It takes no account identifier, because at this point none exists
+     * that the platform itself established:
      * {@code app/cbl/CBTRN02C.cbl:L382-L387} has just missed on the keyed read of the
      * cross-reference file. An identifier a caller supplied alongside the card number is not
      * evidence of ownership, and publishing it here would attribute one caller's declined attempt to

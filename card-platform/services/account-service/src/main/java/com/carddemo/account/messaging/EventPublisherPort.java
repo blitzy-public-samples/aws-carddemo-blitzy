@@ -1,9 +1,11 @@
 package com.carddemo.account.messaging;
 
+import java.util.concurrent.CompletionStage;
+
 /**
  * The account service publishes every event through this interface.
  *
- * <p>ADDITIVE. This interface has no COBOL ancestor. The CardDemo source carries no event
+ * <p>This interface has no COBOL ancestor. The CardDemo source carries no event
  * bus and no publish abstraction.
  *
  * <p>Source reference: the {@code WIRTE-JOBSUB-TDQ} paragraph at
@@ -14,7 +16,8 @@ package com.carddemo.account.messaging;
  * <p>A caller publishes after the local transaction that recorded the change has committed, so
  * request handling publishes nothing.
  *
- * <p>A failed publish throws an unchecked exception.
+ * <p>A failed publish either throws before a send starts or completes the returned stage
+ * exceptionally.
  *
  * <p>A different event bus needs one new implementation of this interface and no other change.
  */
@@ -56,9 +59,10 @@ public interface EventPublisherPort {
      *                    eleven characters, leading zeros included.
      * @param payload     the event body, already serialized as JavaScript Object Notation (JSON)
      *                    and taken from the {@code payload} column of {@code outbox_event}
+     * @return completion of the broker acknowledgement
      * @throws IllegalArgumentException when an argument is absent, when {@code aggregateId} misses
      *         {@link #AGGREGATE_ID_PATTERN}, when the payload declares an event type that does not
      *         belong on {@code topic}, or when the payload fails the document that type names
      */
-    void publish(String topic, String aggregateId, String payload);
+    CompletionStage<Void> publish(String topic, String aggregateId, String payload);
 }

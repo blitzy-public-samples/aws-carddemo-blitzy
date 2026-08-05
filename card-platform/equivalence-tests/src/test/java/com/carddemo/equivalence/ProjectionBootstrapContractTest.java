@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -52,8 +53,8 @@ import org.junit.jupiter.api.Test;
  * decide the opening state. No container, no connection and no ordering of test execution is
  * involved, and the comparison is the same on every machine.</p>
  *
- * <p>Freshness and ordering are asserted from the shipped configuration and schema, which is as far
- * as this checkpoint reaches. Each service pins an idempotent producer acknowledged by every
+ * <p>Freshness and ordering are asserted from the shipped configuration and schema. Each service
+ * pins an idempotent producer acknowledged by every
  * replica, a consumer that does not auto-commit and acknowledges by hand, and a
  * {@code processed_event} table keyed on the event identifier. Together those give per-account
  * ordering, because the account identifier is the message key, and they make a redelivery harmless.
@@ -166,6 +167,21 @@ class ProjectionBootstrapContractTest {
             "notification-service", "account-service", "card-service");
 
     /**
+     * Calls that count as an effect inside a listener's transactional unit.
+     *
+     * <p>The first two are repository writes. {@code save} inserts or updates one row, and
+     * {@code applyStateChange} is the upsert a projection refresh performs. The rest are the domain
+     * components a listener delegates its work to; each writes through a repository of its own, and
+     * the write joins the listener's transaction because the call sits in the listener's body.
+     *
+     * <p>A listener that performs none of these is doing nothing, which is what
+     * {@code everyConsumerGuardsBeforeItAppliesAndMarksBeforeItAcknowledges} reports.
+     */
+    private static final List<String> EFFECT_CALLS = List.of(".save(", ".applyStateChange(",
+            ".applyContextChange(", "postingService.", "rejectRecorder.", "notificationService.",
+            "riskScoringService.");
+
+    /**
      * Every projection and replica table, keyed by module name and table, with what it holds a copy
      * of. A table in this list must be seeded and must equal its fixture.
      */
@@ -186,6 +202,9 @@ class ProjectionBootstrapContractTest {
         tables.put("card-service.card_xref",
                 "Replica of the same cross-reference the authorization service holds, so the card "
                         + "path of app/cbl/COCRDLIC.cbl reads its own copy");
+        tables.put("account-service.card_xref",
+                "Replica used by the account update path to derive the customer identifier from "
+                        + "the account identifier instead of trusting a caller-supplied pairing");
         return Map.copyOf(tables);
     }
 
@@ -389,6 +408,9 @@ class ProjectionBootstrapContractTest {
             assertEquals(FIXTURE_ROW_COUNT, seededRows("card-service", "card_xref").size(),
                     "the card cross-reference replica holds one row per record of "
                             + "app/data/ASCII/cardxref.txt");
+            assertEquals(FIXTURE_ROW_COUNT, seededRows("account-service", "card_xref").size(),
+                    "the account cross-reference replica holds one row per record of "
+                            + "app/data/ASCII/cardxref.txt");
             assertEquals(FIXTURE_ROW_COUNT, seededRows("card-service", "card").size(),
                     "the card table holds one row per record of app/data/ASCII/carddata.txt");
         }
@@ -492,12 +514,11 @@ class ProjectionBootstrapContractTest {
         }
 
         /**
-         * The two cross-reference replicas hold the same rows as each other and as the fixture, so the
-         * authorization path and the card path start in agreement about every card.
+         * The three cross-reference replicas hold the same rows as each other and as the fixture.
          */
         @Test
-        @DisplayName("both cross-reference replicas equal the fixture and each other")
-        void bothCrossReferenceReplicasEqualTheFixtureAndEachOther() {
+        @DisplayName("all three cross-reference replicas equal the fixture and each other")
+        void allCrossReferenceReplicasEqualTheFixtureAndEachOther() {
             Map<String, String> fixture = new LinkedHashMap<>();
             for (CopybookRecordParser.CardCrossReferenceRecord crossReference
                     : CardDemoFixtureLoader.loadCardCrossReferences()) {
@@ -508,12 +529,15 @@ class ProjectionBootstrapContractTest {
             Map<String, String> authorization =
                     replicaRows("authorization-service", "card_xref");
             Map<String, String> card = replicaRows("card-service", "card_xref");
+            Map<String, String> account = replicaRows("account-service", "card_xref");
 
             assertEquals(fixture.keySet(), authorization.keySet(),
                     "the authorization replica holds the card numbers of "
                             + "app/data/ASCII/cardxref.txt and no others");
             assertEquals(fixture.keySet(), card.keySet(),
                     "the card replica holds the same card numbers");
+            assertEquals(fixture.keySet(), account.keySet(),
+                    "the account replica holds the same card numbers");
             List<String> divergent = new ArrayList<>();
             int ordinal = FIRST_ORDINAL;
             for (Map.Entry<String, String> expected : fixture.entrySet()) {
@@ -525,12 +549,16 @@ class ProjectionBootstrapContractTest {
                     divergent.add(at("card-service", "card_xref", "row", ordinal)
                             + " differs from the fixture");
                 }
+                if (!expected.getValue().equals(account.get(expected.getKey()))) {
+                    divergent.add(at("account-service", "card_xref", "row", ordinal)
+                            + " differs from the fixture");
+                }
                 ordinal++;
             }
 
             assertEquals(List.of(), divergent,
-                    "these replica rows differ from app/data/ASCII/cardxref.txt, so the two "
-                            + "services would decide differently about the same card: " + divergent);
+                    "these replica rows differ from app/data/ASCII/cardxref.txt, so the services "
+                            + "would resolve one account differently: " + divergent);
         }
 
         /** The card table opens on every card of the fixture, keyed on the full card number. */
@@ -814,13 +842,14 @@ class ProjectionBootstrapContractTest {
         }
 
         /**
-         * Neither replica is seeded from the other, so the two cross-reference copies cannot drift at
+         * No replica is seeded from another, so the three cross-reference copies cannot drift at
          * bootstrap through a copy of a copy.
          */
         @Test
-        @DisplayName("neither cross-reference replica is derived from the other")
-        void neitherCrossReferenceReplicaIsDerivedFromTheOther() {
-            for (String module : List.of("authorization-service", "card-service")) {
+        @DisplayName("no cross-reference replica is derived from another")
+        void noCrossReferenceReplicaIsDerivedFromAnother() {
+            for (String module : List.of(
+                    "authorization-service", "account-service", "card-service")) {
                 Path directory = REPOSITORY_ROOT.get()
                         .resolve(SERVICES_DIRECTORY)
                         .resolve(module)
@@ -842,14 +871,32 @@ class ProjectionBootstrapContractTest {
          *
          * <p>Ordering within an account is a property of the message key and the partition, and it
          * is asserted above through the key serializer and the idempotent producer. What each
-         * listener adds is the guard: it reads {@code processed_event} before it applies any effect,
-         * it writes the marker beside those effects in one transactional unit, and it acknowledges
+         * listener adds is the guard: it reaches {@code processed_event} before it applies any
+         * effect, the marker and those effects share one transactional unit, and it acknowledges
          * the delivery only after that unit returns. A redelivery then finds the marker and writes
          * nothing, and a delivery that fails leaves the offset uncommitted.</p>
+         *
+         * <p>A guard takes one of two forms, and both are read here. A listener either reads the
+         * marker and writes it beside its effects, or it claims the marker with one conditional
+         * insert whose row count reports whether the delivery is new. The claim is itself a write,
+         * so a claiming listener needs no second write inside the unit to prove the unit acts.</p>
          *
          * <p>A listener declares that unit one of two ways, and both are read here: one method
          * annotated {@code @Transactional}, or one method a {@code TransactionTemplate} runs. A
          * listener that declares neither fails this test.</p>
+         *
+         * <p>The guard itself also comes in two forms, and both are read. A listener may read
+         * {@code existsById} and then write the marker, or it may claim the identifier in one
+         * statement through an insert that does nothing on conflict and reports how many rows it
+         * wrote. The claim is the stronger of the two: it closes the window the read leaves between
+         * the check and the write, in which two concurrent deliveries of one event can both find no
+         * marker. What matters to this test is the same either way, which is that the guard stands
+         * before the first effect.</p>
+         *
+         * <p>An effect is a write this listener performs or delegates. A listener that calls a
+         * repository directly writes through {@code save} or {@code applyStateChange}; one that
+         * delegates to a domain component calls that component, and the write happens inside the same
+         * transaction because the call is in this method's body.</p>
          *
          * <p>Each property is read from the listener source itself, in the same way every other
          * assertion in this class reads shipped text, so no broker, no database and no test ordering
@@ -857,13 +904,58 @@ class ProjectionBootstrapContractTest {
          * reads the rows back.</p>
          */
         @Test
+        @DisplayName("the platform declares exactly the seven listeners named here, and no other")
+        void thePlatformDeclaresExactlyTheSevenNamedListeners() {
+            assertEquals(EXPECTED_LISTENERS, listenerSources().keySet(),
+                    "a listener added or removed changes what consumes the one event an "
+                            + "authorization call publishes, and the fan-out is the property this "
+                            + "migration exists to demonstrate");
+        }
+
+        @Test
+        @DisplayName("each consumed topic is read by the listeners named here, under one group each")
+        void eachConsumedTopicIsReadByItsNamedListeners() {
+            Map<String, List<String>> readers = new LinkedHashMap<>();
+            for (Map.Entry<String, String> listener : listenerSources().entrySet()) {
+                String topicProperty = topicPropertyOf(listener.getValue());
+                readers.computeIfAbsent(topicProperty, key -> new ArrayList<>())
+                        .add(listener.getKey());
+            }
+            readers.values().forEach(Collections::sort);
+
+            assertEquals(EXPECTED_TOPIC_READERS, readers,
+                    "the reader set of a topic is the fan-out of that topic. A topic losing its "
+                            + "last reader is an event nothing consumes, and a topic gaining one "
+                            + "changes the demonstration");
+        }
+
+        @Test
+        @DisplayName("every listener's own module carries the runtime proof for its listener")
+        void everyListenerModuleCarriesItsRuntimeProof() {
+            List<String> unproven = new ArrayList<>();
+            for (String listener : EXPECTED_LISTENERS) {
+                String module = listener.substring(0, listener.indexOf(' '));
+                if (!moduleCarriesAConsumerTest(module)) {
+                    unproven.add(listener);
+                }
+            }
+
+            assertEquals(List.of(), unproven,
+                    "this class reads shipped text and starts no broker, so the behaviour of a "
+                            + "listener is proven in the module that owns it. These modules declare "
+                            + "a listener and no test that drives one: " + unproven);
+        }
+
+        @Test
         @DisplayName("every consumer guards, then applies, then marks, then acknowledges")
         void everyConsumerGuardsBeforeItAppliesAndMarksBeforeItAcknowledges() {
             Map<String, String> listeners = listenerSources();
-            assertFalse(listeners.isEmpty(),
-                    "no service declares a listener, so nothing consumes the events the "
-                            + "authorization service publishes");
+            assertEquals(EXPECTED_LISTENERS, listeners.keySet(),
+                    "the ordering assertions below cover exactly the listeners this platform "
+                            + "declares, so the inventory is pinned here too");
 
+            String markerRead = "existsById";
+            String markerClaim = "claimEvent";
             List<String> broken = new ArrayList<>();
             for (Map.Entry<String, String> listener : listeners.entrySet()) {
                 String name = listener.getKey();
@@ -874,14 +966,20 @@ class ProjectionBootstrapContractTest {
                     broken.add(name + " declares no transactional unit");
                     continue;
                 }
-                int guard = transactionalBody.indexOf("existsById");
-                int firstEffect = transactionalBody.indexOf(".save(");
-                if (guard < 0) {
+                int claimGuard = transactionalBody.indexOf("claimEvent");
+                int readGuard = transactionalBody.indexOf("existsById");
+                int helperGuard = transactionalBody.indexOf("claimed(");
+                int firstEffect = firstEffectIn(transactionalBody);
+                if (claimGuard < 0 && readGuard < 0 && helperGuard < 0) {
                     broken.add(name + " reads no processed-event guard inside its transaction");
                 } else if (firstEffect < 0) {
                     broken.add(name + " writes nothing inside its transaction");
-                } else if (guard > firstEffect) {
-                    broken.add(name + " applies an effect before it reads its guard");
+                } else {
+                    int guard = claimGuard >= 0 ? claimGuard
+                            : readGuard >= 0 ? readGuard : helperGuard;
+                    if (guard > firstEffect) {
+                        broken.add(name + " applies an effect before it reads its guard");
+                    }
                 }
                 if (transactionalBody.contains(".acknowledge(")) {
                     broken.add(name + " acknowledges inside its transaction, before the commit");
@@ -899,6 +997,32 @@ class ProjectionBootstrapContractTest {
 
             assertEquals(List.of(), broken,
                     "a listener breaks the order that makes a redelivery harmless: " + broken);
+        }
+
+        /**
+         * Finds where the first effect of a transactional unit sits, or reports that it has none.
+         *
+         * <p>Three call shapes count as an effect, and a listener uses whichever suits the work it
+         * does. {@code save} is a direct repository write. {@code applyStateChange} is the upsert a
+         * projection refresh performs, which writes without reading first so that a concurrent
+         * delivery cannot lose. A call to a domain component named below writes through that
+         * component, inside this same transaction, because the call sits in this body.</p>
+         *
+         * <p>The earliest of the three is what the guard is compared against, because the guard has to
+         * stand before the first of them and not merely before one of them.</p>
+         *
+         * @param transactionalBody the body of the transactional unit, comments and literals removed
+         * @return the position of the earliest effect, or {@code -1} when the body performs none
+         */
+        private int firstEffectIn(String transactionalBody) {
+            int earliest = -1;
+            for (String call : EFFECT_CALLS) {
+                int at = transactionalBody.indexOf(call);
+                if (at >= 0 && (earliest < 0 || at < earliest)) {
+                    earliest = at;
+                }
+            }
+            return earliest;
         }
 
         /**
@@ -950,6 +1074,13 @@ class ProjectionBootstrapContractTest {
          *         runs no template or declares no such method
          */
         private String transactionTemplateBodyOf(String code) {
+            Matcher block = Pattern
+                    .compile("transactionTemplate\\s*\\.\\s*execute\\w*\\(\\s*\\w+\\s*->\\s*\\{")
+                    .matcher(code);
+            if (block.find()) {
+                return bodyFrom(code, code.indexOf('{', block.start()));
+            }
+
             Matcher call = Pattern
                     .compile("transactionTemplate\\s*\\.\\s*execute\\w*\\(\\s*\\w+\\s*->\\s*(\\w+)"
                             + "\\s*\\(")
@@ -1009,6 +1140,93 @@ class ProjectionBootstrapContractTest {
                 from = text.indexOf(fragment, from + fragment.length());
             }
             return found;
+        }
+
+        /**
+         * Every listener this platform declares, keyed as {@code <module> <file name>}.
+         *
+         * <p>One authorization call publishes one event, and the fan-out of that event is the
+         * property this migration exists to demonstrate. An inventory assertion is what makes a
+         * listener silently lost or silently added a build failure: a count, or an emptiness check,
+         * passes with one listener and hides the other six.
+         *
+         * <p>Four services consume. The authorization service reads the two state-change events
+         * that keep the projections its decline rules read current, ledger posting and fraud
+         * detection each read the authorization event under a group of their own, and the
+         * notification service reads three.
+         */
+        private static final Set<String> EXPECTED_LISTENERS = new LinkedHashSet<>(List.of(
+                "authorization-service AccountStateChangedConsumer.java",
+                "authorization-service CardUpdatedConsumer.java",
+                "ledger-posting-service TransactionAuthorizedConsumer.java",
+                "fraud-detection-service TransactionAuthorizedConsumer.java",
+                "notification-service CustomerContextChangedConsumer.java",
+                "notification-service FraudFlaggedConsumer.java",
+                "notification-service TransactionPostedConsumer.java"));
+
+        /**
+         * The reader set of each consumed topic, keyed by the property the listener resolves.
+         *
+         * <p>{@code transaction.authorized} carrying two independent readers is the user's
+         * headline requirement made checkable: neither reader appears in the other's list, and
+         * neither is the authorization service.
+         *
+         * <p>Each reader list is held in ascending order and the assertion sorts what it collects,
+         * so the assertion reports membership and not the order the source tree is walked in.
+         */
+        private static final Map<String, List<String>> EXPECTED_TOPIC_READERS = Map.of(
+                "carddemo.kafka.topics.account-state-changed",
+                List.of("authorization-service AccountStateChangedConsumer.java"),
+                "carddemo.kafka.topics.card-updated",
+                List.of("authorization-service CardUpdatedConsumer.java"),
+                "carddemo.kafka.topics.transaction-authorized",
+                List.of("fraud-detection-service TransactionAuthorizedConsumer.java",
+                        "ledger-posting-service TransactionAuthorizedConsumer.java"),
+                "carddemo.kafka.topics.customer-context-changed",
+                List.of("notification-service CustomerContextChangedConsumer.java"),
+                "carddemo.kafka.topics.fraud-assessed",
+                List.of("notification-service FraudFlaggedConsumer.java"),
+                "carddemo.kafka.topics.transaction-posted",
+                List.of("notification-service TransactionPostedConsumer.java"));
+
+        /**
+         * Reads the configuration property one listener resolves its topic through.
+         *
+         * <p>A default is stripped, so {@code ${a.b:fallback}} and {@code ${a.b}} read alike.
+         * The property name is a string literal, so this reader strips comments and keeps every
+         * literal, where {@link #codeOf(String)} empties them.
+         *
+         * @param source the listener source, as shipped
+         * @return the property name, or the empty string when the listener names none
+         */
+        private String topicPropertyOf(String source) {
+            String withoutComments = source.replaceAll("(?s)/\\*.*?\\*/", " ")
+                    .replaceAll("//[^\\n]*", " ");
+            Matcher topic = Pattern.compile("topics\\s*=\\s*\"\\$\\{([^:}]+)")
+                    .matcher(withoutComments);
+            return topic.find() ? topic.group(1) : "";
+        }
+
+        /**
+         * Reports whether one module declares a test that drives a listener.
+         *
+         * @param module the Maven module directory name
+         * @return {@code true} when the module's test tree holds a consumer test
+         */
+        private boolean moduleCarriesAConsumerTest(String module) {
+            Path tests = REPOSITORY_ROOT.get().resolve(SERVICES_DIRECTORY).resolve(module)
+                    .resolve("src/test/java");
+            if (!Files.isDirectory(tests)) {
+                return false;
+            }
+            try (var walk = Files.walk(tests)) {
+                return walk.map(path -> path.getFileName().toString())
+                        .anyMatch(name -> name.endsWith("ConsumerTest.java")
+                                || name.endsWith("ConsumerIT.java")
+                                || name.equals("ProjectionConsumerTest.java"));
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("cannot walk " + tests, unreadable);
+            }
         }
 
         /**

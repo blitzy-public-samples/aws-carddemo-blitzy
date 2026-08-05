@@ -5,8 +5,8 @@ import com.carddemo.events.EventEnvelope;
 import java.util.List;
 
 /**
- * Diagnostic detail intended for a message on the dead-letter topic
- * {@code carddemo.kafka.topics.dead-letter}. No handler routes a message there yet.
+ * Diagnostic detail the replica-consumer error handler sends to
+ * {@code carddemo.kafka.topics.dead-letter} after bounded retries.
  *
  * <p>Transformed from the abend reporting group {@code 01 ABEND-DATA} at
  * app/cpy/CSMSG02Y.cpy:L21-L29. The group holds four alphanumeric fields:
@@ -35,6 +35,8 @@ import java.util.List;
  * @param culprit   the failing component
  * @param reason    the failure classification
  * @param message   the failure detail
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record DeadLetterMetadata(String abendCode, String culprit, String reason,
         String message) {
@@ -81,8 +83,8 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
      * Sanitises all four text components.
      *
      * <p>This constructor throws nothing. A dead-letter record describes a failure that already
-     * happened, so a second failure raised while building it would suppress the dead-letter
-     * message and leave the broker redelivering the same message for ever.</p>
+     * happened. A second failure raised while building it would suppress the dead-letter message,
+     * and leave the broker redelivering the same message for ever.</p>
      */
     public DeadLetterMetadata {
         abendCode = sanitise(abendCode, ABEND_CODE_MAX_LENGTH);
@@ -175,9 +177,9 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
      * <p>What the envelope adds is where the failing record was: topic, partition and offset. An
      * operator needs those to reach the record itself, and none of the three is derivable from the
      * diagnostics. The list of shortened components is left empty here, and that is exact rather
-     * than lazy: this record bounds each diagnostic to the same width
-     * {@link DeadLetterEnvelope} bounds it to, so every value handed over already fits and the
-     * envelope has nothing left to shorten. A producer that bounds its diagnostics more narrowly
+     * than lazy. This record bounds each diagnostic to the same width {@link DeadLetterEnvelope}
+     * bounds it to, so every value handed over already fits and the envelope has nothing left to
+     * shorten. A producer that bounds its diagnostics more narrowly
      * than this record does should build the envelope directly, so its own shortening is named.
      *
      * @param aggregateId     the eleven-digit account identifier of the failing record, and the

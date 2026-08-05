@@ -6,7 +6,7 @@ import java.math.BigDecimal;
 import java.util.Objects;
 
 /**
- * One transaction of one card's alert history.
+ * One transaction of one account's alert history.
  *
  * <p>Twelve components map the record {@code 01 TRNX-RECORD.} at
  * {@code app/cpy/COSTM01.CPY:L20}, one component per field from {@code :L23} through
@@ -28,8 +28,6 @@ import java.util.Objects;
  * {@link #from(StatementTransactionEntity)} drops those trailing spaces from the six free-text
  * components, left-pads the two digit identifiers to their column widths, and leaves both
  * timestamps at their full width.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  *
  * @param transactionId identifies one transaction within the card. From {@code TRNX-ID PIC X(16)}
  *        at {@code app/cpy/COSTM01.CPY:L23}
@@ -58,7 +56,8 @@ import java.util.Objects;
  * @param processingTimestamp when the platform recorded the transaction. From
  *        {@code TRNX-PROC-TS PIC X(26)} at {@code app/cpy/COSTM01.CPY:L35}
  */
-public record NotificationTransactionItem(String transactionId, String typeCode,
+public record NotificationTransactionItem(String transactionId, String maskedCardNumber,
+        String typeCode,
         String categoryCode, String source, String description, String amount, String merchantId,
         String merchantName, String merchantCity, String merchantZip, String originTimestamp,
         String processingTimestamp) {
@@ -76,6 +75,7 @@ public record NotificationTransactionItem(String transactionId, String typeCode,
      */
     public NotificationTransactionItem {
         Objects.requireNonNull(transactionId, "transactionId is required");
+        Objects.requireNonNull(maskedCardNumber, "maskedCardNumber is required");
         Objects.requireNonNull(typeCode, "typeCode is required");
         Objects.requireNonNull(categoryCode, "categoryCode is required");
         Objects.requireNonNull(source, "source is required");
@@ -92,8 +92,9 @@ public record NotificationTransactionItem(String transactionId, String typeCode,
     /**
      * Maps one {@link StatementTransactionEntity} row onto one item of the alert history.
      *
-     * <p>The transaction identifier comes from the embedded key. The card number of that key
-     * stays on {@link NotificationHistoryResponse}.</p>
+     * <p>The transaction identifier comes from the embedded key. The masked card number comes from
+     * the display column of the row, already masked when the row was written, so this method masks
+     * nothing.</p>
      *
      * @param row the read-model row
      * @return the item built from {@code row}
@@ -105,6 +106,7 @@ public record NotificationTransactionItem(String transactionId, String typeCode,
         Objects.requireNonNull(row, "row is required");
         return new NotificationTransactionItem(
                 Objects.requireNonNull(row.getId(), "row key is required").getTransactionId(),
+                row.getMaskedCardNumber(),
                 decoded(row.getTypeCode(), "typeCode"),
                 digits(row.getCategoryCode(), PicClause.TRAN_CAT_CD_WIDTH, "categoryCode"),
                 decoded(row.getSource(), "source"),
@@ -152,6 +154,25 @@ public record NotificationTransactionItem(String transactionId, String typeCode,
             return plain;
         }
         return PAD_DIGIT.repeat(width - plain.length()) + plain;
+    }
+
+    /**
+     * Renders the transaction identifier and the type and category codes, and no other component.
+     *
+     * <p>Six components describe what a cardholder bought, where and for how much: the description,
+     * the amount, the merchant identifier, name and city, and the merchant mail code. The two
+     * timestamps place the purchase in time. The rendering a record generates carries all twelve,
+     * and reaches any log line or exception message naming this record, so nine are withheld here
+     * and a caller reads them through their accessors.</p>
+     *
+     * @return the transaction identifier, the type code and the category code
+     */
+    @Override
+    public String toString() {
+        return "NotificationTransactionItem[transactionId=" + transactionId
+                + ", typeCode=" + typeCode
+                + ", categoryCode=" + categoryCode
+                + ", 9 transaction fields withheld]";
     }
 
     /**

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.notification.entity.StatementTransactionEntity;
 import com.carddemo.notification.entity.StatementTransactionEntity.StatementTransactionId;
 import java.lang.reflect.RecordComponent;
@@ -16,15 +17,14 @@ import org.junit.jupiter.api.Test;
 /**
  * Record-shape and mapping tests for {@link NotificationTransactionItem}.
  *
- * <p>Twelve components map the record {@code 01 TRNX-RECORD.} at {@code app/cpy/COSTM01.CPY:L20}.
- * One component takes {@code TRNX-ID} at {@code app/cpy/COSTM01.CPY:L23}, and eleven take the
- * fields at {@code app/cpy/COSTM01.CPY:L25-L35}.
+ * <p>Thirteen components map the record {@code 01 TRNX-RECORD.} at
+ * {@code app/cpy/COSTM01.CPY:L20}. Two take the transaction identifier and masked display value,
+ * and eleven take the fields at {@code app/cpy/COSTM01.CPY:L25-L35}.
  *
- * <p>Two source constructs carry no component. {@code TRNX-CARD-NUM PIC X(16)} at
- * {@code app/cpy/COSTM01.CPY:L22} sits inside the group {@code 05 TRNX-KEY.} at
- * {@code app/cpy/COSTM01.CPY:L21} and is envelope-level. The trailing {@code FILLER PIC X(20)} at
- * {@code app/cpy/COSTM01.CPY:L36} is dropped. Both omissions appear in
- * {@code card-platform/docs/traceability-matrix.md}.
+ * <p>Two source constructs carry no component. {@code TRNX-CARD-NUM PIC X(16)} at {@code
+ * app/cpy/COSTM01.CPY:L22} sits inside the group {@code 05 TRNX-KEY.} at {@code
+ * app/cpy/COSTM01.CPY:L21} and is envelope-level. The trailing {@code FILLER PIC X(20)} at {@code
+ * app/cpy/COSTM01.CPY:L36} is dropped.
  *
  * <p>The statement program splits the envelope from the item. The move into
  * {@code TRNX-CARD-NUM} at {@code app/cbl/CBSTM03A.CBL:L421} runs once per card group. The move
@@ -36,24 +36,23 @@ import org.junit.jupiter.api.Test;
  * {@code TRNX-MERCHANT-ID PIC 9(09)} at {@code app/cpy/COSTM01.CPY:L30} declare. The amount
  * arrives as a decimal string, never as a JavaScript Object Notation (JSON) number.
  *
- * <p>Zero-padding placement: {@code card-platform/docs/decision-log.md}.
- *
  * <p>All inputs below are built in this class. These tests read no file, start no application
  * context, open no database connection and reach no broker.
  */
 final class NotificationTransactionItemTest {
 
     /**
-     * The twelve component names, in the order the record declares them. Source order:
+     * The thirteen component names, in the order the response declares them. Source order:
      * {@code app/cpy/COSTM01.CPY:L23} then {@code app/cpy/COSTM01.CPY:L25-L35}.
      */
-    private static final List<String> DECLARED_COMPONENTS = List.of("transactionId", "typeCode",
-            "categoryCode", "source", "description", "amount", "merchantId", "merchantName",
-            "merchantCity", "merchantZip", "originTimestamp", "processingTimestamp");
+    private static final List<String> DECLARED_COMPONENTS = List.of(
+            "transactionId", "maskedCardNumber", "typeCode", "categoryCode", "source",
+            "description", "amount", "merchantId", "merchantName", "merchantCity",
+            "merchantZip", "originTimestamp", "processingTimestamp");
 
     /**
      * Names a row-creation or audit stamp carries. {@code statement_transaction} in
-     * {@code src/main/resources/db/migration/V1__schema.sql} declares thirteen columns and none of
+     * {@code src/main/resources/db/migration/V1__schema.sql} declares fourteen columns and none of
      * them stamps the row.
      */
     private static final List<String> AUDIT_STAMP_NAMES =
@@ -80,8 +79,11 @@ final class NotificationTransactionItemTest {
     private static final String VERIFICATION_FIELD_ABBREVIATION =
             "CARD-CVV-CD".split("-")[1].toLowerCase(Locale.ROOT);
 
-    /** The masked card number of the key: twelve mask characters then the last four digits. */
+    /** The masked card number the display column holds: twelve mask characters then four digits. */
     private static final String MASKED_CARD_NUMBER = "************7065";
+
+    /** Card token of that card, and the card half of the key every row below carries. */
+    private static final String CARD_TOKEN = PanMasker.cardToken("4859452612877065");
 
     /**
      * A transaction identifier at the sixteen characters {@code TRNX-ID PIC X(16)} at
@@ -154,14 +156,12 @@ final class NotificationTransactionItemTest {
     }
 
     /**
-     * Asserts the component count is twelve, one per field of {@code app/cpy/COSTM01.CPY:L23} and
-     * {@code app/cpy/COSTM01.CPY:L25-L35}.
+     * Asserts the component count is thirteen, including the display-only masked card number.
      */
     @Test
-    void theItemDeclaresTwelveComponents() {
-        assertEquals(12, NotificationTransactionItem.class.getRecordComponents().length,
-                "one component per field of app/cpy/COSTM01.CPY:L23 and"
-                        + " app/cpy/COSTM01.CPY:L25-L35");
+    void theItemDeclaresThirteenComponents() {
+        assertEquals(13, NotificationTransactionItem.class.getRecordComponents().length,
+                "one display value plus the transaction fields");
     }
 
     /**
@@ -198,15 +198,14 @@ final class NotificationTransactionItemTest {
     }
 
     /**
-     * Asserts no component name carries the card number. {@code TRNX-CARD-NUM PIC X(16)} at
-     * {@code app/cpy/COSTM01.CPY:L22} is envelope-level, moved once per card group at
-     * {@code app/cbl/CBSTM03A.CBL:L421} against the per-transaction moves at
-     * {@code app/cbl/CBSTM03A.CBL:L424-L427}.
+     * Asserts the item carries only the masked display form of the card number.
      */
     @Test
-    void noComponentCarriesTheCardNumber() {
-        assertFalse(anyComponentNameContains("card"),
-                "the card number of app/cpy/COSTM01.CPY:L22 stays on the envelope");
+    void theItemCarriesOnlyTheMaskedCardNumber() {
+        NotificationTransactionItem item = NotificationTransactionItem.from(row());
+        assertEquals(MASKED_CARD_NUMBER, item.maskedCardNumber(), "display value unchanged");
+        assertTrue(item.maskedCardNumber().matches("^\\*{12}[0-9]{4}$"), "masked shape");
+        assertFalse(item.maskedCardNumber().matches("^[0-9]{16}$"), "no full card number");
     }
 
     /**
@@ -425,7 +424,7 @@ final class NotificationTransactionItemTest {
     /**
      * Lists the component names the record declares, in declaration order.
      *
-     * @return the twelve names
+     * @return the thirteen names
      */
     private static List<String> componentNames() {
         return Arrays.stream(NotificationTransactionItem.class.getRecordComponents())
@@ -458,7 +457,8 @@ final class NotificationTransactionItemTest {
     private static StatementTransactionEntity row(String categoryCode, String merchantId,
             BigDecimal amount, String description) {
         return new StatementTransactionEntity(
-                new StatementTransactionId(MASKED_CARD_NUMBER, TRANSACTION_ID), TYPE_CODE,
+                new StatementTransactionId(CARD_TOKEN, TRANSACTION_ID), MASKED_CARD_NUMBER,
+                TYPE_CODE,
                 categoryCode, SOURCE, description, amount, merchantId, MERCHANT_NAME,
                 MERCHANT_CITY, MERCHANT_ZIP, ORIGIN_TIMESTAMP, PROCESSING_TIMESTAMP);
     }

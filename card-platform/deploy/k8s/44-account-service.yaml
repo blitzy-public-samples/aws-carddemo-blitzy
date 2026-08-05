@@ -1,22 +1,18 @@
-# Deployment and Service for the account service, which serves account and
-# customer reads and updates and closes the billing cycle.
+# Deployment and Service for the account service, which is to serve account and
+# customer reads and updates and close the billing cycle.
 #
-# The authorization service reads this service while it applies the decline
-# rules. 30-configmap.yaml names the Service below in ACCOUNT_SERVICE_BASE_URL,
-# and the Domain Name System (DNS) resolves that name inside this namespace.
+# No other service calls this one. It publishes account.state-changed, and the
+# authorization service consumes that stream to keep its own
+# account_credit_snapshot replica current, so the decline rules read a local table
+# rather than waiting on this service.
 #
-# Billing-cycle close is a Hypertext Transfer Protocol (HTTP) endpoint on this
-# service. Read path: app/cbl/COACTVWC.cbl. Update path and concurrent-change
-# detection: app/cbl/COACTUPC.cbl. Cycle-counter reset:
-# app/cbl/CBACT04C.cbl:L353-L354.
+# Read path: app/cbl/COACTVWC.cbl. Update path and concurrent-change detection:
+# app/cbl/COACTUPC.cbl. Cycle-counter reset: app/cbl/CBACT04C.cbl:L353-L354.
 #
-# This service publishes account.state-changed on a mutation and consumes no
-# event. The endpoints and the outbox relay this manifest configures are planned
-# and unauthored, so the container starts, migrates its schema and answers
-# /actuator.
-#
-# Rationale for every choice in this folder: card-platform/docs/decision-log.md
-# Request and event paths: card-platform/docs/architecture-before-after.md
+# AccountUpdateService, ConcurrentChangeDetector, BillingCycleService, the edit
+# library, OutboxWriter and OutboxRelay are all present. The module registers no
+# controller and no listener, so the container starts, migrates its schema,
+# publishes account.state-changed rows its relay finds and answers /actuator.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -64,12 +60,14 @@ spec:
           # Build and load the image before applying this file. The context is the module
           # directory, the one the Dockerfile header names:
           #
+          #   version=$(mvn -f card-platform/pom.xml help:evaluate \
+          #     -Dexpression=project.version -q -DforceStdout)
           #   mvn -f card-platform/pom.xml -pl services/account-service -am package
           #   docker build -f card-platform/services/account-service/Dockerfile \
-          #     -t carddemo/account-service:1.0.0 \
+          #     -t "carddemo/account-service:${version}" \
           #     card-platform/services/account-service
-          image: carddemo/account-service:1.0.0
-          imagePullPolicy: IfNotPresent
+          image: carddemo/account-service:1.0.0-SNAPSHOT
+          imagePullPolicy: Never
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -166,18 +164,16 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: ACCOUNT_KAFKA_USER
-            # The two passwords that open the mounted transport material. Both
-            # are named here and not pulled with envFrom. carddemo-tls-secret
-            # also carries keys whose names are file names.
+            # The server keystore is private to this service; trust material is shared.
             - name: SERVER_SSL_KEYSTORE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-tls-secret
+                  name: carddemo-account-tls-secret
                   key: SERVER_SSL_KEYSTORE_PASSWORD
             - name: SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-tls-secret
+                  name: carddemo-trust-secret
                   key: KAFKA_SSL_TRUSTSTORE_PASSWORD
           # Both probes read /actuator on the management port over TLS. Port
           # 8080 answers no management request. Readiness allows time for the
@@ -232,16 +228,21 @@ spec:
             medium: Memory
             sizeLimit: 64Mi
         - name: transport-security
-          secret:
-            secretName: carddemo-tls-secret
+          projected:
             defaultMode: 0640
-            items:
-              - key: keystore.p12
-                path: keystore.p12
-              - key: truststore.p12
-                path: truststore.p12
-              - key: ca.crt
-                path: ca.crt
+            sources:
+              - secret:
+                  name: carddemo-account-tls-secret
+                  items:
+                    - key: keystore.p12
+                      path: keystore.p12
+              - secret:
+                  name: carddemo-trust-secret
+                  items:
+                    - key: truststore.p12
+                      path: truststore.p12
+                    - key: ca.crt
+                      path: ca.crt
 ---
 # Pods reach this service at account-service:8080, a short name DNS resolves.
 # The authorization service reads it there, and nothing outside the cluster
@@ -268,21 +269,24 @@ spec:
       targetPort: 8080
       protocol: TCP
 ---
-# Who may reach the account pod, at the network layer.
+# Network policy for the account pod. Ingress admits its business and management
+# surfaces. Egress admits only Domain Name System (DNS), PostgreSQL and Kafka.
 #
 # This is one of the two supporting services the authorization service reads while it
-# applies the decline rules, and what travels on that call is a credit limit and two
-# cycle balances. 30-configmap.yaml names the address it is reached at,
-# ACCOUNT_SERVICE_BASE_URL, and that call is https for the same reason this policy
-# exists: a cluster pod network is a path shared with every other workload on the
-# cluster.
+# applies the decline rules. What carries a credit limit and two cycle balances between
+# the two services is the account.state-changed stream and not a call, and the broker
+# listener it travels on is SASL_SSL for the same reason this policy exists: a cluster
+# pod network is a path shared with every other workload on the cluster.
 #
-# The request layer already answers both ports: config/SecurityConfig authenticates
-# every call to the account and customer surface and checks ownership before a handler
-# runs, and it leaves /actuator/health open for probes while requiring ROLE_MONITORING
-# for metrics and the Prometheus scrape, so an anonymous caller receives 401 and an
-# identity holding a business role receives 403. This policy closes the same two gaps
-# a second time, at the network rather than the request layer.
+# The authorization service is not among the callers. It reads its own copy of the two
+# accumulators and the expiry date, refreshed by the state changes this service
+# publishes, so no ingress rule here exists on its behalf.
+#
+# config/SecurityConfig authenticates every call to the account and customer surface
+# and checks ownership before a handler runs. It leaves /actuator/health open for
+# probes and requires ROLE_MONITORING for metrics and the Prometheus scrape. An
+# anonymous caller receives 401; an identity holding a business role receives 403.
+# This policy closes the same two gaps at the network layer.
 # 40-authorization-service.yaml carries the same shape and the note on kubelet probes,
 # which originate from the node and match neither selector below.
 #
@@ -305,6 +309,7 @@ spec:
       app.kubernetes.io/part-of: card-platform
   policyTypes:
     - Ingress
+    - Egress
   ingress:
     # The account, customer and cycle-close surface. Any pod of this platform may call
     # it, and Spring Security authenticates every request that arrives.
@@ -323,4 +328,33 @@ spec:
               app.kubernetes.io/component: monitoring
       ports:
         - port: 9080
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kafka
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 9092
           protocol: TCP

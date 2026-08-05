@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 
 import jakarta.validation.ConstraintViolation;
+import jakarta.validation.Valid;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
@@ -27,13 +28,14 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Reads whether the field edits of {@code app/cbl/COACTUPC.cbl} actually run when a request is
  * validated, and whether any request or view renders a value.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor. It exists because a validator nothing calls edits
+ * <p>This class has no COBOL ancestor. It exists because a validator nothing calls edits
  * nothing: the {@code domain/validation} package held faithful translations of paragraphs
  * {@code 1215-EDIT-MANDATORY} through {@code 1280-EDIT-US-STATE-ZIP-CD}, and the request records
  * declared width bounds alone, so every one of those edits was unreachable through Bean Validation.
@@ -70,6 +72,16 @@ class DtoValidationWiringTest {
             "000000001", "Aaron", "A", "Aaronson", "500 Market Street", "Suite 200", "Springfield",
             "IL", "USA", "62704", "(345)563-7159", "(443)197-1271", "020", "97", "3888",
             "GOVID000000000000001", "19750304", "0000000001", "Y", "742");
+
+    /**
+     * The baseline account component of a body that fetched nothing, from
+     * {@code MOVE LOW-VALUES TO ACUP-OLD-ACCT-DATA} at {@code app/cbl/COACTUPC.cbl:L1438}. No
+     * cascade reaches it, so its absence adds no violation.
+     */
+    private static final AccountDataRequest NO_BASELINE_ACCOUNT = null;
+
+    /** The baseline customer component of a body that fetched nothing. */
+    private static final CustomerDataRequest NO_BASELINE_CUSTOMER = null;
 
     /** An account request whose every component passes. */
     private static final AccountDataRequest VALID_ACCOUNT = new AccountDataRequest(
@@ -294,75 +306,52 @@ class DtoValidationWiringTest {
         private static final String NOT_PROVIDED = "Account number not provided";
 
         @Test
-        @DisplayName("the record holds the identifier and the two groups of L757 and nothing more")
-        void theRecordHoldsThreeComponents() {
+        @DisplayName("the record holds the two groups of L757 and declares no identifier of its own")
+        void theRecordHoldsTwoComponents() {
             RecordComponent[] components = AccountUpdateRequest.class.getRecordComponents();
 
-            assertEquals(3, components.length,
-                    () -> "05 ACUP-NEW-DETAILS. at app/cbl/COACTUPC.cbl:L757 holds one identifier"
-                            + " and two subordinate groups, and this record holds: "
+            assertEquals(2, components.length,
+                    () -> "05 ACUP-NEW-DETAILS. at app/cbl/COACTUPC.cbl:L757 opens with an"
+                            + " identifier the path now carries, so this record holds its two"
+                            + " subordinate groups alone: " + namesOf(components));
+            assertEquals("accountData", components[0].getName(), () -> namesOf(components));
+            assertEquals(AccountDataRequest.class, components[0].getType(), "L758 to L796");
+            assertEquals("customerData", components[1].getName(), () -> namesOf(components));
+            assertEquals(CustomerDataRequest.class, components[1].getType(), "L797 onward");
+            assertTrue(namesOf(components).indexOf("accountId") < 0,
+                    () -> "the identifier travels in the path of PUT /accounts/{accountId} and"
+                            + " nowhere else, so no rule is needed for the two disagreeing: "
                             + namesOf(components));
-            assertEquals("accountId", components[0].getName(), () -> namesOf(components));
-            assertEquals(String.class, components[0].getType(),
-                    "ACUP-NEW-ACCT-ID-X PIC X(11) at app/cbl/COACTUPC.cbl:L759 is the wire form,"
-                            + " and PIC 9(11) at L760-L761 redefines the same eleven bytes");
-            assertEquals("accountData", components[1].getName(), () -> namesOf(components));
-            assertEquals(AccountDataRequest.class, components[1].getType(), "L758 to L796");
-            assertEquals("customerData", components[2].getName(), () -> namesOf(components));
-            assertEquals(CustomerDataRequest.class, components[2].getType(), "L797 onward");
         }
 
         @Test
-        @DisplayName("the identifier keeps its ten leading zeros through a serialization round trip")
-        void theIdentifierKeepsItsLeadingZeros() {
-            AccountUpdateRequest request = updateOf(ACCOUNT_ID);
-
-            assertEquals(ACCOUNT_ID, request.accountId(),
-                    "the accessor returns the eleven characters that arrived");
+        @DisplayName("the body round trips both sections and carries no identifier property")
+        void theBodyRoundTripsBothSectionsAndCarriesNoIdentifier() {
+            AccountUpdateRequest request = anUpdate();
 
             ObjectMapper mapper = JsonMapper.builder().build();
             String json = mapper.writeValueAsString(request);
             AccountUpdateRequest returned = mapper.readValue(json, AccountUpdateRequest.class);
 
-            assertTrue(json.contains("\"" + ACCOUNT_ID + "\""),
-                    () -> "a numeric component would render 00000000001 as 1 and drop ten leading"
-                            + " zeros: " + json);
-            assertEquals(ACCOUNT_ID, returned.accountId(), () -> json);
+            assertFalse(json.contains("accountId"),
+                    () -> "the body declares no identifier property, so a caller cannot submit one"
+                            + " that disagrees with the path: " + json);
             assertEquals(request, returned, () -> json);
         }
 
         @Test
-        @DisplayName("an identifier wider than eleven characters breaks the width bound of L759")
-        void anIdentifierWiderThanElevenCharactersIsRefused() {
-            assertEquals(11, AccountUpdateRequest.ACCOUNT_ID_MAX_LENGTH,
-                    "ACUP-NEW-ACCT-ID-X PIC X(11) at app/cbl/COACTUPC.cbl:L759");
-            assertTrue(validator.validate(updateOf(ACCOUNT_ID)).isEmpty(),
-                    () -> "an eleven-character identifier passes: "
-                            + messagesOf(validator.validate(updateOf(ACCOUNT_ID))));
-
-            Set<ConstraintViolation<AccountUpdateRequest>> violations =
-                    validator.validate(updateOf("000000000012"));
-
-            assertEquals(1, violations.size(),
-                    () -> "one bound reports one violation: " + messagesOf(violations));
-            assertEquals("accountId",
-                    violations.iterator().next().getPropertyPath().toString(),
-                    () -> messagesOf(violations));
-        }
-
-        @Test
-        @DisplayName("a missing identifier reports no bean violation and reaches the validator")
-        void aMissingIdentifierReportsNoBeanViolation() {
+        @DisplayName("the identifier rule still holds, applied to the value the path supplied")
+        void theIdentifierRuleStillHoldsOnThePathValue() {
+            assertTrue(AccountIdValidator.validate(ACCOUNT_ID).valid(),
+                    "an eleven-digit identifier with a non-zero digit passes");
+            assertFalse(AccountIdValidator.validate("000000000012").valid(),
+                    "a twelve-character identifier is refused by the rule of"
+                            + " app/cbl/COACTUPC.cbl:L1802-L1803");
             for (String missing : List.of("", "   ", "           ")) {
-                assertTrue(validator.validate(updateOf(missing)).isEmpty(),
-                        () -> "app/cbl/COACTUPC.cbl:L1787-L1788 catches a field of spaces and"
-                                + " line 1792 answers with one text, so no bound answers first: "
-                                + messagesOf(validator.validate(updateOf(missing))));
-                assertEquals(NOT_PROVIDED, AccountIdValidator.validate(missing).message());
+                assertEquals(NOT_PROVIDED, AccountIdValidator.validate(missing).message(),
+                        "app/cbl/COACTUPC.cbl:L1787-L1788 catches a field of spaces and line 1792"
+                                + " answers with one text");
             }
-            assertTrue(validator.validate(updateOf(null)).isEmpty(),
-                    () -> "an absent identifier reaches the validator untouched: "
-                            + messagesOf(validator.validate(updateOf(null))));
             assertEquals(NOT_PROVIDED, AccountIdValidator.validate(null).message());
         }
 
@@ -393,43 +382,53 @@ class DtoValidationWiringTest {
         }
 
         @Test
-        @DisplayName("the cascade reaches the account section at L758")
-        void theCascadeReachesTheAccountSection() {
-            AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID,
-                    withActiveStatus("X"), VALID_CUSTOMER);
+        @DisplayName("the request declares no cascade, so no second unordered pass competes")
+        void theRequestDeclaresNoCascade() {
+            AccountUpdateRequest request =
+                    new AccountUpdateRequest(withActiveStatus("X"), withFirstName("Aaron2"));
 
             Set<ConstraintViolation<AccountUpdateRequest>> violations = validator.validate(request);
 
-            assertFalse(violations.isEmpty(),
-                    "without the cascade the edits of AccountDataRequest are unreachable through"
-                            + " the enclosing request");
-            assertTrue(violations.stream()
-                            .anyMatch(violation -> violation.getPropertyPath().toString()
-                                    .equals("accountData.activeStatus")),
-                    () -> "the path names the composed component: " + messagesOf(violations));
+            assertTrue(violations.isEmpty(),
+                    () -> "two bad fields would answer with a Set in unspecified order, and"
+                            + " AccountUpdateResponse carries one message: " + messagesOf(violations));
+            for (RecordComponent component : AccountUpdateRequest.class.getRecordComponents()) {
+                assertNull(component.getAnnotation(Valid.class),
+                        () -> "a cascade on " + component.getName() + " would run a second"
+                                + " validator beside the ordered pass of"
+                                + " AccountUpdateService.editMapInputs");
+            }
         }
 
         @Test
-        @DisplayName("the cascade reaches the customer section at L797")
-        void theCascadeReachesTheCustomerSection() {
-            AccountUpdateRequest request = new AccountUpdateRequest(ACCOUNT_ID, VALID_ACCOUNT,
-                    withFirstName("Aaron2"));
+        @DisplayName("the composed sections keep their own bounds and stay validatable directly")
+        void theComposedSectionsKeepTheirOwnBounds() {
+            assertFalse(validator.validate(withActiveStatus("X")).isEmpty(),
+                    "AccountDataRequest still declares the bounds of its ten components");
+            assertFalse(validator.validate(withFirstName("Aaron2")).isEmpty(),
+                    "CustomerDataRequest still declares the bounds of its twenty components");
+        }
 
-            Set<ConstraintViolation<AccountUpdateRequest>> violations = validator.validate(request);
-
-            assertFalse(violations.isEmpty(),
-                    "without the cascade the edits of CustomerDataRequest are unreachable through"
-                            + " the enclosing request");
-            assertTrue(violations.stream()
-                            .anyMatch(violation -> violation.getPropertyPath().toString()
-                                    .equals("customerData.firstName")),
+        @Test
+        @DisplayName("the ordered pass is the one validator, and it answers with one message")
+        void theOrderedPassIsTheOneValidator() {
+            for (RecordComponent component : EditResult.class.getRecordComponents()) {
+                assertFalse(Collection.class.isAssignableFrom(component.getType())
+                                || Map.class.isAssignableFrom(component.getType()),
+                        () -> "WS-RETURN-MSG PIC X(75) at app/cbl/COACTUPC.cbl:L479 holds one text"
+                                + " under the guard at line 480, so no component collects many: "
+                                + component.getName());
+            }
+            Set<ConstraintViolation<AccountUpdateRequest>> violations = validator.validate(
+                    new AccountUpdateRequest(VALID_ACCOUNT, withFirstName("Aaron2")));
+            assertTrue(violations.isEmpty(),
                     () -> "the path names the composed component: " + messagesOf(violations));
         }
 
         @Test
         @DisplayName("the rendering names all three components and carries no value")
         void theRenderingNamesThreeComponentsAndCarriesNoValue() {
-            String rendering = updateOf(ACCOUNT_ID).toString();
+            String rendering = anUpdate().toString();
 
             assertFalse(rendering.contains(ACCOUNT_ID),
                     () -> "the account identifier is the key every event of this account carries: "
@@ -438,7 +437,7 @@ class DtoValidationWiringTest {
                 assertFalse(rendering.contains(value),
                         () -> "the rendering carries " + value + ": " + rendering);
             }
-            for (String component : List.of("accountId", "accountData", "customerData")) {
+            for (String component : List.of("accountData", "customerData")) {
                 assertTrue(rendering.contains(component + "=" + CustomerDataRequest.WITHHELD),
                         () -> "each component is named and its value withheld, and " + component
                                 + " is missing from: " + rendering);
@@ -448,13 +447,12 @@ class DtoValidationWiringTest {
         }
 
         /**
-         * Builds an update request carrying one identifier and both reference sections.
+         * Builds an update request carrying both reference sections.
          *
-         * @param accountId the identifier to submit; may be {@code null}
          * @return the request
          */
-        private AccountUpdateRequest updateOf(String accountId) {
-            return new AccountUpdateRequest(accountId, VALID_ACCOUNT, VALID_CUSTOMER);
+        private AccountUpdateRequest anUpdate() {
+            return new AccountUpdateRequest(VALID_ACCOUNT, VALID_CUSTOMER);
         }
 
         /**

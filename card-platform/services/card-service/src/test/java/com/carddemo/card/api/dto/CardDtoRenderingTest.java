@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.events.EventEnvelope;
 import java.lang.reflect.RecordComponent;
 import java.time.LocalDate;
@@ -17,18 +18,14 @@ import org.junit.jupiter.api.Test;
  * Asserts that no rendering of a card request or response carries a card number, a cardholder name
  * or an expiry date.
  *
- * <p>The rendering a Java record carries by default prints every component, and every type below is
- * a record. {@link CardUpdateRequest} is the one that matters most: its first component is
- * the full sixteen-digit Primary Account Number, and beside it sit the embossed name and the expiry
- * date in three parts. A number, a name and an expiry date together are what a card-not-present
- * authorization asks for, so the default rendering of that one record is enough to use the card. A
- * log line, an assertion failure, a debugger view or the message of an exception that interpolated
- * the request would persist all of it.
+ * <p>Every type below is a record, and the rendering a record carries by default prints every
+ * component. {@link CardUpdateRequest} carries the most: the full sixteen-digit Primary Account
+ * Number, the embossed name and the expiry date in three parts, which together are what a
+ * card-not-present authorization asks for.
  *
- * <p>Two of the six render every component deliberately, because no component of either is
- * sensitive. Those two are asserted here as well, so that the decision is pinned rather than
- * assumed, and so that a component added later has to be weighed against a failing test instead of
- * appearing silently in every log line that touches the type.
+ * <p>Two of the six render every component, because no component of either is sensitive. Those two
+ * are asserted here as well, so a sensitive component added to either fails a test rather than
+ * reaching a log line.
  *
  * <p>Every test runs in memory. None opens a connection, sends a request or reads a file.
  */
@@ -66,6 +63,14 @@ class CardDtoRenderingTest {
      * the component in full.
      */
     private static final String MASKED = "*".repeat(12) + CARD_NUMBER.substring(12);
+
+    /**
+     * {@link #CARD_NUMBER} in the form a paging cursor carries: the card token the production
+     * helper derives. {@link CardListResponse} refuses any other form in its canonical
+     * constructor, and the value carries no digit of the card number, which is what makes a
+     * rendering of a page safe to print the cursor in full.
+     */
+    private static final String CURSOR = PanMasker.cardToken(CARD_NUMBER);
 
     @Nested
     @DisplayName("The update request withholds every value it carries")
@@ -114,11 +119,11 @@ class CardDtoRenderingTest {
     }
 
     @Nested
-    @DisplayName("The detail response withholds the cardholder name and the expiry date")
+    @DisplayName("The detail response withholds the name, the expiry date and the account")
     class DetailResponseRendering {
 
         @Test
-        @DisplayName("the name and the expiry date are withheld, the identifiers are kept")
+        @DisplayName("the name, the expiry date and the account identifier are withheld")
         void theNameAndExpiryAreWithheld() {
             String rendered = new CardDetailResponse(MASKED, ACCOUNT_ID, EMBOSSED_NAME,
                     EXPIRATION_DATE, ACTIVE_STATUS).toString();
@@ -132,8 +137,9 @@ class CardDtoRenderingTest {
 
             assertTrue(rendered.contains(MASKED),
                     "the rendering publishes the masked number: " + rendered);
-            assertTrue(rendered.contains("accountId=" + ACCOUNT_ID),
-                    "the rendering keeps the account identifier: " + rendered);
+            assertFalse(rendered.contains("accountId=" + ACCOUNT_ID),
+                    "the account identifier is stable and identifies one cardholder, so the "
+                            + "rendering withholds it: " + rendered);
             assertTrue(rendered.contains("activeStatus=" + ACTIVE_STATUS),
                     "the rendering keeps the status flag: " + rendered);
         }
@@ -148,18 +154,18 @@ class CardDtoRenderingTest {
         void theRenderingNamesACountAndNoCard() {
             CardSummary summary = new CardSummary(MASKED, ACCOUNT_ID, ACTIVE_STATUS);
             String rendered =
-                    new CardListResponse(List.of(summary, summary), true, MASKED).toString();
+                    new CardListResponse(List.of(summary, summary), true, CURSOR).toString();
 
             assertTrue(rendered.contains("cards=2 on this page"),
                     "the rendering counts the page: " + rendered);
             assertFalse(rendered.contains(MASKED),
-                    "expanding the page would repeat every masked number in it, and the cursor "
-                            + "holds a card number of its own: " + rendered);
+                    "expanding the page would repeat every masked number in it: " + rendered);
             assertTrue(rendered.contains("nextPageExists=true")
-                            && rendered.contains("nextCursor=" + EventEnvelope.WITHHELD),
+                            && rendered.contains("nextCursor=" + CURSOR),
                     "the rendering keeps the paging state, which is what a paging problem needs, "
-                            + "and withholds the cursor, which holds the browse key of "
-                            + "app/cbl/COCRDLIC.cbl:L488-L489: " + rendered);
+                            + "and names the cursor in full. The cursor is a card token, which "
+                            + "carries no digit of the card number it stands for, so it discloses "
+                            + "nothing a log line may not hold: " + rendered);
         }
 
         @Test
@@ -219,18 +225,19 @@ class CardDtoRenderingTest {
     }
 
     @Nested
-    @DisplayName("Two types render every component, and that is a decision rather than a default")
+    @DisplayName("Two types render every component, none of which is sensitive")
     class DeliberatelyCompleteRenderings {
 
         @Test
-        @DisplayName("the summary renders all three components, none of which is sensitive")
+        @DisplayName("the summary names the masked number and the status, and withholds the "
+                + "account")
         void theSummaryRendersEveryComponent() {
             String rendered = new CardSummary(MASKED, ACCOUNT_ID, ACTIVE_STATUS).toString();
 
             assertTrue(rendered.contains("cardNumber=" + MASKED),
                     "the masked number is safe by construction: " + rendered);
-            assertTrue(rendered.contains("accountId=" + ACCOUNT_ID), "the rendering names the"
-                    + " account: " + rendered);
+            assertFalse(rendered.contains("accountId=" + ACCOUNT_ID),
+                    "the account identifier is stable and identifies one cardholder: " + rendered);
             assertTrue(rendered.contains("activeStatus=" + ACTIVE_STATUS),
                     "the rendering names the status: " + rendered);
             assertFalse(rendered.contains(CARD_NUMBER),

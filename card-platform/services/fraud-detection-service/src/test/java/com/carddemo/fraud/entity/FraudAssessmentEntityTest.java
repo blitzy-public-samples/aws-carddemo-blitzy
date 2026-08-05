@@ -21,16 +21,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Contract tests for {@link FraudAssessmentEntity}, the row that records how the risk rules rated
  * one authorized transaction.
  *
- * <p>ADDITIVE IN FULL: no COBOL (Common Business Oriented Language) program scores risk, so no
+ * <p>No Common Business Oriented Language (COBOL) ancestor: no COBOL program scores risk, so no
  * assertion here cites a source paragraph. The bounds and the rule identifiers come from
  * {@link FraudFlagged}, which the schema document {@code fraud-flagged-v1.json} enumerates. These
  * tests read them from that class, so the two cannot drift apart.
  *
- * <p>Five invariants are covered. The score bounds, the closed rule identifier set, the absence of
- * duplicates, the agreement between the verdict and the rule list, and the exact widths of the two
- * identifiers. The round trip through {@link FraudAssessmentEntity.TriggeredRuleListConverter} is
- * covered too. That includes an identifier holding the separator, which the previous comma-joined
- * form split into two rules.
+ * <p>Four invariants are covered. The score bounds, the closed rule identifier set, the absence of
+ * duplicates, and the exact widths of the two identifiers. The verdict is tested independently
+ * because the configured score threshold, not a non-empty rule list, determines it. The round trip
+ * through {@link FraudAssessmentEntity.TriggeredRuleListConverter} is covered too.
  *
  * <p>Every test builds the entity directly and reaches no database, context or broker.
  */
@@ -154,23 +153,23 @@ class FraudAssessmentEntityTest {
     }
 
     @Test
-    @DisplayName("A verdict of true with no rule is refused")
-    void flaggedWithoutRuleIsRefused() {
-        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> new FraudAssessmentEntity(TRANSACTION_ID, ACCOUNT_ID, 10, true, List.of(),
-                        ASSESSED_AT),
-                "a flagged row names the reason it was flagged");
-        assertTrue(refused.getMessage().contains("flagged"),
-                "the failure names the verdict: " + refused.getMessage());
+    @DisplayName("A threshold verdict is stored independently of the contributing rule list")
+    void flaggedWithoutRuleIsStored() {
+        FraudAssessmentEntity assessment = new FraudAssessmentEntity(
+                TRANSACTION_ID, ACCOUNT_ID, 10, true, List.of(), ASSESSED_AT);
+        assertTrue(assessment.isFlagged(), "the threshold verdict changed");
+        assertEquals(List.of(), assessment.getTriggeredRules(), "the rule list changed");
     }
 
     @Test
-    @DisplayName("A verdict of false alongside a rule is refused")
-    void unflaggedWithRuleIsRefused() {
-        assertThrows(IllegalArgumentException.class,
-                () -> new FraudAssessmentEntity(TRANSACTION_ID, ACCOUNT_ID, 10, false,
-                        List.of(FraudFlagged.VELOCITY_RULE), ASSESSED_AT),
-                "a row carrying a rule hides it from a consumer that reads the flag alone");
+    @DisplayName("A cleared assessment may retain a rule whose score stayed below the threshold")
+    void clearedAssessmentMayRetainTriggeredRules() {
+        FraudAssessmentEntity cleared = assertDoesNotThrow(
+                () -> new FraudAssessmentEntity(TRANSACTION_ID, ACCOUNT_ID, 30, false,
+                        List.of(FraudFlagged.VELOCITY_RULE), ASSESSED_AT));
+        assertFalse(cleared.isFlagged(), "the threshold verdict changed");
+        assertEquals(List.of(FraudFlagged.VELOCITY_RULE), cleared.getTriggeredRules(),
+                "the explanatory rule was dropped");
     }
 
     @ParameterizedTest
@@ -271,16 +270,15 @@ class FraudAssessmentEntityTest {
     }
 
     @Test
-    @DisplayName("An identifier holding the separator survives the converter round trip")
-    void converterKeepsASeparatorBearingIdentifierWhole() {
+    @DisplayName("The converter refuses an identifier outside the published set")
+    void converterRefusesAnUnknownIdentifier() {
         FraudAssessmentEntity.TriggeredRuleListConverter converter =
                 new FraudAssessmentEntity.TriggeredRuleListConverter();
         List<String> awkward = List.of("A,B");
         String stored = converter.convertToDatabaseColumn(awkward);
-        assertEquals(awkward, converter.convertToEntityAttribute(stored),
-                "the comma-joined form read this back as the two rules A and B");
-        assertEquals(1, converter.convertToEntityAttribute(stored).size(),
-                "one identifier holding a comma stays one identifier");
+        assertThrows(IllegalArgumentException.class,
+                () -> converter.convertToEntityAttribute(stored),
+                "a corrupt stored identifier reached the domain");
     }
 
     @Test

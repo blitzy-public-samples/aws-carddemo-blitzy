@@ -38,7 +38,9 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
@@ -84,8 +86,6 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>The writer and these assertions have no Common Business-Oriented Language (COBOL) source.
  * They are net new; no COBOL ancestor. Fixed event values and in-memory collaborators keep the
  * tests independent of a broker, database, container, or network.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @DisplayName("Outbox writer")
 public class OutboxWriterTest {
@@ -95,6 +95,7 @@ public class OutboxWriterTest {
     private static final Instant FLAGGED_ENVELOPE_INSTANT =
             Instant.parse("2022-06-10T19:27:53Z");
     private static final Instant ASSESSMENT_INSTANT = Instant.parse("2022-06-10T19:27:54Z");
+    private static final Instant ROW_CREATED_AT = Instant.parse("2026-08-04T12:30:00Z");
     private static final UUID FLAGGED_EVENT_IDENTIFIER =
             UUID.fromString("7c3a5b2e-4d16-4f8a-b0c5-2e7d6a4f8b31");
     private static final UUID CLEARED_EVENT_IDENTIFIER =
@@ -445,13 +446,13 @@ public class OutboxWriterTest {
      * {@link AnnotationConfigApplicationContext}.
      *
      * <p>The stereotype is {@link TestConfiguration} rather than
-     * {@code org.springframework.context.annotation.Configuration}. {@code TestConfiguration} carries
-     * {@code @TestComponent}, which {@code TestTypeExcludeFilter} removes from the component scan that
-     * {@code @SpringBootApplication} performs over {@code com.carddemo.fraud}. A plain
-     * {@code @Configuration} here is scan-eligible, so every {@code @SpringBootTest} in this module
-     * would also register the {@code outboxEventRepository} bean below and collide with the repository
-     * Spring Data JPA builds under that same name. {@code TestConfiguration} is meta-annotated
-     * {@code @Configuration}, so explicit registration keeps working unchanged.
+     * {@code org.springframework.context.annotation.Configuration}. {@code TestConfiguration}
+     * carries {@code @TestComponent}, which {@code TestTypeExcludeFilter} removes from the
+     * component scan {@code @SpringBootApplication} performs over {@code com.carddemo.fraud}.
+     * A plain {@code @Configuration} here is scan-eligible. Every {@code @SpringBootTest} in this
+     * module would then register the {@code outboxEventRepository} bean below, and collide with
+     * the repository Spring Data JPA builds under that name. {@code TestConfiguration} is
+     * meta-annotated {@code @Configuration}, so explicit registration keeps working unchanged.
      */
     @TestConfiguration(proxyBeanMethods = false)
     @EnableTransactionManagement(proxyTargetClass = true)
@@ -561,7 +562,8 @@ public class OutboxWriterTest {
 
         @BeforeEach
         void setUp() {
-            writer = new OutboxWriter(repository);
+            writer = new OutboxWriter(
+                    repository, Clock.fixed(ROW_CREATED_AT, ZoneOffset.UTC));
         }
 
         @Test
@@ -624,7 +626,8 @@ public class OutboxWriterTest {
 
         @BeforeEach
         void setUp() {
-            writer = new OutboxWriter(repository);
+            writer = new OutboxWriter(
+                    repository, Clock.fixed(ROW_CREATED_AT, ZoneOffset.UTC));
         }
 
         @Test
@@ -634,11 +637,9 @@ public class OutboxWriterTest {
             ArgumentCaptor<OutboxEventEntity> rows =
                     ArgumentCaptor.forClass(OutboxEventEntity.class);
             FraudFlagged event = flaggedEvent();
-            Instant beforeWrite = Instant.now();
 
             writer.write(event);
 
-            Instant afterWrite = Instant.now();
             verify(repository).save(rows.capture());
             OutboxEventEntity row = rows.getValue();
 
@@ -652,7 +653,7 @@ public class OutboxWriterTest {
                     .matches("^[0-9]{11}$");
             assertThat(row.isPublished()).isFalse();
             assertThat(row.getPublishedAt()).isNull();
-            assertThat(row.getCreatedAt()).isBetween(beforeWrite, afterWrite);
+            assertThat(row.getCreatedAt()).isEqualTo(ROW_CREATED_AT);
             assertThat(row.getCreatedAt())
                     .isNotEqualTo(FLAGGED_ENVELOPE_INSTANT)
                     .isNotEqualTo(ASSESSMENT_INSTANT);

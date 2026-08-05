@@ -160,8 +160,8 @@ CREATE TABLE rejected_transaction (
 -- aggregate_id is the account identifier and the Kafka message key.
 -- payload is bounded at 8192 octets, the ceiling
 -- libs/event-contracts/.../serde/EventWireBounds.java applies on the wire, so the stored
--- bound and the published bound are one bound. The seven relay-state columns are ADDITIVE
--- with no COBOL ancestor: without a claim, two relay instances read the same unpublished
+-- bound and the published bound are one bound. The seven relay-state columns have no
+-- COBOL ancestor: without a claim, two relay instances read the same unpublished
 -- row and publish it twice, and without an attempt count and a next-attempt time one
 -- undeliverable row is retried forever and blocks the rows behind it.
 CREATE TABLE outbox_event (
@@ -225,7 +225,7 @@ CREATE INDEX ix_outbox_event_pending
 
 -- Processed event marker. Additive: no COBOL program detects a duplicate delivery.
 -- One row records one consumed event identifier, written with the side effects of that
--- event. The primary key is the only access path.
+-- event. ix_processed_event_processed_at below serves the retention scan.
 -- The primary key is the guard as well as the key: an insert that collides is how a consumer
 -- learns the event was already handled, so the guard cannot be checked and then raced past.
 -- The consumer inserts this row in the same local transaction as its side effects and
@@ -243,7 +243,6 @@ CREATE TABLE processed_event (
 -- Retention. A marker matters only while a redelivery of its event is still possible.
 -- This index serves the purge that deletes markers past the retention horizon.
 CREATE INDEX ix_processed_event_processed_at ON processed_event (processed_at);
-
 
 -- Three secondary indexes follow, and none of them is unique.
 
@@ -269,7 +268,6 @@ CREATE INDEX ix_outbox_event_claimable
 CREATE INDEX ix_outbox_event_published_at
     ON outbox_event (published_at) WHERE published = TRUE;
 
-
 -- ============================================================================
 -- Retention and erasure
 -- ============================================================================
@@ -283,36 +281,38 @@ CREATE INDEX ix_outbox_event_published_at
 --
 -- Each COMMENT below reads as four fields followed by a sentence, so an operator can
 -- read the policy out of the catalogue rather than out of a document:
---   retention=<window>      how long a row may stay, or the word relationship for a business
---                           record whose life is the customer relationship
+--   retention=<window>      how long a row may stay, or the word relationship for a
+--                           business record whose life is the customer relationship
 --   purge_key=<column>      the column a purge job ranges over, or 'none'
---   personal_data=<yes|no>  whether the row describes an identifiable person
+--   personal_data=<pseudonymous|no> whether the row can be linked to a person
 -- Read them back with:
 --   SELECT relname, obj_description(oid, 'pg_class') FROM pg_class
 --    WHERE relkind = 'r' ORDER BY relname;
 --
 -- The windows below are the demo baseline this platform ships with. No requirement in
--- scope fixes a legal retention period, and card-platform/docs/suggested-next-tasks.md (planned)
--- carries the task of replacing them with the periods a deployment's jurisdiction
--- requires. The purge job itself is out of scope for the same reason: nothing in the
--- Agent Action Plan schedules one, and a job that deletes financial records is not
--- something to add without an owner. The columns and indexes it needs are here.
+-- scope fixes a legal retention period, so a deployment replaces them with the periods
+-- its own jurisdiction requires. The purge job itself is out of scope for the same
+-- reason: nothing in the Agent Action Plan schedules one, and a job that deletes
+-- financial records is not something to add without an owner. The columns and indexes
+-- it needs are here.
 
 -- The range a purge job scans.
 CREATE INDEX ix_rejected_transaction_rejected_at ON rejected_transaction (rejected_at);
 
 COMMENT ON TABLE transaction IS
-    'retention=relationship; purge_key=none; personal_data=no. Posted transaction, the ledger
-     record itself. app/cbl/CBTRN02C.cbl:L562-L577 writes one per posted transaction and no
-     program deletes one. A financial record is not purged on a timer.';
+    'retention=relationship; purge_key=none; personal_data=pseudonymous. Posted transaction,
+     including amount, merchant detail, masked card and transaction identifier. Those values
+     can resolve to a named customer through the owning services. A financial record is not
+     purged on a timer.';
 
 COMMENT ON TABLE transaction_category_balance IS
-    'retention=relationship; purge_key=none; personal_data=no. Per-account category balance.
-     Derived from transaction rows and as durable as they are.';
+    'retention=relationship; purge_key=none; personal_data=pseudonymous. Per-account category
+     balance. account_id links the financial aggregate to a named customer through the account
+     service. Derived from transaction rows and as durable as they are.';
 
 COMMENT ON TABLE account_balance_projection IS
-    'retention=relationship; purge_key=none; personal_data=no. Balance projection this
-     service maintains per event.';
+    'retention=relationship; purge_key=none; personal_data=pseudonymous. Per-account balance
+     and billing-cycle projection. account_id links it to a named customer.';
 
 COMMENT ON TABLE transaction_type IS
     'retention=reference; purge_key=none; personal_data=no. Seeded lookup from
@@ -323,15 +323,15 @@ COMMENT ON TABLE transaction_category IS
      app/data/ASCII/trancatg.txt, 18 rows.';
 
 COMMENT ON TABLE rejected_transaction IS
-    'retention=90 days; purge_key=rejected_at; personal_data=no. Diagnostic record of one
-     refusal, card number masked. It exists to explain a refusal, not to be a financial
-     record, so it expires: purge rows whose rejected_at is older than 90 days.';
+    'retention=90 days; purge_key=rejected_at; personal_data=pseudonymous. Diagnostic record
+     of one refusal, carrying transaction, amount, merchant and masked-card details that can
+     be linked to a customer. Purge rows whose rejected_at is older than 90 days.';
 
 COMMENT ON TABLE outbox_event IS
-    'retention=7 days after published; purge_key=created_at; personal_data=no. One posted
-     event awaiting publication. Purge rows where published is true and created_at is older
-     than 7 days.';
+    'retention=7 days after published; purge_key=published_at; personal_data=pseudonymous. One
+     posted or declined event awaiting publication, keyed by account and carrying financial
+     payload data. Purge rows where published_at is older than 7 days.';
 
 COMMENT ON TABLE processed_event IS
-    'retention=30 days; purge_key=processed_at; personal_data=no. Duplicate-delivery marker,
-     kept longer than broker topic retention so a replay still finds it.';
+    'retention=carddemo.processed-event.marker-retention-hours; purge_key=processed_at;
+     personal_data=no. Duplicate-delivery marker.';

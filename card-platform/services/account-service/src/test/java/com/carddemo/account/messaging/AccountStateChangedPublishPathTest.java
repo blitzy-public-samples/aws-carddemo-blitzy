@@ -29,7 +29,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /**
  * Runs {@link AccountStateChanged} through the publish path and the consume path this service uses.
  *
- * <p>ADDITIVE. No COBOL program publishes an event, so nothing here translates a source construct.
+ * <p>No COBOL program publishes an event, so nothing here translates a source construct.
  * The account fields the event carries come from {@code app/cpy/CVACT01Y.cpy}:
  * {@code ACCT-ACTIVE-STATUS PIC X(01)} at {@code :L6}, {@code ACCT-CURR-BAL PIC S9(10)V99} at
  * {@code :L7}, {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} at {@code :L8},
@@ -49,8 +49,6 @@ import static org.junit.jupiter.api.Assertions.fail;
  * <p>Money travels as a decimal string. Each amount holds two fractional digits and truncates toward
  * zero, since the rounding phrase appears in none of the twenty-eight programs under
  * {@code app/cbl}.
- *
- * <p>{@code card-platform/docs/decision-log.md} (planned) holds the rationale for these choices.
  *
  * <p>Versions in use: Java 25, Apache Maven 3.9.16, junit-jupiter 6.0.3,
  * spring-boot-starter-test 4.1.0, json-schema-validator 3.0.6 and jackson-databind 3.1.4.
@@ -261,8 +259,8 @@ class AccountStateChangedPublishPathTest {
      * @return an event that satisfies the document
      */
     private static AccountStateChanged eventOf(AccountStateChanged.ChangeKind changeType) {
-        return AccountStateChanged.of(ACCOUNT_ID, changeType, CREDIT_LIMIT, ZERO, ZERO,
-                EXPIRATION_DATE);
+        return AccountStateChanged.of(ACCOUNT_ID, changeType, CURRENT_BALANCE, CREDIT_LIMIT, ZERO,
+                ZERO, EXPIRATION_DATE);
     }
 
     /**

@@ -17,30 +17,28 @@ import java.util.UUID;
  * One row of the table {@code outbox_event} in this service's private schema, holding one event
  * awaiting publication to the topic {@code fraud.assessed}.
  *
- * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. Searching {@code app/cbl/} for {@code fraud},
- * {@code velocit}, {@code risk}, {@code scoring} and {@code luhn} matches zero of its 28 programs.
+ * <p>No Common Business Oriented Language (COBOL) ancestor. Searching {@code app/cbl/} for
+ * {@code fraud}, {@code velocit}, {@code risk}, {@code scoring} and {@code luhn} matches zero of
+ * its 28 programs.
  * The width of {@code aggregate_id} comes from {@code XREF-ACCT-ID PIC 9(11)} at
  * {@code app/cpy/CVACT03Y.cpy:L7}, shape only; no other column here has a source counterpart.
  *
- * <p>Flyway creates the table from {@code src/main/resources/db/migration/V1__schema.sql}.
- * Hibernate validates this mapping against that schema and writes no schema object, so a column
- * name or type differing from the contract below stops start-up.
+ * <p>Flyway creates the table from {@code src/main/resources/db/migration/V1__schema.sql}, which
+ * is authoritative for every column, index and constraint. Hibernate runs under
+ * {@code ddl-auto: validate} and writes no schema object, so a column name or type that differs
+ * from that migration stops start-up.
  *
- * <pre>
- * event_id     UUID                        NOT NULL, primary key pk_outbox_event
- * event_type   VARCHAR(32)                 NOT NULL
- * aggregate_id CHAR(11)                    NOT NULL
- * payload      TEXT                        NOT NULL
- * published    BOOLEAN                     NOT NULL DEFAULT FALSE
- * created_at   TIMESTAMP(6) WITH TIME ZONE NOT NULL
- * published_at TIMESTAMP(6) WITH TIME ZONE
- * index        ix_outbox_event_pending (created_at, event_id) WHERE published = FALSE
- * </pre>
+ * <p>The mapped columns fall into three groups: the event itself ({@code event_id},
+ * {@code event_type}, {@code aggregate_id}, {@code payload}), its publication
+ * ({@code published}, {@code created_at}, {@code published_at}), and the relay's own bookkeeping
+ * ({@code relay_state}, {@code attempt_count}, {@code next_attempt_at}, {@code last_attempt_at},
+ * {@code last_error}, {@code claimed_by}, {@code claimed_at}). Three indexes serve the pending
+ * scan, the claim query and the published purge.
  *
- * <p>The relay claims unpublished rows in {@code created_at} then {@code event_id} order, publishes
- * each one, then calls {@link #markPublished(Instant)}.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
+ * <p>{@code messaging.TransactionAuthorizedConsumer} writes one row through
+ * {@code outbox.OutboxWriter}, inside the same local transaction as the assessment that row
+ * describes. {@code outbox.OutboxRelay} claims unpublished rows in {@code created_at} then
+ * {@code event_id} order, publishes each one, then calls {@link #markPublished(Instant)}.
  */
 @Entity
 @Table(name = "outbox_event",
@@ -234,8 +232,8 @@ public class OutboxEventEntity {
      * boolean would be refused by the database rather than quietly leave a published row looking
      * pending. The claim is released, because a published row needs none.
      *
-     * <p>A second call on an already published row is ignored, so a relay that publishes and then
-     * fails before its own transaction commits does not corrupt the row on the retry that follows.
+     * <p>A second call on an already published row is ignored. A relay that publishes and then
+     * fails before its own transaction commits therefore leaves the row intact for the retry.
      *
      * @param publishedAt when the publish succeeded
      * @throws NullPointerException  if {@code publishedAt} is null
@@ -302,16 +300,10 @@ public class OutboxEventEntity {
     }
 
     // ------------------------------------------------------------------------------------
-    // Relay state. ADDITIVE: the CardDemo source has no relay and therefore no lease. Its one
-    // asynchronous handoff, the transient data queue write at app/cbl/CORPT00C.cbl:L517, is
-    // picked up by a single scheduled job, so nothing there can claim a row twice or give up on
-    // one. The enum, the four constants, the seven columns and the three operations below are
-    // one concern and are kept together rather than scattered through the class.
-    //
-    // Two failures are what these columns exist to prevent. Without a claim, two relay instances
-    // read the same unpublished row and publish the same event twice, which a consumer then has
-    // to deduplicate. Without an attempt count and a next-attempt time, one undeliverable row is
-    // retried forever and every row behind it waits.
+    // Relay state. The enum, the four constants, the seven columns and the three operations
+    // below hold two invariants. A row is claimed by at most one relay instance, so one event
+    // is published once. A row carries an attempt count and a next-attempt time, so an
+    // undeliverable row is abandoned rather than retried forever ahead of the rows behind it.
     // ------------------------------------------------------------------------------------
 
     /**
@@ -340,17 +332,17 @@ public class OutboxEventEntity {
     /**
      * How many attempts a row takes before the relay abandons it.
      *
-     * <p>The ceiling lives here and not in a check constraint on purpose: abandoning a row is a
-     * decision the relay records, and a constraint would instead turn the attempt that crosses
-     * the ceiling into a failed statement.
+     * <p>The ceiling lives here and not in a check constraint. Abandoning a row is a decision
+     * the relay records, whereas a constraint would turn the attempt that crosses the ceiling
+     * into a failed statement.
      */
     public static final int MAX_DELIVERY_ATTEMPTS = 10;
 
     /**
      * Widest value {@code last_error} holds, from {@code last_error VARCHAR(500)} in
-     * {@code src/main/resources/db/migration/V1__schema.sql}. The column is bounded so that a
-     * stack trace cannot be stored in it by accident, and a longer reason is truncated rather
-     * than refused: losing the tail of a diagnostic is better than losing the row.
+     * {@code src/main/resources/db/migration/V1__schema.sql}. The bound keeps a stack trace out
+     * of the column by accident. A longer reason is truncated rather than refused, so the row
+     * survives and only the tail of the diagnostic is lost.
      */
     public static final int LAST_ERROR_MAX_LENGTH = 500;
 

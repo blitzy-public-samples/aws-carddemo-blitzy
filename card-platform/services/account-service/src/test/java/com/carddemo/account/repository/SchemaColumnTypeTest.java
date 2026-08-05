@@ -49,14 +49,14 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * {@code IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)}.</p>
  *
  * <p><b>Two renames.</b> {@code ACCT-EXPIRAION-DATE} at {@code app/cpy/CVACT01Y.cpy:L11} becomes
- * column {@code expiration_date}, and {@code CUST-ADDR-LINE-3} at
- * {@code app/cpy/CVCUS01Y.cpy:L11} becomes column {@code address_city}.
- * {@code card-platform/docs/traceability-matrix.md} records both.</p>
+ * column {@code expiration_date}, and {@code CUST-ADDR-LINE-3} at {@code app/cpy/CVCUS01Y.cpy:L11}
+ * becomes column {@code address_city}.
  *
  * <p><b>What this class covers.</b> Five monetary account columns, two further decimal columns and
  * the two sensitive customer identifier columns. The two business keys, the one composite key, the
- * remaining character columns and the two additive tables. Column counts, seed row counts and
- * stored values belong to other test classes of this module.
+ * remaining character columns and the two additive tables. The seven outbox relay-state columns
+ * also have their defaults, nullability and check constraints read from the catalogue. Column
+ * counts, seed row counts and stored values belong to other test classes of this module.
  * {@code card-platform/docs/decision-log.md} holds the reasoning behind the storage forms the
  * assertions read back, and {@code card-platform/docs/data-model.md} draws the tables.</p>
  */
@@ -114,6 +114,22 @@ class SchemaColumnTypeTest extends AbstractAccountPostgresTest {
     }
 
     /**
+     * Supplies the seven outbox relay-state columns with their type, length and nullability.
+     *
+     * @return one row per relay-state column
+     */
+    private static Stream<Arguments> relayStateColumns() {
+        return Stream.of(
+                arguments("relay_state", VARYING_TEXT, 16, false),
+                arguments("attempt_count", "integer", null, false),
+                arguments("next_attempt_at", TIMESTAMP_WITH_ZONE, null, false),
+                arguments("last_attempt_at", TIMESTAMP_WITH_ZONE, null, true),
+                arguments("last_error", VARYING_TEXT, 500, true),
+                arguments("claimed_by", VARYING_TEXT, 64, true),
+                arguments("claimed_at", TIMESTAMP_WITH_ZONE, null, true));
+    }
+
+    /**
      * One row of {@code information_schema.columns}, holding the five fields the assertions read.
      *
      * @param dataType type name PostgreSQL reports for the column
@@ -121,9 +137,10 @@ class SchemaColumnTypeTest extends AbstractAccountPostgresTest {
      * @param precision declared total digit count, null for a column declaring none
      * @param scale declared digit count after the decimal point, null for a column declaring none
      * @param nullable whether the column accepts a null
+     * @param defaultValue default expression, or null when none is declared
      */
     private record ColumnShape(String dataType, Integer textLength, Integer precision,
-                               Integer scale, boolean nullable) {
+                               Integer scale, boolean nullable, String defaultValue) {
     }
 
     /** Connection source for the two catalogue queries, bound to the container the harness runs. */
@@ -136,6 +153,9 @@ class SchemaColumnTypeTest extends AbstractAccountPostgresTest {
     /** Primary key columns of every table of the schema, in key order. */
     private final Map<String, List<String>> primaryKeys = new HashMap<>();
 
+    /** Check constraints of the schema, keyed by constraint name. */
+    private final Map<String, String> checkConstraints = new HashMap<>();
+
     /**
      * Reads the two catalogue queries once for the test method about to run.
      *
@@ -146,13 +166,14 @@ class SchemaColumnTypeTest extends AbstractAccountPostgresTest {
         try (Connection connection = dataSource.getConnection()) {
             readColumns(connection);
             readPrimaryKeys(connection);
+            readCheckConstraints(connection);
         }
     }
 
     private void readColumns(Connection connection) throws SQLException {
         String query = """
                 SELECT table_name, column_name, data_type, character_maximum_length,
-                       numeric_precision, numeric_scale, is_nullable
+                       numeric_precision, numeric_scale, is_nullable, column_default
                   FROM information_schema.columns
                  WHERE table_schema = ?
                 """;
@@ -166,7 +187,8 @@ class SchemaColumnTypeTest extends AbstractAccountPostgresTest {
                                     boxedInt(rows, "character_maximum_length"),
                                     boxedInt(rows, "numeric_precision"),
                                     boxedInt(rows, "numeric_scale"),
-                                    "YES".equals(rows.getString("is_nullable"))));
+                                    "YES".equals(rows.getString("is_nullable")),
+                                    rows.getString("column_default")));
                 }
             }
         }
@@ -189,6 +211,23 @@ class SchemaColumnTypeTest extends AbstractAccountPostgresTest {
                 while (rows.next()) {
                     primaryKeys.computeIfAbsent(rows.getString("table_name"),
                             table -> new ArrayList<>()).add(rows.getString("column_name"));
+                }
+            }
+        }
+    }
+
+    private void readCheckConstraints(Connection connection) throws SQLException {
+        String query = """
+                SELECT constraint_name, check_clause
+                  FROM information_schema.check_constraints
+                 WHERE constraint_schema = ?
+                """;
+        try (PreparedStatement statement = connection.prepareStatement(query)) {
+            statement.setString(1, ACCOUNT_SCHEMA);
+            try (ResultSet rows = statement.executeQuery()) {
+                while (rows.next()) {
+                    checkConstraints.put(
+                            rows.getString("constraint_name"), rows.getString("check_clause"));
                 }
             }
         }
@@ -417,6 +456,51 @@ class SchemaColumnTypeTest extends AbstractAccountPostgresTest {
                 .as("nullability of outbox_event.published, from %s", ADDITIVE_SOURCE).isFalse();
         assertThat(shape("outbox_event", "published_at").nullable())
                 .as("nullability of outbox_event.published_at, from %s", ADDITIVE_SOURCE).isTrue();
+    }
+
+    @ParameterizedTest(name = "outbox_event.{0} is {1}, length {2}, nullable {3}")
+    @MethodSource("relayStateColumns")
+    void relayStateColumnsCarryTheirTypeLengthAndNullability(String column, String dataType,
+            Integer length, boolean nullable) {
+        ColumnShape shape = shape("outbox_event", column);
+
+        assertThat(shape.dataType())
+                .as("type of outbox_event.%s, from %s", column, ADDITIVE_SOURCE)
+                .isEqualTo(dataType);
+        assertThat(shape.textLength())
+                .as("length of outbox_event.%s, from %s", column, ADDITIVE_SOURCE)
+                .isEqualTo(length);
+        assertThat(shape.nullable())
+                .as("nullability of outbox_event.%s, from %s", column, ADDITIVE_SOURCE)
+                .isEqualTo(nullable);
+    }
+
+    @Test
+    @DisplayName("relay_state and attempt_count declare their initial defaults")
+    void relayStateColumnsDeclareTheirDefaults() {
+        assertThat(shape("outbox_event", "relay_state").defaultValue())
+                .contains("'PENDING'");
+        assertThat(shape("outbox_event", "attempt_count").defaultValue()).isEqualTo("0");
+        assertThat(shape("outbox_event", "next_attempt_at").defaultValue()).isNull();
+        assertThat(shape("outbox_event", "last_attempt_at").defaultValue()).isNull();
+        assertThat(shape("outbox_event", "last_error").defaultValue()).isNull();
+        assertThat(shape("outbox_event", "claimed_by").defaultValue()).isNull();
+        assertThat(shape("outbox_event", "claimed_at").defaultValue()).isNull();
+    }
+
+    @Test
+    @DisplayName("outbox relay-state checks bind the state, attempts, claim pair and publication")
+    void relayStateCheckConstraintsArePresent() {
+        assertThat(checkConstraints.get("ck_outbox_event_relay_state"))
+                .contains("relay_state", "PENDING", "CLAIMED", "PUBLISHED", "ABANDONED");
+        assertThat(checkConstraints.get("ck_outbox_event_attempt_count"))
+                .contains("attempt_count", ">= 0");
+        assertThat(checkConstraints.get("ck_outbox_event_claim_pairing"))
+                .contains("claimed_by", "claimed_at", "IS NULL");
+        assertThat(checkConstraints.get("ck_outbox_event_published_agrees"))
+                .contains("published", "relay_state", "PUBLISHED");
+        assertThat(checkConstraints.get("ck_outbox_event_published_at"))
+                .contains("published_at", "relay_state", "PUBLISHED");
     }
 
     @Test

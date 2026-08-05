@@ -10,12 +10,13 @@ import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
 /**
- * Writes the stream names this service resolved, and says where each one came from.
+ * Writes the stream names and dead-letter suffix this service resolved, and says where each came
+ * from.
  *
- * <p>ADDITIVE. {@code app/jcl/POSTTRAN.jcl} names the daily transaction file this service's stream
- * replaces, and it names it in the job rather than in the program, so {@code app/cbl/CBTRN02C.cbl}
- * could not resolve a name at run time at all. Its nearest relative is the source habit of
- * displaying what a program is about to work on.
+ * <p>No COBOL ancestor. {@code app/jcl/POSTTRAN.jcl} names the daily transaction file this
+ * service's stream replaces, and it names it in the job rather than in the program, so {@code
+ * app/cbl/CBTRN02C.cbl} could not resolve a name at run time at all. Its nearest relative is the
+ * source habit of displaying what a program is about to work on.
  *
  * <h2>The problem this solves</h2>
  *
@@ -41,8 +42,6 @@ import org.springframework.stereotype.Component;
  *
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else.
- *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 public class StreamNameReport implements ApplicationListener<ApplicationReadyEvent> {
@@ -68,7 +67,7 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
     }
 
     /**
-     * The names this service resolved, in the order they are reported.
+     * The names and suffix this service resolved, in the order they are reported.
      *
      * <p>Package-private and returned rather than logged so a test can assert the list without
      * capturing log output. One entry per topic this module binds: an entry missing here would be a
@@ -92,9 +91,13 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
                         "TOPIC_TRANSACTION_DECLINED",
                         topics.transactionDeclined()),
                 new ReportedName(
-                        "topic an unprocessable record is routed to",
+                        "fallback topic for a record with no source topic",
                         "TOPIC_DEAD_LETTER",
-                        topics.deadLetter()));
+                        topics.deadLetter()),
+                new ReportedName(
+                        "suffix appended to each source topic for dead-letter routing",
+                        "TOPIC_DEAD_LETTER_SUFFIX",
+                        topics.deadLetterSuffix()));
     }
 
     @Override

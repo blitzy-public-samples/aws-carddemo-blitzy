@@ -23,9 +23,7 @@ import org.springframework.stereotype.Component;
  * <p>{@link NotificationRenderer} defines the four COBOL terms these methods use.</p>
  *
  * <p>{@code 01 STATEMENT-LINES} at {@code app/cbl/CBSTM03A.CBL:L85-L146} declares 17 record groups,
- * and one method below builds each group. Four write blocks emit them in source order, and
- * {@code card-platform/docs/traceability-matrix.md} (planned) carries the record-by-record
- * mapping.</p>
+ * and one method below builds each group.
  *
  * <p>Every field arrives at its final width. {@link CardholderContext} and
  * {@link TransactionRow} normalise each component in their canonical constructors, and the two
@@ -199,8 +197,7 @@ public final class PlainTextRenderer implements NotificationRenderer {
     private static final int RULE_WIDTH = RECORD_WIDTH;
 
     /**
-     * Width the fraud alert gives a joined rule identifier list. ADDITIVE, with no COBOL
-     * ancestor.
+     * Width the fraud alert gives a joined rule identifier list. No COBOL ancestor.
      *
      * <p>A rule identifier list outgrows the {@link #ST_ACCT_ID_WIDTH} value field of
      * {@code ST-LINE7}. The fraud alert therefore spends that field and its trailing filler on
@@ -308,27 +305,26 @@ public final class PlainTextRenderer implements NotificationRenderer {
     private static final String TOTAL_LABEL = "Total EXP:";
 
     /**
-     * Label the fraud alert gives the flagged transaction. ADDITIVE, with no COBOL ancestor.
+     * Label the fraud alert gives the flagged transaction. with no COBOL ancestor.
      * Holds {@value #LABEL_WIDTH} characters, matching the labels of {@code ST-LINE7} through
      * {@code ST-LINE9}.
      */
     private static final String TRANSACTION_ID_LABEL = "Transaction ID     :";
 
     /**
-     * Label the fraud alert gives the risk score. ADDITIVE, with no COBOL ancestor. Holds
+     * Label the fraud alert gives the risk score. No COBOL ancestor. Holds
      * {@value #LABEL_WIDTH} characters.
      */
     private static final String RISK_SCORE_LABEL = "Risk Score         :";
 
     /**
-     * Label the fraud alert gives the rule identifier list. ADDITIVE, with no COBOL ancestor.
+     * Label the fraud alert gives the rule identifier list. with no COBOL ancestor.
      * Holds {@value #LABEL_WIDTH} characters.
      */
     private static final String TRIGGERED_RULES_LABEL = "Triggered Rules    :";
 
     /**
-     * Separator the fraud alert places between rule identifiers. ADDITIVE, with no COBOL
-     * ancestor.
+     * Separator the fraud alert places between rule identifiers. No COBOL ancestor.
      */
     private static final String TRIGGERED_RULE_SEPARATOR = ", ";
 
@@ -394,11 +390,11 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Renders an alert covering one flagged transaction.
      *
-     * <p>ADDITIVE. {@code app/cbl/CBSTM03A.CBL} carries no fraud concept, so this operation has
-     * no COBOL ancestor. The alert borrows the statement vocabulary, including the banners of
-     * {@code ST-LINE0} and {@code ST-LINE15}. It also reuses the rule of {@code ST-LINE5} and
-     * {@code ST-LINE12}, the name record of {@code ST-LINE1}, and the label-and-value shape of
-     * {@code ST-LINE7}.</p>
+     * <p>No COBOL ancestor. {@code app/cbl/CBSTM03A.CBL} carries no fraud concept, so this
+     * operation has no COBOL ancestor. The alert borrows the statement vocabulary, including the
+     * banners of {@code ST-LINE0} and {@code ST-LINE15}. It also reuses the rule of {@code
+     * ST-LINE5} and {@code ST-LINE12}, the name record of {@code ST-LINE1}, and the label-and-value
+     * shape of {@code ST-LINE7}.</p>
      *
      * <p>The alert carries the cardholder name, the account identifier, the flagged transaction
      * identifier, the risk score and the rule identifiers that fired. It carries no amount and no
@@ -804,7 +800,7 @@ public final class PlainTextRenderer implements NotificationRenderer {
     }
 
     /**
-     * Builds the rule identifier record of the fraud alert. ADDITIVE, with no COBOL ancestor.
+     * Builds the rule identifier record of the fraud alert. with no COBOL ancestor.
      *
      * <p>Composition: label {@value #LABEL_WIDTH}, joined identifiers
      * {@value #FRAUD_RULE_LIST_WIDTH}, totalling {@value #RECORD_WIDTH}. The value field spans

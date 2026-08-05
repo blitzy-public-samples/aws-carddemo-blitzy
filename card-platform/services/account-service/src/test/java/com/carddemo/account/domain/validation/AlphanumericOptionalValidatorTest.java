@@ -40,6 +40,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Every input below is built in this file, and no fixture row is read. The methods run on plain
  * JUnit Jupiter with no Spring context, no container and no database.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("AlphanumericOptionalValidator, the optional alphanumeric field edit")
 class AlphanumericOptionalValidatorTest {
@@ -53,13 +55,13 @@ class AlphanumericOptionalValidatorTest {
     private static final String CHARACTER_CLASS_MESSAGE = " can have numbers or alphabets only.";
 
     /**
-     * ADDITIVE message text for a value wider than the inspected field. No source literal carries
+     * Message text for a value wider than the inspected field. No source literal carries
      * this text: the source moves a fixed-width screen field into its edit field, so a wider value
      * cannot reach paragraph 1240.
      */
     private static final String NO_LONGER_THAN = " must be no longer than ";
 
-    /** ADDITIVE. Closes the text {@link #NO_LONGER_THAN} opens. */
+    /** No COBOL ancestor. Closes the text {@link #NO_LONGER_THAN} opens. */
     private static final String CHARACTERS = " characters.";
 
     /** Character count of {@link #CHARACTER_CLASS_MESSAGE}. */
@@ -311,8 +313,8 @@ class AlphanumericOptionalValidatorTest {
         assertThat(wholeValue.valid()).isFalse();
         assertThat(wholeValue.message()).isEqualTo(FIELD_LABEL + CHARACTER_CLASS_MESSAGE);
 
-        // ADDITIVE. A caller can supply a value wider than the inspected field, and the edit
-        // refuses one that carries a character the window would not cover. An optional field
+        // No COBOL ancestor. A caller can supply a value wider than the inspected field, and the
+        // edit refuses one that carries a character the window would not cover. An optional field
         // therefore cannot pass on its first two characters while the caller holds markup.
         EditResult pastWidth = AlphanumericOptionalValidator.validate(FIELD_LABEL, "AB-", 2);
         EditResult markupPastWidth =

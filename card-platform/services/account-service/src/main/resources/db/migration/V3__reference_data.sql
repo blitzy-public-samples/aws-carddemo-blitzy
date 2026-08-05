@@ -1,4 +1,4 @@
--- Account service reference data, third of three migrations. Every value below is a literal of
+-- Account service reference data, third of four migrations. Every value below is a literal of
 -- app/cpy/CSLKPCDY.cpy, in copybook order. V1__schema.sql declares the three tables.
 
 -- us_phone_area_code carries one row per distinct area code. band records which condition name

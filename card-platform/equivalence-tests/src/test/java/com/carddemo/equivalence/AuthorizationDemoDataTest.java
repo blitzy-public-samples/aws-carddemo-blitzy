@@ -34,8 +34,8 @@ import org.junit.jupiter.api.Test;
  * tests assert three things. The fixture-faithful seed still matches the fixture, the demo value
  * appears only in the demo location, and the demo migration touches only the expiry column.
  *
- * <p>Editing an expiry in {@code V2__seed.sql} instead would have moved the oracle the suite
- * measures against, which is the outcome these tests exist to prevent.
+ * <p>An expiry edited in {@code V2__seed.sql} moves the oracle the suite measures against, and
+ * these tests fail on it. {@code card-platform/docs/decision-log.md} records the split.
  */
 class AuthorizationDemoDataTest {
 

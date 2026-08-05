@@ -1,5 +1,6 @@
 package com.carddemo.authorization.config;
 
+import java.time.Duration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -13,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Binds the shipped {@code application.yml} into {@link AuthorizationProperties} and reads the
  * result back.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor. Each test builds a context holding one properties
+ * <p>This class has no COBOL ancestor. Each test builds a context holding one properties
  * bean and no auto-configuration, so no database and no message broker has to run.
  *
  * <p>The first test is the reachability check: a key that no component reads binds to nothing, and
@@ -45,13 +46,41 @@ class AuthorizationPropertiesTest {
                     .isEqualTo("transaction.authorized");
             assertThat(properties.kafka().topics().transactionDeclined())
                     .isEqualTo("transaction.declined");
+            assertThat(properties.kafka().topics().accountStateChanged())
+                    .isEqualTo("account.state-changed");
+            assertThat(properties.kafka().topics().cardUpdated()).isEqualTo("card.updated");
+            assertThat(properties.kafka().topics().deadLetter()).isEqualTo("carddemo.dead-letter");
+            assertThat(properties.kafka().groups().accountStateChanged())
+                    .isEqualTo("authorization-account-state");
+            assertThat(properties.kafka().groups().cardUpdated())
+                    .isEqualTo("authorization-card-updated");
             assertThat(properties.outbox().relay().fixedDelayMs()).isEqualTo(500L);
             assertThat(properties.outbox().relay().batchSize()).isEqualTo(100);
-            assertThat(properties.services().account().baseUrl())
-                    .isEqualTo("http://account-service:8080");
-            assertThat(properties.services().card().baseUrl())
-                    .isEqualTo("http://card-service:8080");
+            assertThat(properties.outbox().relay().instanceId()).isNotBlank();
+            assertThat(properties.outbox().relay().claimTimeout())
+                    .isEqualTo(java.time.Duration.ofMinutes(2L));
+            assertThat(properties.outbox().publishedRetentionHours()).isEqualTo(168L);
+            assertThat(properties.processedEvent().markerRetentionHours()).isEqualTo(168L);
+            assertThat(properties.retention().sweepIntervalMs()).isEqualTo(3_600_000L);
+            assertThat(properties.replica().maxStaleness()).isEqualTo(java.time.Duration.ofDays(1L));
         });
+    }
+
+    /**
+     * Asserts this record binds no supporting-service address, because the service reads no other
+     * service.
+     *
+     * <p>Two addresses used to be bound here and nothing read either one. A configured value with no
+     * reader is worse than an absent one: it tells a reader the call exists.
+     */
+    @Test
+    @DisplayName("binds no supporting-service address, because no such call is made")
+    void bindsNoSupportingServiceAddress() {
+        assertThat(AuthorizationProperties.class.getRecordComponents())
+                .as("the components of the bound carddemo block")
+                .extracting(java.lang.reflect.RecordComponent::getName)
+                .containsExactlyInAnyOrder(
+                        "kafka", "outbox", "processedEvent", "retention", "replica");
     }
 
     @Test
@@ -77,13 +106,31 @@ class AuthorizationPropertiesTest {
     }
 
     @Test
-    @DisplayName("a supporting-service address with no scheme stops start-up")
-    void aSupportingServiceAddressWithNoSchemeStopsStartUp() {
-        shipped.withPropertyValues("carddemo.services.account.base-url=account-service:8080")
+    @DisplayName("a relay claim timeout of zero stops start-up")
+    void aNonPositiveRelayClaimTimeoutStopsStartUp() {
+        shipped.withPropertyValues("carddemo.outbox.relay.claim-timeout=PT0S")
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
-                            .hasStackTraceContaining("services.account.baseUrl");
+                            .hasStackTraceContaining("claimTimeout");
+                });
+    }
+
+    /**
+     * Asserts a replica window of zero stops start-up.
+     *
+     * <p>No observation can be newer than the moment it is compared against, so a window of zero would
+     * refuse every authorization. Failing at start-up names the property; failing at the first request
+     * would look like a broken replica.
+     */
+    @Test
+    @DisplayName("a replica window of zero stops start-up")
+    void aReplicaWindowOfZeroStopsStartUp() {
+        shipped.withPropertyValues("carddemo.replica.max-staleness=PT0S")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("max-staleness");
                 });
     }
 

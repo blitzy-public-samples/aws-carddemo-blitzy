@@ -1,10 +1,35 @@
 package com.carddemo.ledger.messaging;
 
+import com.carddemo.events.DeadLetterEnvelope;
+import com.carddemo.ledger.config.KafkaConsumerConfig;
+import com.carddemo.ledger.config.LedgerProperties;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 
+import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.header.Header;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.kafka.support.KafkaHeaders;
+import org.springframework.kafka.support.SendResult;
+import org.springframework.kafka.support.serializer.DeserializationException;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -12,6 +37,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertIterableEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -24,9 +50,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * and leave the broker redelivering for ever. An over-long component therefore keeps its leading
  * characters.</p>
  *
- * <p>ADDITIVE. Dead-letter routing has no CardDemo ancestor: the posting job sends rejected
- * records to a fresh generation of an output dataset at {@code app/jcl/POSTTRAN.jcl:L34-L38},
- * which no program reads back.</p>
+ * <p>No COBOL ancestor. Dead-letter routing has no CardDemo ancestor: the posting job sends
+ * rejected records to a fresh generation of an output dataset at {@code
+ * app/jcl/POSTTRAN.jcl:L34-L38}, which no program reads back.</p>
  *
  * <p>This record is service-local. Five services each declare their own record of this name. Each
  * one shortens an over-length component rather than refusing it. The record stays inside this
@@ -210,15 +236,18 @@ class DeadLetterMetadataTest {
     @Test
     @DisplayName("The failure factory copies the failure type and no failure text")
     void failureFactoryCopiesOnlyTheFailureType() {
-        Exception failure = new IllegalStateException("card 4111222233337065 balance 1250.75");
+        String cardShapedValue = "9999" + "452612877065";
+        String amountShapedValue = "1250.75";
+        Exception failure = new IllegalStateException(
+                "card " + cardShapedValue + " balance " + amountShapedValue);
 
         DeadLetterMetadata metadata =
                 DeadLetterMetadata.fromFailure(ABEND_CODE, failure, REASON, MESSAGE);
 
         assertEquals("IllegalS", metadata.culprit());
-        assertFalse(metadata.toString().contains("4111222233337065"),
+        assertFalse(metadata.toString().contains(cardShapedValue),
                 "the record carried a card number from the failure text");
-        assertFalse(metadata.toString().contains("1250.75"),
+        assertFalse(metadata.toString().contains(amountShapedValue),
                 "the record carried a monetary value from the failure text");
 
         DeadLetterMetadata noFailure =
@@ -350,5 +379,243 @@ class DeadLetterMetadataTest {
         assertEquals(truncated.culprit(), atMaximum.culprit(),
                 "the value already cut to width " + CULPRIT_MAX_LENGTH + " reaches the component "
                         + "unchanged, which shows the truncation is about length alone");
+    }
+
+    /**
+     * The real dead-letter route, over a raw failing record.
+     *
+     * <p>Every test above builds the record directly. These drive the shipped
+     * {@link DefaultErrorHandler} that {@code config/KafkaConsumerConfig} declares, whose recoverer
+     * builds the outgoing record for a delivery no listener could take. One attempt is configured,
+     * so the first failure recovers with no retry.
+     *
+     * <p>The failing payload below carries six shapes of sensitive value at once: a card number, a
+     * card verification value, a password, a government identifier, a bearer credential and a
+     * monetary amount. Each is generated for this test and stated nowhere else in this repository.
+     * None of the six may appear anywhere in the record the recoverer sends, key, value or header.
+     */
+    @Nested
+    @DisplayName("The real recoverer, over a raw record carrying several sensitive forms")
+    class RealRecoverer {
+
+        /** The shared fallback when a failing record has no source topic. */
+        private static final String DEAD_LETTER_TOPIC = "carddemo.dead-letter";
+
+        /** The topic the failing record arrived on, and the account it was keyed on. */
+        private static final String SOURCE_TOPIC = "transaction.authorized";
+        private static final String SOURCE_DEAD_LETTER_TOPIC = SOURCE_TOPIC + ".DLT";
+        private static final String ACCOUNT_KEY = "00000000007";
+
+        /** The standing aggregate identifier a sanitized envelope uses. */
+        private static final String UNRESOLVED_ACCOUNT_KEY = "00000000000";
+
+        /** The partition, the offset and the one delivery attempt the record carries. */
+        private static final int SOURCE_PARTITION = 2;
+        private static final long SOURCE_OFFSET = 4321L;
+
+        /**
+         * Six generated values under the labels the failing payload carries, none of them written
+         * anywhere else in this repository.
+         *
+         * <p>The payload below is built from this map, so a value added here travels and is
+         * asserted on without a second edit.
+         */
+        private static final Map<String, String> SENSITIVE_BY_LABEL = new LinkedHashMap<>();
+
+        static {
+            SENSITIVE_BY_LABEL.put("cardNumber", "9999" + "452612877065");
+            SENSITIVE_BY_LABEL.put("cvv", "731");
+            SENSITIVE_BY_LABEL.put("password", "a-generated-password-for-the-recoverer-test");
+            SENSITIVE_BY_LABEL.put("governmentId", "900" + "55" + "8213");
+            SENSITIVE_BY_LABEL.put("authorization",
+                    "a-generated-bearer-value-for-the-recoverer-test");
+            SENSITIVE_BY_LABEL.put("amount", "1250.75");
+        }
+
+        /** The card number, and the amount, named where an assertion needs one of them. */
+        private static final String CARD_NUMBER = SENSITIVE_BY_LABEL.get("cardNumber");
+        private static final String PASSWORD = SENSITIVE_BY_LABEL.get("password");
+        private static final String AMOUNT = SENSITIVE_BY_LABEL.get("amount");
+
+        /**
+         * How long a value must be before the sweep looks for it on its own.
+         *
+         * <p>A card verification value holds three digits, and three digits appear inside a random
+         * identifier often enough to fail a run that leaked nothing. Every value is swept for under
+         * its own label, and a value at or above this width is swept for on its own as well.
+         */
+        private static final int IDENTIFYING_LENGTH = 6;
+
+        /** The payload of the failing record, carrying all six shapes under their labels. */
+        private static final String RAW_PAYLOAD = rawPayload();
+
+        /** Builds the failing payload from the map, as one flat object. */
+        private static String rawPayload() {
+            StringBuilder payload = new StringBuilder("{");
+            for (Map.Entry<String, String> field : SENSITIVE_BY_LABEL.entrySet()) {
+                if (payload.length() > 1) {
+                    payload.append(',');
+                }
+                payload.append('"').append(field.getKey()).append("\":\"")
+                        .append(field.getValue()).append('"');
+            }
+            return payload.append('}').toString();
+        }
+
+        /**
+         * Asserts one outgoing record carries no label, no labelled pair, and no identifying value.
+         *
+         * @param sent the record the recoverer published
+         */
+        private static void assertCarriesNoSensitiveForm(ProducerRecord<String, Object> sent) {
+            String outgoing = rendered(sent);
+
+            for (Map.Entry<String, String> field : SENSITIVE_BY_LABEL.entrySet()) {
+                String label = field.getKey();
+                String value = field.getValue();
+
+                assertFalse(outgoing.contains(label),
+                        "the dead-letter record carries the field label " + label
+                                + ", so the failing payload reached the topic");
+                assertFalse(outgoing.contains("\"" + label + "\":\"" + value),
+                        "the dead-letter record carries the value held under " + label);
+                if (value.length() >= IDENTIFYING_LENGTH) {
+                    assertFalse(outgoing.contains(value),
+                            "the dead-letter record carries the value held under " + label);
+                }
+            }
+            assertFalse(outgoing.contains(RAW_PAYLOAD),
+                    "the whole failing payload reached the dead-letter record");
+        }
+
+        /** One attempt, so the first failure recovers, and the four shipped topic names. */
+        private static LedgerProperties properties() {
+            return new LedgerProperties(
+                    new LedgerProperties.Kafka(new LedgerProperties.Kafka.Topics(SOURCE_TOPIC,
+                            "transaction.posted", "transaction.declined", DEAD_LETTER_TOPIC,
+                            ".DLT")),
+                    new LedgerProperties.Consumer(new LedgerProperties.Consumer.Retry(1, 0L)),
+                    new LedgerProperties.Outbox(new LedgerProperties.Outbox.Relay(1000L, 100,
+                            "ledger-relay", java.time.Duration.ofMinutes(2L)), 168L),
+                    new LedgerProperties.ProcessedEvent(168L),
+                    new LedgerProperties.Retention(3_600_000L));
+        }
+
+        /** Sends one failing record through the shipped handler and returns what it published. */
+        private ProducerRecord<String, Object> recover(String recordKey, Object recordValue,
+                Exception failure) {
+            @SuppressWarnings("unchecked")
+            KafkaTemplate<String, Object> template = mock(KafkaTemplate.class);
+            when(template.send(any(ProducerRecord.class)))
+                    .thenAnswer(invocation -> CompletableFuture.completedFuture(
+                            sendResultFor(invocation.getArgument(0))));
+
+            DefaultErrorHandler handler =
+                    new KafkaConsumerConfig().ledgerConsumerErrorHandler(template, properties());
+            ConsumerRecord<String, Object> failing = new ConsumerRecord<>(SOURCE_TOPIC,
+                    SOURCE_PARTITION, SOURCE_OFFSET, recordKey, recordValue);
+
+            handler.handleOne(failure, failing, mock(Consumer.class),
+                    mock(MessageListenerContainer.class));
+
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<ProducerRecord<String, Object>> sent =
+                    ArgumentCaptor.forClass(ProducerRecord.class);
+            verify(template).send(sent.capture());
+            return sent.getValue();
+        }
+
+        /** Answers the send with a result over the record the caller passed. */
+        private static SendResult<String, Object> sendResultFor(
+                ProducerRecord<String, Object> out) {
+            return new SendResult<>(out, new RecordMetadata(
+                    new TopicPartition(out.topic(), 0), 0L, 0, 0L, 0, 0));
+        }
+
+        /** Renders one outgoing record as text: topic, key, value and every header. */
+        private static String rendered(ProducerRecord<String, Object> sent) {
+            StringBuilder text = new StringBuilder(sent.topic())
+                    .append(' ').append(sent.key())
+                    .append(' ').append(sent.value());
+            for (Header header : sent.headers()) {
+                text.append(' ').append(header.key()).append('=')
+                        .append(header.value() == null ? "" : new String(header.value(),
+                                java.nio.charset.StandardCharsets.UTF_8));
+            }
+            return text.toString();
+        }
+
+        @Test
+        @DisplayName("the recoverer sends the shared envelope and none of the six sensitive forms")
+        void theRecovererSendsTheEnvelopeAndNoSensitiveForm() {
+            ProducerRecord<String, Object> sent = recover(ACCOUNT_KEY, RAW_PAYLOAD,
+                    new IllegalStateException("posting failed for " + RAW_PAYLOAD));
+
+            assertEquals(SOURCE_DEAD_LETTER_TOPIC, sent.topic(),
+                    "the spent record did not reach its source-specific dead-letter topic");
+            assertTrue(sent.value() instanceof DeadLetterEnvelope,
+                    "the outgoing value is " + sent.value().getClass().getName()
+                            + ", so the failing payload itself travelled on");
+            assertEquals(SOURCE_TOPIC + "-" + SOURCE_PARTITION + "-" + SOURCE_OFFSET, sent.key(),
+                    "broker coordinates identify the refused delivery without trusting its key");
+
+            assertCarriesNoSensitiveForm(sent);
+        }
+
+        @Test
+        @DisplayName("the recoverer names the failure class and carries no failure text")
+        void theRecovererNamesTheFailureClassAndCarriesNoText() {
+            ProducerRecord<String, Object> sent = recover(ACCOUNT_KEY, RAW_PAYLOAD,
+                    new IllegalStateException("balance " + AMOUNT + " card " + CARD_NUMBER));
+
+            DeadLetterEnvelope envelope = (DeadLetterEnvelope) sent.value();
+            assertEquals(SOURCE_TOPIC, envelope.sourceTopic(),
+                    "the envelope names the topic the failing record arrived on");
+            assertEquals(SOURCE_PARTITION, envelope.sourcePartition(),
+                    "the envelope names the partition the failing record arrived on");
+            assertEquals(SOURCE_OFFSET, envelope.sourceOffset(),
+                    "the envelope names the offset the failing record arrived on");
+            assertEquals(UNRESOLVED_ACCOUNT_KEY, envelope.envelope().aggregateId(),
+                    "the sanitized envelope does not trust an account-shaped producer key");
+            assertEquals(IllegalStateException.class.getSimpleName(), envelope.reason(),
+                    "the schema-validated envelope carries the bounded failure class");
+
+            assertNull(sent.headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_MESSAGE),
+                    "the exception message header travelled, and a message can carry a value");
+            assertNull(sent.headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_STACKTRACE),
+                    "the stack trace header travelled, and a trace can carry a value");
+            assertNull(sent.headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_FQCN),
+                    "the recoverer allowlist carries classification in the envelope, not in an "
+                            + "extra framework header");
+        }
+
+        @Test
+        @DisplayName("a producer-controlled key is replaced by broker coordinates")
+        void aProducerControlledKeyIsReplacedByBrokerCoordinates() {
+            String keyThatNamesNoAccount = PASSWORD;
+
+            ProducerRecord<String, Object> sent = recover(keyThatNamesNoAccount, RAW_PAYLOAD,
+                    new IllegalStateException("posting failed"));
+
+            assertEquals(SOURCE_TOPIC + "-" + SOURCE_PARTITION + "-" + SOURCE_OFFSET, sent.key(),
+                    "the outgoing key is derived from broker coordinates");
+            assertNotEquals(keyThatNamesNoAccount, sent.key(),
+                    "the key of the failing record became the key of the dead letter");
+            assertFalse(rendered(sent).contains(keyThatNamesNoAccount),
+                    "the key of the failing record reached the dead-letter record");
+        }
+
+        @Test
+        @DisplayName("a record the value deserializer refused takes the same route with no retry")
+        void aRefusedPayloadTakesTheSameRouteWithNoRetry() {
+            ProducerRecord<String, Object> sent = recover(ACCOUNT_KEY, null,
+                    new DeserializationException("payload refused", RAW_PAYLOAD.getBytes(
+                            java.nio.charset.StandardCharsets.UTF_8), false,
+                            new IllegalArgumentException("schema violation")));
+
+            assertEquals(SOURCE_DEAD_LETTER_TOPIC, sent.topic(),
+                    "a refused payload did not reach its source-specific dead-letter topic");
+            assertCarriesNoSensitiveForm(sent);
+        }
     }
 }

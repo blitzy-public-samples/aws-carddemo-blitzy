@@ -12,9 +12,9 @@ import org.springframework.stereotype.Component;
 /**
  * Writes the stream names this service resolved, and says where each one came from.
  *
- * <p>ADDITIVE. {@code app/cbl/CBTRN02C.cbl} names its datasets in a data division and a job stream
- * names the files behind them, so a program could not resolve a name at run time at all. Its nearest
- * relative is the source habit of displaying what a program is about to work on.
+ * <p>No COBOL ancestor. {@code app/cbl/CBTRN02C.cbl} names its datasets in a data division and a
+ * job stream names the files behind them, so a program could not resolve a name at run time at all.
+ * Its nearest relative is the source habit of displaying what a program is about to work on.
  *
  * <h2>The problem this solves</h2>
  *
@@ -41,7 +41,6 @@ import org.springframework.stereotype.Component;
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else. No card number reaches this class either.
  *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 public class StreamNameReport implements ApplicationListener<ApplicationReadyEvent> {
@@ -70,8 +69,10 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
      * The names this service resolved, in the order they are reported.
      *
      * <p>Package-private and returned rather than logged so a test can assert the list without
-     * capturing log output. One entry per topic this module binds: an entry missing here would be a
-     * stream whose resolution is unreported, which is the defect this class exists to prevent.
+     * capturing log output. One entry per topic this module binds, published and consumed alike: an
+     * entry missing here would be a stream whose resolution is unreported, which is the defect this
+     * class exists to prevent. A mistyped consumed name costs as much as a mistyped published one,
+     * because a listener then reads a topic nothing arrives on and reports itself healthy.
      *
      * @return one entry per stream name, never empty
      */
@@ -85,7 +86,19 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
                 new ReportedName(
                         "topic a declined authorization travels on",
                         "TOPIC_TRANSACTION_DECLINED",
-                        topics.transactionDeclined()));
+                        topics.transactionDeclined()),
+                new ReportedName(
+                        "topic the account projection is kept current from",
+                        "TOPIC_ACCOUNT_STATE_CHANGED",
+                        topics.accountStateChanged()),
+                new ReportedName(
+                        "topic the cross-reference observation is kept current from",
+                        "TOPIC_CARD_UPDATED",
+                        topics.cardUpdated()),
+                new ReportedName(
+                        "topic a record no listener could consume reaches",
+                        "TOPIC_DEAD_LETTER",
+                        topics.deadLetter()));
     }
 
     @Override

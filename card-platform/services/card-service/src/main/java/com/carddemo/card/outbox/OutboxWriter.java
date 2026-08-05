@@ -21,15 +21,15 @@ import tools.jackson.databind.ObjectMapper;
 /**
  * Stores one {@code CardUpdated} event in {@code outbox_event}, and publishes nothing.
  *
- * <p>ADDITIVE. No CardDemo program, copybook or job stores an event row. The one ancestor construct
+ * <p>No CardDemo program, copybook or job stores an event row. The one ancestor construct
  * is the transient data queue write of the Customer Information Control System (CICS) at
  * {@code app/cbl/CORPT00C.cbl:L515-L523}. Paragraph {@code WIRTE-JOBSUB-TDQ.} hands one record to a
  * job that runs later.
  *
- * <p>The card row and this row commit together, or neither commits.
- * {@link #writeCardUpdated(CardEntity)} joins the transaction its caller opened and starts none, so
- * the caller owns that boundary. That atomicity is ADDITIVE, and so is the idempotency the primary
- * key of the table carries.
+ * <p>The card row and this row commit together, or neither commits. {@link
+ * #writeCardUpdated(CardEntity)} joins the transaction its caller opened and starts none, so the
+ * caller owns that boundary. Neither that atomicity nor the idempotency the primary key of the
+ * table carries has a COBOL ancestor.
  *
  * <p>The source offers no atomicity to reproduce. {@code app/cbl/CBTRN02C.cbl:L440-L442} runs three
  * writes under no condition and tests no status between them. All eight file definitions of
@@ -44,16 +44,15 @@ import tools.jackson.databind.ObjectMapper;
  *
  * <p>One call stores one row. The card list path and the card detail path store nothing here.
  *
- * <p>The masked card number is ADDITIVE. The source masks nothing: {@code app/bms/COCRDSL.bms:L96}
- * defines the card detail field unprotected, with {@code LENGTH=16} at {@code :L99}. A card read
- * keys on all sixteen characters of the Primary Account Number (PAN), so this class takes the
- * stored value and {@link CardUpdated#ofUnmaskedCardNumber} masks it. The card verification value
- * reaches no row and no log line here, and {@link CardEntity} publishes no accessor for it.
+ * <p>The masked card number has no COBOL ancestor. The source masks nothing: {@code
+ * app/bms/COCRDSL.bms:L96} defines the card detail field unprotected, with {@code LENGTH=16} at
+ * {@code :L99}. A card read keys on all sixteen characters of the Primary Account Number (PAN), so
+ * this class takes the stored value and {@link CardUpdated#ofUnmaskedCardNumber} masks it. The card
+ * verification value reaches no row and no log line here, and {@link CardEntity} publishes no
+ * accessor for it.
  *
  * <p>This class holds no broker type, starts no thread, and writes no {@code processed_event}
  * marker. That marker guards an inbound delivery, and this service registers no consumer.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 public class OutboxWriter {
@@ -132,14 +131,14 @@ public class OutboxWriter {
      * transaction its caller opened and starts none of its own. A failure anywhere in that unit of
      * work leaves no row.
      *
-     * <p>Five payload values come from the card, and the event stamps its own identifier, type,
+     * <p>Four payload values come from the card, and the event stamps its own identifier, type,
      * contract version and moment. The row takes that event identifier as its primary key, so one
      * event yields one row and a second store of the same event fails on the key. On insert
      * {@code published} is {@code false}, and the relay alone turns it true.
      *
      * <p>The account key reaches the message key column, the two account properties of the payload,
      * and nothing else. No message thrown here holds a card number, an account identifier or an
-     * embossed name.
+     * cardholder name.
      *
      * @param card the card as it stands after the update, carrying the stored card number
      * @return the row saved, keyed on the event identifier
@@ -154,8 +153,7 @@ public class OutboxWriter {
 
         String accountKey = accountKeyOf(card);
         CardUpdated event = CardUpdated.ofUnmaskedCardNumber(card.getCardNumber(), accountKey,
-                card.getEmbossedName(), expirationTextOf(card.getExpirationDate()),
-                card.getActiveStatus());
+                expirationTextOf(card.getExpirationDate()), card.getActiveStatus());
         String payload = writeAndCheck(event);
 
         OutboxEventEntity row = outboxEvents.save(new OutboxEventEntity(event.eventId(),
@@ -219,8 +217,8 @@ public class OutboxWriter {
      * document. The check runs before the row is saved, so a payload the contract refuses leaves
      * the caller's transaction able to roll back with nothing stored.
      *
-     * <p>The document is flat. Five envelope properties sit beside five payload properties, and
-     * {@code card-updated-v1.json} names all ten in one {@code required} array. That document
+     * <p>The document is flat. Five envelope properties sit beside four payload properties, and
+     * {@code card-updated-v2.json} names all nine in one {@code required} array. That document
      * closes its property set, so an undeclared property fails this check.
      *
      * <p>A refusal message holds JSON pointers and broken keywords, so no card number and no

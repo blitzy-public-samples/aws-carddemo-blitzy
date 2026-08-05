@@ -59,6 +59,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code PlainTextRendererTest}. The shared helpers that fill
  * {@code app/cbl/CBSTM03A.CBL:L462-L481} belong to {@code NotificationRendererTest}. The total at
  * {@code app/cbl/CBSTM03A.CBL:L434} belongs to {@code NotificationServiceTest}.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("HtmlRenderer, the hundred-column markup records of CBSTM03A")
 class HtmlRendererTest {
@@ -1807,15 +1809,15 @@ class HtmlRendererTest {
     /**
      * Markup characters supplied by a cardholder reach every record as an entity reference.
      *
-     * <p>ADDITIVE. {@code app/cbl/CBSTM03A.CBL} escapes nothing, because a 3270 screen and a
-     * fixed-width dataset carry no markup meaning. A rendering sent to a browser does, so
-     * {@link HtmlRenderer} routes every value-bearing field through
-     * {@link NotificationRenderer#escapeHtmlText(String)}. The tests below supply hostile values to
-     * every interpolated field of both render operations and read the whole rendering back.</p>
+     * <p>No COBOL ancestor. {@code app/cbl/CBSTM03A.CBL} escapes nothing, because a 3270 screen and
+     * a fixed-width dataset carry no markup meaning. A rendering sent to a browser does, so {@link
+     * HtmlRenderer} routes every value-bearing field through {@link
+     * NotificationRenderer#escapeHtmlText(String)}. The tests below supply hostile values to every
+     * interpolated field of both render operations and read the whole rendering back.</p>
      *
      * <p>The oracle counts raw markup characters. A benign rendering carries a known number of
-     * them, all from the literals of the source, and a hostile rendering must carry exactly the
-     * same number: every character the cardholder supplied has become an entity reference. That
+     * them, all from the literals of the source. A hostile rendering must carry exactly the same
+     * number. Every character the cardholder supplied has become an entity reference. That
      * comparison needs no second copy of the escaping rule.</p>
      */
     @Nested
@@ -1960,7 +1962,7 @@ class HtmlRendererTest {
      * field under test.
      *
      * <p>The comparison is an upper bound rather than an equality. An escaped value is longer than
-     * the value it replaces, so an assembled line can pass the hundred characters of
+     * the value it replaces. An assembled line can therefore pass the hundred characters of
      * {@code FD-HTMLFILE-REC PIC X(100)} at {@code app/cbl/CBSTM03A.CBL:L47} and lose its tail to
      * the same truncation a COBOL {@code MOVE} performs. A rendering that lost a character of its
      * own markup carries no character a cardholder supplied, so the security property is the upper

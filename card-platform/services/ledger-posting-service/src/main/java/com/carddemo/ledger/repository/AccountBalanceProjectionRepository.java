@@ -1,8 +1,13 @@
 package com.carddemo.ledger.repository;
 
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
+import jakarta.persistence.LockModeType;
 import java.util.Optional;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.data.repository.Repository;
+import org.springframework.data.repository.query.Param;
 
 /**
  * Finds and stores rows of {@link AccountBalanceProjectionEntity}, the balance and the two
@@ -43,25 +48,42 @@ import org.springframework.data.repository.Repository;
  *
  * <h2>Concurrent updates</h2>
  *
- * <p>Three mechanisms keep one account's rows consistent, and none of them is a lock this interface
- * has to expose. The account identifier is the message key, so every event for one account lands on
- * one partition and one consumer applies them in order. The primary key admits one row per account.
- * The idempotency marker stops a redelivered event from adding the same amount twice.
+ * <p>The account identifier is the message key, so normal delivery orders one account's events on
+ * one partition. The posting path also takes a pessimistic write lock, because a malformed key or a
+ * consumer-group transition must not turn two read-modify-write operations into one lost update.
+ * The primary key admits one row per account, and the idempotency marker stops a redelivery.
  *
- * <p>Rationale, source mapping and flagged findings: {@code card-platform/docs/decision-log.md}
- * (planned), {@code card-platform/docs/traceability-matrix.md} (planned) and
- * {@code card-platform/docs/business-rule-flags.md} (planned).
+ * <p>Rationale, source mapping and flagged findings: {@code card-platform/docs/decision-log.md},
+ * {@code card-platform/docs/traceability-matrix.md}, and
+ * {@code card-platform/docs/business-rule-flags.md}.
  */
 public interface AccountBalanceProjectionRepository
         extends Repository<AccountBalanceProjectionEntity, String> {
 
     /**
-     * Finds the balance row for one account.
+     * Finds the balance row for one account, taking no lock.
+     *
+     * <p>{@code api/BalanceQueryController} reads through this method. A posting path reads through
+     * {@link #findForUpdateById(String)} instead.
      *
      * @param accountId the eleven-digit account number
      * @return the row, or an empty {@code Optional} when the table holds no such account
      */
     Optional<AccountBalanceProjectionEntity> findById(String accountId);
+
+    /**
+     * Reads and locks the balance row that the posting path is about to replace.
+     *
+     * @param accountId the eleven-digit account number
+     * @return the locked row, or an empty value when the projection is absent
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            SELECT projection FROM AccountBalanceProjectionEntity projection
+            WHERE projection.accountId = :accountId
+            """)
+    Optional<AccountBalanceProjectionEntity> findForUpdateById(
+            @Param("accountId") String accountId);
 
     /**
      * Saves a balance row the caller has already read and changed.

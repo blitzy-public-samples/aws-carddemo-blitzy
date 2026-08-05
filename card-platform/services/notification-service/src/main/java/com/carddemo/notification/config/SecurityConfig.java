@@ -43,10 +43,9 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
 /**
  * Request authentication and authorization for the notification service.
  *
- * <p>This service holds a card-keyed read model and renders a cardholder alert. Its one route
- * returns the transaction history of a card, which is a disclosure of what a cardholder bought,
- * where and for how much, so the route is scoped to the cards the caller owns and its page size is
- * bounded.
+ * <p>This service holds an account-keyed read model and renders a cardholder alert. Its one route
+ * returns an account's transaction history, which discloses what a cardholder bought, where and
+ * for how much. The route is scoped to accounts the caller owns, and its page size is bounded.
  *
  * <h2>Where the two roles come from</h2>
  *
@@ -64,8 +63,6 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * configured identity carries an already-encoded password, {@link PasswordEncoderFactories}
  * supplies the delegating encoder that reads its {@code {bcrypt}} prefix, and no plaintext password
  * is stored, compared or logged anywhere on this platform.
- * {@code card-platform/docs/business-rule-flags.md} (planned) carries the source behaviour for the
- * record.
  *
  * <h2>The four properties this class holds</h2>
  *
@@ -118,8 +115,6 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * {@code libs/event-contracts} carries the event contracts. Six small copies that each state
  * their own routes are the intended shape, and each copy differs only in
  * {@link #apiSecurity(HttpSecurity)}.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Configuration
 @EnableWebSecurity
@@ -148,7 +143,14 @@ public class SecurityConfig {
     /** Ownership kind for a customer identifier, {@code CUST-ID PIC 9(09)}. */
     static final String CUSTOMER_SCOPE = "CUSTOMER";
 
-    /** Ownership kind for a card, named by its masked form and never by a full card number. */
+    /**
+     * Ownership kind for a card, named by its card token and never by a card number of either form.
+     *
+     * <p>The token is what makes this authority decide one card. A masked card number identifies no
+     * single card, so {@code SCOPE_CARD_************7065} would entitle its holder to every card
+     * sharing those last four digits. A full card number would put a Primary Account Number into a
+     * configured authority and into every request path the rule matches.</p>
+     */
     static final String CARD_SCOPE = "CARD";
 
     /** Realm name a 401 carries, so a client knows which credential to present. */
@@ -192,8 +194,9 @@ public class SecurityConfig {
      * <p>An identity becomes one authority for its role and one authority per ownership scope, so
      * the whole entitlement of a caller travels in the authority list and no custom principal type
      * is needed. A scope reads {@code SCOPE_ACCOUNT_00000000001} or
-     * {@code SCOPE_CARD_************5740}: the kind, then the identifier exactly as the column
-     * holds it, leading zeros and mask characters included.
+     * {@code SCOPE_CARD_1134636222d1a2485d20203d0e970c72124893eb01be73a5fde5fdcccc2c4ac9}:
+     * the kind, then the identifier exactly as
+     * the column holds it, leading zeros included.
      *
      * @param identities the configured identities
      * @return one {@link UserDetails} per configured identity
@@ -286,15 +289,17 @@ public class SecurityConfig {
     /**
      * Secures the notification service API.
      *
-     * <p>One route answers. {@code GET /notifications/{maskedCardNumber}} returns the alert
-     * history of one card, and the rule scopes it to the cards the caller owns.
+     * <p>One route answers. {@code GET /notifications/{cardToken}} returns the alert history of one
+     * card, and the rule scopes it to the cards the caller owns.
      *
-     * <p>The path segment is the masked card number, twelve mask characters then the last four
-     * digits, and never a full card number: {@code src/main/resources/openapi.yaml} carries the
-     * pattern and {@code src/main/resources/db/migration/V1__schema.sql} stores the same masked
-     * form as the key of the read model. A masked number is not unique across the whole card
-     * estate, which is precisely why the ownership rule is load-bearing here rather than merely
-     * defensive: it is what stops a caller reaching a history that shares its last four digits.
+     * <p>The path segment is the card token, {@value com.carddemo.cobol.PanMasker#CARD_TOKEN_LENGTH}
+     * lower-case hexadecimal characters, and never a card number of either form:
+     * {@code src/main/resources/openapi.yaml} carries the pattern and
+     * {@code src/main/resources/db/migration/V1__schema.sql} stores the same token as the key of the
+     * read model. The token is what lets this rule decide one card. Over a masked number the rule
+     * would be unsound rather than merely weak: one authority would admit its holder to every card
+     * sharing those last four digits, and the request path would name a card the caller may not
+     * hold.
      *
      * @param http the builder Spring Security supplies
      * @return the chain covering every request that is not an actuator endpoint
@@ -314,8 +319,8 @@ public class SecurityConfig {
                         // server.error.include-* key at a value that reveals no detail.
                         .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC)
                             .permitAll()
-                        .requestMatchers(HttpMethod.GET, "/notifications/{maskedCardNumber}")
-                            .access(ownsPathVariable(CARD_SCOPE, "maskedCardNumber"))
+                        .requestMatchers(HttpMethod.GET, "/notifications/{cardToken}")
+                            .access(ownsPathVariable(CARD_SCOPE, "cardToken"))
                         // Default deny. A route named by no rule above is refused.
                         .anyRequest().denyAll())
                 .httpBasic(basic -> basic.authenticationEntryPoint(SecurityConfig::unauthorized))
@@ -481,7 +486,7 @@ public class SecurityConfig {
          * @param role     {@code ADMIN}, {@code USER} or {@code MONITORING}
          * @param scopes   the ownership authorities this identity holds, each
          *                 {@code SCOPE_ACCOUNT_<id>}, {@code SCOPE_CUSTOMER_<id>} or
-         *                 {@code SCOPE_CARD_<masked>}. Empty for an administrator and for a
+         *                 {@code SCOPE_CARD_<token>}. Empty for an administrator and for a
          *                 monitoring identity
          */
         public record Identity(String username, String password, String role, List<String> scopes) {
@@ -489,7 +494,7 @@ public class SecurityConfig {
     }
 
     // ------------------------------------------------------------------------------------
-    // Published-credential guard. ADDITIVE: the CardDemo source compares a stored password
+    // Published-credential guard. No COBOL ancestor: the CardDemo source compares a stored password
     // against a supplied one directly at app/cbl/COSGN00C.cbl:L223, so it has no notion of a
     // credential being unfit to run with. This platform publishes example values in
     // card-platform/.env.example and deploy/k8s/31-secret.example.yaml, and a reader following the

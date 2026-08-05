@@ -1,6 +1,7 @@
 package com.carddemo.ledger.domain;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -13,6 +14,7 @@ import static org.mockito.Mockito.when;
 
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
+import jakarta.persistence.LockModeType;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Optional;
@@ -23,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
+import org.springframework.data.jpa.repository.Lock;
 
 /**
  * Arithmetic and branch tests for {@link AccountBalanceUpdater}.
@@ -83,9 +86,19 @@ final class AccountBalanceUpdaterTest {
         updater = new AccountBalanceUpdater(accountBalances);
     }
 
+    @Test
+    @DisplayName("the posting read takes a pessimistic write lock before replacing the balance")
+    void thePostingReadTakesAPessimisticWriteLock() throws NoSuchMethodException {
+        Lock lock = AccountBalanceProjectionRepository.class
+                .getMethod("findForUpdateById", String.class)
+                .getAnnotation(Lock.class);
+
+        assertEquals(LockModeType.PESSIMISTIC_WRITE, lock.value());
+    }
+
     /** Stubs the repository to hold one row for {@link #ACCOUNT_ID}, each amount at scale two. */
     private void storeRow(BigDecimal balance, BigDecimal cycleCredit, BigDecimal cycleDebit) {
-        when(accountBalances.findById(ACCOUNT_ID)).thenReturn(Optional.of(
+        when(accountBalances.findForUpdateById(ACCOUNT_ID)).thenReturn(Optional.of(
                 new AccountBalanceProjectionEntity(ACCOUNT_ID, balance, cycleCredit, cycleDebit)));
     }
 
@@ -229,19 +242,21 @@ final class AccountBalanceUpdaterTest {
 
         /**
          * The {@code INVALID KEY} branch at {@code :L555-L558} reports
-         * {@code 'ACCOUNT RECORD NOT FOUND'} and creates no record. The subject throws, names the
-         * account, and saves nothing.
+         * {@code 'ACCOUNT RECORD NOT FOUND'} and creates no record. The subject throws and saves
+         * nothing, and its message withholds the account.
          */
         @Test
         @DisplayName("throws and saves nothing when no row carries the account")
         void throwsAndSavesNothingWhenNoRowCarriesTheAccount() {
-            when(accountBalances.findById(ACCOUNT_ID)).thenReturn(Optional.empty());
+            when(accountBalances.findForUpdateById(ACCOUNT_ID)).thenReturn(Optional.empty());
 
             AccountBalanceUpdater.AccountBalanceRowMissingException thrown = assertThrows(
                     AccountBalanceUpdater.AccountBalanceRowMissingException.class,
                     () -> updater.updateBalances(ACCOUNT_ID, POSTED_AMOUNT));
 
-            assertTrue(thrown.getMessage().contains(ACCOUNT_ID));
+            assertFalse(thrown.getMessage().contains(ACCOUNT_ID),
+                    "an exception message reaches a log and a dead-letter record, so it names no "
+                            + "account");
             verify(accountBalances, never()).save(any(AccountBalanceProjectionEntity.class));
         }
 
@@ -308,12 +323,10 @@ final class AccountBalanceUpdaterTest {
     class RefundDirection {
 
         /**
-         * Line {@code :L551} adds a negative amount to {@code ACCT-CURR-CYC-DEBIT} at
-         * {@code app/cpy/CVACT01Y.cpy:L14}, carrying the accumulator further below zero. The
-         * overlimit computation at {@code app/cbl/CBTRN02C.cbl:L403-L405} subtracts that
-         * accumulator, so a refund lifts the balance the credit-limit test reads and tightens the
-         * next authorization. The finding sits in
-         * {@code card-platform/docs/business-rule-flags.md}.
+         * Line {@code :L551} adds a negative amount to {@code ACCT-CURR-CYC-DEBIT} at {@code
+         * app/cpy/CVACT01Y.cpy:L14}, carrying the accumulator further below zero. The overlimit
+         * computation at {@code app/cbl/CBTRN02C.cbl:L403-L405} subtracts that accumulator, so a
+         * refund lifts the balance the credit-limit test reads and tightens the next authorization.
          */
         @Test
         @DisplayName("carries the cycle debit accumulator further below zero")

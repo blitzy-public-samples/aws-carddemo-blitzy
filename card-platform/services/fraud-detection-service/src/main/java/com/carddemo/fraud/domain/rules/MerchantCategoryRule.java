@@ -10,7 +10,7 @@ import org.springframework.stereotype.Component;
  * Scores one authorized transaction on its merchant category code, and triggers when the configured
  * set of elevated-risk categories holds that code.
  *
- * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. The scored field is not additive:
+ * <p>No COBOL ancestor. The scored field is not additive:
  * {@code TRAN-CAT-CD PIC 9(04)} at {@code app/cpy/CVTRA05Y.cpy:L7} declares it.
  *
  * <p>The chain shape comes from {@code 1500-VALIDATE-TRAN} at
@@ -19,8 +19,6 @@ import org.springframework.stereotype.Component;
  *
  * <p>The code is four digits held as text, so a leading zero belongs to the value. Membership in
  * {@link #ELEVATED_RISK_CATEGORIES} is the whole test: no lookup, no reference table and no join.
- *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 @Order(30)
@@ -39,9 +37,8 @@ public class MerchantCategoryRule implements RiskRule {
     private static final Set<String> ELEVATED_RISK_CATEGORIES = Set.of("0001", "0002", "0004");
 
     /**
-     * The points a triggered contribution carries. A demonstration value: no measurement stands
-     * behind it. A score runs from zero to one hundred, and
-     * {@code carddemo.fraud.risk.flag-threshold} sets which score is flagged.
+     * Points this rule contributes when triggered, on the zero-to-one-hundred scale a risk score
+     * carries. Demonstration value: no measurement stands behind it.
      */
     private static final int RISK_POINTS = 25;
 

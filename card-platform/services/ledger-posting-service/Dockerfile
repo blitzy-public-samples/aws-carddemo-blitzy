@@ -1,13 +1,8 @@
-# Container image for the CardDemo ledger posting service. It consumes one topic and publishes another.
-#
-# The build context is this module directory, so every COPY path below resolves
-# inside card-platform/services/ledger-posting-service/. The archive under target/ arrives from
-# `mvn -f card-platform/pom.xml package`, which runs ahead of this image build.
-#
-# Posting arithmetic: app/cbl/CBTRN02C.cbl paragraphs 2000, 2500, 2700, 2800
-# and 2900.
-#
-# Rationale for every version and exclusion: card-platform/docs/decision-log.md (planned)
+# Container image for the CardDemo ledger posting service. It consumes one topic and publishes
+# another. The build context is this module directory, so every COPY path below resolves inside
+# card-platform/services/ledger-posting-service/. The archive under target/ arrives from `mvn -f
+# card-platform/pom.xml package`, which runs ahead of this image build. Posting arithmetic:
+# app/cbl/CBTRN02C.cbl paragraphs 2000, 2500, 2700, 2800 and 2900.
 
 # The one runtime image every service in this mono-repo shares. A Java Runtime
 # Environment (JRE) 25.0.4 runs the archive. The digest pins the layer, and the

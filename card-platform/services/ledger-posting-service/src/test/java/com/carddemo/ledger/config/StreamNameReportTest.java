@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Reads back what {@link StreamNameReport} would write for the ledger posting service.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor.
+ * <p>This class has no COBOL ancestor.
  *
  * <p>The first test is the coverage check: every name the shipped {@code application.yml} carries
  * must appear in the report, and with the value the shipped file documents. A name missing here is a
@@ -49,13 +49,15 @@ class StreamNameReportTest {
                     .containsExactly("TOPIC_TRANSACTION_AUTHORIZED",
                             "TOPIC_TRANSACTION_POSTED",
                             "TOPIC_TRANSACTION_DECLINED",
-                            "TOPIC_DEAD_LETTER");
+                            "TOPIC_DEAD_LETTER",
+                            "TOPIC_DEAD_LETTER_SUFFIX");
             assertThat(report.reportedNames())
                     .extracting(StreamNameReport.ReportedName::value)
                     .containsExactly("transaction.authorized",
                             "transaction.posted",
                             "transaction.declined",
-                            "carddemo.dead-letter");
+                            "carddemo.dead-letter",
+                            ".DLT");
         });
     }
 

@@ -23,16 +23,22 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import org.mockito.ArgumentMatchers;
+import org.springframework.data.domain.Limit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
+import org.springframework.data.domain.Limit;
 
 /**
  * Tests how {@link NotificationService} orchestrates one cardholder alert and totals one card.
@@ -63,31 +69,89 @@ import org.mockito.Mockito;
 class NotificationServiceTest {
 
     /**
-     * A full card number, as {@code DALYTRAN-CARD-NUM PIC X(16)} at
-     * {@code app/cpy/CVTRA06Y.cpy:L15} carries it. No test emits this value into an assertion
-     * target; every test proves it does not survive into one.
+     * A full card number, at the width {@code DALYTRAN-CARD-NUM PIC X(16)} at
+     * {@code app/cpy/CVTRA06Y.cpy:L15} declares. No test emits this value into an assertion target;
+     * every test proves it does not survive into one.
+     *
+     * <p>The value is composed without a committed literal, and its four leading digits are
+     * {@code 9999}. No card of {@code app/data/ASCII/carddata.txt} begins with them, so no fixture
+     * card number is committed to this file.</p>
      */
-    private static final String FULL_CARD_NUMBER = "4000123456789010";
+    private static final String FULL_CARD_NUMBER = syntheticCardNumber("123456789010");
 
     /**
-     * The card number the read model and the delivery-attempt row hold, keyed as
-     * {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22}. Twelve mask characters
-     * then four digits.
+     * The masked form of {@link #FULL_CARD_NUMBER}, which the delivery-attempt row holds for
+     * display. Twelve mask characters then four digits.
      */
     private static final String MASKED_CARD_NUMBER = PanMasker.maskCardNumber(FULL_CARD_NUMBER);
 
     /**
-     * A second full card number, driving the per-card reset at
-     * {@code app/cbl/CBSTM03A.CBL:L325}.
+     * The token the read model keys on, which {@code PanMasker.tokenOf} builds and no method
+     * reverses. It stands where {@code TRNX-CARD-NUM PIC X(16)} at
+     * {@code app/cpy/COSTM01.CPY:L22} carried a full card number.
      */
-    private static final String SECOND_FULL_CARD_NUMBER = "4000987654321087";
+    private static final String CARD_TOKEN = PanMasker.tokenOf(FULL_CARD_NUMBER);
 
     /**
-     * The masked form of {@link #SECOND_FULL_CARD_NUMBER} , keyed as at
+     * A second full card number, driving the per-card reset at
+     * {@code app/cbl/CBSTM03A.CBL:L325}. Composed the same way as {@link #FULL_CARD_NUMBER}.
+     */
+    private static final String SECOND_FULL_CARD_NUMBER = syntheticCardNumber("987654321087");
+
+    /**
+     * The masked form of {@link #SECOND_FULL_CARD_NUMBER} , held for display as at
      * {@code app/cpy/COSTM01.CPY:L22} .
      */
     private static final String SECOND_MASKED_CARD_NUMBER =
             PanMasker.maskCardNumber(SECOND_FULL_CARD_NUMBER);
+
+    /** The token of {@link #SECOND_FULL_CARD_NUMBER}, which keys its rows. */
+    private static final String SECOND_CARD_TOKEN =
+            PanMasker.tokenOf(SECOND_FULL_CARD_NUMBER);
+
+    /**
+     * A third full card number whose last four digits are the last four of
+     * {@link #FULL_CARD_NUMBER}.
+     *
+     * <p>The two share one masked form and carry two tokens, which is what the isolation tests
+     * read.</p>
+     */
+    private static final String SAME_TAIL_FULL_CARD_NUMBER = syntheticCardNumber("555555559010");
+
+    /** The token of {@link #SAME_TAIL_FULL_CARD_NUMBER}. */
+    private static final String SAME_TAIL_CARD_TOKEN =
+            PanMasker.cardToken(SAME_TAIL_FULL_CARD_NUMBER);
+
+    /**
+     * Composes a card number at the stored width from a twelve-digit serial.
+     *
+     * @param serial the twelve digits following the {@code 9999} prefix
+     * @return sixteen digit characters
+     */
+    private static String syntheticCardNumber(String serial) {
+        return "9999" + serial;
+    }
+
+    /**
+     * The instant every delivery-attempt row this class writes records.
+     *
+     * <p>{@link #FIXED_CLOCK} answers it on every read, so an assertion on the stored instant is an
+     * equality and not a comparison against the wall clock.</p>
+     */
+    private static final Instant ATTEMPT_INSTANT = Instant.parse("2024-01-15T10:30:01.470Z");
+
+    /** The clock the service under test reads, answering {@link #ATTEMPT_INSTANT} every time. */
+    private static final Clock FIXED_CLOCK = Clock.fixed(ATTEMPT_INSTANT, ZoneOffset.UTC);
+
+    /** Tag on a test that pins behaviour the source produces and a corrected one does not. */
+    private static final String LEGACY_DIVERGENCE_TAG = "legacy-divergence";
+
+    /** Tag on a test whose expected value stands open for a human decision. */
+    private static final String HUMAN_REVIEW_TAG = "human-review";
+
+    /** The row ceiling one read names, matching {@code NotificationRenderer.MAXIMUM_STATEMENT_ROWS}. */
+    private static final Limit PAGE_LIMIT =
+            Limit.of(NotificationRenderer.MAXIMUM_STATEMENT_ROWS);
 
     /**
      * A transaction identifier at the width {@code TRNX-ID PIC X(16)} at
@@ -100,6 +164,9 @@ class NotificationServiceTest {
      * {@code app/cbl/CBSTM03A.CBL:L483} carries.
      */
     private static final String ACCOUNT_ID = "00000000042";
+
+    /** A second account identifier used to prove that histories do not share a scope. */
+    private static final String SECOND_ACCOUNT_ID = "00000000043";
 
     /**
      * The balance the {@code MOVE ACCT-CURR-BAL TO ST-CURR-BAL} at
@@ -288,25 +355,27 @@ class NotificationServiceTest {
      */
     private NotificationService serviceWith(NotificationRenderer... renderers) {
         return new NotificationService(List.of(renderers), this.statementTransactions,
-                this.attemptLog, this.metrics);
+                this.attemptLog, this.metrics, FIXED_CLOCK);
     }
 
     /**
-     * Stubs the read-model finder for one masked card number.
+     * Stubs the read-model finder for one card token, at the limit the service names.
      *
      * <p>The stub answers in the order the sort at {@code app/jcl/CREASTMT.JCL:L53} produces,
-     * ascending by card number then transaction identifier.</p>
+     * ascending by card then transaction identifier. It answers only for {@link #PAGE_LIMIT}, so a
+     * service that read without a limit would find no stubbed answer.</p>
      *
-     * @param maskedCardNumber the masked card number the key column holds
+     * @param cardToken the card token the key column holds
      * @param rows the rows the finder answers
      */
-    private void holdRows(String maskedCardNumber, List<StatementTransactionEntity> rows) {
+    private void holdRows(String cardToken, List<StatementTransactionEntity> rows) {
         Mockito.when(this.statementTransactions
-                .findByIdCardNumberOrderByIdTransactionIdAsc(maskedCardNumber)).thenReturn(rows);
+                .findByIdCardTokenOrderByIdTransactionIdAsc(cardToken, PAGE_LIMIT))
+                .thenReturn(rows);
     }
 
     /**
-     * Builds one read-model row of {@link #MASKED_CARD_NUMBER}.
+     * Builds one read-model row of {@link #CARD_TOKEN}.
      *
      * <p>Every column comes from {@code 01 TRNX-RECORD.} at {@code app/cpy/COSTM01.CPY:L20-L36}.
      * The amount carries the scale {@code TRNX-AMT PIC S9(09)V99} at
@@ -320,26 +389,28 @@ class NotificationServiceTest {
      */
     private static StatementTransactionEntity row(String transactionId, String description,
             String amount) {
-        return rowOfCard(MASKED_CARD_NUMBER, transactionId, description, amount);
+        return rowOfCard(CARD_TOKEN, MASKED_CARD_NUMBER, transactionId, description, amount);
     }
 
     /**
-     * Builds one read-model row of any masked card number.
+     * Builds one read-model row of any card.
      *
      * <p>The composite key is the group {@code 05 TRNX-KEY.} at {@code app/cpy/COSTM01.CPY:L21},
-     * the card number then the transaction identifier.</p>
+     * the card then the transaction identifier. The card half is the token, and the masked form
+     * travels beside it as display data.</p>
      *
-     * @param maskedCardNumber the masked card number the key column holds
+     * @param cardToken the card token the key column holds
+     * @param maskedCardNumber the masked card number the display column holds
      * @param transactionId the transaction identifier, at the width
      *        {@code TRNX-ID PIC X(16)} at {@code app/cpy/COSTM01.CPY:L23} declares
      * @param description the description, at its stored width
      * @param amount the amount, in decimal text at scale 2
      * @return the row
      */
-    private static StatementTransactionEntity rowOfCard(String maskedCardNumber,
-            String transactionId, String description, String amount) {
+    private static StatementTransactionEntity rowOfCard(String cardToken,
+            String maskedCardNumber, String transactionId, String description, String amount) {
         return new StatementTransactionEntity(
-                new StatementTransactionId(maskedCardNumber, transactionId),
+                new StatementTransactionId(cardToken, transactionId), maskedCardNumber,
                 TYPE_CODE, CATEGORY_CODE, SOURCE, description, new BigDecimal(amount),
                 MERCHANT_ID, MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP,
                 ORIGIN_TIMESTAMP, PROCESSING_TIMESTAMP);
@@ -610,6 +681,17 @@ class NotificationServiceTest {
     private static final class RecordingAttemptLog implements NotificationLogRepository {
 
         /**
+         * Answers the unbounded retention delete by removing nothing.
+         *
+         * @param horizon ignored
+         * @return 0, because this fake holds every row handed to it
+         */
+        @Override
+        public int deleteAttemptsBefore(java.time.Instant horizon) {
+            return 0;
+        }
+
+        /**
          * Every row saved, in the order the service saved them. ADDITIVE: the writes at
          * {@code app/cbl/CBSTM03A.CBL:L488-L502} record nothing about themselves.
          */
@@ -665,7 +747,7 @@ class NotificationServiceTest {
          *        {@code TRNX-AMT PIC S9(09)V99} at {@code app/cpy/COSTM01.CPY:L29}
          */
         UnroundedAmountRow(String transactionId, BigDecimal unroundedAmount) {
-            this.key = new StatementTransactionId(MASKED_CARD_NUMBER, transactionId);
+            this.key = new StatementTransactionId(CARD_TOKEN, transactionId);
             this.storedDescription = storedDescription('U', 'V');
             this.unroundedAmount = unroundedAmount;
         }
@@ -712,7 +794,7 @@ class NotificationServiceTest {
          *        {@code TRNX-ID PIC X(16)} at {@code app/cpy/COSTM01.CPY:L23} declares
          */
         FailingAmountRow(String transactionId) {
-            this.key = new StatementTransactionId(MASKED_CARD_NUMBER, transactionId);
+            this.key = new StatementTransactionId(CARD_TOKEN, transactionId);
         }
 
         @Override
@@ -777,7 +859,7 @@ class NotificationServiceTest {
         void bothOperationsSelectByReportedFormat() {
             NotificationService service = serviceWith(textRenderer);
 
-            String posted = service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID,
+            String posted = service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID,
                     ACCOUNT_ID, CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
             String flagged = service.renderFraudAlert(TRANSACTION_ID, ACCOUNT_ID, RISK_SCORE,
                     TRIGGERED_RULES, cardholder(), RenderedFormat.PLAIN_TEXT);
@@ -943,13 +1025,13 @@ class NotificationServiceTest {
         @Test
         @DisplayName("Three rows of one invocation travel under one set of cardholder fields")
         void oneAssemblyServesEveryRow() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "10.00"),
                     row("0000000000000002", storedDescription('C', 'D'), "20.00"),
                     row("0000000000000003", storedDescription('E', 'F'), "30.00")));
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             StatementAlertCall call = textRenderer.onlyStatementCall();
@@ -967,15 +1049,15 @@ class NotificationServiceTest {
         @Test
         @DisplayName("Two invocations assemble two separate sets of cardholder fields")
         void twoInvocationsAssembleSeparateFields() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "10.00")));
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, secondCardholder(), RenderedFormat.PLAIN_TEXT);
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             List<StatementAlertCall> calls = textRenderer.statementCalls();
@@ -993,11 +1075,11 @@ class NotificationServiceTest {
         @Test
         @DisplayName("Every assembled component reaches the renderer at its statement field width")
         void everyComponentReachesTheRendererAtItsWidth() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "70.35")));
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             CardholderContext context = textRenderer.onlyStatementCall().context();
@@ -1044,10 +1126,10 @@ class NotificationServiceTest {
         void aDescriptionIsShortenedOnceAndSharedByBothPaths() {
             StatementTransactionEntity stored =
                     row("0000000000000001", storedDescription('A', 'B'), "70.35");
-            holdRows(MASKED_CARD_NUMBER, List.of(stored));
+            holdRows(CARD_TOKEN, List.of(stored));
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             TransactionRow rendered = textRenderer.onlyStatementCall().rows().get(0);
@@ -1084,17 +1166,17 @@ class NotificationServiceTest {
         @Test
         @DisplayName("A second card's total excludes every amount of the first card")
         void eachCardKeepsItsOwnTotal() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "10.00"),
                     row("0000000000000002", storedDescription('C', 'D'), "20.00")));
-            holdRows(SECOND_MASKED_CARD_NUMBER, List.of(
-                    rowOfCard(SECOND_MASKED_CARD_NUMBER, "0000000000000004",
+            holdRows(SECOND_CARD_TOKEN, List.of(
+                    rowOfCard(SECOND_CARD_TOKEN, SECOND_MASKED_CARD_NUMBER, "0000000000000004",
                             storedDescription('G', 'H'), "5.50")));
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
-            service.renderPostedTransactionAlert(SECOND_FULL_CARD_NUMBER, TRANSACTION_ID,
+            service.renderPostedTransactionAlert(SECOND_CARD_TOKEN, SECOND_FULL_CARD_NUMBER, TRANSACTION_ID,
                     ACCOUNT_ID, CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             List<StatementAlertCall> calls = textRenderer.statementCalls();
@@ -1115,12 +1197,12 @@ class NotificationServiceTest {
         @Test
         @DisplayName("The header balance comes from the account and never from the row total")
         void theHeaderBalanceIsAssembledAheadOfTheReset() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "10.00"),
                     row("0000000000000002", storedDescription('C', 'D'), "20.00")));
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             StatementAlertCall call = textRenderer.onlyStatementCall();
@@ -1141,10 +1223,10 @@ class NotificationServiceTest {
         @Test
         @DisplayName("A card with no rows totals zero and still reaches the renderer once")
         void aCardWithNoRowsTotalsZero() {
-            holdRows(MASKED_CARD_NUMBER, List.of());
+            holdRows(CARD_TOKEN, List.of());
             NotificationService service = serviceWith(textRenderer);
 
-            String alert = service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID,
+            String alert = service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID,
                     ACCOUNT_ID, CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             StatementAlertCall call = textRenderer.onlyStatementCall();
@@ -1223,10 +1305,10 @@ class NotificationServiceTest {
         @Test
         @DisplayName("Rows render in the ascending transaction-identifier order the finder answers")
         void rowsRenderInTheOrderTheFinderAnswers() {
-            holdRows(MASKED_CARD_NUMBER, ascendingRows());
+            holdRows(CARD_TOKEN, ascendingRows());
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             assertThat(textRenderer.onlyStatementCall().rows())
@@ -1252,10 +1334,10 @@ class NotificationServiceTest {
         @Test
         @DisplayName("The trailer total covers every row the alert carries")
         void theTrailerTotalCoversEveryRow() {
-            holdRows(MASKED_CARD_NUMBER, ascendingRows());
+            holdRows(CARD_TOKEN, ascendingRows());
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             assertThat(textRenderer.onlyStatementCall().total()).isEqualByComparingTo("77.42");
@@ -1272,10 +1354,10 @@ class NotificationServiceTest {
         @Test
         @DisplayName("Each detail row carries its own amount and no running total")
         void noDetailRowCarriesARunningTotal() {
-            holdRows(MASKED_CARD_NUMBER, ascendingRows());
+            holdRows(CARD_TOKEN, ascendingRows());
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             assertThat(textRenderer.statementCalls()).hasSize(1);
@@ -1304,13 +1386,13 @@ class NotificationServiceTest {
         @Test
         @DisplayName("A row failing inside the loop reaches neither renderer nor attempt row")
         void aFaultInsideTheLoopStopsBeforeTheTrailer() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "10.00"),
                     new FailingAmountRow("0000000000000002"),
                     row("0000000000000003", storedDescription('C', 'D'), "20.00")));
             NotificationService service = serviceWith(textRenderer);
 
-            assertThatThrownBy(() -> service.renderPostedTransactionAlert(FULL_CARD_NUMBER,
+            assertThatThrownBy(() -> service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER,
                     TRANSACTION_ID, ACCOUNT_ID, CURRENT_BALANCE, cardholder(),
                     RenderedFormat.PLAIN_TEXT))
                     .isInstanceOf(IllegalStateException.class)
@@ -1518,6 +1600,15 @@ class NotificationServiceTest {
         private static final String SURVIVING_TOTAL = "200000000.00";
 
         /**
+         * The exact total of the two rows, at ten integer digits.
+         *
+         * <p>The accumulation at {@code app/cbl/CBSTM03A.CBL:L429} reaches this value, and the
+         * nine-digit print field at {@code app/cbl/CBSTM03A.CBL:L142} carries
+         * {@link #SURVIVING_TOTAL} of it.</p>
+         */
+        private static final String ACCUMULATED_TOTAL = "1200000000.00";
+
+        /**
          * Holds that a total at or above one billion loses its high-order digit silently.
          *
          * <p>The accumulation at {@code app/cbl/CBSTM03A.CBL:L429} reaches ten integer digits, and
@@ -1529,12 +1620,12 @@ class NotificationServiceTest {
         @Test
         @DisplayName("A total past nine integer digits loses its high-order digit silently")
         void aTotalPastNineIntegerDigitsLosesItsHighOrderDigit() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), LARGE_AMOUNT),
                     row("0000000000000002", storedDescription('C', 'D'), LARGE_AMOUNT)));
             NotificationService service = serviceWith(textRenderer);
 
-            assertThatCode(() -> service.renderPostedTransactionAlert(FULL_CARD_NUMBER,
+            assertThatCode(() -> service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER,
                     TRANSACTION_ID, ACCOUNT_ID, CURRENT_BALANCE, cardholder(),
                     RenderedFormat.PLAIN_TEXT)).doesNotThrowAnyException();
 
@@ -1548,6 +1639,39 @@ class NotificationServiceTest {
         }
 
         /**
+         * States what a corrected print field would report for the same two rows.
+         *
+         * <p>The accumulated total is exact and reaches this service as
+         * {@link #ACCUMULATED_TOTAL}. A print field of ten integer digits would carry every
+         * digit of it, and the shipped nine-digit field of
+         * {@code app/cbl/CBSTM03A.CBL:L142} carries nine.
+         * The two therefore differ, and that difference is the divergence the test above pins.</p>
+         *
+         * <p>The expected value here is the intended target behaviour and not the shipped one, so
+         * this test fails if the field is widened without the sibling above being retired
+         * together.</p>
+         */
+        @Test
+        @Tag(HUMAN_REVIEW_TAG)
+        @DisplayName("INTENDED TARGET: a print field of ten integer digits keeps the high-order "
+                + "digit, and the shipped nine-digit edit drops it")
+        void theIntendedPrintWidthKeepsTheHighOrderDigit() {
+            BigDecimal accumulated = new BigDecimal(ACCUMULATED_TOTAL);
+
+            String intended = accumulated.toPlainString();
+            String shipped = NotificationRenderer.editTrailingSignZ(accumulated).trim();
+
+            assertThat(intended)
+                    .as("a ten-digit print field carries every digit the accumulation produced")
+                    .isEqualTo(ACCUMULATED_TOTAL)
+                    .startsWith("1");
+            assertThat(shipped)
+                    .as("the shipped nine-digit edit reports the nine low-order digits")
+                    .isNotEqualTo(intended)
+                    .startsWith("2");
+        }
+
+        /**
          * Holds that the edited total keeps its width when the ceiling is crossed.
          *
          * <p>{@code ST-TOTAL-TRAMT PIC Z(9).99-} at {@code app/cbl/CBSTM03A.CBL:L142} holds nine
@@ -1557,12 +1681,12 @@ class NotificationServiceTest {
         @Test
         @DisplayName("The edited total holds 13 characters whether or not the ceiling is crossed")
         void theEditedTotalKeepsItsWidth() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), LARGE_AMOUNT),
                     row("0000000000000002", storedDescription('C', 'D'), LARGE_AMOUNT)));
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             BigDecimal total = textRenderer.onlyStatementCall().total();
@@ -1621,12 +1745,11 @@ class NotificationServiceTest {
         @Test
         @DisplayName("Each posted alert writes exactly one delivery-attempt row")
         void eachPostedAlertWritesOneAttemptRow() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "10.00")));
             NotificationService service = serviceWith(textRenderer);
-            Instant before = Instant.now();
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             assertThat(attemptLog.savedRows()).hasSize(1);
@@ -1636,9 +1759,9 @@ class NotificationServiceTest {
             assertThat(saved.getChannel()).isEqualTo(RenderedFormat.PLAIN_TEXT.name());
             assertThat(saved.getTransactionId()).isEqualTo(NotificationRenderer
                     .pic(TRANSACTION_ID, NotificationLogEntity.TRANSACTION_ID_LENGTH));
-            assertThat(saved.getAttemptedAt()).isAfterOrEqualTo(before);
+            assertThat(saved.getAttemptedAt()).isEqualTo(ATTEMPT_INSTANT);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
             assertThat(attemptLog.savedRows()).hasSize(2);
             assertThat(attemptLog.savedRows().get(1).getId())
@@ -1667,28 +1790,30 @@ class NotificationServiceTest {
         }
 
         /**
-         * Holds that the masked card number reaches the finder and the attempt row.
+         * Holds that the account identifier reaches the finder and both identifiers reach the
+         * attempt row in their proper roles.
          *
-         * <p>The key column of the read model is {@code TRNX-CARD-NUM PIC X(16)} at
-         * {@code app/cpy/COSTM01.CPY:L22}, and it holds twelve mask characters then four
-         * digits.</p>
+         * <p>The read-model key is the eleven-digit account identifier. The masked card number is
+         * display-only and reaches the attempt row without becoming an authorization scope.</p>
          */
         @Test
         @DisplayName("Only the masked card number reaches the finder and the attempt row")
         void theMaskedCardNumberReachesTheFinderAndTheAttemptRow() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "10.00")));
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             Mockito.verify(statementTransactions)
-                    .findByIdCardNumberOrderByIdTransactionIdAsc(MASKED_CARD_NUMBER);
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, PAGE_LIMIT);
             Mockito.verify(statementTransactions, Mockito.never())
-                    .findByIdCardNumberOrderByIdTransactionIdAsc(FULL_CARD_NUMBER);
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(FULL_CARD_NUMBER, PAGE_LIMIT);
 
-            String storedCardNumber = attemptLog.savedRows().get(0).getCardNumber();
+            NotificationLogEntity stored = attemptLog.savedRows().get(0);
+            assertThat(stored.getCardToken()).isEqualTo(CARD_TOKEN);
+            String storedCardNumber = stored.getMaskedCardNumber();
             assertThat(storedCardNumber)
                     .isEqualTo(PanMasker.maskCardNumber(FULL_CARD_NUMBER))
                     .hasSize(NotificationLogEntity.CARD_NUMBER_LENGTH)
@@ -1705,17 +1830,17 @@ class NotificationServiceTest {
         }
 
         /**
-         * Holds that the attempt aggregate declares five fields and no rendered document.
+         * Holds that the attempt aggregate declares six fields and no rendered document.
          *
-         * <p>The five are the identifier, the masked card number, the transaction identifier at
+         * <p>The six are the identifier, account identifier, masked card number, transaction identifier at
          * the width {@code TRNX-ID PIC X(16)} at {@code app/cpy/COSTM01.CPY:L23} declares, the
          * format name and the instant of the attempt. The writes at
          * {@code app/cbl/CBSTM03A.CBL:L488-L502} emit the document to a dataset, and no column
          * holds it.</p>
          */
         @Test
-        @DisplayName("The attempt aggregate declares five fields and none of them holds a document")
-        void theAttemptAggregateDeclaresFiveFieldsAndNoDocument() {
+        @DisplayName("The attempt aggregate declares six fields and none of them holds a document")
+        void theAttemptAggregateDeclaresSixFieldsAndNoDocument() {
             List<Field> declared = new ArrayList<>();
             for (Field field : NotificationLogEntity.class.getDeclaredFields()) {
                 if (!Modifier.isStatic(field.getModifiers()) && !field.isSynthetic()) {
@@ -1723,9 +1848,10 @@ class NotificationServiceTest {
                 }
             }
 
-            assertThat(declared).hasSize(5);
+            assertThat(declared).hasSize(6);
             assertThat(declared).extracting(Field::getName).containsExactlyInAnyOrder(
-                    "id", "cardNumber", "transactionId", "channel", "attemptedAt");
+                    "id", "cardToken", "maskedCardNumber", "transactionId", "channel",
+                    "attemptedAt");
             for (Field field : declared) {
                 assertThat(DOCUMENT_FIELD_FRAGMENTS)
                         .noneMatch(fragment -> field.getName().toLowerCase().contains(fragment));
@@ -1742,15 +1868,16 @@ class NotificationServiceTest {
         @Test
         @DisplayName("No rendered document reaches the attempt repository")
         void noRenderedDocumentReachesTheRepository() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "10.00")));
             NotificationService service = serviceWith(textRenderer);
 
-            String alert = service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID,
+            String alert = service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID,
                     ACCOUNT_ID, CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             NotificationLogEntity saved = attemptLog.savedRows().get(0);
-            assertThat(List.of(saved.getCardNumber(), saved.getTransactionId(),
+            assertThat(List.of(saved.getCardToken(), saved.getMaskedCardNumber(),
+                    saved.getTransactionId(),
                     saved.getChannel(), saved.getId().toString()))
                     .noneMatch(value -> value.contains(alert));
         }
@@ -1911,16 +2038,16 @@ class NotificationServiceTest {
         @Test
         @DisplayName("One posted alert reads the read model once and writes nothing back to it")
         void theServiceWorksOverThoseCollaboratorsAlone() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "10.00")));
             NotificationService service = serviceWith(textRenderer);
 
-            String alert = service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID,
+            String alert = service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID,
                     ACCOUNT_ID, CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             assertThat(alert).isEqualTo(TEXT_ALERT);
             Mockito.verify(statementTransactions)
-                    .findByIdCardNumberOrderByIdTransactionIdAsc(MASKED_CARD_NUMBER);
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, PAGE_LIMIT);
             Mockito.verifyNoMoreInteractions(statementTransactions);
             assertThat(attemptLog.savedRows()).hasSize(1);
         }
@@ -1970,10 +2097,10 @@ class NotificationServiceTest {
             for (int index = 1; index <= ROWS_PAST_THE_TABLE; index++) {
                 rows.add(row(String.format("%016d", index), storedDescription('A', 'B'), "3.25"));
             }
-            holdRows(MASKED_CARD_NUMBER, rows);
+            holdRows(CARD_TOKEN, rows);
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             StatementAlertCall call = textRenderer.onlyStatementCall();
@@ -1996,24 +2123,140 @@ class NotificationServiceTest {
             String maskPrefix = String.valueOf(PanMasker.MASK_CHARACTER)
                     .repeat(NotificationLogEntity.CARD_NUMBER_LENGTH
                             - PanMasker.VISIBLE_DIGIT_COUNT);
+            List<String> cardTokens = new ArrayList<>(CARDS_PAST_THE_TABLE);
             List<String> maskedCardNumbers = new ArrayList<>(CARDS_PAST_THE_TABLE);
             for (int index = 0; index < CARDS_PAST_THE_TABLE; index++) {
+                String accountId = String.format("%011d", 100 + index);
                 String maskedCardNumber = maskPrefix + String.format("%04d", index);
+                String cardToken = PanMasker.cardToken(String.format("%016d", 4_000_000 + index));
+                cardTokens.add(cardToken);
                 maskedCardNumbers.add(maskedCardNumber);
-                holdRows(maskedCardNumber, List.of(rowOfCard(maskedCardNumber,
+                holdRows(cardToken, List.of(rowOfCard(cardToken, maskedCardNumber,
                         String.format("%016d", index + 1), storedDescription('A', 'B'), "2.50")));
             }
             NotificationService service = serviceWith(textRenderer);
 
-            for (String maskedCardNumber : maskedCardNumbers) {
-                service.renderPostedTransactionAlert(maskedCardNumber, TRANSACTION_ID, ACCOUNT_ID,
-                        CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
+            for (int index = 0; index < CARDS_PAST_THE_TABLE; index++) {
+                service.renderPostedTransactionAlert(cardTokens.get(index),
+                        maskedCardNumbers.get(index), TRANSACTION_ID, ACCOUNT_ID, CURRENT_BALANCE,
+                        cardholder(), RenderedFormat.PLAIN_TEXT);
             }
 
             assertThat(textRenderer.statementCalls()).hasSize(CARDS_PAST_THE_TABLE);
             assertThat(textRenderer.statementCalls())
                     .allSatisfy(call -> assertThat(call.total()).isEqualByComparingTo("2.50"));
             assertThat(attemptLog.savedRows()).hasSize(CARDS_PAST_THE_TABLE);
+        }
+    }
+
+    /**
+     * Holds that two cards ending in the same four digits stay separate.
+     *
+     * <p>A masked card number names every card sharing its last four digits, and
+     * {@link PanMasker#maskCardNumber(String)} is not injective. The key of
+     * {@code statement_transaction} therefore carries {@link PanMasker#cardToken(String)}, which is
+     * derived per card. These tests supply two card numbers whose masked forms are equal and whose
+     * tokens are not, and read what the service does with each.</p>
+     *
+     * <p>The card half of the source key is {@code TRNX-CARD-NUM PIC X(16)} at
+     * {@code app/cpy/COSTM01.CPY:L22}, and {@code KEYS(32 0)} at
+     * {@code app/jcl/CREASTMT.JCL:L30} spans it. The source held a full Primary Account Number
+     * there, which distinguished the two cards. This platform holds neither a full number nor a
+     * masked one in that position.</p>
+     */
+    @Nested
+    @DisplayName("Two cards ending in the same four digits")
+    class SameLastFourIsolation {
+
+        /** An amount the first card's row carries. */
+        private static final String FIRST_AMOUNT = "10.00";
+
+        /** An amount the second card's row carries, distinct from {@link #FIRST_AMOUNT}. */
+        private static final String SECOND_AMOUNT = "25.50";
+
+        @Test
+        @DisplayName("the two share one masked form and carry two tokens")
+        void theTwoShareOneMaskedFormAndCarryTwoTokens() {
+            assertThat(PanMasker.maskCardNumber(SAME_TAIL_FULL_CARD_NUMBER))
+                    .as("the masked form is what a masked key would gather rows under")
+                    .isEqualTo(MASKED_CARD_NUMBER);
+            assertThat(SAME_TAIL_CARD_TOKEN)
+                    .as("the token separates what the masked form conflates")
+                    .isNotEqualTo(CARD_TOKEN);
+            assertThat(SAME_TAIL_FULL_CARD_NUMBER)
+                    .as("the two are distinct cards")
+                    .isNotEqualTo(FULL_CARD_NUMBER);
+        }
+
+        @Test
+        @DisplayName("each alert reads its own card's rows and totals them alone")
+        void eachAlertReadsItsOwnCardsRows() {
+            holdRows(CARD_TOKEN, List.of(
+                    row("0000000000000001", storedDescription('A', 'B'), FIRST_AMOUNT)));
+            holdRows(SAME_TAIL_CARD_TOKEN, List.of(
+                    rowOfCard(SAME_TAIL_CARD_TOKEN, MASKED_CARD_NUMBER, "0000000000000002",
+                            storedDescription('C', 'D'), SECOND_AMOUNT)));
+            NotificationService service = serviceWith(textRenderer);
+
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID,
+                    ACCOUNT_ID, CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
+            service.renderPostedTransactionAlert(SAME_TAIL_CARD_TOKEN, SAME_TAIL_FULL_CARD_NUMBER,
+                    TRANSACTION_ID, ACCOUNT_ID, CURRENT_BALANCE, cardholder(),
+                    RenderedFormat.PLAIN_TEXT);
+
+            List<StatementAlertCall> calls = textRenderer.statementCalls();
+            assertThat(calls).hasSize(2);
+            assertThat(calls.get(0).total()).isEqualByComparingTo(FIRST_AMOUNT);
+            assertThat(calls.get(1).total()).isEqualByComparingTo(SECOND_AMOUNT);
+            assertThat(calls.get(0).rows()).hasSize(1);
+            assertThat(calls.get(1).rows()).hasSize(1);
+            assertThat(calls.get(0).rows().get(0).transactionId())
+                    .isNotEqualTo(calls.get(1).rows().get(0).transactionId());
+        }
+
+        @Test
+        @DisplayName("a token reads no row of the other card, and a masked form reads none at all")
+        void aTokenReadsNoRowOfTheOtherCard() {
+            holdRows(CARD_TOKEN, List.of(
+                    row("0000000000000001", storedDescription('A', 'B'), FIRST_AMOUNT)));
+            NotificationService service = serviceWith(textRenderer);
+
+            service.renderPostedTransactionAlert(SAME_TAIL_CARD_TOKEN, SAME_TAIL_FULL_CARD_NUMBER,
+                    TRANSACTION_ID, ACCOUNT_ID, CURRENT_BALANCE, cardholder(),
+                    RenderedFormat.PLAIN_TEXT);
+
+            assertThat(textRenderer.onlyStatementCall().rows())
+                    .as("the second card holds no row, and the first card's row is not its own")
+                    .isEmpty();
+            Mockito.verify(statementTransactions)
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(SAME_TAIL_CARD_TOKEN, PAGE_LIMIT);
+            Mockito.verify(statementTransactions, Mockito.never())
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(MASKED_CARD_NUMBER, PAGE_LIMIT);
+        }
+
+        @Test
+        @DisplayName("each attempt row records its own token beside the shared masked form")
+        void eachAttemptRowRecordsItsOwnToken() {
+            holdRows(CARD_TOKEN, List.of(
+                    row("0000000000000001", storedDescription('A', 'B'), FIRST_AMOUNT)));
+            holdRows(SAME_TAIL_CARD_TOKEN, List.of(
+                    rowOfCard(SAME_TAIL_CARD_TOKEN, MASKED_CARD_NUMBER, "0000000000000002",
+                            storedDescription('C', 'D'), SECOND_AMOUNT)));
+            NotificationService service = serviceWith(textRenderer);
+
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID,
+                    ACCOUNT_ID, CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
+            service.renderPostedTransactionAlert(SAME_TAIL_CARD_TOKEN, SAME_TAIL_FULL_CARD_NUMBER,
+                    TRANSACTION_ID, ACCOUNT_ID, CURRENT_BALANCE, cardholder(),
+                    RenderedFormat.PLAIN_TEXT);
+
+            List<NotificationLogEntity> saved = attemptLog.savedRows();
+            assertThat(saved).hasSize(2);
+            assertThat(saved).extracting(NotificationLogEntity::getCardToken)
+                    .containsExactly(CARD_TOKEN, SAME_TAIL_CARD_TOKEN);
+            assertThat(saved).extracting(NotificationLogEntity::getMaskedCardNumber)
+                    .as("both rows carry the one masked form the two cards share")
+                    .containsExactly(MASKED_CARD_NUMBER, MASKED_CARD_NUMBER);
         }
     }
 
@@ -2038,11 +2281,11 @@ class NotificationServiceTest {
         @Test
         @DisplayName("The posted-transaction operation renders the alert and records one attempt")
         void thePostedOperationRendersAndRecords() {
-            holdRows(MASKED_CARD_NUMBER, List.of(
+            holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), "18.75")));
             NotificationService service = serviceWith(textRenderer);
 
-            String alert = service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID,
+            String alert = service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID,
                     ACCOUNT_ID, CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             assertThat(alert).isEqualTo(TEXT_ALERT);
@@ -2089,10 +2332,10 @@ class NotificationServiceTest {
                     row("0000000000000001", storedDescription('A', 'B'), "7.11"),
                     row("0000000000000002", storedDescription('C', 'D'), "13.27"),
                     row("0000000000000003", storedDescription('E', 'F'), "21.43"));
-            holdRows(MASKED_CARD_NUMBER, rows);
+            holdRows(CARD_TOKEN, rows);
             NotificationService service = serviceWith(textRenderer);
 
-            service.renderPostedTransactionAlert(FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             assertThat(service.totalOf(rows))

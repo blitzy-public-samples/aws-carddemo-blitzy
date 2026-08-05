@@ -66,9 +66,9 @@ import java.util.regex.Pattern;
  *                                 keyed read at {@code app/cbl/CBTRN02C.cbl:L383-L384} returned an
  *                                 invalid-key condition and no account exists to name.
  * @param approved                 {@code true} when the platform authorized the transaction.
- *                                 ADDITIVE. {@code app/cbl/CBTRN02C.cbl:L211} states the same
- *                                 outcome as a reject-code field holding zero.
- * @param declineReasonCode            the single reject code, from
+ *                                 No COBOL ancestor. {@code app/cbl/CBTRN02C.cbl:L211} states
+ *                                 the same outcome as a reject-code field holding zero.
+ * @param declineReasonCode        the single reject code, from
  *                                 {@code WS-VALIDATION-FAIL-REASON PIC 9(04)} at
  *                                 {@code app/cbl/CBTRN02C.cbl:L181}. Present on a declined
  *                                 response, absent on an approved one.
@@ -77,6 +77,8 @@ import java.util.regex.Pattern;
  *                                 {@code app/cbl/CBTRN02C.cbl:L182}. Present on a declined
  *                                 response, absent on an approved one, and at most
  *                                 {@value #DECLINE_REASON_DESCRIPTION_MAX_LENGTH} characters.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record AuthorizationResponse(
         String transactionId,
@@ -267,8 +269,8 @@ public record AuthorizationResponse(
      * <p>The identifier is absent on exactly one outcome, a decline carrying
      * {@link DeclineReason#INVALID_CARD_NUMBER}. An approval names the account it authorized
      * against, and the other three declines name the account they read. Without this test a
-     * response could reach the outbox with no identifier to key its event on, and the event contract
-     * requiring eleven digits would fail after the decision had already been taken.
+     * response could reach the outbox with no identifier to key its event on. The event contract
+     * requiring eleven digits would then fail after the decision had already been taken.
      *
      * <p>No failure text repeats the identifier. The reject code or the word {@code absent} stands
      * in for it.

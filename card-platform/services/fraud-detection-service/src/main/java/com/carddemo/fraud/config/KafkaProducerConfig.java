@@ -1,7 +1,9 @@
 package com.carddemo.fraud.config;
 
+import com.carddemo.events.DeadLetterEnvelope;
 import com.carddemo.events.FraudCleared;
 import com.carddemo.events.FraudFlagged;
+import com.carddemo.events.serde.EventContracts;
 import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
 
 import java.util.LinkedHashMap;
@@ -22,7 +24,7 @@ import org.springframework.kafka.core.ProducerFactory;
 /**
  * Kafka producer wiring for the fraud detection service: one producer factory and one template.
  *
- * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. Searching {@code app/cbl/} for {@code fraud},
+ * <p>No COBOL ancestor. Searching {@code app/cbl/} for {@code fraud},
  * {@code velocit}, {@code risk} and {@code scoring} matches zero of its 28 programs.
  *
  * <p>Idempotent production is enabled and every record is acknowledged by all replicas. The value
@@ -51,8 +53,6 @@ import org.springframework.kafka.core.ProducerFactory;
  * compiles at release 25 while the Spring Boot parent defaults to 17, and class-file major
  * version 69 is the proof. The wire form is flat: an event nested under an {@code envelope} key
  * fails every schema document this platform ships.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Configuration
 public class KafkaProducerConfig {
@@ -70,6 +70,9 @@ public class KafkaProducerConfig {
     private static final String FRAUD_ASSESSED_TOPIC_PROPERTY =
             "carddemo.kafka.topics.fraud-assessed";
 
+    /** Property naming the topic a row this relay cannot publish travels to. */
+    private static final String DEAD_LETTER_TOPIC_PROPERTY = "carddemo.kafka.topics.dead-letter";
+
     /** Opening characters of a placeholder no property source resolved. */
     private static final String UNRESOLVED_PLACEHOLDER = "${";
 
@@ -79,23 +82,32 @@ public class KafkaProducerConfig {
     /** The topic {@code FraudFlagged} and {@code FraudCleared} are published to. */
     private final String fraudAssessedTopic;
 
+    /** The topic a {@code DeadLetterEnvelope} from the relay is published to. */
+    private final String deadLetterTopic;
+
     /**
-     * Reads the broker address and the topic name, each from a property carrying its default.
+     * Reads the broker address and the two topic names, each from a property carrying its default.
      *
-     * <p>An unset property leaves the default in place: {@code kafka:9092} for the address and
-     * {@code fraud.assessed} for the topic. A blank or unresolved value stops start-up with the
-     * property named. No failure message here holds a value read from configuration.
+     * <p>An unset property leaves the default in place: {@code kafka:29092} for the address, which is
+     * the internal listener the compose stack publishes, {@code fraud.assessed} for the assessment
+     * topic and {@code carddemo.dead-letter} for the dead-letter topic. A blank or unresolved value
+     * stops start-up with the property named. No failure message here holds a value read from
+     * configuration.
      *
      * @param bootstrapServers   the broker address, from {@code spring.kafka.bootstrap-servers}
      * @param fraudAssessedTopic the topic name, from {@code carddemo.kafka.topics.fraud-assessed}
-     * @throws IllegalArgumentException when either property resolves to no usable value
+     * @param deadLetterTopic    the topic name, from {@code carddemo.kafka.topics.dead-letter}
+     * @throws IllegalArgumentException when any property resolves to no usable value
      */
     public KafkaProducerConfig(
-            @Value("${spring.kafka.bootstrap-servers:kafka:9092}") String bootstrapServers,
+            @Value("${spring.kafka.bootstrap-servers:kafka:29092}") String bootstrapServers,
             @Value("${carddemo.kafka.topics.fraud-assessed:fraud.assessed}")
-                    String fraudAssessedTopic) {
+                    String fraudAssessedTopic,
+            @Value("${carddemo.kafka.topics.dead-letter:carddemo.dead-letter}")
+                    String deadLetterTopic) {
         this.bootstrapServers = resolved(bootstrapServers, BOOTSTRAP_SERVERS_PROPERTY);
         this.fraudAssessedTopic = resolved(fraudAssessedTopic, FRAUD_ASSESSED_TOPIC_PROPERTY);
+        this.deadLetterTopic = resolved(deadLetterTopic, DEAD_LETTER_TOPIC_PROPERTY);
     }
 
     /**
@@ -113,8 +125,16 @@ public class KafkaProducerConfig {
      * <p>The settings start from the bound {@code spring.kafka} block, which carries the broker
      * authentication and the client timeouts the shipped file declares. Four settings are pinned
      * here: the broker address, {@code acks=all}, {@code enable.idempotence=true} and the topic
-     * each of the two event types is published to. The two serializer class entries are dropped,
-     * and the factory holds the two serializer instances this method constructs.
+     * each event type is published to. The two serializer class entries are dropped, and the factory
+     * holds the two serializer instances this method constructs.
+     *
+     * <p>Three event types travel through this one factory, so three topic overrides are registered.
+     * The validating serializer refuses an event sent to a topic its type is not bound to, and it
+     * knows only the default name until an override names the deployed one. The relay sends its
+     * {@code DeadLetterEnvelope} through this same template, so a deployment that renames the
+     * dead-letter topic and registered no override for it would have every dead letter refused —
+     * leaving the row that could not be published unpublishable as well, retried by each sweep and
+     * failing the same way for as long as the service runs.
      *
      * @param kafkaProperties the bound {@code spring.kafka} block
      * @return the producer factory the template sends through
@@ -136,6 +156,9 @@ public class KafkaProducerConfig {
                 fraudAssessedTopic);
         settings.put(JsonSchemaValidatingSerializer.TOPIC_OVERRIDE_PREFIX + FraudCleared.EVENT_TYPE,
                 fraudAssessedTopic);
+        settings.put(
+                JsonSchemaValidatingSerializer.TOPIC_OVERRIDE_PREFIX + EventContracts.DEAD_LETTER,
+                deadLetterTopic);
 
         return new DefaultKafkaProducerFactory<>(settings, new StringSerializer(),
                 new JsonSchemaValidatingSerializer<>());

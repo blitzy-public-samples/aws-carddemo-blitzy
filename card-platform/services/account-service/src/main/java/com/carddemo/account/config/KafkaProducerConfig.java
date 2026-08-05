@@ -4,26 +4,27 @@ import com.carddemo.account.messaging.EventPublisherPort;
 import com.carddemo.events.serde.EventContracts;
 import com.carddemo.events.serde.EventJsonValidator;
 import com.carddemo.events.serde.EventWireBounds;
-
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
-
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringSerializer;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
 import org.springframework.boot.kafka.autoconfigure.KafkaConnectionDetails;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
-
 import tools.jackson.core.json.JsonFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -34,7 +35,7 @@ import tools.jackson.databind.json.JsonMapper;
  * Event-publishing wiring for the account service: the producer, the template, the one
  * {@link EventPublisherPort} bean and the mapper that reads a written event.
  *
- * <p>ADDITIVE. No COBOL program declares an event bus. The nearest source construct is the
+ * <p>No COBOL program declares an event bus. The nearest source construct is the
  * transient data queue write at {@code app/cbl/CORPT00C.cbl:L517-L518}.
  *
  * <p>Every event carries the eleven-digit account identifier of
@@ -44,9 +45,6 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>A consumer of {@code AccountStateChanged} subscribes to the topic this class resolves and
  * needs no change to this service.
- *
- * <p>Publish and consume paths per event: {@code card-platform/docs/event-flow.md}. Decisions:
- * {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
 public class KafkaProducerConfig {
@@ -57,20 +55,29 @@ public class KafkaProducerConfig {
     /** The topic an account update and a billing-cycle close travel on. */
     private final String accountStateChangedTopic;
 
+    /** The topic a change to a cardholder field travels on. */
+    private final String customerContextChangedTopic;
+
     /** Each event type this service publishes, mapped to the topic this deployment configures. */
     private final Map<String, String> configuredTopics;
 
+    /** How long one publish waits for the broker before the attempt is reported as failed. */
+    private final Duration publishTimeout;
+
     /**
-     * Reads both topic names from the bound {@code carddemo} block.
+     * Reads every topic name from the bound {@code carddemo} block.
      *
      * @param properties the bound configuration, which rejects a blank topic name at start-up
      */
     public KafkaProducerConfig(AccountProperties properties) {
         AccountProperties.Kafka.Topics topics = properties.kafka().topics();
         this.accountStateChangedTopic = topics.accountStateChanged();
+        this.customerContextChangedTopic = topics.customerContextChanged();
         this.configuredTopics = Map.of(
                 EventContracts.ACCOUNT_STATE_CHANGED, topics.accountStateChanged(),
+                EventContracts.CUSTOMER_CONTEXT_CHANGED, topics.customerContextChanged(),
                 EventContracts.DEAD_LETTER, topics.deadLetter());
+        this.publishTimeout = properties.outbox().relay().publishTimeout();
     }
 
     /**
@@ -82,6 +89,27 @@ public class KafkaProducerConfig {
      */
     public String accountStateChangedTopic() {
         return accountStateChangedTopic;
+    }
+
+    /**
+     * Returns the topic name a {@code CustomerContextChanged} row travels on. The default is
+     * {@code customer.context-changed} and {@code TOPIC_CUSTOMER_CONTEXT_CHANGED} overrides it.
+     *
+     * @return the resolved topic name, never blank
+     */
+    public String customerContextChangedTopic() {
+        return customerContextChangedTopic;
+    }
+
+    /**
+     * Returns the topic bound to one event type, or {@code null} when this service publishes no
+     * event of that type.
+     *
+     * @param eventType the {@code EventEnvelope.eventType} value of one stored row
+     * @return the configured topic name, or {@code null}
+     */
+    public String topicFor(String eventType) {
+        return configuredTopics.get(eventType);
     }
 
     /**
@@ -162,7 +190,7 @@ public class KafkaProducerConfig {
     @Bean
     public EventPublisherPort accountEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
             ObservabilityConfig.AccountMeters meters) {
-        return new KafkaEventPublisher(kafkaTemplate, configuredTopics, meters);
+        return new KafkaEventPublisher(kafkaTemplate, configuredTopics, meters, publishTimeout);
     }
 
     /**
@@ -202,22 +230,28 @@ public class KafkaProducerConfig {
         /** The one publish-side gate, shared with every other event of this platform. */
         private final EventJsonValidator validator = EventJsonValidator.shared();
 
+        /** The bound {@code carddemo.outbox.relay.publish-timeout} value. */
+        private final Duration publishTimeout;
+
         /**
-         * Takes the template, the configured topic per event type and the instruments.
+         * Takes the template, the configured topic per event type, the instruments and the wait.
          *
          * @param kafkaTemplate    the template that sends every event to the broker
          * @param configuredTopics each event type this service publishes, mapped to its topic
          * @param meters           the instruments that count a failed publish attempt
+         * @param publishTimeout   how long one send waits for the broker
          */
         KafkaEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
-                Map<String, String> configuredTopics, ObservabilityConfig.AccountMeters meters) {
+                Map<String, String> configuredTopics, ObservabilityConfig.AccountMeters meters,
+                Duration publishTimeout) {
             this.kafkaTemplate = kafkaTemplate;
             this.configuredTopics = configuredTopics;
             this.meters = meters;
+            this.publishTimeout = publishTimeout;
         }
 
         @Override
-        public void publish(String topic, String aggregateId, String payload) {
+        public CompletionStage<Void> publish(String topic, String aggregateId, String payload) {
             try {
                 if (topic == null || payload == null) {
                     throw new IllegalArgumentException("topic and payload are both required");
@@ -235,10 +269,50 @@ public class KafkaProducerConfig {
 
                 log.debug("Publishing account event {} to topic {}, payload length {}", eventType,
                         topic, payload.length());
-                kafkaTemplate.send(topic, aggregateId, payload).join();
+                return kafkaTemplate.send(topic, aggregateId, payload)
+                        .thenApply(result -> (Void) null)
+                        .whenComplete((ignored, failure) -> {
+                            if (failure != null) {
+                                meters.recordPublishFailure();
+                            }
+                        });
             } catch (RuntimeException failure) {
                 meters.recordPublishFailure();
                 throw failure;
+            }
+        }
+
+        /**
+         * Sends one payload and waits no longer than {@link #publishTimeout} for the broker.
+         *
+         * <p>An unbounded wait holds this thread, and with it the relay sweep that called it, for as
+         * long as the broker is unreachable. The bounded wait turns that into one thrown failure the
+         * caller records against the row.
+         *
+         * <p>The thrown message names the topic and the bound and reads no field of the payload, so
+         * a caller that logs it records no account identifier, customer name or Social Security
+         * number.
+         *
+         * @param topic       the destination topic
+         * @param aggregateId the message key
+         * @param payload     the event text
+         * @throws KafkaException when the broker does not acknowledge inside the bound, when the
+         *         send fails, or when the waiting thread is interrupted
+         */
+        private void sendAndWait(String topic, String aggregateId, String payload) {
+            try {
+                kafkaTemplate.send(topic, aggregateId, payload)
+                        .get(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (TimeoutException lapsed) {
+                throw new KafkaException("the broker did not acknowledge a send to topic " + topic
+                        + " within " + publishTimeout, lapsed);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new KafkaException("the wait on a send to topic " + topic
+                        + " was interrupted", interrupted);
+            } catch (ExecutionException failed) {
+                throw new KafkaException("a send to topic " + topic + " failed",
+                        failed.getCause());
             }
         }
 

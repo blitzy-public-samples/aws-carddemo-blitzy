@@ -1,458 +1,379 @@
 ## CardDemo Card Platform
 
-- [CardDemo Card Platform](#carddemo-card-platform)
-- [What this directory contains](#what-this-directory-contains)
-- [Current checkpoint](#current-checkpoint)
+- [Overview](#overview)
+- [Delivered capability](#delivered-capability)
 - [Quickstart](#quickstart)
-- [Target repository map](#target-repository-map)
-- [Architecture before and after](#architecture-before-and-after)
-- [Module graph and the no-coupling boundary](#module-graph-and-the-no-coupling-boundary)
-- [The six services](#the-six-services)
-- [Event contracts](#event-contracts)
-- [Equivalence testing and documentation index](#equivalence-testing-and-documentation-index)
+- [Security and transport](#security-and-transport)
+- [Repository map](#repository-map)
+- [Runtime architecture](#runtime-architecture)
+- [Module boundary](#module-boundary)
+- [Services and APIs](#services-and-apis)
+- [Events and consumer groups](#events-and-consumer-groups)
+- [Equivalence](#equivalence)
+- [Documentation](#documentation)
 
 <br/>
 
-## What this directory contains
+## Overview
 
-This directory holds six independently deployable services, written in Java 25 on Spring Boot 4.1.0. The services exchange events over Apache Kafka, and each one owns a private PostgreSQL schema that no other service reads. Together they reimplement the documented behaviour of the COBOL application under `app/`, and none of them calls the mainframe at runtime. Nothing under `app/`, `diagrams/`, or `samples/` changes.
+This directory contains six independently deployable Java 25 services on Spring Boot 4.1.0. Kafka carries service events, and one PostgreSQL instance hosts six private databases and schemas.
 
-This file describes the target platform and marks what is built. Every choice made here, together with the alternatives rejected and the risks accepted, will be recorded in `docs/decision-log.md`.
+The platform forward-engineers documented CardDemo behavior without calling the mainframe at runtime. Files under `app/`, `diagrams/`, and `samples/` remain reference inputs and are not modified.
+
+The architecture has one synchronous authorization entry point. Ledger posting, fraud detection, and notification processing run asynchronously without direct service calls between consumers.
 
 <br/>
 
-## Current checkpoint
+## Delivered capability
 
-The platform is under construction, and this section is the boundary between what runs today and what is still to come. Everything outside this section describes the target, and each later section marks its own gaps.
+The Maven aggregator contains nine child modules and builds ten reactor projects, including the parent. The full source, contract, integration, and equivalence lifecycle runs through `mvn verify`.
 
-Built and verified today:
-
-| Layer | State |
+| Capability | Delivered implementation |
 | :--- | :--- |
-| Build | Nine Maven modules build and test offline. `mvn -o clean verify` passes, and the enforcer keeps every service module free of a dependency on another service |
-| Event contracts | Nine JSON Schema documents, five immutable event records in the shared library and two more declared by the account and card services, the shared envelope, and the serializer and deserializer that validate a payload against its document on publish and on consume |
-| COBOL compatibility | Truncating fixed-point arithmetic, tolerant numeric parsing, date validation, card masking, and the three reference-data sets from `app/cpy/CSLKPCDY.cpy` |
-| Persistence | Flyway migrations and seed data per service, plus the Jakarta Persistence entities the migrations validate against |
-| Validation | The account-service edit library, seventeen validators translated from `app/cbl/COACTUPC.cbl` paragraphs 1205 through 1280 |
-| Rendering | The notification service's plain-text and HTML renderers, from `app/cbl/CBSTM03A.CBL` lines 86 to 159 |
-| Infrastructure | `docker-compose.yml` starts PostgreSQL 18.4 and Apache Kafka 4.2.1, creates six event topics and the one shared dead-letter topic, and the Kubernetes manifests mirror that stack |
+| Authorization | Four source-derived decline rules, one response, and exactly one authorization event per call |
+| Posting | Transaction, category-balance, account-balance, rejection, outbox, and duplicate-delivery handling |
+| Fraud | Three net-new risk rules, persisted assessments, and flagged or cleared events |
+| Notification | Posted-transaction, fraud, and customer-context consumers, private read models, two renderers, alert-attempt metadata, and history API |
+| Account | Account and customer reads, coordinated update, source-compatible conflict check, cycle close, and state-change publication |
+| Card | Seven-row cursor browse, card detail, ordered update, state-change publication, and cross-reference divergence metering |
+| Contracts | Thirteen JSON Schema Draft 2020-12 documents, validating serialization, validating deserialization, and compatibility tests |
+| Persistence | Flyway-owned schemas, fixture-backed seeds, Jakarta Persistence validation, outboxes, and processed-event guards |
+| Operations | Structured JSON logs, health and metrics endpoints, Docker Compose, and Kubernetes manifests |
+| Equivalence | Posting, authorization, bill payment, interest rules, validation, identifier, fixture, card-seed, and decimal comparisons |
 
-Not built yet, and therefore not runnable:
+Seven listeners are present:
 
-| Missing piece | Consequence for a reader |
-| :--- | :--- |
-| Only two services answer a request | The authorization endpoint and the notification history carry a controller and a handler each. The four other services declare their route rules and their configuration and no controller, so every other endpoint in this file describes the target |
-| No `@KafkaListener` anywhere | No service consumes an event yet, so the fan-out cannot be observed on a console consumer |
-| No posting arithmetic and no risk rules | The four decline rules exist. `RiskRule` is an interface with no implementation, and no class applies the posting arithmetic of `app/cbl/CBTRN02C.cbl:L424-L579` |
-| An outbox relay in one service only | The authorization service writes and publishes an outbox row. The account and card services hold the `outbox_event` table, the entity and the repository, and nothing writes a row |
-| No `docs/` or `presentation/` directory, and no service `README.md` files | Every `docs/...` path named in this file is a forward reference, not a live document |
-| Equivalence suite covers fixtures, seeds, identifiers and field validation | The posting, authorization, bill-payment, interest and decimal comparisons are pending, and no result document exists |
+- authorization consumes `AccountStateChanged` and `CardUpdated` under separate groups;
+- ledger consumes authorized transactions and may publish a decline when its account projection is missing;
+- fraud consumes authorized transactions;
+- notification consumes posted transactions;
+- notification also consumes fraud assessments;
+- notification consumes `CustomerContextChanged` to keep renderer context current.
+
+Each listener claims an event identifier before applying effects. It acknowledges only after its local transaction commits.
 
 <br/>
 
 ## Quickstart
 
-Install these versions. The build pins the first two, and the container tooling carries a floor version:
+Use the tested versions below:
 
-1. OpenJDK 25, from Adoptium
-2. Apache Maven 3.9.16
-3. Docker Engine 24.0 or newer
-4. The Compose plugin v2.24 or newer, invoked as `docker compose`. The legacy `docker-compose` script does not read the inline `configs` content this stack ships
+| Tool | Version |
+| :--- | :--- |
+| Eclipse Temurin OpenJDK | 25.0.4+7 |
+| Apache Maven | 3.9.16 |
+| Docker Engine | 29.7.0 |
+| Docker Compose | 5.3.1 |
+| Kafka image | `apache/kafka:4.2.1` |
+| PostgreSQL image | `postgres:18.4` |
 
-The stack pulls two images, `postgres:18.4` and `apache/kafka:4.2.1`, and builds one image per service.
+Start from the repository root:
 
-Nothing in this repository is a working credential, so the copy of `.env.example` needs
-seventeen values generated into it before anything starts. The database, the broker and
-every service each refuse to start on a placeholder, which is why this is a step rather
-than a suggestion.
-
-```shell
+```bash
+cd card-platform
 cp .env.example .env
+```
 
-# Fourteen passwords. The tr strips the three characters the broker refuses, because it
-# builds a login entry around the value and a quote, a backslash or whitespace would end
-# that entry early.
-for v in POSTGRES_PASSWORD \
-         AUTHORIZATION_DB_PASSWORD LEDGER_DB_PASSWORD FRAUD_DB_PASSWORD \
-         NOTIFICATION_DB_PASSWORD ACCOUNT_DB_PASSWORD CARD_DB_PASSWORD \
-         KAFKA_ADMIN_PASSWORD \
-         AUTHORIZATION_KAFKA_PASSWORD LEDGER_KAFKA_PASSWORD FRAUD_KAFKA_PASSWORD \
-         NOTIFICATION_KAFKA_PASSWORD ACCOUNT_KAFKA_PASSWORD CARD_KAFKA_PASSWORD; do
-  sed -i "s|^$v=.*|$v=$(openssl rand -base64 24 | tr -d '/+=')|" .env
+The copied file contains 17 `REPLACE` markers. Generate fourteen local passwords and three `{bcrypt}` identity hashes before starting the stack.
+
+[Onboarding](docs/onboarding.md) provides tested, copyable commands for every credential. It also explains the domain, ports, pitfalls, and extension paths.
+
+Build, verify, and start:
+
+```bash
+mvn -B clean verify
+docker compose up -d --build
+docker compose ps
+```
+
+Every Dockerfile copies its packaged archive from `target/`. The Maven command must finish before the image build.
+
+Check all health endpoints:
+
+```bash
+for port in 9081 9082 9083 9084 9085 9086; do
+  curl -fsS "http://localhost:${port}/actuator/health"
+  echo
 done
 ```
 
-The three request identities carry password *hashes* rather than passwords, so they are
-generated differently. `.env.example` carries the `jshell` one-liner beside
-`ADMIN_PASSWORD_HASH`; run it once per identity, choose a password you will type into
-`curl`, and paste each result whole with its `{bcrypt}` prefix. A value without the prefix
-stops start-up rather than letting a service run answering 401 to every request.
+The authorization example and Kafka console command are in [Onboarding](docs/onboarding.md). The authorization response uses HTTP 200 for both approval and source-equivalent decline.
 
-Then build and start:
-
-```shell
-mvn -f pom.xml verify
-docker compose up -d --build
-```
-
-`POST /authorizations` is the one synchronous entry point on the platform. The authorization
-service answers on host port 8081, and every route requires an identity.
-
-The card number is read out of the seeded fixture rather than written here. The seed comes
-from `app/data/ASCII/cardxref.txt`, whose first sixteen bytes are the card number, and a
-number this document embedded instead would be a number a reader copies somewhere it does
-not belong.
-
-```shell
-CARD_NUMBER=$(sed -n '1s/^\(.\{16\}\).*/\1/p' ../app/data/ASCII/cardxref.txt)
-
-curl -sS -X POST http://localhost:8081/authorizations \
-  -u "admin001:the password you chose for ADMIN_PASSWORD_HASH" \
-  -H 'Content-Type: application/json' \
-  -d "{\"cardNumber\":\"$CARD_NUMBER\",
-       \"transactionTypeCode\":\"01\",
-       \"transactionCategoryCode\":\"0001\",
-       \"amount\":\"+00000100.00\",
-       \"merchantId\":\"000012345\",
-       \"originTimestamp\":\"2026-01-15 10:30:00.000000\"}"
-```
-
-One call is to publish one event that three services read. No listener is authored yet, so
-the topic below carries the event and nothing consumes it. The broker authenticates every
-client, so a console consumer presents an identity too. The file named below is the one the
-broker wrote for its own tooling at start-up, and it holds the administrator identity:
-
-```shell
-docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server kafka:29092 --command-config /tmp/kafka-admin.properties \
-  --from-beginning \
-  --include 'transaction.authorized|transaction.posted|fraud.assessed'
-```
-
-One pitfall belongs here because it fails in silence. Every module descriptor declares `<java.version>25</java.version>`. The Spring Boot parent defaults that property, and the compiler release, to 17. A module that omits the override compiles at release 17 with no warning and no failure, so keep the property when you add a module.
-
-Two extension points carry the design:
-
-- Adding a consumer needs no change to the producer. Subscribe to the topic and join a new consumer group. Check the event identifier, write your side effects and the marker row in one local transaction, then acknowledge.
-- Adding a decline rule means adding one class that implements `DeclineRule`. The COBOL marks that seam itself, with the comment `* ADD MORE VALIDATIONS HERE` at `app/cbl/CBTRN02C.cbl:L377`.
-
-Setup detail, domain context, five measured pitfalls, and the longer extension guide are to live in `docs/onboarding.md`. Work found during the migration and left for later is to be listed in `docs/suggested-next-tasks.md`. Neither document exists yet.
+`approved` distinguishes the two outcomes. An approval flows independently through ledger and fraud, then into notification.
 
 <br/>
 
-## Credentials, authentication and transport
+## Security and transport
 
-Every route on every service requires an identity. `/actuator/health` is the single
-exception, because a container health check and a Kubernetes probe carry no credential.
+Every business route requires HTTP Basic authentication. The security chains deny unmatched routes by default.
 
-| Identity | Role | What it reaches |
+| Identity | Role | Access |
 | :--- | :--- | :--- |
-| `admin001` | `ADMIN` | Every business route, and no management endpoint |
-| `user0001` | `USER` | Only the accounts, customers and cards its `USER_SCOPES` name |
-| `monitor01` | `MONITORING` | `/actuator/metrics` and the Prometheus scrape, and no business route |
+| `admin001` | `ADMIN` | Every business route |
+| `user0001` | `USER` | Resources named by `USER_SCOPES` |
+| `monitor01` | `MONITORING` | Metrics and Prometheus endpoints only |
 
-`ADMIN` and `USER` are the two outcomes of the signon fork at
-`app/cbl/COSGN00C.cbl:L232-L236`. `MONITORING` is additive. The scheme is HTTP Basic, the
-chain is default-deny, and an anonymous caller receives 401 while an identity holding the
-wrong role receives 403. Neither response repeats an identifier or a route from the
-request.
+Anonymous access is limited to `/actuator/health` on each management port. Business identities do not receive monitoring access.
 
-One deliberate deviation from the source belongs here. `app/cbl/COSGN00C.cbl:L223` compares
-a stored password against a supplied one directly, in plain text. This platform stores an
-encoded hash instead and refuses a value that arrives without its `{bcrypt}` prefix, so the
-comparison the source performs is not reproduced.
-`docs/decision-log.md` is to record the deviation.
+Passwords are encoded before they enter configuration. The services reject identity values without a supported encoding prefix.
 
-**No credential exists in this repository.** Seventeen values are placeholders carrying the
-literal `REPLACE` marker, and three separate layers refuse them: `docker-compose.yml` stops
-the stack when a credential is unset, the database and broker provisioning programs refuse a
-value still carrying the marker, and each service checks its own database password, broker
-credential and identity hashes as its context refreshes, before it binds a port. A service
-that started on a placeholder would answer every request with 401 and read as misconfigured
-rather than as insecure, which is the failure those refusals replace.
+The Compose stack binds every published port to `127.0.0.1`. It uses separate database and Kafka credentials for each service.
 
-Credentials are per service, not per platform:
-
-- **Six database logins**, one per service, each owning its own schema. `PUBLIC` holds
-  nothing on any database or on the public schema, so a compromised service holds a password
-  that opens one schema and reaches no other service's card, customer, balance or fraud data
-  even by name.
-- **Seven broker identities**, one administrator and one per service. The broker refuses any
-  operation no access control entry allows, and the entries a service holds are exactly the
-  topics and the consumer group its own configuration names. A compromised service can
-  neither read a stream it does not consume nor join another service's group and take its
-  partitions.
-- **Three request identities**, shared by all six services. That one is deliberate:
-  `app/csd/CARDDEMO.CSD` defines one `USRSEC` dataset the whole region reads.
-
-Transport differs between the two deployment paths, and the difference is the network rather
-than the protocol. This stack runs on one Docker bridge on one machine and publishes every
-port on the loopback address, so nothing here carries traffic a third party can read. A
-cluster pod network is a path shared with every other workload on it.
-
-| | `docker-compose.yml` | `deploy/k8s` |
+| Transport | Compose | Kubernetes |
 | :--- | :--- | :--- |
-| Database | `sslmode=require`, self-signed certificate the container generates | `sslmode=verify-full` against a mounted authority |
-| Broker | `SASL_PLAINTEXT`, loopback-published port | `SASL_SSL` with a mounted keystore |
-| Service ports | plain HTTP, switches present and off | HTTPS on both ports, keystore mounted |
+| Database | `sslmode=require` | `sslmode=verify-full` |
+| Kafka | `SASL_PLAINTEXT` on the private bridge | `SASL_SSL` |
+| Service ports | HTTP on loopback | HTTPS with mounted key material |
 
-`KAFKA_SECURITY_PROTOCOL` and `SERVER_SSL_ENABLED` are the two values that change between
-them. Switching either on without supplying material stops start-up naming the empty
-setting, which is the intended outcome rather than a defect.
+The demonstration uses synthetic repository fixtures. Do not expose the Compose ports or load real cardholder data.
 
 <br/>
 
 ## Repository map
 
-The tree below is the target layout. `docs/` and `presentation/` do not exist yet, and no service carries a `README.md` yet; every other path is present.
-
-| Path under `card-platform/` | What it holds |
+| Path | Contents |
 | :--- | :--- |
-| `pom.xml` | Maven aggregator. Nine modules, language level 25, enforced module boundaries |
-| `README.md` | This file. The map of the platform |
-| `docker-compose.yml` | The demo stack. One broker, one database instance, six services |
-| `.env.example` | Every environment variable, each with a working demo default |
-| `docs/` | Decision log, traceability matrix, architecture, data model, onboarding, flagged rules |
-| `presentation/` | Executive summary as one self-contained HTML file |
-| `libs/event-contracts/` | Event types, the shared envelope, JSON Schema documents, validating serialization |
-| `libs/cobol-compat/` | Fixed-point arithmetic, tolerant numeric parsing, date validation, masking, reference data |
-| `services/authorization-service/` | The one synchronous entry point. Applies the four decline rules |
-| `services/ledger-posting-service/` | Balance and category balance maintenance, one event at a time |
-| `services/fraud-detection-service/` | Risk scoring. A new capability with no COBOL ancestor |
-| `services/notification-service/` | Cardholder alerting over a read model keyed by card and transaction |
-| `services/account-service/` | Account and customer read and update, plus billing cycle close |
-| `services/card-service/` | Card list, card detail and card update |
-| `equivalence-tests/` | Fixture loader, copybook parser, and the equivalence suite |
-| `deploy/k8s/` | Namespace, broker, database, and one Deployment and Service per service |
+| `pom.xml` | Aggregator, Java 25 setting, plugin management, and nine child modules |
+| `docker-compose.yml` | Kafka, PostgreSQL, six service containers, health checks, and topic creation |
+| `.env.example` | Supported runtime overrides and credential placeholders |
+| `libs/event-contracts/` | Event records, envelope, schemas, wire bounds, serializers, and compatibility tests |
+| `libs/cobol-compat/` | Fixed-point arithmetic, parsing, date validation, masking, and source reference data |
+| `services/authorization-service/` | Synchronous authorization and account-state projection |
+| `services/ledger-posting-service/` | Posting arithmetic and balance projection |
+| `services/fraud-detection-service/` | Net-new risk assessment |
+| `services/notification-service/` | Card-keyed transaction model and alert rendering |
+| `services/account-service/` | Account, customer, validation, and cycle-close operations |
+| `services/card-service/` | Card browse, detail, update, and replica diagnostics |
+| `equivalence-tests/` | Cross-module contracts and source-rule comparisons |
+| `docs/` | Decisions, traceability, architecture, data model, onboarding, flags, results, and next tasks |
+| `deploy/k8s/` | Namespace, Kafka, PostgreSQL, configuration, secrets template, Deployments, and Services |
 
-Every service module is to have the same shape: `pom.xml`, `Dockerfile`, `README.md`, `src/main/java`, `src/main/resources/application.yml`, `src/main/resources/db/migration`, and `src/test/java`. Each module carries all of those except the `README.md`, and only the notification service carries an `openapi.yaml` so far.
+Each service contains:
+
+- `pom.xml` and `Dockerfile`;
+- a service-level `README.md`;
+- `api/`, `domain/`, `entity/`, `repository/`, `messaging/`, `outbox/`, and `config/` packages as needed;
+- `application.yml`, `openapi.yaml`, and Flyway migrations;
+- direct unit, persistence, contract, and integration tests.
+
+The platform has no application front end, service mesh, cache, schema-registry container, or runtime mainframe connector.
 
 <br/>
 
-## Architecture before and after
+## Runtime architecture
 
-Figure 1 puts the two states side by side. On the left, Customer Information Control System (CICS) transactions and Job Control Language (JCL) batch jobs share eight Virtual Storage Access Method (VSAM) datasets. `app/csd/CARDDEMO.CSD` marks all eight `RECOVERY(NONE)` and `JOURNAL(NO)`. On the right, one authorization call publishes one event, three services react to it without calling one another, and six private schemas replace the eight shared datasets. The right side is the target: the [Current checkpoint](#current-checkpoint) section lists which parts of it run today.
+Figure 1 shows the delivered request, event, and projection paths.
 
-**Figure 1 — CardDemo Before and After: Eight Shared VSAM Datasets Become Six Private Schemas, and a Nightly Batch Window Becomes One Event per Call**
+**Figure 1 — Delivered Card Platform: One Authorization Decision and Independent Event Consumers**
 
 ```mermaid
-graph LR
-    subgraph BEFORE["BEFORE. CICS transactions and JCL batch jobs share eight VSAM datasets"]
-        direction TB
-        TERM["3270 terminal"]
-        CICSR["CICS region<br/>19 programs, 19 transactions"]
-        TDQ{{"transient data queue<br/>the one asynchronous handoff"}}
-        BATCH["JCL nightly batch<br/>POSTTRAN, INTCALC, CREASTMT"]
-        VS[("8 shared VSAM datasets<br/>RECOVERY NONE, JOURNAL NO")]
-        TERM --> CICSR
-        CICSR ==> TDQ
-        TDQ --> BATCH
-        CICSR -.-> VS
-        BATCH -.-> VS
-    end
+graph TB
+    CLIENT["REST client"]
+    AUTH["authorization-service"]
+    RULES{"decline rules<br/>0100, 0101, 0102, 0103"}
+    AUTHDB[("authorization_service")]
+    TA{{"transaction.authorized"}}
+    TD{{"transaction.declined"}}
+    LEDGER["ledger-posting-service"]
+    FRAUD["fraud-detection-service"]
+    LEDGERDB[("ledger_service")]
+    FRAUDDB[("fraud_service")]
+    TP{{"transaction.posted"}}
+    FA{{"fraud.assessed"}}
+    NOTIFY["notification-service"]
+    NOTIFYDB[("notification_service")]
+    ACCOUNT["account-service"]
+    ACCOUNTDB[("account_service")]
+    AS{{"account.state-changed"}}
+    CC{{"customer.context-changed"}}
+    CARD["card-service"]
+    CARDDB[("card_service")]
+    CU{{"card.updated"}}
+    DEAD{{"carddemo.dead-letter"}}
 
-    subgraph AFTER["AFTER. One event per authorization call, three independent consumers, six private schemas"]
-        direction TB
-        CLIENT["REST client"]
-        AUTH["authorization-service"]
-        DEC{"decline rules<br/>100, 101, 102, 103"}
-        ACCTS["account-service"]
-        CARDS["card-service"]
-        TA{{"transaction.authorized"}}
-        TD{{"transaction.declined"}}
-        LEDG["ledger-posting-service"]
-        FRAU["fraud-detection-service"]
-        NOTI["notification-service"]
-        TP{{"transaction.posted"}}
-        FA{{"fraud.assessed"}}
-        ADB[("authorization")]
-        ACDB[("account")]
-        CADB[("card")]
-        LDB[("ledger")]
-        FDB[("fraud")]
-        NDB[("notification")]
-        CLIENT -->|"POST /authorizations"| AUTH
-        AUTH --> DEC
-        DEC ==>|"approved"| TA
-        DEC ==>|"declined"| TD
-        TA ==> LEDG
-        TA ==> FRAU
-        LEDG ==> TP
-        FRAU ==> FA
-        TP ==> NOTI
-        FA ==> NOTI
-        AUTH -.-> ADB
-        ACCTS -->|"read: no event"| ACDB
-        CARDS -->|"read: no event"| CADB
-        ACCTS ==>|"on mutation only"| ASC
-        CARDS ==>|"on mutation only"| CSC
-        LEDG -.-> LDB
-        FRAU -.-> FDB
-        NOTI -.-> NDB
-    end
-
-    %% The link below is invisible. It places the before state left of the after state.
-    VS ~~~ CLIENT
+    CLIENT -->|"POST /authorizations"| AUTH
+    AUTH --> RULES
+    RULES --> AUTHDB
+    RULES ==>|approved| TA
+    RULES ==>|declined| TD
+    TA ==> LEDGER
+    TA ==> FRAUD
+    LEDGER --> LEDGERDB
+    FRAUD --> FRAUDDB
+    LEDGER ==> TP
+    FRAUD ==> FA
+    TP ==> NOTIFY
+    FA ==> NOTIFY
+    NOTIFY --> NOTIFYDB
+    ACCOUNT --> ACCOUNTDB
+    ACCOUNT ==> AS
+    ACCOUNT ==> CC
+    AS ==> AUTH
+    CC ==> NOTIFY
+    CARD --> CARDDB
+    CARD ==> CU
+    CU ==> AUTH
+    LEDGER -.-> DEAD
+    FRAUD -.-> DEAD
+    NOTIFY -.-> DEAD
+    AUTH -.-> DEAD
 ```
 
 Legend for Figure 1:
 
-- Plain arrow: a synchronous Representational State Transfer (REST) call, terminal input and output, or in-process control flow.
-- Thick arrow: an asynchronous publish or consume, so the two sides run independently.
-- Dotted arrow: direct access to stored data.
-- Diamond: the decline-rule chain, which short-circuits on the first failure. Its four reason codes come from `app/cbl/CBTRN02C.cbl:L380-L420`.
-- Hexagon: a queue on the left, a Kafka topic on the right. Every Kafka message carries the account identifier as its key.
-- Cylinder: stored data. On the left, one dataset group serves every program. On the right, each schema belongs to exactly one service.
-- One call publishes exactly one event: to `transaction.authorized` on an approval, or to `transaction.declined` on a decline. A decline is expected business traffic, and `app/cbl/CBTRN02C.cbl:L229-L230` treats it that way by setting return code 4 rather than failing the run. No consumer subscribes to the decline topic in the demo, and no decline reaches a dead-letter topic.
-- The supporting services publish on a mutation and publish nothing on a read, which is why `account.state-changed` and `card.updated` carry a label and the read edges do not.
-- No arrow joins `ledger-posting-service`, `fraud-detection-service` and `notification-service`. The absence is the requirement, not an omission. No arrow joins the authorization service to the account or card service either: it reads its own replica tables instead.
+- Plain arrows are synchronous request or private database work.
+- Thick arrows are Kafka publish or consume paths.
+- Dotted arrows are terminal dead-letter routes.
+- The diamond is the source-derived decision chain.
+- Cylinders are schemas read by one service only.
+- No consumer calls another consumer.
 
-Figure 1 carries the before-state counts the Agent Action Plan fixes: 19 programs and 19 transactions. The shipped `app/csd/CARDDEMO.CSD` defines 18 of each, and `docs/decision-log.md` is to record that discrepancy as a flagged item.
+The source and target are compared in [Architecture, Before and After](docs/architecture-before-after.md). Every event path appears in [Event Flow](docs/event-flow.md).
 
-Figure 1 is the only rendering of the two states this directory currently carries.
+The measured CICS definition contains 8 files, 17 mapsets, 18 programs, and 18 transactions. The broader source directory contains 28 COBOL programs.
 
 <br/>
 
-## Module graph and the no-coupling boundary
+## Module boundary
 
-Nine Maven modules build in one pass, and the dependency direction runs one way. Figure 2 draws it. The two libraries depend on nothing inside this build. Each service depends on both libraries and on no other service. The equivalence suite depends on everything, in test scope alone.
+Figure 2 shows the compile dependency direction.
 
-**Figure 2 — Maven Module Graph: the Build Boundary That Makes Inter-Service Coupling a Compilation Failure**
+**Figure 2 — Maven Boundary: Shared Libraries Below Services and Equivalence Tests Above**
 
 ```mermaid
 graph TB
-    ET["equivalence-tests"]
+    EQ["equivalence-tests"]
 
-    subgraph SERVICES["Six service modules. No module here depends on another"]
-        AUTH["services/authorization-service"]
-        LEDG["services/ledger-posting-service"]
-        FRAU["services/fraud-detection-service"]
-        NOTI["services/notification-service"]
-        ACCT["services/account-service"]
-        CARD["services/card-service"]
+    subgraph SERVICES["six service modules"]
+        A["authorization"]
+        L["ledger"]
+        F["fraud"]
+        N["notification"]
+        AC["account"]
+        C["card"]
     end
 
-    subgraph LIBS["Two shared libraries. Neither depends on any module of this build"]
-        EC["libs/event-contracts"]
-        CC["libs/cobol-compat"]
+    subgraph LIBRARIES["two shared libraries"]
+        EVENTS["event-contracts"]
+        COBOL["cobol-compat"]
     end
 
-    ET -. "test scope" .-> SERVICES
-    ET -. "test scope" .-> LIBS
-    SERVICES --> EC
-    SERVICES --> CC
+    EQ -.-> SERVICES
+    EQ -.-> LIBRARIES
+    SERVICES --> EVENTS
+    SERVICES --> COBOL
 ```
 
 Legend for Figure 2:
 
-- Solid arrow: a compile dependency. The module at the tail cannot build without the module at the head.
-- Dotted arrow labelled test scope: a dependency the equivalence suite uses in tests only. No service ships it.
-- Box: a group of modules. The six service modules share one box, and no arrow runs between any two of them.
+- Solid arrows are compile dependencies.
+- Dotted arrows are test-scope dependencies.
+- No arrow runs between service modules.
 
-A developer who writes an import from the ledger service into the fraud service gets a compilation failure. `maven-enforcer-plugin` reports the banned dependency as a named build error. The boundary carries a requirement stated at the outset: "Fraud detection, ledger posting, and notification services must not call each other or block the authorization response path."
+Each service depends on both shared libraries and no other service. A forbidden inter-service Java import fails compilation and the Maven enforcer reports it.
 
-`equivalence-tests` is a module of the aggregator, so the equivalence suite runs on every build.
-
-<br/>
-
-## The six services
-
-> **This is an isolated demo, not a deployment.** Every surface below is unauthenticated. No module declares Spring Security, OAuth or JSON Web Token support, so any caller that reaches a port reaches the data behind it, including account, customer, card and alert-history data. The data is synthetic: it comes from the fixtures under `app/data/`, and no real cardholder appears in it. `docker-compose.yml` binds every published port to `127.0.0.1`, and the Kubernetes Services are `ClusterIP`, so the stack answers only from the machine or cluster it runs on. Do not expose a port, and do not load real cardholder data. Authentication and authorization are separate work, tracked as a security task rather than assumed here.
-
-The synchronous surfaces in the table below are the target. None answers yet; see [Current checkpoint](#current-checkpoint).
-
-| Service | Role | Synchronous surface | Events produced | Events consumed | COBOL provenance |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `authorization-service` | The only synchronous entry point, and the sole writer of the authorization decision. Applies four decline rules | `POST /authorizations`, port 8081 | `TransactionAuthorized`, `TransactionDeclined` | none | `app/cbl/CBTRN02C.cbl` decline rules, `app/cbl/COTRN02C.cbl` request contract, `app/cbl/COSGN00C.cbl` signon |
-| `ledger-posting-service` | Reproduces the batch posting arithmetic once per event | balance queries, port 8082 | `TransactionPosted` | `TransactionAuthorized` | `app/cbl/CBTRN02C.cbl`, `app/jcl/POSTTRAN.jcl` |
-| `fraud-detection-service` | Scores risk. Never sits in the authorization response path | assessment queries, port 8083 | `FraudFlagged`, `FraudCleared` | `TransactionAuthorized` | none, a new capability with zero COBOL provenance |
-| `notification-service` | Alerts a cardholder over a read model keyed by card and transaction | notification history, port 8084 | none | `TransactionPosted`, `FraudFlagged` | `app/cbl/CBSTM03A.CBL` lines 86 to 159, `app/cpy/COSTM01.CPY`, `app/jcl/CREASTMT.JCL` |
-| `account-service` | Account and customer read and update, plus `POST /accounts/{id}/cycle-close` | account and customer endpoints, port 8085 | `AccountStateChanged` | none | `app/cbl/COACTVWC.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/CBACT04C.cbl` lines 353 to 354 |
-| `card-service` | Card list, card detail and card update | card endpoints, port 8086 | `CardUpdated` | none | `app/cbl/COCRDLIC.cbl`, `app/cbl/COCRDSLC.cbl`, `app/cbl/COCRDUPC.cbl` |
-
-Six facts about that table are worth stating plainly:
-
-- Two services are to consume `transaction.authorized` directly: ledger posting and fraud detection. Each joins a consumer group of its own, so each receives every event.
-- The notification service is to consume `TransactionPosted` and `FraudFlagged`, which the other two publish. Three services therefore react to one authorization call, and none of the three calls another.
-- The `fraud.assessed` topic carries `FraudCleared` as well as `FraudFlagged`, and a listener routes on the envelope `eventType`. The notification service counts a cleared assessment and raises no alert on one.
-- The account and card services publish only when a record changes. A read publishes nothing.
-- `fraud-detection-service` has no COBOL ancestor. No fraud module exists under `app/`, and a search for one returned nothing, so every rule in that service is new.
-- `authorization-service` has no single source program either. `COPAUA0C` and transaction `CP00`, both named in the original brief, exist nowhere under `app/`. Its decision logic is synthesised from the three programs named above, and `docs/traceability-matrix.md` is to declare the synthesis.
+The equivalence module depends on every module for tests only. It is last in the reactor.
 
 <br/>
 
-## Event contracts
+## Services and APIs
 
-Five event types travel between the services: `TransactionAuthorized`, `TransactionDeclined`, `TransactionPosted`, `FraudFlagged` and `FraudCleared`. The account and card services add `AccountStateChanged` and `CardUpdated`, and every dead-letter topic carries `DeadLetterEnvelope`. Each payload has a JavaScript Object Notation (JSON) Schema document, Draft 2020-12, under `libs/event-contracts/src/main/resources/schemas/`. Every payload is validated against its document twice, on publish and again on consume, and both ends read one shared table of documents. Which class does the publish-side check depends on how a service publishes: the four services whose producer serializes an event object use `JsonSchemaValidatingSerializer`, and the account and card services validate as they write the outbox row, through `toValidatedJson`, then check the stored text again in `KafkaEventPublisher` before it reaches the broker. The consume side is `JsonSchemaValidatingDeserializer` in every case. A malformed event therefore reaches neither a topic nor a consumer, and no path publishes without a check.
+| Service and guide | Business port | Management port | Delivered operations |
+| :--- | ---: | ---: | :--- |
+| [authorization-service](services/authorization-service/README.md) | 8081 | 9081 | `POST /authorizations` |
+| [ledger-posting-service](services/ledger-posting-service/README.md) | 8082 | 9082 | `GET /balances/{accountId}` |
+| [fraud-detection-service](services/fraud-detection-service/README.md) | 8083 | 9083 | `GET /fraud-assessments`, `GET /fraud-assessments/{transactionId}` |
+| [notification-service](services/notification-service/README.md) | 8084 | 9084 | `GET /notifications/{cardToken}` |
+| [account-service](services/account-service/README.md) | 8085 | 9085 | `GET /accounts/{accountId}`, `PUT /accounts/{accountId}`, `POST /accounts/{accountId}/cycle-close`, `GET /customers/{customerId}` |
+| [card-service](services/card-service/README.md) | 8086 | 9086 | `GET /cards`, `POST /cards/detail`, `PUT /cards` |
 
-Every document closes its top-level property set and declares a `maxProperties` ceiling, so a producer cannot carry a field no schema describes — an unmasked card number among them — inside a known event type. A later version adds a value inside the optional `extensions` object instead, which is bounded to sixteen short string members, so a consumer already validating against version 1 keeps working. Both ends also refuse a record wider than 8192 bytes, the same width as the `payload` column of every `outbox_event` table.
+All business ports map to container port 8080. All management ports map to container port 9080.
 
-Every event carries the same envelope:
+Kafka is `kafka:29092` inside Compose and `localhost:9092` from the host. PostgreSQL is `postgres:5432` inside Compose and `localhost:5432` from the host.
 
-| Field | What it holds |
-| :--- | :--- |
-| `eventId` | Identifier of this event. A consumer checks it, then writes its side effects and the marker row in one local transaction, and acknowledges only after that transaction commits, so a duplicate delivery changes nothing |
-| `eventType` | Name of the event type. A listener reading a shared topic routes on it |
-| `schemaVersion` | Contract version, matching the `-v1` suffix of the schema document |
-| `occurredAt` | Moment the producer wrote the event, in Coordinated Universal Time |
-| `aggregateId` | The eleven-digit account identifier, and the Kafka message key |
-
-Three conventions carry weight. Changing any one of them breaks correctness, and `docs/decision-log.md` is to carry the reasoning behind each:
-
-- **`aggregateId` is always the account identifier and always the Kafka message key.** Kafka keeps order within a partition and nowhere else. The ledger must not reorder the balance updates of one account.
-- **A payload `accountId` never disagrees with `aggregateId`.** Three documents declare both fields, and each record rejects a differing pair. Draft 2020-12 has no keyword comparing one property against another, so the check lives in the record and in a test.
-- **Money travels as a decimal string, never as a JSON number.** Most parsers turn a JSON number into a double, which returns binary floating point to a fixed-point system. Each schema constrains an amount with the pattern `^-?\d{1,9}\.\d{2}$`.
-
-Adding a property to a schema is safe. Removing one, or tightening one, breaks a consumer that already reads the topic. `SchemaBackwardCompatibilityTest` in [libs/event-contracts/](libs/event-contracts/) freezes a bounded set of invariants and fails the build when one changes:
-
-- the exact required set and required count of each document;
-- the five envelope properties, their order, and the constraints they share;
-- the open property set, and the relative order of the eight top-level keywords;
-- the two money patterns, the two fixed-width timestamp forms, the four decline code and text pairs, and the three rule identifiers;
-- the masking pattern, and the absence of a card secret or a status flag;
-- the property set each Java record puts on the wire, compared both ways against the document.
-
-The suite is not a general schema-diff tool. It compares no document against an earlier revision, so a narrowing outside that list passes. `EventSchemaContractTest` beside it checks the same documents from the instance side, validating well-formed and malformed payloads against them.
-
-<br/>
-
-## Equivalence testing and documentation index
-
-The equivalence suite reads the nine fixed-width fixtures under `app/data/ASCII/` and compares behaviour against results derived from the documented COBOL rules. The mainframe is never called, so every comparison runs from data checked into this repository. The suite lives in [equivalence-tests/](equivalence-tests/), and Failsafe runs every `*EquivalenceTest` class at `integration-test`, failing the build at `verify`.
-
-What the suite covers today:
-
-| Piece | State |
-| :--- | :--- |
-| `CardDemoFixtureLoader` | Loads any of the nine fixtures. Width-tolerant, because `cardxref.txt` carries 36-byte records where its copybook declares 50 |
-| `CopybookRecordParser` | Parses a record by fixed offset, driven by the same scale constants the production code uses |
-| `fixture-coverage.csv` | 188 rows recording the fixture inventory the loader and parser are held against |
-| `ValidationEquivalenceTest` | Compares field validation, including the verbatim message texts and the 300-to-850 credit-score range |
-| `FixtureCoverageEquivalenceTest` | Rederives every census row from `app/data/` so the inventory above cannot drift from the files |
-| `CardSeedEquivalenceTest` | Compares the seeded card rows against `app/data/ASCII/carddata.txt` |
-| `IdentifierFidelityEquivalenceTest` | Holds every identifier at its source width, so a leading zero survives the round trip |
-| `EquivalenceSuiteExecutionConfigurationTest` | Holds the Surefire exclude and the Failsafe include in place, so an equivalence class cannot run twice or not at all |
-
-Five comparisons are pending, and this file claims them nowhere else. They are the posting comparison over the 300 records of `dailytran.txt`, the four decline reasons, the bill-payment divergence, the interest rate rules, and decimal truncation. The `docs/equivalence-results.md` result document is pending too, so no comparison result is published yet.
-
-One rule matters more than the rest: **all monetary arithmetic truncates toward zero and never rounds.** The `ROUNDED` phrase appears zero times in the 28 programs under `app/cbl`. Every `BigDecimal` operation therefore pins `RoundingMode.DOWN`. `CobolDecimal` in [libs/cobol-compat/](libs/cobol-compat/) is the single place that decision is made, and no helper there accepts a rounding mode. A changed cent is a parity failure, and `docs/decision-log.md` is to record the rounding modes considered and rejected.
-
-The table below is the documentation set this platform is to carry. Every `docs/` and `presentation/` entry is a forward reference: neither directory exists yet, so no link is live. The two entries marked present are.
-
-| Document | What it covers | State |
+| Service | Database | Schema |
 | :--- | :--- | :--- |
-| `docs/onboarding.md` | Clean machine to a running platform: setup, domain context, pitfalls, how to extend | planned |
-| `docs/suggested-next-tasks.md` | Improvements found during the migration that fell outside scope | planned |
-| `docs/decision-log.md` | Every non-trivial decision, with alternatives, reasons and risks | planned |
-| `docs/traceability-matrix.md` | Each COBOL program and copybook mapped to a target or to a stated exclusion | planned |
-| `docs/architecture-before-after.md` | The paired before and after views at full size | planned |
-| `docs/event-flow.md` | The publish and consume path of every event | planned |
-| `docs/data-model.md` | Copybook field to PostgreSQL column, service by service | planned |
-| `docs/business-rule-flags.md` | The 26 COBOL rules flagged as ambiguous, undocumented or inconsistent, with citations | planned |
-| `docs/equivalence-results.md` | Fixture by fixture comparison results | planned |
-| `docs/prose-validation.md` | Writing review of every document authored here | planned |
-| `presentation/executive-summary.html` | Executive summary, one self-contained HTML file | planned |
-| [deploy/k8s/](deploy/k8s/) | Manifests that run the same stack on Kubernetes | present |
-| [.env.example](.env.example) | Every environment variable, each with a working demo default | present |
+| authorization | `carddemo_authorization` | `authorization_service` |
+| ledger | `carddemo_ledger` | `ledger_service` |
+| fraud | `carddemo_fraud` | `fraud_service` |
+| notification | `carddemo_notification` | `notification_service` |
+| account | `carddemo_account` | `account_service` |
+| card | `carddemo_card` | `card_service` |
+
+Flyway creates every schema. Hibernate uses `ddl-auto: validate` and never generates tables.
+
+<br/>
+
+## Events and consumer groups
+
+Seven business topics, four source-specific dead-letter topics, and one shared fallback are created explicitly.
+
+| Topic | Event types | Producers | Consumers and groups |
+| :--- | :--- | :--- | :--- |
+| `transaction.authorized` | `TransactionAuthorized` | authorization | ledger `ledger-posting`; fraud `fraud-detection` |
+| `transaction.declined` | `TransactionDeclined` | authorization and ledger | no runtime consumer |
+| `transaction.posted` | `TransactionPosted` | ledger | notification `notification-posted` |
+| `fraud.assessed` | `FraudFlagged`, `FraudCleared` | fraud | notification `notification-fraud` |
+| `account.state-changed` | `AccountStateChanged` | account | authorization `authorization-account-state` |
+| `customer.context-changed` | `CustomerContextChanged` | account | notification `notification-customer` |
+| `card.updated` | `CardUpdated` | card | authorization `authorization-card-updated` |
+| `<source>.DLT` | `DeadLetterEnvelope` | listener error handlers | operator inspection and replay |
+| `carddemo.dead-letter` | `DeadLetterEnvelope` | listener error handlers without source metadata | operator inspection and replay |
+
+Every governed event carries `eventId`, `eventType`, `schemaVersion`, `occurredAt`, and an aggregate key. Money travels as a decimal string.
+
+The account identifier is the normal Kafka key and ordering unit. An unresolved-card decline uses the transaction key because no account identifier exists.
+
+Thirteen schema documents cover eight business event types, four additive version upgrades, and the dead-letter envelope. Publish and consume paths validate against the registered document.
+
+`TransactionPosted` version 2 adds the statement provenance required by notification. Version 1 remains constructible and testable, but notification refuses it as insufficient.
+
+<br/>
+
+## Equivalence
+
+The suite compares Java behavior with documented source rules and checked-in fixtures. It never calls a mainframe.
+
+Run the complete equivalence lifecycle from this directory:
+
+```bash
+mvn -o -B -pl equivalence-tests -am verify
+```
+
+`mvn test` does not execute `*EquivalenceTest.java`. Failsafe runs those classes during `verify`.
+
+The delivered suite includes:
+
+- posting over all 300 daily transaction records;
+- decline reasons 0100 through 0103 and the narrowed-precision boundary;
+- online bill-payment behavior;
+- interest-rate resolution without migrating interest processing;
+- account and card validation;
+- truncation toward zero;
+- fixture census, identifier fidelity, and card seed checks.
+
+The published run reports 178 Failsafe equivalence tests and 180 unit or contract tests, with zero failures. See [Equivalence Results](docs/equivalence-results.md).
+
+Interest is verified but not migrated. `BillingCycleService` reproduces only the two accumulator resets at `app/cbl/CBACT04C.cbl:L353-L354`.
+
+<br/>
+
+## Documentation
+
+| Document | Purpose |
+| :--- | :--- |
+| [Onboarding](docs/onboarding.md) | Clean-machine setup, domain context, pitfalls, and extension guidance |
+| [Suggested Next Tasks](docs/suggested-next-tasks.md) | Follow-up work with locations and verification criteria |
+| [Decision Log](docs/decision-log.md) | Alternatives, reasons, accepted risks, and declared deviations |
+| [Traceability Matrix](docs/traceability-matrix.md) | Bidirectional source-to-target classification |
+| [Business Rule Flags](docs/business-rule-flags.md) | Twenty-six ambiguous, inconsistent, or undocumented source rules |
+| [Architecture, Before and After](docs/architecture-before-after.md) | Paired Mermaid migration views |
+| [Event Flow](docs/event-flow.md) | Topics, groups, outboxes, projections, and idempotency |
+| [Data Model](docs/data-model.md) | Service-owned tables and copybook-to-column provenance |
+| [Equivalence Results](docs/equivalence-results.md) | Fixture-by-fixture parity evidence and declared gaps |
+
+Each service also has a local guide linked from [Services and APIs](#services-and-apis). The root `README.md` retains the separate mainframe installation path.
+
+Use [Suggested Next Tasks](docs/suggested-next-tasks.md) for unresolved business decisions. Do not silently correct a flagged source behavior in production code.
 
 <br/>

@@ -2,14 +2,19 @@ package com.carddemo.card.messaging;
 
 import com.carddemo.events.serde.EventContracts;
 import com.carddemo.events.serde.EventJsonValidator;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -19,13 +24,13 @@ import tools.jackson.databind.ObjectMapper;
  * Kafka-backed {@link EventPublisherPort} implementation. This class holds the only Kafka type the
  * card service imports.
  *
- * <p>ADDITIVE. No COBOL program defines this class. The nearest source construct is the
+ * <p>No COBOL program defines this class. The nearest source construct is the
  * {@code WIRTE-JOBSUB-TDQ} paragraph at {@code app/cbl/CORPT00C.cbl:L515-L523}, which hands one
  * record to a Customer Information Control System (CICS) transient data queue.
  *
- * <p>The card row and the outbox row are to commit in one local transaction. A planned outbox relay
- * is to call this class afterwards in a separate transaction, never from inside request handling.
- * No writer and no relay is authored yet.
+ * <p>{@code domain/CardUpdateService} and {@code outbox/OutboxWriter} commit the card row and the
+ * outbox row in one local transaction. {@code outbox/OutboxRelay} calls this class afterwards, in a
+ * transaction of its own, never from inside request handling.
  *
  * <p>Four checks run before any event leaves this service. Construction rejects a producer that
  * does not pin acknowledgement from every in-sync replica, idempotent production, a safe in-flight
@@ -35,20 +40,31 @@ import tools.jackson.databind.ObjectMapper;
  * validates the payload through {@link EventJsonValidator}, the one gate every event of this
  * platform passes.
  *
- * <p>That gate is shared deliberately. It reads the same table {@code JsonSchemaValidatingSerializer}
- * and {@code JsonSchemaValidatingDeserializer} read, so a card event is held to the same governed
- * type list, the same contract version, the same size ceiling, the same parser limits and the same
- * closed property set as every other event on the platform. This class previously loaded schema
- * documents itself and derived a document name from the event type, which was a second gate that
- * could disagree with the first and applied neither the governed type list nor the size ceiling.
+ * <p>That gate is shared. It reads the same table
+ * {@code JsonSchemaValidatingSerializer} and {@code JsonSchemaValidatingDeserializer} read. A card
+ * event is therefore held to the same rules as every other event on the platform.
  *
- * <p>Every rejection message holds a JSON pointer, a broken keyword, an event type, a topic name or
- * a length. No rejection message holds a value read from the payload, so a full Primary Account
- * Number (PAN), a card verification value or an account identifier cannot reach a log through a
- * failed publish.
+ * <ul>
+ *   <li>the governed event type list</li>
+ *   <li>the contract version</li>
+ *   <li>the size ceiling</li>
+ *   <li>the parser limits</li>
+ *   <li>the closed property set</li>
+ * </ul>
+ *
+ * <p>This class previously loaded schema documents itself and derived a document name from the
+ * event type. That was a second gate, able to disagree with the first, and it applied neither the
+ * governed type list nor the size ceiling.
+ *
+ * <p>Every rejection message holds a JSON pointer, a broken keyword, an event type, a topic name
+ * or a length. None holds a value read from the payload. A full Primary Account Number (PAN), a
+ * card verification value and an account identifier therefore cannot reach a log through a failed
+ * publish.
  *
  * <p>Another event bus needs one more implementation of {@link EventPublisherPort}, and a new
  * consumer of a card event needs no change in this package.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Component
 public class KafkaEventPublisher implements EventPublisherPort {
@@ -97,12 +113,23 @@ public class KafkaEventPublisher implements EventPublisherPort {
     /**
      * The one gate every event of this platform passes on the way out.
      *
-     * <p>{@code com.carddemo:event-contracts} owns it, so the governed event type list, the contract
-     * version, the size ceiling, the parser limits and every closed property set are the same here as
-     * in the shared serializer and the shared deserializer. Nothing about a schema document is
-     * decided in this package.
+     * <p>{@code com.carddemo:event-contracts} owns it. Five things are therefore the same here as
+     * in the shared serializer and deserializer.
+     *
+     * <ul>
+     *   <li>the governed event type list</li>
+     *   <li>the contract version</li>
+     *   <li>the size ceiling</li>
+     *   <li>the parser limits</li>
+     *   <li>every closed property set</li>
+     * </ul>
+     *
+     * <p>Nothing about a schema document is decided in this package.
      */
     private final EventJsonValidator eventValidator = EventJsonValidator.shared();
+
+    /** How long one send waits for the broker before the attempt is reported as failed. */
+    private final Duration publishTimeout;
 
     /**
      * Takes the producer template Spring Boot builds from the {@code spring.kafka.producer}
@@ -112,14 +139,18 @@ public class KafkaEventPublisher implements EventPublisherPort {
      * @param configuredCardUpdatedTopic the topic name configured for the card update event, which
      *                                   {@code application.yml} reads from
      *                                   {@code carddemo.kafka.topics.card-updated}
+     * @param publishTimeout             how long one send waits for the broker, from
+     *                                   {@code carddemo.outbox.relay.publish-timeout}
      * @throws IllegalStateException when the producer does not pin acknowledgement from every
      *         in-sync replica, idempotent production, an in-flight limit of at most
      *         {@value #MAX_IN_FLIGHT_LIMIT}, or a bounded delivery, request and block timeout
      */
     public KafkaEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
-            @Value("${carddemo.kafka.topics.card-updated:}") String configuredCardUpdatedTopic) {
+            @Value("${carddemo.kafka.topics.card-updated:}") String configuredCardUpdatedTopic,
+            @Value("${carddemo.outbox.relay.publish-timeout}") Duration publishTimeout) {
         this.kafkaTemplate = kafkaTemplate;
         this.configuredCardUpdatedTopic = configuredCardUpdatedTopic;
+        this.publishTimeout = publishTimeout;
         requireReliableProducer(kafkaTemplate.getProducerFactory().getConfigurationProperties());
     }
 
@@ -133,12 +164,14 @@ public class KafkaEventPublisher implements EventPublisherPort {
      * <p>The log record names the event type, the topic and the payload length. It carries no
      * message key, no account identifier and no part of the payload.
      *
-     * @throws IllegalArgumentException when {@code topic} or {@code payload} is null, when
-     *         {@code aggregateId} is not eleven decimal digits, when the payload is not one JSON
-     *         object, when the payload declares an event type that does not belong on
-     *         {@code topic}, when {@code aggregateId} differs from the payload's
-     *         {@code aggregateId} or from its {@code accountId} where the document declares one,
-     *         or when the shared gate refuses the payload
+     * @throws IllegalArgumentException on any of five conditions.
+     *         {@code topic} or {@code payload} is null.
+     *         {@code aggregateId} is not eleven decimal digits.
+     *         The payload is not one JSON object.
+     *         The payload declares an event type that does not belong on {@code topic}, or
+     *         {@code aggregateId} differs from the payload's {@code aggregateId} or from its
+     *         {@code accountId} where the document declares one.
+     *         The shared gate refuses the payload
      */
     @Override
     public void publish(String topic, String aggregateId, String payload) {
@@ -157,7 +190,39 @@ public class KafkaEventPublisher implements EventPublisherPort {
         requireValidAgainstSchema(payload);
         log.debug("Publishing card event {} to topic {}, payload length {}",
                 eventType, topic, payload.length());
-        kafkaTemplate.send(topic, aggregateId, payload).join();
+        sendAndWait(topic, aggregateId, payload);
+    }
+
+    /**
+     * Sends one payload and waits no longer than the configured publish timeout for the broker.
+     *
+     * <p>An unbounded wait holds this thread, and with it the relay sweep that called it, for as
+     * long as the broker is unreachable. The bounded wait turns that into one thrown failure the
+     * caller records against the row.
+     *
+     * <p>The thrown message names the topic and the bound and reads no field of the payload, so a
+     * caller that logs it records no card number and no account identifier.
+     *
+     * @param topic       the destination topic
+     * @param aggregateId the message key
+     * @param payload     the event text
+     * @throws KafkaException when the broker does not acknowledge inside the bound, when the send
+     *         fails, or when the waiting thread is interrupted
+     */
+    private void sendAndWait(String topic, String aggregateId, String payload) {
+        try {
+            kafkaTemplate.send(topic, aggregateId, payload)
+                    .get(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException lapsed) {
+            throw new KafkaException("the broker did not acknowledge a send to topic " + topic
+                    + " within " + publishTimeout, lapsed);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new KafkaException("the wait on a send to topic " + topic + " was interrupted",
+                    interrupted);
+        } catch (ExecutionException failed) {
+            throw new KafkaException("a send to topic " + topic + " failed", failed.getCause());
+        }
     }
 
     /**
@@ -302,10 +367,11 @@ public class KafkaEventPublisher implements EventPublisherPort {
     /**
      * Validates the payload through the shared gate {@code com.carddemo:event-contracts} owns.
      *
-     * <p>The shared validator selects the schema from the event type, refuses a type the platform
-     * does not govern, refuses another contract version, applies the platform size ceiling and the
-     * platform parser limits, and reports a failure by JSON pointer and broken keyword with no value
-     * from the event in the message. This class adds nothing to that and reimplements none of it.
+     * <p>The shared validator selects the schema from the event type. It refuses a type the
+     * platform does not govern and refuses another contract version. It applies the platform size
+     * ceiling and the platform parser limits. It reports a failure by JSON pointer and broken
+     * keyword, with no value from the event in the message. This class adds nothing to that and
+     * reimplements none of it.
      *
      * @param payload the serialized event, validated as received
      * @throws IllegalArgumentException when the event names no governed type, carries another

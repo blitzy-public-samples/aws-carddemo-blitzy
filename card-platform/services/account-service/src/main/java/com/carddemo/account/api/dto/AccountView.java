@@ -1,17 +1,23 @@
 package com.carddemo.account.api.dto;
 
+import com.carddemo.cobol.PicClause;
 import com.carddemo.events.EventEnvelope;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.util.Objects;
+import java.util.regex.Pattern;
+import tools.jackson.databind.annotation.JsonSerialize;
+import tools.jackson.databind.ser.std.ToStringSerializer;
 
 /**
  * Account projection returned by {@code GET /accounts/{accountId}}.
  *
- * <p>DEMO SURFACE, NO AUTHENTICATION. This projection carries a credit limit, a balance and both
- * cycle counters, and no module of this platform declares Spring Security, OAuth or JSON Web Token
- * support. Any caller that reaches the port reaches these figures. The demo stack binds each
- * published port to the loopback address and seeds only the synthetic rows of
- * {@code app/data/ASCII/acctdata.txt}. Do not expose the port, and do not load real account data.
- * Authentication and authorization are separate work.
+ * <p>Spring Security protects this route. {@code config/SecurityConfig} authenticates every caller
+ * over HTTP Basic and admits a {@code USER} or an {@code ADMIN} identity whose scope names the
+ * requested account; a route named by no rule is denied. The projection carries a credit limit, a
+ * balance and both cycle counters, so the demo stack binds each published port to the loopback
+ * address and seeds only the synthetic rows of {@code app/data/ASCII/acctdata.txt}. Do not expose
+ * the port, and do not load real account data.
  *
  * <p>Eleven components carry the eleven values that {@code 1200-SETUP-SCREEN-VARS.} at
  * {@code app/cbl/COACTVWC.cbl:L460} moves for a located account. The gate
@@ -119,15 +125,88 @@ import java.math.BigDecimal;
 public record AccountView(
         String accountId,
         String activeStatus,
-        BigDecimal currentBalance,
-        BigDecimal creditLimit,
-        BigDecimal cashCreditLimit,
-        BigDecimal currentCycleCredit,
-        BigDecimal currentCycleDebit,
+        @JsonSerialize(using = ToStringSerializer.class) BigDecimal currentBalance,
+        @JsonSerialize(using = ToStringSerializer.class) BigDecimal creditLimit,
+        @JsonSerialize(using = ToStringSerializer.class) BigDecimal cashCreditLimit,
+        @JsonSerialize(using = ToStringSerializer.class) BigDecimal currentCycleCredit,
+        @JsonSerialize(using = ToStringSerializer.class) BigDecimal currentCycleDebit,
         String openDate,
         String expirationDate,
         String reissueDate,
         String groupId) {
+
+    /**
+     * Shape every monetary component holds once stored: an optional leading minus, at most ten
+     * integer digits, a point, then exactly two fractional digits.
+     *
+     * <p>The ten integer digits come from {@code PIC S9(10)V99}, which
+     * {@code app/cpy/CVACT01Y.cpy:L7} declares for the balance, {@code :L8} and {@code :L9} for the
+     * two credit limits, and {@code :L13} and {@code :L14} for the two cycle accumulators.</p>
+     */
+    static final String MONEY_PATTERN = "^-?\\d{1,10}\\.\\d{2}$";
+
+    /** {@link #MONEY_PATTERN} compiled, and the check every monetary component runs. */
+    private static final Pattern MONEY_MATCHER = Pattern.compile(MONEY_PATTERN);
+
+    /**
+     * Stores every monetary component at the scale its source field declares, then checks its shape.
+     *
+     * <p>Five components carry money, and each reaches the wire as a decimal string rather than as a
+     * JavaScript Object Notation (JSON) number. A JSON number is read back through a binary
+     * floating-point type by most parsers, which is the one thing a platform whose correctness rests
+     * on fixed-point arithmetic cannot allow. {@code TransactionAuthorized} in
+     * {@code card-platform/libs/event-contracts} carries its amount the same way, so an amount reads
+     * alike whether it arrives on an event or in a response.
+     *
+     * <p>Scale is pinned here rather than trusted from the caller. Each component is stored at the
+     * scale of its own {@code PIC} clause, so {@code 100} and {@code 100.0} and {@code 100.00} all
+     * serialize as {@code "100.00"} and a response never reports a balance to one decimal place.
+     *
+     * <p>Truncation is toward zero, {@link RoundingMode#DOWN}, which is what every arithmetic store
+     * in the source does: the {@code ROUNDED} phrase appears nowhere across the twenty-eight programs
+     * of {@code app/cbl/}. Half-up rounding here would report a cent the ledger never held.
+     *
+     * <p>No message this constructor raises carries a component value: a refusal reports the stored
+     * width, precision and scale, and each one describes one cardholder's finances.
+     *
+     * @throws NullPointerException     when a monetary component is null
+     * @throws IllegalArgumentException when a monetary component is too wide for its source field
+     */
+    public AccountView {
+        currentBalance = stored(currentBalance, PicClause.ACCT_CURR_BAL_SCALE, "currentBalance");
+        creditLimit = stored(creditLimit, PicClause.ACCT_CREDIT_LIMIT_SCALE, "creditLimit");
+        cashCreditLimit = stored(cashCreditLimit, PicClause.ACCT_CASH_CREDIT_LIMIT_SCALE,
+                "cashCreditLimit");
+        currentCycleCredit = stored(currentCycleCredit, PicClause.ACCT_CURR_CYC_CREDIT_SCALE,
+                "currentCycleCredit");
+        currentCycleDebit = stored(currentCycleDebit, PicClause.ACCT_CURR_CYC_DEBIT_SCALE,
+                "currentCycleDebit");
+    }
+
+    /**
+     * Stores one monetary component at its declared scale and checks the shape it serializes as.
+     *
+     * @param value     the component as the caller supplied it, at any scale
+     * @param scale     the scale the source field declares, from {@link PicClause}
+     * @param component the component name a refusal reports
+     * @return the component at {@code scale}, truncated toward zero
+     * @throws NullPointerException     when {@code value} is null
+     * @throws IllegalArgumentException when the stored value is too wide for its source field
+     */
+    private static BigDecimal stored(BigDecimal value, int scale, String component) {
+        Objects.requireNonNull(value, component + " is required");
+
+        BigDecimal atScale = value.setScale(scale, RoundingMode.DOWN);
+        String text = atScale.toPlainString();
+        if (!MONEY_MATCHER.matcher(text).matches()) {
+            throw new IllegalArgumentException(component + " must match " + MONEY_PATTERN
+                    + " once stored at scale " + scale + ", and the supplied value stores as "
+                    + text.length() + " characters with precision " + atScale.precision()
+                    + " and scale " + atScale.scale());
+        }
+        return atScale;
+    }
+
     /**
      * Names all eleven components and withholds every value.
      *

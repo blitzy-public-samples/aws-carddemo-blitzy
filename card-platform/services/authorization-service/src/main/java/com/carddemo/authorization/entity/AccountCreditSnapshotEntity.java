@@ -16,12 +16,15 @@ import java.util.UUID;
 /**
  * Credit and expiry values the authorization decline rules read for one account.
  *
- * <p>Five of the thirteen fields declared in {@code app/cpy/CVACT01Y.cpy} appear here as columns.
- * The account service owns the whole account record, and account state-change events keep these
- * rows current. The table is {@code account_credit_snapshot}, created by
- * {@code src/main/resources/db/migration/V1__schema.sql}.</p>
+ * <p>Eight columns are mapped: five carrying fields of {@code app/cpy/CVACT01Y.cpy}, and three
+ * carrying the provenance and age of the copy. The account service owns the whole account record.
+ * {@code AccountStateChangedConsumer} keeps these rows current after the fixture-backed seed load.
+ * The table is
+ * {@code account_credit_snapshot}, created by
+ * {@code src/main/resources/db/migration/V1__schema.sql}, which is authoritative for the column
+ * and constraint definitions.</p>
  *
- * <p>Mapped fields, in source order:</p>
+ * <p>The five source-derived columns, in source order:</p>
  *
  * <pre>
  * account_id               ACCT-ID               PIC 9(11)      L5
@@ -40,8 +43,8 @@ import java.util.UUID;
  * the transaction amount, and L407 compares the credit limit against it. Line L414 compares
  * {@code ACCT-EXPIRAION-DATE} against the first ten characters of the transaction origin timestamp,
  * character by character. The working field {@code WS-TEMP-BAL PIC S9(09)V99} at L187 is one
- * integer digit narrower than the two accumulators and the credit limit. The planned credit-limit
- * rule under {@code domain/rules} is to carry that narrower width.</p>
+ * integer digit narrower than the two accumulators and the credit limit. {@code CreditLimitRule}
+ * under {@code domain/rules} carries that narrower width.</p>
  *
  * <p>Both accumulators are signed and unconstrained. Line L551 of the same program adds a negative
  * amount to {@code ACCT-CURR-CYC-DEBIT}, and 50 of the 300 records in
@@ -59,6 +62,8 @@ import java.util.UUID;
  *       account service holds both.</li>
  *   <li>{@code FILLER PIC X(178)} at L17. No column models these bytes.</li>
  * </ul>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "account_credit_snapshot",
@@ -73,9 +78,9 @@ public class AccountCreditSnapshotEntity {
      * <p>The field is a {@link String} and not a number. {@code PIC 9(11)} is a display field
      * eleven characters wide, and account record 7 of {@code app/data/ASCII/acctdata.txt} writes
      * the identifier as {@code 00000000007}. A numeric column stores that as seven and returns
-     * {@code 7}, so every caller then has to re-pad it to reach the eleven-character key at
-     * {@code KEYS(11 0)} in {@code app/jcl/ACCTFILE.jcl:L40} or the aggregate identifier an event
-     * envelope carries, and a caller that forgets produces a key that matches nothing. The column
+     * {@code 7}. Every caller would then have to re-pad it to reach the eleven-character key at
+     * {@code KEYS(11 0)} in {@code app/jcl/ACCTFILE.jcl:L40}, or the aggregate identifier an event
+     * envelope carries. A caller that forgot would produce a key matching nothing. The column
      * holds the padded form once, and the check constraint
      * {@code ck_account_credit_snapshot_account_id_digits} holds the width and the digit class.
      */
@@ -125,7 +130,7 @@ public class AccountCreditSnapshotEntity {
     private BigDecimal currentCycleDebit;
 
     // ------------------------------------------------------------------------------------
-    // Replica freshness. ADDITIVE: the source has no replica to keep current.
+    // Replica freshness. No COBOL ancestor: the source has no replica to keep current.
     // app/cbl/CBTRN02C.cbl:L396 reads the account dataset itself, so it cannot be stale.
     // A copy that cannot say how old it is cannot be refused when it is too old, which is the
     // whole point of the three columns below.
@@ -133,11 +138,11 @@ public class AccountCreditSnapshotEntity {
 
     /**
      * The state-change event that last wrote this row, or null for a row loaded by
-     * {@code V2__seed.sql}.
+     * {@code V2__seed.sql}. Null in every current row, because no consumer writes this table.
      *
-     * <p>The seed is the initial load rather than an event, so it names none. A check constraint in
-     * {@code src/main/resources/db/migration/V1__schema.sql} ties this column to
-     * {@link #getSourceOccurredAt()}: a row carries both halves of its provenance or neither.
+     * <p>A check constraint in {@code src/main/resources/db/migration/V1__schema.sql} ties this
+     * column to {@link #getSourceOccurredAt()}: a row carries both halves of its provenance or
+     * neither.
      */
     @Column(name = "source_event_id")
     private UUID sourceEventId;
@@ -163,11 +168,11 @@ public class AccountCreditSnapshotEntity {
     private Instant observedAt;
 
     /**
-     * No-argument constructor for the persistence provider, which sets the five fields by
-     * reflection after it builds the instance.
+     * No-argument constructor for the persistence provider, which assigns all eight mapped fields
+     * by reflection after it builds the instance.
      */
     protected AccountCreditSnapshotEntity() {
-        // The provider populates every field. Callers use the five-argument constructor.
+        // The provider populates every field. Callers use the six-argument constructor.
     }
 
     /**
@@ -189,6 +194,7 @@ public class AccountCreditSnapshotEntity {
      * @param accountExpirationDate {@code ACCT-EXPIRAION-DATE}, exactly ten characters
      * @param currentCycleCredit    {@code ACCT-CURR-CYC-CREDIT}, scale 2, either sign
      * @param currentCycleDebit     {@code ACCT-CURR-CYC-DEBIT}, scale 2, either sign
+     * @param observedAt            the moment these values were observed at the source
      * @throws NullPointerException     when any argument is {@code null}
      * @throws IllegalArgumentException when a scale, a length or a character class does not
      *                                  match the source picture clause
@@ -356,7 +362,7 @@ public class AccountCreditSnapshotEntity {
      * authorization decision reads, so the text names the column and prints
      * {@link EventEnvelope#WITHHELD} in place of the value. That marker is the platform-wide
      * redaction marker, and this rendering reaches a log line the moment any code concatenates
-     * the entity into a message: the credit limit, the expiration date and the two cycle
+     * the entity into a message. The credit limit, the expiration date and the two cycle
      * accumulators are the account holder's financial position, and the identifier names the
      * person the position belongs to. Every one of the five stays behind its accessor, which is
      * where a caller states its intent to read it.</p>
@@ -404,9 +410,7 @@ public class AccountCreditSnapshotEntity {
      * Reports whether this row was observed recently enough to authorize against.
      *
      * <p>The caller supplies the window, so the policy lives in configuration and not here. A row
-     * with no observation time is reported stale rather than fresh: a replica that cannot establish
-     * its own freshness has to be treated as unfit, because the alternative is authorizing against
-     * a copy that may have stopped being updated at any point in the past.
+     * with no observation time is reported stale.
      *
      * @param now       the current time
      * @param maxAge    how old an observation may be and still count as fresh

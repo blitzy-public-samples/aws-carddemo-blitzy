@@ -12,35 +12,29 @@ import java.util.UUID;
 /**
  * One row per event identifier this service has handled, in table {@code processed_event}.
  *
- * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. Searching all 28 Common Business Oriented
- * Language (COBOL) programs in {@code app/cbl/} for {@code fraud}, {@code risk}, {@code velocit},
- * {@code scoring} and {@code luhn} matches none.
+ * <p>No Common Business Oriented Language (COBOL) ancestor. Searching all 28 COBOL programs in
+ * {@code app/cbl/} for {@code fraud}, {@code risk}, {@code velocit}, {@code scoring} and
+ * {@code luhn} matches none.
  *
  * <p>The CardDemo source detects no duplicate: {@code app/cbl/CBTRN02C.cbl:L564} writes the
  * transaction file, and a failing status test at L566 reaches {@code 9999-ABEND-PROGRAM} at
  * L707-L711, four statements ending in {@code CALL 'CEE3ABD'}. A replayed feed hits a duplicate key
  * and abends.
  *
- * <p>The planned consumer in the sibling {@code messaging} package is to read this table before
- * acting, then insert the marker in the same local transaction as its side effects. No consumer is
- * authored yet, so the table is empty.
+ * <p>{@code messaging.TransactionAuthorizedConsumer} reads this table before it acts, then inserts
+ * the marker inside the same local transaction as its side effects, marker after effects, and
+ * acknowledges the delivery only once that transaction commits. A redelivery finds the row present
+ * and does nothing.
  *
- * <p>Flyway 12.4.0 creates both columns on PostgreSQL 18.4 from
- * {@code src/main/resources/db/migration/V1__schema.sql}. The primary key is the only access path,
- * and no other index exists:
- *
- * <ul>
- *   <li>{@code event_id}: Structured Query Language (SQL) type {@code UUID}, {@code NOT NULL},
- *       primary key {@code pk_processed_event}, held as a Universally Unique Identifier
- *       ({@link UUID}).</li>
- *   <li>{@code processed_at}: SQL type {@code TIMESTAMP(6) WITH TIME ZONE}, {@code NOT NULL}, held
- *       as an {@link Instant}.</li>
- * </ul>
+ * <p>Three columns come from {@code src/main/resources/db/migration/V1__schema.sql}, which Flyway
+ * 12.4.0 applies to PostgreSQL 18.4 and which is authoritative for them: {@code event_id} as the
+ * primary key {@code pk_processed_event}, {@code processed_at}, and {@code consumed_topic}. A
+ * retention index over {@code processed_at} accompanies them.
  *
  * <p>{@link Table} names no schema; the default schema arrives from configuration. That
  * configuration sets {@code spring.jpa.hibernate.ddl-auto} to {@code validate}, and the Jakarta
- * Persistence API (JPA) provider then checks this mapping against the Data Definition Language
- * (DDL) above at start-up. A column name or type mismatch stops the service.
+ * Persistence API (JPA) provider then checks this mapping against that migration at start-up. A
+ * column name or type mismatch stops the service.
  */
 @Entity
 @Table(name = "processed_event",
@@ -67,10 +61,10 @@ public class ProcessedEventEntity {
      * Which topic the delivery that first handled this event arrived on, or null when the
      * marker was written without one.
      *
-     * <p>A marker on its own says an event was handled and nothing about where it came from, which
-     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
-     * came from or arrive on a dead-letter topic during a recovery, and those are different
-     * situations. Recording the topic separates them.
+     * <p>A marker on its own says an event was handled and nothing about where it came from,
+     * which is not enough to investigate a replay. The same identifier can be redelivered on the
+     * topic it came from, or arrive on a dead-letter topic during a recovery. Those are different
+     * situations, and recording the topic separates them.
      */
     @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
     private String consumedTopic;
@@ -78,8 +72,9 @@ public class ProcessedEventEntity {
     /**
      * No-argument constructor for the Jakarta Persistence API provider.
      *
-     * <p>The provider calls it while materialising a row, then assigns both fields. Application
-     * code calls {@link #ProcessedEventEntity(UUID, Instant)}.
+     * <p>The provider calls it while materialising a row, then assigns all three fields.
+     * Application code calls {@link #ProcessedEventEntity(UUID, Instant)} and
+     * {@link #setConsumedTopic(String)}.
      */
     protected ProcessedEventEntity() {
         // Both fields stay unassigned until the provider populates them.
@@ -135,7 +130,9 @@ public class ProcessedEventEntity {
     }
 
     /**
-     * Renders both columns.
+     * Renders the event identifier and the instant, and omits {@code consumedTopic}. The identifier
+     * is opaque and the instant is operational, so neither names an account, an amount or a
+     * cardholder.
      *
      * @return the event identifier and the instant handling finished
      */

@@ -3,7 +3,7 @@ package com.carddemo.card.messaging;
 /**
  * The card service publishes every event through this interface.
  *
- * <p>ADDITIVE. No COBOL program and no copybook defines this contract. The locator below is a
+ * <p>No COBOL program and no copybook defines this contract. The locator below is a
  * reference, not an ancestor.
  *
  * <p>Source reference: the {@code WIRTE-JOBSUB-TDQ} paragraph at

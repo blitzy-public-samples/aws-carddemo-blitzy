@@ -1,5 +1,6 @@
 package com.carddemo.notification.entity;
 
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
@@ -15,9 +16,9 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 /**
- * The card-keyed read model this service serves its alert history from.
+ * The account-keyed read model this service serves its alert history from.
  *
- * <p>Thirteen columns map the record {@code 01 TRNX-RECORD.} at {@code app/cpy/COSTM01.CPY:L20}.
+ * <p>Fourteen columns map the record {@code 01 TRNX-RECORD.} at {@code app/cpy/COSTM01.CPY:L20}.
  * The composite key is the group {@code 05 TRNX-KEY.} at {@code app/cpy/COSTM01.CPY:L21}, which
  * the cluster definition declares as {@code KEYS(32 0)} at {@code app/jcl/CREASTMT.JCL:L30}, a Job
  * Control Language (JCL) member. The sort step orders the two key parts as
@@ -27,8 +28,10 @@ import org.hibernate.type.SqlTypes;
  * <p>Each column, with the source field and source line it maps:
  *
  * <pre>
- * TRNX-CARD-NUM       L22   card_number            CHAR(16)
+ * TRNX-CARD-NUM       L22   card_token             CHAR(64)  identity
+ *                           masked_card_number     CHAR(16)  display
  * TRNX-ID             L23   transaction_id         CHAR(16)
+ * TRNX-CARD-NUM       L22   card_number            CHAR(16)   display only, ADDITIVE form
  * TRNX-TYPE-CD        L25   type_code              CHAR(2)
  * TRNX-CAT-CD         L26   category_code          CHAR(4)
  * TRNX-SOURCE         L27   source                 CHAR(10)
@@ -42,22 +45,27 @@ import org.hibernate.type.SqlTypes;
  * TRNX-PROC-TS        L35   processing_timestamp   CHAR(26)
  * </pre>
  *
- * <p>The card number column holds the masked form: twelve mask characters then the last four
- * digits. Masking is an addition. The source key holds a full Primary Account Number (PAN), and
- * the card field on the card detail map occupies its full sixteen characters at
- * {@code app/bms/COCRDSL.bms:L99}.
+ * <p>One source field becomes two columns, because one value cannot do both jobs. The source key
+ * holds a full Primary Account Number (PAN) and the card field on the card detail map occupies its
+ * full sixteen characters at {@code app/bms/COCRDSL.bms:L99}. This platform stores neither a full
+ * card number nor a masked one as an identity: {@code card_token} carries the card identity that
+ * {@code PanMasker.cardToken} derives, one value per card, and {@code masked_card_number} carries
+ * the twelve-mask-character display form beside it. Both columns are additions, and the source masks
+ * and tokenizes nothing.
+ *
+ * <p>The masked form keys nothing here on purpose. Twelve of its sixteen characters are mask
+ * characters, so two cards sharing their last four digits mask to one value: a key over it would
+ * merge two cards' histories into one row set, and an ownership rule over it would admit a caller to
+ * a card it does not hold.
  *
  * <p>Both timestamp columns hold 26 characters of text, and neither maps to a date or time type.
- * Two source constructs carry no column: the group {@code 05 TRNX-REST.} at
- * {@code app/cpy/COSTM01.CPY:L24}, and the trailing {@code FILLER PIC X(20)} at
- * {@code app/cpy/COSTM01.CPY:L36}. Both omissions appear in
- * {@code card-platform/docs/traceability-matrix.md} (planned).
+ * Two source constructs carry no column: the group {@code 05 TRNX-REST.} at {@code
+ * app/cpy/COSTM01.CPY:L24}, and the trailing {@code FILLER PIC X(20)} at {@code
+ * app/cpy/COSTM01.CPY:L36}.
  *
  * <p>The one secondary index declared below is the index
  * {@code src/main/resources/db/migration/V1__schema.sql} creates over
  * {@code processing_timestamp}.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Entity
 @Table(name = "statement_transaction",
@@ -69,9 +77,27 @@ public class StatementTransactionEntity {
     private static final Pattern MASKED_CARD_NUMBER =
             Pattern.compile("^\\*{12}[0-9]{4}$");
 
+    /**
+     * Shape of a card token: {@value PanMasker#CARD_TOKEN_LENGTH} lower-case hexadecimal
+     * characters, the rendering {@code PanMasker.cardToken} produces.
+     */
+    private static final Pattern CARD_TOKEN = Pattern.compile(PanMasker.CARD_TOKEN_PATTERN);
+
     /** Holds the composite key. Source: {@code 05 TRNX-KEY.} at {@code app/cpy/COSTM01.CPY:L21}. */
     @EmbeddedId
     private StatementTransactionId id;
+
+    /**
+     * Holds the masked card number as display data, never as an identity.
+     *
+     * <p>Twelve mask characters then the last four digits, at the width
+     * {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22} declares. The key carries
+     * the card identity; this column carries what a cardholder recognises.</p>
+     */
+    @JdbcTypeCode(SqlTypes.CHAR)
+    @Column(name = "masked_card_number", nullable = false,
+            length = PicClause.TRAN_CARD_NUM_WIDTH)
+    private String maskedCardNumber;
 
     /**
      * Holds the transaction type code. Source: {@code TRNX-TYPE-CD PIC X(02)} at
@@ -176,9 +202,10 @@ public class StatementTransactionEntity {
     }
 
     /**
-     * Takes the key and the eleven non-key values in column order.
+     * Takes the key and the twelve non-key values in column order.
      *
      * @param id the composite key
+     * @param maskedCardNumber the masked card number, twelve mask characters then four digits
      * @param typeCode the transaction type code
      * @param categoryCode the transaction category code, four digits
      * @param source where the transaction entered the platform
@@ -191,14 +218,16 @@ public class StatementTransactionEntity {
      * @param originTimestamp when the transaction originated, 26 characters
      * @param processingTimestamp when the platform recorded the transaction, 26 characters
      * @throws NullPointerException when an argument is null
-     * @throws IllegalArgumentException when a decimal argument carries the wrong scale, or when
-     *         {@code categoryCode} or {@code merchantId} is not the digit count its column holds
+     * @throws IllegalArgumentException when a decimal argument carries the wrong scale, when
+     *         {@code categoryCode} or {@code merchantId} is not the digit count its column holds,
+     *         or when {@code maskedCardNumber} is not the masked form
      */
-    public StatementTransactionEntity(StatementTransactionId id, String typeCode,
-            String categoryCode, String source, String description, BigDecimal amount,
-            String merchantId, String merchantName, String merchantCity, String merchantZip,
-            String originTimestamp, String processingTimestamp) {
+    public StatementTransactionEntity(StatementTransactionId id, String maskedCardNumber,
+            String typeCode, String categoryCode, String source, String description,
+            BigDecimal amount, String merchantId, String merchantName, String merchantCity,
+            String merchantZip, String originTimestamp, String processingTimestamp) {
         this.id = Objects.requireNonNull(id, "id is required");
+        this.maskedCardNumber = requireMasked(maskedCardNumber);
         this.typeCode = Objects.requireNonNull(typeCode, "typeCode is required");
         this.categoryCode =
                 requireDigits(categoryCode, PicClause.TRAN_CAT_CD_WIDTH, "categoryCode");
@@ -214,6 +243,30 @@ public class StatementTransactionEntity {
                 Objects.requireNonNull(originTimestamp, "originTimestamp is required");
         this.processingTimestamp =
                 Objects.requireNonNull(processingTimestamp, "processingTimestamp is required");
+    }
+
+    /**
+     * Checks the display card number against the masked shape its column enforces.
+     *
+     * <p>{@code ck_statement_transaction_masked_card_number} in
+     * {@code src/main/resources/db/migration/V1__schema.sql} holds the stored column to the same
+     * shape, so a full Primary Account Number is refused here and again at the column. No message
+     * this method raises names the argument.</p>
+     *
+     * @param maskedCardNumber the argument
+     * @return the argument
+     * @throws NullPointerException when the argument is null
+     * @throws IllegalArgumentException when the argument is not twelve mask characters then four
+     *         digits
+     */
+    private static String requireMasked(String maskedCardNumber) {
+        Objects.requireNonNull(maskedCardNumber, "maskedCardNumber is required");
+        if (!MASKED_CARD_NUMBER.matcher(maskedCardNumber).matches()) {
+            throw new IllegalArgumentException("maskedCardNumber holds "
+                    + maskedCardNumber.length() + " characters and this column holds "
+                    + PicClause.TRAN_CARD_NUM_WIDTH + " in the masked form");
+        }
+        return maskedCardNumber;
     }
 
     /**
@@ -264,6 +317,11 @@ public class StatementTransactionEntity {
     /** @return the composite key */
     public StatementTransactionId getId() {
         return id;
+    }
+
+    /** @return the masked card number this row displays, which identifies no single card */
+    public String getMaskedCardNumber() {
+        return maskedCardNumber;
     }
 
     /** @return the transaction type code */
@@ -338,11 +396,16 @@ public class StatementTransactionEntity {
     }
 
     /**
-     * The composite key: the masked card number then the transaction identifier.
+     * The composite key: the card token then the transaction identifier.
      *
-     * <p>Both parts are sixteen characters, from {@code TRNX-CARD-NUM PIC X(16)} at
-     * {@code app/cpy/COSTM01.CPY:L22} and {@code TRNX-ID PIC X(16)} at
-     * {@code app/cpy/COSTM01.CPY:L23}.
+     * <p>The card half stands in for {@code TRNX-CARD-NUM PIC X(16)} at
+     * {@code app/cpy/COSTM01.CPY:L22} and holds {@value PanMasker#CARD_TOKEN_LENGTH} characters
+     * rather than sixteen. The transaction half is {@code TRNX-ID PIC X(16)} at
+     * {@code app/cpy/COSTM01.CPY:L23} at its declared width.
+     *
+     * <p>Neither a full nor a masked card number can key this table. A full one would reach every
+     * index page and backup that holds the key. A masked one identifies no single card, so it would
+     * merge the histories of two cards sharing their last four digits.
      */
     @Embeddable
     public static class StatementTransactionId implements Serializable {
@@ -351,13 +414,12 @@ public class StatementTransactionEntity {
         private static final long serialVersionUID = 1L;
 
         /**
-         * Holds the masked card number. Source: {@code TRNX-CARD-NUM PIC X(16)} at
-         * {@code app/cpy/COSTM01.CPY:L22}.
+         * Holds the card token. Stands in for {@code TRNX-CARD-NUM PIC X(16)} at
+         * {@code app/cpy/COSTM01.CPY:L22}, whose value was a full Primary Account Number.
          */
         @JdbcTypeCode(SqlTypes.CHAR)
-        @Column(name = "card_number", nullable = false,
-                length = PicClause.TRAN_CARD_NUM_WIDTH)
-        private String cardNumber;
+        @Column(name = "card_token", nullable = false, length = PanMasker.CARD_TOKEN_LENGTH)
+        private String cardToken;
 
         /**
          * Holds the transaction identifier. Source: {@code TRNX-ID PIC X(16)} at
@@ -374,34 +436,35 @@ public class StatementTransactionEntity {
         /**
          * Takes both key parts.
          *
-         * @param cardNumber the masked card number, twelve mask characters then four digits
+         * @param cardToken the card token, exactly {@value PanMasker#CARD_TOKEN_LENGTH} lower-case
+         *        hexadecimal characters
          * @param transactionId the transaction identifier, exactly
          *        {@value PicClause#TRAN_ID_WIDTH} characters
          * @throws NullPointerException when an argument is null
-         * @throws IllegalArgumentException when the card number is not masked, or when the
+         * @throws IllegalArgumentException when the card token misses the token shape, or when the
          *         transaction identifier is not exactly {@value PicClause#TRAN_ID_WIDTH}
          *         characters
          */
-        public StatementTransactionId(String cardNumber, String transactionId) {
-            Objects.requireNonNull(cardNumber, "cardNumber is required");
+        public StatementTransactionId(String cardToken, String transactionId) {
+            Objects.requireNonNull(cardToken, "cardToken is required");
             Objects.requireNonNull(transactionId, "transactionId is required");
-            if (!MASKED_CARD_NUMBER.matcher(cardNumber).matches()) {
-                throw new IllegalArgumentException("cardNumber holds "
-                        + cardNumber.length() + " characters and this column holds "
-                        + PicClause.TRAN_CARD_NUM_WIDTH + " in the masked form");
+            if (!CARD_TOKEN.matcher(cardToken).matches()) {
+                throw new IllegalArgumentException("cardToken holds " + cardToken.length()
+                        + " characters and this column holds " + PanMasker.CARD_TOKEN_LENGTH
+                        + " lower-case hexadecimal characters");
             }
             if (transactionId.length() != PicClause.TRAN_ID_WIDTH) {
                 throw new IllegalArgumentException("transactionId holds "
                         + transactionId.length() + " characters and this column holds "
                         + PicClause.TRAN_ID_WIDTH);
             }
-            this.cardNumber = cardNumber;
+            this.cardToken = cardToken;
             this.transactionId = transactionId;
         }
 
-        /** @return the masked card number */
-        public String getCardNumber() {
-            return cardNumber;
+        /** @return the card token, which identifies the card and discloses no card number */
+        public String getCardToken() {
+            return cardToken;
         }
 
         /** @return the transaction identifier */
@@ -417,13 +480,13 @@ public class StatementTransactionEntity {
             if (!(other instanceof StatementTransactionId that)) {
                 return false;
             }
-            return Objects.equals(cardNumber, that.cardNumber)
+            return Objects.equals(cardToken, that.cardToken)
                     && Objects.equals(transactionId, that.transactionId);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(cardNumber, transactionId);
+            return Objects.hash(cardToken, transactionId);
         }
     }
 }

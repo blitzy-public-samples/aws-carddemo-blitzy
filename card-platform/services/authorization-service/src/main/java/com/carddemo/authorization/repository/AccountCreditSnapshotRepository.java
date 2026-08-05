@@ -41,10 +41,12 @@ import org.springframework.data.repository.query.Param;
  *
  * <h2>The refresh contract</h2>
  *
- * <p>A consumer of that event applies it through {@link #save(AccountCreditSnapshotEntity)} and
- * records the event identifier through {@code ProcessedEventRepository} in the SAME local
- * transaction. Splitting the two leaves a window where the projection has moved and the marker has
- * not, and a redelivery inside that window applies the same change twice.</p>
+ * <p>No consumer calls {@link #save(AccountCreditSnapshotEntity)} today: this service registers no
+ * listener, so the method is the refresh path and nothing exercises it. A consumer that is added
+ * must apply the event through that method and record the event identifier through
+ * {@code ProcessedEventRepository} in the SAME local transaction. Splitting the two leaves a window
+ * where the projection has moved and the marker has not, and a redelivery inside that window
+ * applies the same change twice.</p>
  *
  * <p>{@link AccountCreditSnapshotEntity} carries no setter, so a refresh builds a replacement row
  * with the same identifier and saves it. The identifier is already present, so the save is an
@@ -58,11 +60,12 @@ import org.springframework.data.repository.query.Param;
  * account record has no delete path in {@code app/cbl/}. A missing row also has a defined meaning
  * already: reason code 101 at {@code app/cbl/CBTRN02C.cbl:L397-L399}.</p>
  *
- * <p>{@code card-platform/docs/decision-log.md} (planned) records the decisions behind this
- * projection.</p>
  */
 public interface AccountCreditSnapshotRepository
         extends Repository<AccountCreditSnapshotEntity, String> {
+
+    /** The count a projection write returns when a newer change was already recorded. */
+    int NO_ROW_WRITTEN = 0;
 
     /**
      * Returns the snapshot row for one account identifier.
@@ -85,10 +88,9 @@ public interface AccountCreditSnapshotRepository
      *
      * <p>An absent row yields an empty {@code Optional}, and the method throws nothing for a miss.
      * {@code app/cbl/CBTRN02C.cbl:L396-L399} answers the same miss with reason code 101 and the
-     * text {@code ACCOUNT RECORD NOT FOUND}. The planned account-exists rule under
-     * {@code domain/rules} is to turn the empty {@code Optional} into that decline, and it is not
-     * authored yet. A present row supplies the credit limit, both cycle
-     * accumulators and the expiry text that reason codes 102 and 103 test at
+     * text {@code ACCOUNT RECORD NOT FOUND}. {@code AccountExistsRule} under {@code domain/rules}
+     * turns the empty {@code Optional} into that decline. A present row supplies the credit limit,
+     * both cycle accumulators and the expiry text that reason codes 102 and 103 test at
      * {@code app/cbl/CBTRN02C.cbl:L403-L420}.</p>
      *
      * @param accountId the account identifier, exactly eleven digit characters
@@ -99,9 +101,9 @@ public interface AccountCreditSnapshotRepository
     /**
      * Writes one snapshot row, refreshing the account it already holds.
      *
-     * <p>This is the only write to {@code account_credit_snapshot}. A consumer of
-     * {@code AccountStateChanged} builds a row from the event payload and saves it here, in the same
-     * local transaction as the idempotency marker that guards the apply.
+     * <p>This is the only write to {@code account_credit_snapshot}, and no current code calls it. A
+     * consumer of {@code AccountStateChanged} is to build a row from the event payload and save it
+     * here, in the same local transaction as the idempotency marker that guards the apply.
      *
      * <p>The row carries the account identifier as its identity, so saving an account already
      * present updates that row. Saving an account absent from the projection inserts one, which is
@@ -123,12 +125,13 @@ public interface AccountCreditSnapshotRepository
      * Applies one account state change, unless the row already carries a newer one.
      *
      * <p>One statement rather than read-then-write. It is idempotent, so replaying the topic
-     * converges on the same rows, and it is ordered, so a redelivery arriving behind a newer event
-     * discards itself instead of moving the replica backwards. This matters more here than anywhere
-     * else in the service: the credit-limit rule at {@code app/cbl/CBTRN02C.cbl:L403-L407}
-     * authorizes against {@code current_cycle_credit} and {@code current_cycle_debit}, so a stale
-     * or regressed row does not fail loudly, it approves a transaction that should have been
-     * declined.
+     * converges on the same rows. It is ordered too, so a redelivery arriving behind a newer event
+     * discards itself instead of moving the replica backwards.
+     *
+     * <p>This matters more here than anywhere else in the service. The credit-limit rule at
+     * {@code app/cbl/CBTRN02C.cbl:L403-L407} authorizes against {@code current_cycle_credit} and
+     * {@code current_cycle_debit}. A stale or regressed row does not fail loudly; it approves a
+     * transaction that should have been declined.
      *
      * <p>{@code source_occurred_at IS NULL} on the stored row means the row came from
      * {@code V2__seed.sql}. Any event supersedes it.

@@ -76,11 +76,14 @@ import java.util.UUID;
  * tests a card number for the numeric class only, at {@code app/cbl/COCRDUPC.cbl:L784}, and its
  * message at {@code app/cbl/COCRDUPC.cbl:L194} names sixteen digits. The lookup paragraph at
  * {@code app/cbl/CBTRN02C.cbl:L380-L392} tests no card-number format at all.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "card_xref",
         indexes = {
-                @Index(name = "idx_card_xref_account_id", columnList = "account_id"),
+                @Index(name = "idx_card_xref_account_id",
+                        columnList = "account_id, card_number"),
                 @Index(name = "ix_card_xref_observed_at", columnList = "observed_at")})
 public class CardCrossReferenceEntity {
 
@@ -121,10 +124,10 @@ public class CardCrossReferenceEntity {
      *
      * <p>Column {@code account_id CHAR(11) NOT NULL}, indexed and not unique by
      * {@code idx_card_xref_account_id}. The stored value is already the eleven-character
-     * zero-padded form that the event envelope carries as its aggregate identifier and Kafka
-     * message key, so no rendering step stands between the column and the key.
+     * zero-padded form the event envelope carries as its aggregate identifier and Kafka
+     * message key. No rendering step stands between the column and the key.
      *
-     * <p>The field is a {@link String} for the same reason {@link #customerId} is: the
+     * <p>The field is a {@link String} for the same reason {@link #customerId} is. The
      * alternate-index key at {@code KEYS(11,25)} in {@code app/jcl/XREFFILE.jcl:L74} occupies
      * eleven bytes, and a numeric column returns {@code 50} where the record holds
      * {@code 00000000050}. The column check constraint
@@ -136,7 +139,7 @@ public class CardCrossReferenceEntity {
     private String accountId;
 
     // ------------------------------------------------------------------------------------
-    // Replica freshness. ADDITIVE: the source has no replica to keep current.
+    // Replica freshness. No COBOL ancestor: the source has no replica to keep current.
     // app/cbl/CBTRN02C.cbl:L382 reads the cross-reference dataset itself, so it cannot be
     // stale.
     // A copy that cannot say how old it is cannot be refused when it is too old, which is the
@@ -223,11 +226,11 @@ public class CardCrossReferenceEntity {
      * Rejects an identifier that is the wrong width or carries a character outside
      * {@code 0} through {@code 9}.
      *
-     * <p>A {@code PIC 9(n)} display field is exactly n characters wide and holds only digits, so
-     * both halves of that contract are checked here and the column check constraint repeats them
-     * in the database. Neither failure message carries a character of the rejected value: the
-     * width message reports a length and the digit message reports a position, which keeps a
-     * customer identifier out of any log line this class reaches.
+     * <p>A {@code PIC 9(n)} display field is exactly n characters wide and holds only digits.
+     * Both halves of that contract are checked here, and the column check constraint repeats
+     * them in the database. Neither failure message carries a character of the rejected value.
+     * The width message reports a length and the digit message reports a position, which keeps
+     * a customer identifier out of any log line this class reaches.
      *
      * @param fieldName the field under check, named in any failure message
      * @param value     the identifier to check
@@ -338,9 +341,7 @@ public class CardCrossReferenceEntity {
      * Reports whether this row was observed recently enough to authorize against.
      *
      * <p>The caller supplies the window, so the policy lives in configuration and not here. A row
-     * with no observation time is reported stale rather than fresh: a replica that cannot establish
-     * its own freshness has to be treated as unfit, because the alternative is authorizing against
-     * a copy that may have stopped being updated at any point in the past.
+     * with no observation time is reported stale.
      *
      * @param now       the current time
      * @param maxAge    how old an observation may be and still count as fresh

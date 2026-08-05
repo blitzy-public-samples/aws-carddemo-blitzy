@@ -44,6 +44,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Expected message texts are quoted from {@code app/cpy/CSUTLDPY.cpy} character for character,
  * keeping the leading spaces, the missing spaces, the trailing space, and the lower-case
  * {@code day} the source carries.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 class CobolDateValidatorTest {
 
@@ -224,7 +226,7 @@ class CobolDateValidatorTest {
     private static final String EDIT_DATE_ONE_DAY_AFTER_REFERENCE_TODAY = "20220611";
 
     /**
-     * The fixed reference date this checkpoint names: Sunday, 2 August 2026.
+     * The fixed reference date these tests use: Sunday, 2 August 2026.
      *
      * <p>Every boundary case below is driven from this value rather than from the clock, so no
      * assertion can flip at midnight.
@@ -1263,11 +1265,11 @@ class CobolDateValidatorTest {
      * whose verdict does not depend on the reference date.
      *
      * <p>{@code app/cpy/CSUTLDPY.cpy:L343} reads the date the overload reads, through
-     * {@code FUNCTION CURRENT-DATE}. Comparing one reading of the clock against another can flip at
-     * midnight, so the three-argument form is handed {@link #CHECKPOINT_REFERENCE_DATE} and each
-     * input is chosen so that no calendar date changes its verdict. A date of birth in 1961 is in
-     * the past under any reference date after 1961, and a month of thirteen fails the field edits
-     * before the reference date is read at all.</p>
+     * {@code FUNCTION CURRENT-DATE}. Comparing one reading of the clock against another can flip
+     * at midnight. The three-argument form is therefore handed {@link #CHECKPOINT_REFERENCE_DATE},
+     * and each input is chosen so that no calendar date changes its verdict. A date of birth in
+     * 1961 is in the past under any reference date after 1961. A month of thirteen fails the field
+     * edits before the reference date is read at all.</p>
      */
     @Test
     void theTwoArgumentDateOfBirthOverloadAgreesWithTheThreeArgumentFormOnAClockIndependentInput() {

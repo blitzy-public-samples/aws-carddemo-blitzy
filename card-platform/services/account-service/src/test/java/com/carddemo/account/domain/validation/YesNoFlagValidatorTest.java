@@ -38,6 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Every input below is built in the test. The class reads plain strings, and {@code mvn test}
  * runs it with no database, no broker and no container runtime.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("YesNoFlagValidator, the yes or no field edit")
 class YesNoFlagValidatorTest {

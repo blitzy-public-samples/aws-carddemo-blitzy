@@ -18,7 +18,7 @@ import java.util.Objects;
  * rule in the sibling {@code domain} package reads the two counters the row holds.
  *
  * <p>No COBOL (Common Business Oriented Language) program in {@code app/cbl/} counts authorization
- * velocity or scores risk. ADDITIVE IN FULL: net new; no COBOL ancestor. Two column shapes are
+ * velocity or scores risk, so this table has no ancestor there. Two column shapes are
  * borrowed, shape only: {@code account_id} from {@code XREF-ACCT-ID PIC 9(11)} at
  * {@code app/cpy/CVACT03Y.cpy:L7}, and {@code total_amount} from {@code TRAN-AMT PIC S9(09)V99} at
  * {@code app/cpy/CVTRA05Y.cpy:L10}. Every other column is additive with no source counterpart.</p>
@@ -34,14 +34,15 @@ import java.util.Objects;
  * updated_at          TIMESTAMP(6) WITH TIME ZONE NOT NULL
  * </pre>
  *
- * <p>The primary key is {@code (account_id, window_start)} in that column order, and it is the only
- * index on the table. {@link VelocityWindowId} carries those two columns at the same two Java
- * types.</p>
+ * <p>The primary key is {@code (account_id, window_start)} in that column order, and
+ * {@link VelocityWindowId} carries those two columns at the same two Java types. The secondary
+ * index {@code ix_velocity_window_start} over {@code window_start} serves the retention scan.</p>
  *
- * <p>This class stores an amount and holds no arithmetic. The planned consumer is to add through
- * {@code com.carddemo.cobol.CobolDecimal}, which truncates every result toward zero. It is also to
- * check {@code processed_event} before it acts and write the marker in the same local transaction
- * as this row, so that a duplicate delivery counts once. No consumer is authored yet.</p>
+ * <p>This class stores an amount and holds no arithmetic. {@code domain.RiskScoringService} adds
+ * through {@code com.carddemo.cobol.CobolDecimal}, which truncates every result toward zero, and
+ * updates one row per event it scores. {@code messaging.TransactionAuthorizedConsumer} checks
+ * {@code processed_event} before it calls that service and writes the marker in the same local
+ * transaction as this row, so a duplicate delivery counts once.</p>
  *
  * <p>Flyway creates this table, and Jakarta Persistence validates this mapping against it at
  * start-up, so a column name or a column type that differs stops the application.</p>
@@ -67,25 +68,24 @@ public class VelocityWindowEntity {
     private String accountId;
 
     /**
-     * Second part of the key, and the inclusive lower bound of the bucket. ADDITIVE, with no source
-     * counterpart. The bucket width arrives from configuration.
+     * Second part of the key, and the inclusive lower bound of the bucket. The bucket width
+     * arrives from configuration.
      */
     @Id
     @Column(name = "window_start", nullable = false, updatable = false)
     private Instant windowStart;
 
     /**
-     * Authorizations counted in the bucket. ADDITIVE, with no source counterpart. The consumer
-     * raises the count by one for each event it has not already processed.
+     * Authorizations counted in the bucket. The consumer raises the count by one for each event
+     * it has not already processed.
      */
     @Column(name = "authorization_count", nullable = false)
     private int authorizationCount;
 
     /**
-     * Amounts totalled over the bucket. The column is {@code NUMERIC(11,2)}, a precision and a
-     * scale taken from {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L10},
-     * shape only. A negative value is ordinary traffic: 50 of the 300 amounts in
-     * {@code app/data/ASCII/dailytran.txt} are negative.
+     * Amount magnitudes totalled over the bucket. The column is {@code NUMERIC(11,2)}, a precision
+     * and a scale taken from {@code TRAN-AMT PIC S9(09)V99} at
+     * {@code app/cpy/CVTRA05Y.cpy:L10}, shape only. Refunds are stored by absolute magnitude.
      *
      * <p>The value totals amounts over one time bucket. It is neither an account balance nor a
      * billing-cycle accumulator.</p>
@@ -95,8 +95,8 @@ public class VelocityWindowEntity {
     private BigDecimal totalAmount;
 
     /**
-     * Time of the last change to the row. ADDITIVE, with no source counterpart. The caller supplies
-     * the value, and no lifecycle callback sets it.
+     * Time of the last change to the row. The caller supplies the value, and no lifecycle
+     * callback sets it.
      */
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
@@ -114,9 +114,9 @@ public class VelocityWindowEntity {
      * @param updatedAt          time of this change
      * @throws NullPointerException     if any reference argument is null
      * @throws IllegalArgumentException if the identifier is not eleven digits, if the count is
-     *                                  negative, or if the total carries a scale or a digit count
-     *                                  the column does not hold. The failure text names the length,
-     *                                  the count or the scale, never the identifier itself
+     *                                  negative, or if the total is negative or carries a scale or
+     *                                  digit count the column does not hold. The failure text names
+     *                                  the length, count, sign or scale, never the identifier itself
      */
     public VelocityWindowEntity(String accountId, Instant windowStart, int authorizationCount,
             BigDecimal totalAmount, Instant updatedAt) {
@@ -188,6 +188,10 @@ public class VelocityWindowEntity {
                     + PicClause.TRAN_AMT_PRECISION + " digits; the value supplied holds "
                     + value.precision());
         }
+        if (value.signum() < 0) {
+            throw new IllegalArgumentException(
+                    "totalAmount stores a non-negative transaction magnitude");
+        }
         return value;
     }
 
@@ -225,10 +229,10 @@ public class VelocityWindowEntity {
      * Replaces the total. The caller totals amounts through
      * {@code com.carddemo.cobol.CobolDecimal} and passes the result here.
      *
-     * @param totalAmount the new total, at two digits after the decimal point
+     * @param totalAmount the new non-negative total, at two digits after the decimal point
      * @throws NullPointerException     if {@code totalAmount} is null
-     * @throws IllegalArgumentException if the scale differs from two, or the digit count exceeds
-     *                                  eleven
+     * @throws IllegalArgumentException if the value is negative, the scale differs from two, or the
+     *                                  digit count exceeds eleven
      */
     public void setTotalAmount(BigDecimal totalAmount) {
         this.totalAmount = requireTotalAmount(totalAmount);

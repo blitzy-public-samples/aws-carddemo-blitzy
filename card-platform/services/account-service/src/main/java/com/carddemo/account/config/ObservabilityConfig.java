@@ -4,14 +4,18 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
  * Supplies the one bean the account service records its measurements through.
  *
- * <p>{@link AccountMeters} holds seven meters in four groups: events consumed, processing latency,
+ * <p>{@link AccountMeters} holds nine series in four groups: events consumed, processing latency,
  * throughput, and failure count. Every name opens with {@code carddemo.account.}, which is the
  * namespace the fraud detection and notification services use.
  *
@@ -21,7 +25,8 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>Every meter surfaces under {@code /actuator}, where the service exposes
  * {@code health,metrics,prometheus} and answers its container probe at
- * {@code http://localhost:8080/actuator/health}. No meter carries a tag. No meter name holds a
+ * {@code http://localhost:8080/actuator/health}. Every meter carries the bounded
+ * {@code service=account-service} tag. No meter name holds a
  * Social Security Number or a government-issued identifier, the two customer fields declared at
  * {@code app/cpy/CVCUS01Y.cpy:L17-L18}.
  *
@@ -29,13 +34,25 @@ import org.springframework.context.annotation.Configuration;
  * {@code logging.structured.format.console} property of {@code application.yml} carries the whole of
  * that setup, and this module ships no Logback configuration file.
  *
- * <p>Decisions behind the meter set: {@code card-platform/docs/decision-log.md} (planned).
+ * <p>Decisions behind the meter set: {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
 public class ObservabilityConfig {
 
+    /** Tag key that names this service on every meter it reports. */
+    public static final String SERVICE_TAG = "service";
+
+    /** Tag key that distinguishes the two transactional operations. */
+    public static final String OPERATION_TAG = "operation";
+
+    /** Failure tag value for the account and customer update transaction. */
+    public static final String UPDATE_OPERATION = "update";
+
+    /** Failure tag value for the billing-cycle close transaction. */
+    public static final String CYCLE_CLOSE_OPERATION = "cycle-close";
+
     /**
-     * Registers the seven account meters and publishes them as one injectable bean.
+     * Registers the account meter set and publishes it as one injectable bean.
      *
      * @param registry the meter registry Spring Boot supplies
      * @return the facade every measured path in this service records through
@@ -45,11 +62,21 @@ public class ObservabilityConfig {
         return new AccountMeters(registry);
     }
 
+    /** Adds the service name to application, Java Virtual Machine, and web meters alike. */
+    @Bean
+    public MeterRegistryCustomizer<MeterRegistry> accountCommonTags(
+            @Value("${spring.application.name:account-service}") String applicationName) {
+        if (applicationName == null || applicationName.isBlank()) {
+            throw new IllegalStateException("spring.application.name must hold a value");
+        }
+        return registry -> registry.config().commonTags(SERVICE_TAG, applicationName);
+    }
+
     /**
      * The recording surface of the account service. One method names one measured path, so a
      * caller injects {@code AccountMeters} and calls the method that matches the work it just did.
      *
-     * <p>ADDITIVE. No COBOL program declares a meter. The two counters below track the two totals
+     * <p>No COBOL program declares a meter. The two counters below track the two totals
      * the batch posting program printed, and the five remaining meters have no source ancestor.
      *
      * <p>Adding a measurement means adding one meter field and one record method here.
@@ -57,8 +84,11 @@ public class ObservabilityConfig {
      * <p>The path that calls each method: {@code domain/AccountUpdateService.java} calls
      * {@link AccountMeters#recordUpdateLatency(Duration)},
      * {@link AccountMeters#recordUpdateApplied()} and
-     * {@link AccountMeters#recordValidationFailure()}; {@code domain/BillingCycleService.java} calls
-     * {@link AccountMeters#recordCycleClosed()}; and {@code outbox/OutboxRelay.java} calls
+     * {@link AccountMeters#recordValidationFailure()}, with
+     * {@link AccountMeters#recordUpdateFailure()} on rollback;
+     * {@code domain/BillingCycleService.java} calls
+     * {@link AccountMeters#recordCycleClosed()} or
+     * {@link AccountMeters#recordCycleCloseFailure()}; and {@code outbox/OutboxRelay.java} calls
      * {@link AccountMeters#recordOutboxPublished(long)} and
      * {@link AccountMeters#recordPublishFailure()}. The events-consumed counter has no caller and
      * takes none. Every meter registers at start-up, so each one is scrapable before its caller
@@ -74,19 +104,19 @@ public class ObservabilityConfig {
         private final Counter eventsConsumed;
 
         /**
-         * Wall time of one account update, from request entry to commit. ADDITIVE: the batch
-         * posting program counted records at {@code app/cbl/CBTRN02C.cbl:L185} and timed nothing.
+         * Wall time of one account update, from request entry to commit. No COBOL ancestor: the
+         * batch posting program counted records at {@code app/cbl/CBTRN02C.cbl:L185} and timed
+         * nothing.
          */
         private final Timer updateLatency;
 
         /**
-         * Account updates that committed. ADDITIVE, with no COBOL ancestor.
+         * Account updates that committed. with no COBOL ancestor.
          */
         private final Counter updateApplied;
 
         /**
-         * Submitted account and customer fields that failed validation. ADDITIVE, with no
-         * COBOL ancestor.
+         * Submitted account and customer fields that failed validation. No COBOL ancestor.
          */
         private final Counter validationFailed;
 
@@ -109,8 +139,11 @@ public class ObservabilityConfig {
          */
         private final Counter publishFailed;
 
+        /** Transaction rollbacks or commit failures, keyed by the bounded operation name. */
+        private final Map<String, Counter> transactionFailures;
+
         /**
-         * Registers all seven meters against {@code registry}. Each meter appears under
+         * Registers every meter against {@code registry}. Each meter appears under
          * {@code /actuator/metrics} from startup, before any path records against it.
          *
          * @param registry the meter registry every meter registers against
@@ -138,6 +171,14 @@ public class ObservabilityConfig {
             this.publishFailed = Counter.builder("carddemo.account.publish.failed")
                     .description("Outbox publish attempts that failed")
                     .register(registry);
+            Map<String, Counter> failures = new LinkedHashMap<>();
+            for (String operation : java.util.List.of(UPDATE_OPERATION, CYCLE_CLOSE_OPERATION)) {
+                failures.put(operation, Counter.builder("carddemo.account.transaction.failures")
+                        .tag(OPERATION_TAG, operation)
+                        .description("Account transactions that rolled back or failed to commit")
+                        .register(registry));
+            }
+            this.transactionFailures = Map.copyOf(failures);
         }
 
         /**
@@ -178,6 +219,16 @@ public class ObservabilityConfig {
          */
         public void recordCycleClosed() {
             cycleClosed.increment();
+        }
+
+        /** Counts one account-update transaction that rolled back or failed to commit. */
+        public void recordUpdateFailure() {
+            transactionFailures.get(UPDATE_OPERATION).increment();
+        }
+
+        /** Counts one cycle-close transaction that rolled back or failed to commit. */
+        public void recordCycleCloseFailure() {
+            transactionFailures.get(CYCLE_CLOSE_OPERATION).increment();
         }
 
         /**

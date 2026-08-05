@@ -1,7 +1,7 @@
 # card-platform notification-service — the Representational State Transfer (REST)
 # interface this module serves.
 #
-# The document describes one read-only endpoint, the alert history for one card.
+# The document describes one read-only endpoint, the alert history for one account.
 # It is hand-written and checked in. api/NotificationHistoryController serves the
 # path below, and no documentation generator joins the classpath, so the tests
 # under src/test/java are what keep this file and that controller in step.
@@ -9,21 +9,27 @@
 # Two properties of that endpoint are security decisions rather than style, and both are
 # stated in the operation below.
 #
-# The path key is the MASKED card number and never a full Primary Account Number (PAN).
-# A path reaches an access log, a reverse proxy log, a trace, a browser history and the
-# instance member of a default error document, and none of those is a place for a PAN.
-# The masked form is what src/main/resources/db/migration/V1__schema.sql already stores
-# as the key of the read model, so the route key and the row key are the same value.
+# The path key is a CARD TOKEN and never a card number of either form. A path reaches an
+# access log, a reverse proxy log, a trace, a browser history and the instance member of
+# a default error document, so a full Primary Account Number (PAN) belongs in none of
+# them. A masked card number is no substitute for a key: twelve of its sixteen characters
+# are mask characters, so two cards sharing their last four digits mask to one value, and
+# a route keyed on that value would answer with their merged history. The token that
+# PanMasker.cardToken derives names one card, and it is the key
+# src/main/resources/db/migration/V1__schema.sql stores, so the route key and the row key
+# are the same value. The derivation is keyless and one-way, so the token discloses no
+# card number.
 #
-# Authentication is required and the response is scoped to the cards the caller owns. A
-# masked card number is not unique across a whole card estate, since two cards can share
-# their last four digits, so the ownership rule in config/SecurityConfig is what stops a
-# caller reaching a history that is not its own. It refuses with 403 rather than
+# Authentication is required and the response is scoped to the cards the caller owns. The
+# ownership rule in config/SecurityConfig compares the token in the path against the
+# SCOPE_CARD_ authorities the identity carries, and it refuses with 403 rather than
 # revealing whether the other card exists.
 #
+# The masked card number is still returned, as display data on the response envelope. It
+# keys nothing, no ownership rule reads it, and no request carries it.
+#
 # The traceability matrix and the decision log this platform still owes are to carry the
-# field-by-field source mapping, every omitted field, and why the route key is the masked
-# form.
+# field-by-field source mapping, every omitted field, and why the route key is a token.
 ---
 openapi: 3.1.0
 
@@ -31,14 +37,15 @@ info:
   title: CardDemo Notification Service
   description: >-
     Returns the alert history for one card. Each entry describes one transaction
-    the read model holds for that card, and the response carries the masked card
-    number, the entry count and the per-card total. Field names and widths
-    follow TRNX-RECORD at app/cpy/COSTM01.CPY:L20-L36.
+    the read model holds for that card, and the response carries the card token,
+    the masked card number, the entry count and the total of the entries it
+    returns. Field names and widths follow TRNX-RECORD at
+    app/cpy/COSTM01.CPY:L20-L36.
 
 
     Every request carries an identity. The scheme is the basicIdentity below,
     the chain in config/SecurityConfig denies by default, and the route admits
-    only a caller holding the ownership authority for the card it names. The demo
+    only a caller holding the ownership authority for the account it names. The demo
     stack binds the published port to the loopback address and seeds only
     synthetic fixture data, so nothing real is exposed either way.
   version: 1.0.0
@@ -52,20 +59,20 @@ servers:
 
 tags:
   - name: notification-history
-    description: Read access to the card-keyed alert history.
+    description: Read access to the account-keyed alert history.
 
 security:
   - basicIdentity: []
 
 paths:
 
-  /notifications/{maskedCardNumber}:
+  /notifications/{cardToken}:
 
     get:
       tags:
         - notification-history
       operationId: getNotificationHistory
-      summary: Return the bounded alert history for one card.
+      summary: Return one bounded page of the alert history for one account.
       description: >-
         Returns one entry per transaction the read model holds for the card, in
         transaction identifier order, up to the ceiling the renderer declares. A
@@ -80,35 +87,61 @@ paths:
         StatementRowCapTest holds the two to the same number.
 
 
-        The path carries the masked card number and never a full one. A full
-        Primary Account Number in a route would reach every access log and proxy
-        that sees the request, and no row of statement_transaction holds one to
-        match it against.
+        The path carries a card token and never a card number. A full Primary
+        Account Number in a route would reach every access log and proxy that
+        sees the request, and a masked one names no single card: two cards
+        sharing their last four digits mask to one value, so the route would
+        answer with their merged history and the ownership rule would admit a
+        caller to a card it does not hold. A caller obtains the token from the
+        cardToken property of any response that names the card.
       parameters:
 
-        - name: maskedCardNumber
+        - name: cardToken
           in: path
           required: true
           description: >-
-            The masked card number: twelve asterisks then the last four digits,
-            sixteen characters in all. Width from TRNX-CARD-NUM PIC X(16) at
-            app/cpy/COSTM01.CPY:L22. Column card_number CHAR(16) in
+            The card token: 64 lower-case hexadecimal characters, the rendering
+            of a SHA-256 digest over a labelled card number that
+            PanMasker.cardToken in card-platform/libs/cobol-compat derives. It
+            stands in for TRNX-CARD-NUM PIC X(16) at app/cpy/COSTM01.CPY:L22,
+            whose value was a full card number. Column card_token CHAR(64) in
             src/main/resources/db/migration/V1__schema.sql holds the same value.
+            The derivation is keyless and one-way, so this value discloses no
+            card number.
           schema:
             type: string
-            minLength: 16
-            maxLength: 16
-            pattern: '^\*{12}[0-9]{4}$'
+            minLength: 64
+            maxLength: 64
+            pattern: '^[0-9a-f]{64}$'
           examples:
-            masked:
-              value: '************7065'
+            token:
+              value: '3c9c1b1f4e8a2d7b6f0e5a4c3d2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09'
+
+        - name: pageSize
+          in: query
+          required: false
+          description: >-
+            Entries this response carries at most. Absent, the response carries
+            carddemo.history.default-page-size entries. Above
+            carddemo.history.maximum-page-size, the maximum applies. Below one,
+            the request is refused with 400. The bound reaches the database as a
+            LIMIT, and the maximum equals
+            NotificationRenderer.MAXIMUM_STATEMENT_ROWS, so a caller cannot ask
+            for more rows than a rendered alert would carry.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          examples:
+            page:
+              value: 25
 
       responses:
 
         '200':
           description: >-
-            The bounded alert history for the card. Cache-Control is
-            no-store: the body carries what a cardholder bought, where and for
+            One bounded page of the alert history for the account. Cache-Control
+            is no-store: the body carries what a cardholder bought, where and for
             how much.
           headers:
             Cache-Control:
@@ -123,8 +156,8 @@ paths:
 
         '400':
           description: >-
-            The path value did not match the masked form of twelve asterisks and
-            four digits.
+            The path value did not match a card token of 64 lower-case
+            hexadecimal characters, or pageSize named a value below one.
           content:
             application/json:
               schema:
@@ -134,7 +167,7 @@ paths:
           description: >-
             The request carried no usable credential. config/SecurityConfig
             refuses it before the handler runs, and the body names neither the
-            card nor the route.
+            account nor the route.
           content:
             application/json:
               schema:
@@ -144,7 +177,7 @@ paths:
           description: >-
             The identity does not hold this card. config/SecurityConfig grants
             the route only to an identity carrying the SCOPE_CARD_ authority for
-            the masked card number in the path, or to an administrator. No 404
+            the card token in the path, or to an administrator. No 404
             distinguishes a card that exists from one that does not: either
             answer would disclose a card the caller may not have.
           content:
@@ -161,8 +194,8 @@ components:
       scheme: basic
       description: >-
         An identity configured under carddemo.security.users, carrying one of the
-        roles ADMIN or USER and, for USER, one SCOPE_CARD_ authority per card it
-        holds. The password is stored already encoded, so no plaintext password
+        roles ADMIN or USER and, for USER, one SCOPE_ACCOUNT_ authority per
+        account it holds. The password is stored already encoded, so no plaintext password
         is compared: config/SecurityConfig declines to reproduce the plaintext
         comparison at app/cbl/COSGN00C.cbl:L223. Basic sends a credential as
         base-64 text, which is encoding and not encryption, so this scheme
@@ -200,7 +233,7 @@ components:
             One text describing the failure. It names no value read from the
             request.
           examples:
-            - 'Card number must be the masked form: twelve asterisks then the last four digits.'
+            - 'Card token must be 64 lower-case hexadecimal characters.'
 
         route:
           type: string
@@ -208,37 +241,61 @@ components:
           maxLength: 200
           description: The route template of the failing endpoint.
           examples:
-            - '/notifications/{maskedCardNumber}'
+            - '/notifications/{cardToken}'
 
     NotificationHistory:
       type: object
       description: >-
         The alert history for one card, bounded by the row ceiling the renderer
-        declares. The card number is masked, and the total covers every entry the
-        response carries and no entry it does not.
+        declares. cardToken identifies the card and cardNumber displays it, and
+        the total covers every entry the response carries and no entry it does
+        not.
       additionalProperties: false
       required:
-        - cardNumber
+        - cardToken
         - transactionCount
         - totalAmount
         - transactions
       properties:
 
+        cardToken:
+          type: string
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
+          description: >-
+            The card token, and the card identity this response is keyed on. It
+            is the value the path carried, the key column card_token CHAR(64)
+            holds, and the value to use as the path of the next request. It
+            stands in for TRNX-CARD-NUM PIC X(16) at app/cpy/COSTM01.CPY:L22 and
+            discloses no card number.
+          examples:
+            - '3c9c1b1f4e8a2d7b6f0e5a4c3d2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09'
+
         cardNumber:
           type: string
+          nullable: true
           minLength: 16
           maxLength: 16
           pattern: '^\*{12}[0-9]{4}$'
           description: >-
             Masked card number. Twelve asterisks then the last four digits.
             Width from TRNX-CARD-NUM PIC X(16) at app/cpy/COSTM01.CPY:L22.
+            Display data alone: it identifies no single card, so no key, index or
+            ownership rule reads it. Absent when the read model holds no entry
+            for the card, because the masked form is read from the entries and
+            none is invented.
           examples:
             - '************7065'
 
         transactionCount:
           type: integer
           minimum: 0
-          description: Entries this response carries.
+          maximum: 200
+          description: >-
+            Entries this response carries, never more than the maxItems of
+            transactions. NotificationRenderer.MAXIMUM_STATEMENT_ROWS fixes the
+            ceiling and StatementRowCapTest holds the two to the same number.
           examples:
             - 3
 
@@ -254,26 +311,40 @@ components:
 
         transactions:
           type: array
-          description: One entry per transaction, in transaction identifier order.
+          maxItems: 200
+          description: >-
+            One entry per transaction, in transaction identifier order, at most
+            maxItems of them. The read names that limit and the database applies
+            it, so a card holding more entries costs one page rather than a whole
+            history. NotificationRenderer.MAXIMUM_STATEMENT_ROWS fixes the number
+            and StatementRowCapTest holds the two together.
           items:
             $ref: '#/components/schemas/StatementTransaction'
 
     StatementTransaction:
       type: object
       description: >-
-        One transaction from the card-keyed read model. Every field comes from
-        TRNX-RECORD at app/cpy/COSTM01.CPY:L20-L36. The card number sits on the
-        response envelope, and the trailing FILLER PIC X(20) at
-        app/cpy/COSTM01.CPY:L36 carries no field. Two events fill a row:
-        TransactionAuthorized supplies transactionId, typeCode, categoryCode,
-        source, description, amount, merchantId, merchantName, merchantCity,
-        merchantZip and originTimestamp, and TransactionPosted supplies
-        processingTimestamp. Either event may arrive first, and a field the
-        arriving event does not supply reads as an empty string or as zeros
-        until the other event arrives.
+        One transaction from the token-keyed read model. Every field comes from
+        TRNX-RECORD at app/cpy/COSTM01.CPY:L20-L36. The card token sits on the
+        response envelope; the masked display value appears on the envelope and
+        on each item. The trailing FILLER PIC X(20) at
+        app/cpy/COSTM01.CPY:L36 carries no field.
+
+
+        One event fills a row. TransactionPosted at schema version 2 carries the
+        whole posted transaction record: TransactionPosted.forAuthorized copies
+        the card token, transactionId, typeCode, categoryCode, source,
+        description, amount, merchantId, merchantName, merchantCity, merchantZip
+        and originTimestamp from the authorization event, and the posting itself
+        supplies processingTimestamp. Every field below therefore carries the
+        value the transaction was authorized with, from the first delivery
+        onward. No field reads as an empty string or as zeros waiting for a
+        second event, and no consumer of this service calls another service to
+        fill one.
       additionalProperties: false
       required:
         - transactionId
+        - maskedCardNumber
         - typeCode
         - categoryCode
         - source
@@ -289,12 +360,32 @@ components:
 
         transactionId:
           type: string
+          minLength: 16
           maxLength: 16
           description: >-
-            Identifies one transaction within the card. From TRNX-ID PIC X(16)
-            at app/cpy/COSTM01.CPY:L23. Every record in
-            app/data/ASCII/dailytran.txt holds sixteen digits, padded on the
-            left with zeros.
+            Identifies one transaction within the card, always exactly sixteen
+            characters. From TRNX-ID PIC X(16) at app/cpy/COSTM01.CPY:L23. Every
+            record in app/data/ASCII/dailytran.txt holds sixteen digits, padded
+            on the left with zeros. The key column transaction_id CHAR(16) and
+            StatementTransactionId both refuse any other width, so the lower
+            bound states what the implementation already guarantees rather than
+            leaving a shorter value describable. No pattern is declared: a
+            sixteen-digit shape in this document would read as a card number, and
+            the entity constrains width alone.
+
+        maskedCardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^\*{12}[0-9]{4}$'
+          description: >-
+            The card this transaction was made on, masked: twelve asterisks then
+            the last four digits. Width from TRNX-CARD-NUM PIC X(16) at
+            app/cpy/COSTM01.CPY:L22. Display only. It identifies no card, because
+            every card ending in the same four digits masks to this same value,
+            so nothing keys or authorizes on it.
+          examples:
+            - '************7065'
 
         typeCode:
           type: string

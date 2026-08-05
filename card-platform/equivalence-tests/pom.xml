@@ -18,11 +18,9 @@
   <name>CardDemo Equivalence Tests</name>
   <description>
     Provides fixed-width fixture loading and copybook parsing support for the equivalence
-    suite. The suite holds one comparison today, ValidationEquivalenceTest, which checks
-    field validation against the documented COBOL rules. Failsafe runs every
-    *EquivalenceTest class at integration-test and fails the build at verify. The posting,
-    authorization, bill-payment, interest and decimal comparisons are pending, and no
-    result document is published yet.
+    suite. Six *EquivalenceTest classes cover posting, authorization, bill payment,
+    interest, validation and decimal behavior. Failsafe runs them at integration-test
+    and fails the build at verify.
   </description>
 
   <!-- The framework parent defaults the compiler release to 17. These two properties pin release 25. -->
@@ -166,14 +164,26 @@
         </configuration>
       </plugin>
 
+      <!-- This module intentionally carries test sources only. Its primary artifact therefore
+           packages the compiled equivalence harness rather than an empty main output directory.
+           Keeping a real artifact lets both verify and install complete without a warning or a
+           meaningless production marker class. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.5.0</version>
+        <configuration>
+          <classesDirectory>${project.build.testOutputDirectory}</classesDirectory>
+        </configuration>
+      </plugin>
+
       <!-- Failsafe runs the *EquivalenceTest classes at integration-test and fails the build at
            verify.
 
            The execution identifier below is the one the parent declares in pluginManagement, so
            Maven merges the two into one execution. The include sits inside that execution and not
            at plugin level, so a second execution added later does not select the same classes
-           again. EquivalenceSuiteExecutionConfigurationTest holds both properties, and
-           card-platform/docs/decision-log.md (planned) carries the reasoning. -->
+           again. EquivalenceSuiteExecutionConfigurationTest holds both properties. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>

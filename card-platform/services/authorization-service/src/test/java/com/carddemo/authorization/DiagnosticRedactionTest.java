@@ -22,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Asserts that nothing this service can hand to a logger carries a card number, a monetary amount or
  * an account identifier.
  *
- * <p>ADDITIVE. No COBOL program renders a record for a log; {@code app/cbl/CBTRN02C.cbl:L714-L727}
+ * <p>No COBOL program renders a record for a log; {@code app/cbl/CBTRN02C.cbl:L714-L727}
  * formats a two-byte file status into four digits and nothing else. This class has no ancestor.
  *
  * <p>Two shapes are covered. {@link AuthorizationRequest} is a record, so the compiler writes a

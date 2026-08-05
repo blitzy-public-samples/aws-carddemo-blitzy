@@ -94,10 +94,11 @@ final class CardCrossReferenceRepositoryTest {
      * <p>An unordered lookup reintroduces the non-determinism these methods exist to remove, so its
      * absence is part of the contract rather than an accident of the current code.
      *
-     * <p>The set is closed on purpose. Beside the three reads sit the two writes that keep this
-     * replica current: an ordered idempotent upsert applied from an event, and the freshness count
-     * a service reports rather than authorizing against a stale row. A sixth method has to be
-     * weighed against this test instead of appearing silently.
+     * <p>The set is closed on purpose. Beside the three reads sit the three writes and counts that
+     * keep this replica current: an ordered idempotent upsert applied from an event, an ordered
+     * observation refresh applied from a card update, and the freshness count a service reports
+     * rather than authorizing against a stale row. A seventh method has to be weighed against this
+     * test instead of appearing silently.
      */
     @Test
     void theRepositoryDeclaresNoAccountLookupWithoutAnOrdering() {
@@ -107,9 +108,11 @@ final class CardCrossReferenceRepositoryTest {
         }
 
         assertEquals(Set.of("findByCardNumber", ORDERED_LIST_METHOD, SINGLE_ROW_METHOD,
-                        "applyStateChange", "countByObservedAtBefore"), declared,
+                        "applyStateChange", "refreshObservation", "countByObservedAtBefore"),
+                declared,
                 "the repository declares the card-number read, the two ordered account reads, the "
-                        + "ordered upsert that applies an event and the freshness count");
+                        + "ordered upsert that applies an event, the observation refresh a masked "
+                        + "card update performs and the freshness count");
         for (String name : declared) {
             assertFalse(name.startsWith("findByAccountId") && !name.contains("OrderBy"),
                     name + " reads by account with no ordering");

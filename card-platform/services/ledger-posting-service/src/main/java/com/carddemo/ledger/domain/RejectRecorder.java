@@ -12,6 +12,7 @@ import java.time.Clock;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Inserts the 430-byte reject row and enqueues one {@code TransactionDeclined} event.
@@ -25,9 +26,6 @@ import org.springframework.stereotype.Service;
  *
  * <p>A reject is expected traffic: {@code app/cbl/CBTRN02C.cbl:L229-L230} moves 4 into the return
  * code once the reject count rises above zero. This recorder evaluates no decline rule.
- *
- * <p>Deviations for this class are recorded in {@code card-platform/docs/decision-log.md} and
- * {@code card-platform/docs/traceability-matrix.md}.
  */
 @Service
 public class RejectRecorder {
@@ -35,8 +33,26 @@ public class RejectRecorder {
     /** Stores one reject row. The target of the {@code WRITE} at {@code :L451}. */
     private final RejectedTransactionRepository rejectedTransactions;
 
-    /** Enqueues the declined event beside that row, in the transaction the caller opened. */
+    /** Enqueues the declined event beside that row in this method's transaction. */
     private final OutboxWriter outbox;
+
+    /**
+     * Trailing characters that carry a positive sign, listed in digit order zero through nine.
+     *
+     * <p>The character at index zero stands for a trailing digit zero, the one at index one for a
+     * digit one, and so on to index nine. {@code equivalence-tests} decodes the same list on the
+     * read side.
+     */
+    private static final String POSITIVE_SIGN_OVERPUNCH_DIGITS = "{ABCDEFGHI";
+
+    /**
+     * Trailing characters that carry a negative sign, listed in digit order zero through nine.
+     *
+     * <p>The character at index zero stands for a trailing digit zero, the one at index one for a
+     * digit one, and so on to index nine. The list holds as many characters as
+     * {@link #POSITIVE_SIGN_OVERPUNCH_DIGITS}.
+     */
+    private static final String NEGATIVE_SIGN_OVERPUNCH_DIGITS = "}JKLMNOPQR";
 
     /** Stamps {@code rejected_at}, in Coordinated Universal Time. */
     private final Clock clock = Clock.systemUTC();
@@ -59,16 +75,33 @@ public class RejectRecorder {
      *
      * <p>{@code app/cbl/CBTRN02C.cbl:L447-L448} assembles the two halves and {@code :L451} writes
      * them as one record. A store failure travels on to the caller, which is the target form of the
-     * status ladder at {@code :L452-L464}.
+     * status ladder at {@code :L452-L464}. The reject row and event row share this transaction, so
+     * either both commit or both roll back.
+     *
+     * <p>{@link DeclineReason#INVALID_CARD_NUMBER} cannot reach this method. That reason is
+     * assigned inside the {@code INVALID KEY} limb of the cross-reference read at
+     * {@code app/cbl/CBTRN02C.cbl:L383-L387}, and the gate at {@code :L372} then keeps the account
+     * read from running. Every {@link TransactionAuthorized} carries the eleven-digit account
+     * identifier that same read resolved, so the two states are mutually exclusive. The guard below
+     * refuses that reason, and derives no account identity for it.
      *
      * @param event  the authorized transaction the ledger refused to post
      * @param reason the validation failure the caller established
-     * @throws NullPointerException  when {@code event} or {@code reason} is {@code null}
-     * @throws IllegalStateException when a rendered half misses its declared width
+     * @throws NullPointerException     when {@code event} or {@code reason} is {@code null}
+     * @throws IllegalArgumentException when {@code reason} answers {@code false} to
+     *                                  {@link DeclineReason#resolvesAccount()}
+     * @throws IllegalStateException    when a rendered half misses its declared width
      */
+    @Transactional
     public void recordReject(TransactionAuthorized event, DeclineReason reason) {
         Objects.requireNonNull(event, "event is required");
         Objects.requireNonNull(reason, "reason is required");
+        if (!reason.resolvesAccount()) {
+            throw new IllegalArgumentException("reason " + reason.code()
+                    + " is assigned before the cross-reference resolves an account identifier at"
+                    + " app/cbl/CBTRN02C.cbl:L383-L387, and every authorized event already carries"
+                    + " one, so it cannot arise on this path");
+        }
 
         String rejectTranData = rejectTranData(event);
         String validationTrailer = validationTrailer(reason);
@@ -110,7 +143,7 @@ public class RejectRecorder {
                 .append(numeric(event.merchantCategoryCode(), PicClause.DALYTRAN_CAT_CD_WIDTH))
                 .append(alphanumeric(event.source(), PicClause.DALYTRAN_SOURCE_WIDTH))
                 .append(alphanumeric(event.description(), PicClause.DALYTRAN_DESC_WIDTH))
-                .append(unsignedAmount(event.amount()))
+                .append(signedAmount(event.amount()))
                 .append(numeric(event.merchantId(), PicClause.DALYTRAN_MERCHANT_ID_WIDTH))
                 .append(alphanumeric(event.merchantName(), PicClause.DALYTRAN_MERCHANT_NAME_WIDTH))
                 .append(alphanumeric(event.merchantCity(), PicClause.DALYTRAN_MERCHANT_CITY_WIDTH))
@@ -145,35 +178,48 @@ public class RejectRecorder {
     }
 
     /**
-     * Builds the declined event under the contract the decline constant selects.
+     * Builds the declined event, keyed on the account identifier the refused event carries.
      *
-     * <p>{@link DeclineReason#resolvesAccount()} answers {@code false} for the one decline assigned
-     * inside the {@code INVALID KEY} limb at {@code app/cbl/CBTRN02C.cbl:L383-L387}, before any
-     * account identifier is read. {@code TransactionDeclined} publishes that decline under its own
-     * contract, keyed on the transaction identifier.
+     * <p>{@code recordReject} has already refused a reason that resolves no account, so the account
+     * identifier here is the one the cross-reference read at
+     * {@code app/cbl/CBTRN02C.cbl:L383} held.
      *
      * @param event  the refused transaction
      * @param reason the validation failure the caller established
      * @return the event, carrying a freshly stamped envelope
      */
     private static TransactionDeclined declined(TransactionAuthorized event, DeclineReason reason) {
-        if (reason.resolvesAccount()) {
-            return TransactionDeclined.of(event.accountId(), event.transactionId(), reason,
-                    event.amount(), event.maskedCardNumber());
-        }
-        return TransactionDeclined.ofUnresolvedAccount(event.transactionId(), event.amount(),
-                event.maskedCardNumber());
+        return TransactionDeclined.of(event.accountId(), event.transactionId(), reason,
+                event.amount(), event.maskedCardNumber());
     }
 
     /**
-     * Renders {@code DALYTRAN-AMT PIC S9(09)V99} as eleven digits with no point and no sign.
+     * Renders {@code DALYTRAN-AMT PIC S9(09)V99} as eleven characters with no decimal point, the
+     * sign carried by the trailing character.
+     *
+     * <p>{@code PIC S9(09)V99} with no {@code SIGN} clause takes the platform default, which is
+     * {@code SIGN IS TRAILING INCLUDED}: the last character encodes the last digit and the sign
+     * together. All 300 records of {@code app/data/ASCII/dailytran.txt} carry that encoding at
+     * one-based offsets 133 through 143, and {@code 0000000009I} reads as {@code 0.99} while
+     * {@code 0000000259R} reads as {@code -25.99}.
+     *
+     * <p>An absolute value would lose the sign, so a refused refund would be recorded as a purchase
+     * of the same size, and {@code app/cbl/CBTRN02C.cbl:L447} copies the arriving record rather
+     * than reshaping it.
      *
      * @param amount the signed amount the event carries
-     * @return eleven digits, zero-padded on the left
+     * @return eleven characters: ten digits then one sign-carrying character
      */
-    private static String unsignedAmount(BigDecimal amount) {
-        return numeric(amount.abs().movePointRight(PicClause.DALYTRAN_AMT_SCALE)
+    private static String signedAmount(BigDecimal amount) {
+        String digits = numeric(amount.abs().movePointRight(PicClause.DALYTRAN_AMT_SCALE)
                 .toBigInteger().toString(), PicClause.DALYTRAN_AMT_WIDTH);
+        int lastPosition = digits.length() - 1;
+        int lastDigit = digits.charAt(lastPosition) - '0';
+        String overpunch = amount.signum() < 0
+                ? NEGATIVE_SIGN_OVERPUNCH_DIGITS
+                : POSITIVE_SIGN_OVERPUNCH_DIGITS;
+
+        return digits.substring(0, lastPosition) + overpunch.charAt(lastDigit);
     }
 
     /**

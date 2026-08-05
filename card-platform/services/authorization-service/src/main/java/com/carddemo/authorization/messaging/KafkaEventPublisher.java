@@ -1,12 +1,18 @@
 package com.carddemo.authorization.messaging;
 
 import com.carddemo.events.serde.EventContracts;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -17,14 +23,15 @@ import tools.jackson.databind.json.JsonMapper;
  * Kafka-backed {@link EventPublisherPort} implementation, and the only Kafka type this service
  * imports outside its configuration.
  *
- * <p>ADDITIVE. No COBOL program declares an event bus. The nearest source construct is the transient
+ * <p>No COBOL program declares an event bus. The nearest source construct is the transient
  * data queue write at {@code app/cbl/CORPT00C.cbl:L515-L523}.
  *
  * <p>Three checks run before any event leaves this service, and each one closes a way a correct
  * decision could still reach the wrong consumer. The event type the payload declares must belong on
- * the supplied topic, so an approval cannot reach the decline topic. The message key must equal every
- * account identifier the payload carries, so an event cannot land on one account's partition while
- * naming another. The payload must satisfy the versioned schema document its event type names.
+ * the supplied topic, so an approval cannot reach the decline topic. The message key must equal the
+ * payload aggregate and every non-null account identifier the payload carries, so an event cannot
+ * land on one aggregate's partition while naming another. The payload must satisfy the versioned
+ * schema document its event type names.
  *
  * <p>{@link EventContracts} performs the binding and the validation, so this service and every other
  * publisher on the platform read one registry and one set of documents.
@@ -50,14 +57,20 @@ public class KafkaEventPublisher implements EventPublisherPort {
     /** Envelope field naming the event, and with it the schema document and the topic. */
     private static final String EVENT_TYPE = "eventType";
 
-    /** Compiled once from {@link EventPublisherPort#AGGREGATE_ID_PATTERN}. */
-    private static final Pattern AGGREGATE_ID_MATCHER = Pattern.compile(AGGREGATE_ID_PATTERN);
+    /** Compiled once from {@link EventPublisherPort#MESSAGE_KEY_PATTERN}. */
+    private static final Pattern MESSAGE_KEY_MATCHER = Pattern.compile(MESSAGE_KEY_PATTERN);
 
     /** Sends every event to the broker. */
     private final KafkaTemplate<String, String> kafkaTemplate;
 
     /** Each event type this service publishes, mapped to the topic this deployment configures. */
     private final Map<String, String> configuredTopics;
+
+    /**
+     * Longest one send waits for the broker, from
+     * {@code carddemo.outbox.relay.publish-timeout}.
+     */
+    private final Duration publishTimeout;
 
     /** Reads the envelope of an already-written payload. */
     private final ObjectMapper objectMapper = JsonMapper.builder().build();
@@ -70,13 +83,18 @@ public class KafkaEventPublisher implements EventPublisherPort {
      *                        {@code carddemo.kafka.topics.transaction-authorized}
      * @param declinedTopic   topic configured for the decline event, from
      *                        {@code carddemo.kafka.topics.transaction-declined}
+     * @param publishTimeout  longest one send waits for the broker, from
+     *                        {@code carddemo.outbox.relay.publish-timeout}
      */
     public KafkaEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
             @Value("${carddemo.kafka.topics.transaction-authorized:}") String authorizedTopic,
-            @Value("${carddemo.kafka.topics.transaction-declined:}") String declinedTopic) {
+            @Value("${carddemo.kafka.topics.transaction-declined:}") String declinedTopic,
+            @Value("${carddemo.outbox.relay.publish-timeout}") Duration publishTimeout) {
         this.kafkaTemplate = kafkaTemplate;
         this.configuredTopics = Map.of(EventContracts.TRANSACTION_AUTHORIZED, authorizedTopic,
                 EventContracts.TRANSACTION_DECLINED, declinedTopic);
+        this.publishTimeout =
+                Objects.requireNonNull(publishTimeout, "publishTimeout must be present");
     }
 
     /**
@@ -87,18 +105,18 @@ public class KafkaEventPublisher implements EventPublisherPort {
      * key, no account identifier and no part of the payload.
      *
      * @throws IllegalArgumentException when an argument is absent, when {@code aggregateId} misses
-     *         {@link #AGGREGATE_ID_PATTERN}, when the payload is not one JSON object, when the event
+     *         {@link #MESSAGE_KEY_PATTERN}, when the payload is not one JSON object, when the event
      *         type it declares does not belong on {@code topic}, when {@code aggregateId} differs
-     *         from an account identifier the payload carries, or when the payload fails the document
-     *         its event type names
+     *         from the payload aggregate or a non-null account identifier it carries, or when the
+     *         payload fails the document its event type names
      */
     @Override
     public void publish(String topic, String aggregateId, String payload) {
         if (topic == null || payload == null) {
             throw new IllegalArgumentException("topic and payload are both required");
         }
-        if (aggregateId == null || !AGGREGATE_ID_MATCHER.matcher(aggregateId).matches()) {
-            throw new IllegalArgumentException("aggregateId must match " + AGGREGATE_ID_PATTERN
+        if (aggregateId == null || !MESSAGE_KEY_MATCHER.matcher(aggregateId).matches()) {
+            throw new IllegalArgumentException("aggregateId must match " + MESSAGE_KEY_PATTERN
                     + " and the supplied value "
                     + (aggregateId == null ? "is null"
                             : "holds " + aggregateId.length() + " characters"));
@@ -106,12 +124,44 @@ public class KafkaEventPublisher implements EventPublisherPort {
 
         JsonNode event = readEnvelope(payload);
         String eventType = requireBoundToTopic(event, topic);
-        requireSingleAccountIdentity(aggregateId, event);
+        requireSingleAggregateIdentity(aggregateId, event);
         requireValidAgainstSchema(eventType, payload);
 
         log.debug("Publishing authorization event {} to topic {}, payload length {}", eventType,
                 topic, payload.length());
-        kafkaTemplate.send(topic, aggregateId, payload).join();
+        sendAndWait(topic, aggregateId, payload);
+    }
+
+    /**
+     * Sends one payload and waits no longer than the configured publish timeout for the broker.
+     *
+     * <p>An unbounded wait holds this thread, and with it the relay sweep that called it, for as long
+     * as the broker is unreachable, and every later event of every account waits behind it. The
+     * bounded wait turns that condition into one thrown failure the caller records against the row.
+     *
+     * <p>The thrown message names the topic and the bound and reads no field of the payload, so a
+     * caller that logs it records no card number and no account identifier.
+     *
+     * @param topic       the destination topic
+     * @param aggregateId the message key
+     * @param payload     the event text
+     * @throws KafkaException when the broker does not acknowledge inside the bound, when the send
+     *         fails, or when the waiting thread is interrupted
+     */
+    private void sendAndWait(String topic, String aggregateId, String payload) {
+        try {
+            kafkaTemplate.send(topic, aggregateId, payload)
+                    .get(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException lapsed) {
+            throw new KafkaException("the broker did not acknowledge a send to topic " + topic
+                    + " within " + publishTimeout, lapsed);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new KafkaException("the wait on a send to topic " + topic + " was interrupted",
+                    interrupted);
+        } catch (ExecutionException failed) {
+            throw new KafkaException("a send to topic " + topic + " failed", failed.getCause());
+        }
     }
 
     /**
@@ -174,25 +224,28 @@ public class KafkaEventPublisher implements EventPublisherPort {
     }
 
     /**
-     * Checks that the message key and every account identifier the payload carries hold one value.
+     * Checks that the message key and the aggregate identifier hold one value.
      *
-     * <p>{@code aggregateId} is the single source of account identity and every document declares it.
-     * A document that also declares the payload field {@code accountId} must agree with it.
+     * <p>Every document declares {@code aggregateId}. A document that also declares a non-null
+     * {@code accountId} must agree with it. The unresolved-card decline is the one governed
+     * exception: schema version 2 declares a transaction-key aggregate and omits
+     * {@code accountId}, because the cross-reference lookup resolved none.
      *
-     * <p>No message below names a value. The account identifier is the value under check, and a
-     * caller that logs the failure would otherwise record it.
+     * <p>No message below names a value. The identifier is the value under check, and a caller that
+     * logs the failure would otherwise record it.
      *
      * @param key   the Kafka message key
      * @param event the parsed event
      * @throws IllegalArgumentException when the identifiers do not agree
      */
-    private static void requireSingleAccountIdentity(String key, JsonNode event) {
+    private static void requireSingleAggregateIdentity(String key, JsonNode event) {
         if (!key.equals(event.path(AGGREGATE_ID).asString(""))) {
             throw new IllegalArgumentException("the Kafka message key and " + AGGREGATE_ID
-                    + " carry one account identifier, and they differ");
+                    + " carry one aggregate identifier, and they differ");
         }
         JsonNode accountId = event.path(ACCOUNT_ID);
-        if (!accountId.isMissingNode() && !key.equals(accountId.asString(""))) {
+        if (!accountId.isMissingNode() && !accountId.isNull()
+                && !key.equals(accountId.asString(""))) {
             throw new IllegalArgumentException("the Kafka message key and " + ACCOUNT_ID
                     + " carry one account identifier, and they differ");
         }

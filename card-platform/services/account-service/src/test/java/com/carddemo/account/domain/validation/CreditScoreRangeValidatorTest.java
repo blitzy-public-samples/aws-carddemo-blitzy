@@ -38,6 +38,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * to the text at app/cbl/COACTUPC.cbl:L2523.</p>
  *
  * <p>No Spring context, no container and no database take part.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("CreditScoreRangeValidator, the inclusive 300 to 850 credit score edit")
 class CreditScoreRangeValidatorTest {

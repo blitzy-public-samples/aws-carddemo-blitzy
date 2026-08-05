@@ -11,8 +11,7 @@ import tools.jackson.databind.JsonNode;
 /**
  * Names the properties no event may carry, and finds the first one a serialized event names.
  *
- * <p>ADDITIVE IN FULL. No COBOL program and no copybook defines this class. The reasoning behind
- * the choices it implements sits in {@code card-platform/docs/decision-log.md} (planned).
+ * <p>No COBOL program and no copybook defines this class.
  *
  * <p>Every schema document closes its top-level property set with
  * {@code "additionalProperties": false} and a {@code maxProperties} ceiling. Each one carries a
@@ -43,7 +42,7 @@ import tools.jackson.databind.JsonNode;
  * <p>A status flag is not on the list. {@code CARD-ACTIVE-STATUS PIC X(01)} at
  * {@code app/cpy/CVACT02Y.cpy:L10} and {@code ACCT-ACTIVE-STATUS PIC X(01)} at
  * {@code app/cpy/CVACT01Y.cpy:L6} reach no transaction event, and
- * {@code schemas/account-state-changed-v1.json} and {@code schemas/card-updated-v1.json}
+ * {@code schemas/account-state-changed-v1.json} and the two governed card-update schemas
  * declare {@code activeStatus} as a property of their own. The five transaction and fraud documents
  * are held clear of it by {@code SchemaBackwardCompatibilityTest}, which reads their declared and
  * undeclared field names document by document.
@@ -59,11 +58,14 @@ import tools.jackson.databind.JsonNode;
  * Every other property naming a card number is refused, so {@code cardNumber} and {@code pan} are
  * both out.
  *
- * <p>{@link JsonSchemaValidatingSerializer} reads this class before it returns bytes, which is the
- * one runtime call site. The consume side needs no second call: every document closes its top-level
- * property set, so {@link JsonSchemaValidatingDeserializer} refuses an undeclared property on the
- * schema alone. An instance is never created, and no method holds state, so any number of producer
- * threads may call in at once.
+ * <p>Two runtime call sites read this class. {@link JsonSchemaValidatingSerializer} reads it before
+ * it returns bytes, and {@link JsonSchemaValidatingDeserializer} reads it before it builds a record.
+ * The consume side runs the same two screens for a reason the schema cannot cover: a document closes
+ * its top-level property set, so an undeclared property is refused on the schema alone, but the
+ * {@code extensions} object is open by design and a free-text property is constrained by length
+ * rather than by shape. A record either screen refuses reaches the dead-letter route rather than a
+ * consumer. An instance is never created, and no method holds state, so any number of producer and
+ * consumer threads may call in at once.
  *
  * <p>Versions: Java 25 and {@code jackson-databind 3.1.4}. A module descriptor that omits
  * {@code <java.version>25</java.version>} compiles at release 17 with no warning.
@@ -88,7 +90,8 @@ public final class SensitiveEventProperties {
      *
      * <p>{@code maskedCardNumber} is declared by
      * {@code schemas/transaction-authorized-v1.json}, {@code schemas/transaction-declined-v1.json},
-     * {@code schemas/transaction-posted-v1.json} and {@code schemas/card-updated-v1.json}. Its
+     * {@code schemas/transaction-posted-v1.json}, {@code schemas/card-updated-v1.json} and
+     * {@code schemas/card-updated-v2.json}. Its
      * separator spellings fold to the same entry and are spared with it.
      */
     public static final Set<String> APPROVED_CARD_PROPERTIES = Set.of("maskedcardnumber");
@@ -137,6 +140,65 @@ public final class SensitiveEventProperties {
             "cardnumber",
             "primaryaccountnumber",
             "embosseddigits");
+
+    /**
+     * Properties whose value is free text a caller supplies, in the folded form the scan compares.
+     *
+     * <p>{@link #firstSensitiveValue(JsonNode)} screens the value of each entry, and of every value
+     * nested under {@link #EXTENSION_PROPERTY}, because those are the only places a caller may write
+     * arbitrary characters. Every other property is either an identifier, an amount or a timestamp,
+     * and its document constrains the value by pattern.
+     *
+     * <p>The distinction is not stylistic. A legitimate CardDemo transaction identifier holds
+     * sixteen digits, {@code 0000000000683580} for one, and so does a Primary Account Number (PAN).
+     * Screening every property for a long digit run would refuse valid traffic, so the digit screen
+     * runs where a caller is free and the pattern is not.
+     */
+    public static final Set<String> FREE_TEXT_PROPERTIES = Set.of(
+            "description",
+            "declinereasondescription",
+            "merchantname",
+            "merchantcity",
+            "merchantzip",
+            "source",
+            "triggeredrules",
+            "reason",
+            "message",
+            "culprit");
+
+    /** The one property whose whole subtree is caller-supplied, in folded form. */
+    public static final String EXTENSION_PROPERTY = "extensions";
+
+    /**
+     * Shortest run of digits a screened value may not hold: twelve.
+     *
+     * <p>The shortest payment card number in circulation holds twelve digits, so a shorter run
+     * carries no card number. {@code app/cpy/CVACT02Y.cpy:L5} declares
+     * {@code CARD-NUM PIC X(16)}, and sixteen is what this platform stores.
+     */
+    private static final Pattern LONG_DIGIT_RUN = Pattern.compile("[0-9]{12,}");
+
+    /**
+     * Characters a screened value is stripped of before the digit run is sought: the space and the
+     * hyphen.
+     *
+     * <p>{@code 4111 1111 1111 1111} and {@code 4111-1111-1111-1111} are how a card number is
+     * written for a human reader, and both hold a sixteen-digit run once these characters go. The
+     * decimal point is deliberately kept, so a monetary amount inside a description stays two runs
+     * rather than becoming one.
+     */
+    private static final Pattern CARD_NUMBER_GROUPING = Pattern.compile("[ \\-]");
+
+    /**
+     * Shape of a United States government identifier: three digits, two digits, then four, in
+     * groups separated by a space or a hyphen.
+     *
+     * <p>{@code CUST-SSN PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L20} holds the same nine digits
+     * unseparated, and the unseparated form is not sought here: nine digits is a plausible merchant
+     * identifier and refusing it would refuse valid traffic. The separated form is not.
+     */
+    private static final Pattern GOVERNMENT_IDENTIFIER =
+            Pattern.compile("(?<![0-9])[0-9]{3}[ \\-][0-9]{2}[ \\-][0-9]{4}(?![0-9])");
 
     /** No instance is created. */
     private SensitiveEventProperties() {
@@ -224,5 +286,109 @@ public final class SensitiveEventProperties {
             }
         }
         return false;
+    }
+
+    /**
+     * The first free-text property of a serialized event whose value carries a card number or a
+     * separated government identifier, searched depth first.
+     *
+     * <p>A property qualifies for the screen when its folded name sits in
+     * {@link #FREE_TEXT_PROPERTIES}, or when it sits anywhere under
+     * {@link #EXTENSION_PROPERTY}. Those are the values a caller writes without a pattern to hold
+     * them, and they are where a card number travels when a caller puts one there.
+     *
+     * <p>The screen reads a value in two forms. The text as written is sought for a run of
+     * {@code [0-9]} twelve characters or longer, and the text with grouping characters removed is
+     * sought for the same run, so {@code 4111 1111 1111 1111} is caught with
+     * {@code 4111111111111111}. The text as written is also sought for the three-two-four shape of a
+     * United States government identifier.
+     *
+     * @param event the serialized event, as a JavaScript Object Notation (JSON) tree; a {@code null}
+     *              tree carries nothing
+     * @return the name of the offending property, exactly as the event spells it, or {@code null}
+     *         when no screened value carries either shape. The value itself never reaches the
+     *         return, so a caller may put the name in a message
+     */
+    public static String firstSensitiveValue(JsonNode event) {
+        return firstSensitiveValue(event, false);
+    }
+
+    /**
+     * Walks one node, screening a value when the node itself is screened or the property that
+     * carries it is.
+     *
+     * @param node     the node to walk; a {@code null} node carries nothing
+     * @param screened whether every value below this node is screened, which
+     *                 {@link #EXTENSION_PROPERTY} sets for its whole subtree
+     * @return the offending property name, or {@code null}
+     */
+    private static String firstSensitiveValue(JsonNode node, boolean screened) {
+        if (node == null) {
+            return null;
+        }
+
+        if (node.isObject()) {
+            for (Map.Entry<String, JsonNode> property : node.properties()) {
+                String folded = fold(property.getKey());
+                boolean screenBelow = screened || EXTENSION_PROPERTY.equals(folded)
+                        || FREE_TEXT_PROPERTIES.contains(folded);
+                if (screenBelow && carriesSensitiveText(property.getValue())) {
+                    return property.getKey();
+                }
+                String nested = firstSensitiveValue(property.getValue(), screenBelow);
+                if (nested != null) {
+                    return nested;
+                }
+            }
+            return null;
+        }
+
+        if (node.isArray()) {
+            for (JsonNode element : node) {
+                if (screened && carriesSensitiveText(element)) {
+                    return EXTENSION_PROPERTY;
+                }
+                String nested = firstSensitiveValue(element, screened);
+                if (nested != null) {
+                    return nested;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Whether one node is textual and its text carries a card number or a separated government
+     * identifier. Only the node itself is read, and no child of it.
+     *
+     * @param value the node to read
+     * @return {@code true} when the text carries either shape
+     */
+    private static boolean carriesSensitiveText(JsonNode value) {
+        if (value == null || !value.isString()) {
+            return false;
+        }
+
+        String text = value.stringValue();
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        if (LONG_DIGIT_RUN.matcher(text).find()
+                || GOVERNMENT_IDENTIFIER.matcher(text).find()) {
+            return true;
+        }
+        return LONG_DIGIT_RUN.matcher(CARD_NUMBER_GROUPING.matcher(text).replaceAll("")).find();
+    }
+
+    /**
+     * Folds one property name the way {@link #isForbidden(String)} folds it: to lower case in
+     * {@link Locale#ROOT}, then with every character outside {@code a} to {@code z} and {@code 0} to
+     * {@code 9} removed.
+     *
+     * @param propertyName the name to fold
+     * @return the folded name
+     */
+    private static String fold(String propertyName) {
+        return NON_ALPHANUMERIC.matcher(propertyName.toLowerCase(Locale.ROOT)).replaceAll("");
     }
 }

@@ -55,21 +55,20 @@ import org.junit.jupiter.api.function.Executable;
  * reflection. No Spring context starts, no container starts and no socket opens, so
  * {@code mvn test} runs the class on a machine with no database and no message broker.</p>
  *
- * <p>ADDITIVE with zero provenance: no Common Business Oriented Language (COBOL) program records a
- * delivery attempt. {@code app/cbl/CBSTM03A.CBL} declares two rendered layouts, the text group
- * {@code 01 STATEMENT-LINES.} at {@code :L85} and the markup group {@code 01 HTML-LINES.} at
- * {@code :L148}, and writes each to a dataset. Neither that program nor
- * {@code app/cpy/COSTM01.CPY} nor {@code app/jcl/CREASTMT.JCL} declares an attempt record.
- * {@code card-platform/docs/traceability-matrix.md} records the net-new status.</p>
+ * <p>No COBOL provenance: no Common Business Oriented Language (COBOL) program records a delivery
+ * attempt. {@code app/cbl/CBSTM03A.CBL} declares two rendered layouts, the text group {@code 01
+ * STATEMENT-LINES.} at {@code :L85} and the markup group {@code 01 HTML-LINES.} at {@code :L148},
+ * and writes each to a dataset. Neither that program nor {@code app/cpy/COSTM01.CPY} nor {@code
+ * app/jcl/CREASTMT.JCL} declares an attempt record.
  *
- * <p>Five columns carry one attempt, and the tests below pin all five as a closed set. A sixth
+ * <p>Six columns carry one attempt, and the tests below pin all six as a closed set. A seventh
  * field fails them, as does a change to any declared width. The {@code notification_log} block of
  * {@code src/main/resources/db/migration/V1__schema.sql} fixes every name, type and width below,
  * and that file carries the Data Definition Language (DDL) of the notification schema.
- * {@code card-platform/docs/decision-log.md} documents the shape.</p>
  *
- * <p>{@code card_number} holds the masked form: twelve mask characters then the last four digits.
- * No full Primary Account Number (PAN) reaches {@code notification_log}. No field, column or
+ * <p>{@code account_id} scopes the attempt to one account. {@code masked_card_number} holds the
+ * display form: twelve mask characters then the last four digits. No full Primary Account Number
+ * (PAN) reaches {@code notification_log}. No field, column or
  * accessor names a card verification value, the three-digit field
  * {@code app/cpy/CVACT02Y.cpy:L7} declares and the card service owns.</p>
  *
@@ -78,10 +77,8 @@ import org.junit.jupiter.api.function.Executable;
  * {@code app/cpy/COSTM01.CPY:L34} and {@code :L35}, and the tests below pin the timestamp type of
  * {@code notification_log} alone.</p>
  *
- * <p>The masked and unmasked readings of {@code card_number} across the notification service are
- * carried in {@code card-platform/docs/suggested-next-tasks.md} (planned). The tests below pin the
- * column name, the mapped type, the declared width and the refusal of null, and assert no
- * pattern.</p>
+ * <p>The tests below pin the column name, the mapped type, the declared width and the refusal of
+ * null, and assert no pattern.</p>
  *
  * <p>Boundary: the mapped shape is under test here. The character mapping under
  * {@code ddl-auto: validate}, repository queries, the two renderers and listener transactions
@@ -94,7 +91,7 @@ final class NotificationLogEntityTest {
     private static final String TABLE_NAME = "notification_log";
 
     /** Instance fields the class maps, statics dropped. */
-    private static final int FIELD_COUNT = 5;
+    private static final int FIELD_COUNT = 6;
 
     /** Class-level annotations the class carries. */
     private static final int CLASS_ANNOTATION_COUNT = 2;
@@ -102,8 +99,11 @@ final class NotificationLogEntityTest {
     /** The identifier field, and the whole primary key. */
     private static final String ID_FIELD = "id";
 
+    /** The field naming the card the attempt alerted, by its token. */
+    private static final String CARD_TOKEN_FIELD = "cardToken";
+
     /** The field holding the masked card the attempt alerted. */
-    private static final String CARD_NUMBER_FIELD = "cardNumber";
+    private static final String CARD_NUMBER_FIELD = "maskedCardNumber";
 
     /** The field holding the transaction the attempt alerted on. */
     private static final String TRANSACTION_ID_FIELD = "transactionId";
@@ -117,8 +117,11 @@ final class NotificationLogEntityTest {
     /** Column of {@link #ID_FIELD}, declared {@code UUID NOT NULL}. */
     private static final String ID_COLUMN = "id";
 
+    /** Column of {@link #CARD_TOKEN_FIELD}, declared {@code CHAR(64) NOT NULL}. */
+    private static final String CARD_TOKEN_COLUMN = "card_token";
+
     /** Column of {@link #CARD_NUMBER_FIELD}, declared {@code CHAR(16) NOT NULL}. */
-    private static final String CARD_NUMBER_COLUMN = "card_number";
+    private static final String CARD_NUMBER_COLUMN = "masked_card_number";
 
     /** Column of {@link #TRANSACTION_ID_FIELD}, declared {@code CHAR(16) NOT NULL}. */
     private static final String TRANSACTION_ID_COLUMN = "transaction_id";
@@ -132,6 +135,9 @@ final class NotificationLogEntityTest {
      */
     private static final String ATTEMPTED_AT_COLUMN = "attempted_at";
 
+    /** Characters {@link #CARD_TOKEN_COLUMN} holds, from the migration. */
+    private static final int CARD_TOKEN_WIDTH = 64;
+
     /** Characters {@link #CARD_NUMBER_COLUMN} holds, from the migration. */
     private static final int CARD_NUMBER_WIDTH = 16;
 
@@ -140,6 +146,9 @@ final class NotificationLogEntityTest {
 
     /** Widest value {@link #CHANNEL_COLUMN} holds, from the migration. */
     private static final int CHANNEL_WIDTH = 20;
+
+    /** Constant the class publishes for the width of {@link #CARD_TOKEN_COLUMN}. */
+    private static final String CARD_TOKEN_WIDTH_CONSTANT = "CARD_TOKEN_LENGTH";
 
     /** Constant the class publishes for the width of {@link #CARD_NUMBER_COLUMN}. */
     private static final String CARD_NUMBER_WIDTH_CONSTANT = "CARD_NUMBER_LENGTH";
@@ -191,7 +200,6 @@ final class NotificationLogEntityTest {
      * the column spelling and the field spelling.
      */
     private static final List<String> FORBIDDEN_NAMES = List.of(
-            "account_id",
             "customer_id",
             "customer_name",
             "balance",
@@ -217,7 +225,6 @@ final class NotificationLogEntityTest {
      * {@link #FORBIDDEN_NAMES}: it catches a renamed addition the whole-name list misses.
      */
     private static final List<String> FORBIDDEN_FRAGMENTS = List.of(
-            "account",
             "balance",
             "credit",
             "score",
@@ -230,7 +237,6 @@ final class NotificationLogEntityTest {
             "recipient",
             "receipt",
             "retry",
-            "count",
             "status",
             "error",
             "version",
@@ -534,7 +540,7 @@ final class NotificationLogEntityTest {
         }
 
         @Test
-        @DisplayName("two constructors: the no-argument one and one taking all five values")
+        @DisplayName("two constructors: the no-argument one and one taking all six values")
         void declaresTwoConstructorsAndTheSecondTakesEveryMappedValue() {
             assertThat(constructorArities()).as("parameter counts of the declared constructors")
                     .containsExactlyElementsOf(EXPECTED_CONSTRUCTOR_ARITIES);
@@ -543,32 +549,36 @@ final class NotificationLogEntityTest {
 
     /** The closed set of mapped fields, their types, their columns and their widths. */
     @Nested
-    @DisplayName("The closed set of five mapped fields")
+    @DisplayName("The closed set of six mapped fields")
     class MappedFieldSet {
 
         @Test
-        @DisplayName("five instance fields, no more and no fewer: a sixth field fails here")
-        void declaresExactlyFiveInstanceFieldsAndRefusesASixth() {
+        @DisplayName("six instance fields, no more and no fewer: a seventh field fails here")
+        void declaresExactlySixInstanceFieldsAndRefusesASeventh() {
             assertThat(instanceFieldNames())
                     .as("instance fields NotificationLogEntity declares, statics dropped")
                     .hasSize(FIELD_COUNT);
         }
 
         @Test
-        @DisplayName("the field names are id, cardNumber, transactionId, channel and attemptedAt")
+        @DisplayName("the field names are id, cardToken, cardNumber, transactionId, channel and "
+                + "attemptedAt")
         void theFieldNamesAreTheClosedSet() {
             assertThat(instanceFieldNames()).as("instance field names")
-                    .containsExactlyInAnyOrder(ID_FIELD, CARD_NUMBER_FIELD, TRANSACTION_ID_FIELD,
-                            CHANNEL_FIELD, ATTEMPTED_AT_FIELD);
+                    .containsExactlyInAnyOrder(ID_FIELD, CARD_TOKEN_FIELD, CARD_NUMBER_FIELD,
+                            TRANSACTION_ID_FIELD, CHANNEL_FIELD, ATTEMPTED_AT_FIELD);
         }
 
         @Test
-        @DisplayName("the declared types are UUID, String, String, String and Instant")
+        @DisplayName("the declared types are UUID, String, String, String, String and Instant")
         void theDeclaredTypesMatchTheMappedColumns() {
             assertAll("declared field types against the migration",
                     () -> assertSame(UUID.class, instanceField(ID_FIELD).getType(),
                             ID_FIELD + " must be a java.util.UUID, matching " + ID_COLUMN
                                     + " UUID"),
+                    () -> assertSame(String.class, instanceField(CARD_TOKEN_FIELD).getType(),
+                            CARD_TOKEN_FIELD + " must be a java.lang.String, matching "
+                                    + CARD_TOKEN_COLUMN + " CHAR(" + CARD_TOKEN_WIDTH + ")"),
                     () -> assertSame(String.class, instanceField(CARD_NUMBER_FIELD).getType(),
                             CARD_NUMBER_FIELD + " must be a java.lang.String, matching "
                                     + CARD_NUMBER_COLUMN + " CHAR(" + CARD_NUMBER_WIDTH + ")"),
@@ -604,10 +614,11 @@ final class NotificationLogEntityTest {
         }
 
         @Test
-        @DisplayName("the column names are id, card_number, transaction_id, channel, attempted_at")
+        @DisplayName("the column names are id, card_token, card_number, transaction_id, channel, "
+                + "attempted_at")
         void theColumnNamesAreTheClosedSet() {
             assertThat(columnNames()).as("column names the instance fields map")
-                    .containsExactlyInAnyOrder(ID_COLUMN, CARD_NUMBER_COLUMN,
+                    .containsExactlyInAnyOrder(ID_COLUMN, CARD_TOKEN_COLUMN, CARD_NUMBER_COLUMN,
                             TRANSACTION_ID_COLUMN, CHANNEL_COLUMN, ATTEMPTED_AT_COLUMN);
         }
 
@@ -632,9 +643,12 @@ final class NotificationLogEntityTest {
         }
 
         @Test
-        @DisplayName("the declared widths are 16, 16 and 20")
+        @DisplayName("the declared widths are 32, 16, 16 and 20")
         void theDeclaredWidthsMatchTheMigration() {
             assertAll("declared @Column widths against V1__schema.sql",
+                    () -> assertEquals(CARD_TOKEN_WIDTH,
+                            columnOf(instanceField(CARD_TOKEN_FIELD)).length(),
+                            "width of " + CARD_TOKEN_COLUMN),
                     () -> assertEquals(CARD_NUMBER_WIDTH,
                             columnOf(instanceField(CARD_NUMBER_FIELD)).length(),
                             "width of " + CARD_NUMBER_COLUMN),
@@ -647,9 +661,13 @@ final class NotificationLogEntityTest {
         }
 
         @Test
-        @DisplayName("the three published width constants carry the same three numbers")
+        @DisplayName("the four published width constants carry the same four numbers")
         void thePublishedWidthConstantsMatchTheMigration() {
             assertAll("published width constants against V1__schema.sql",
+                    () -> assertEquals(CARD_TOKEN_WIDTH,
+                            publishedWidth(CARD_TOKEN_WIDTH_CONSTANT),
+                            CARD_TOKEN_WIDTH_CONSTANT + " names the width of "
+                                    + CARD_TOKEN_COLUMN),
                     () -> assertEquals(CARD_NUMBER_WIDTH,
                             publishedWidth(CARD_NUMBER_WIDTH_CONSTANT),
                             CARD_NUMBER_WIDTH_CONSTANT + " names the width of "
@@ -876,7 +894,7 @@ final class NotificationLogEntityTest {
                                 + "and holds no reference to one"));
                 checks.add(() -> assertFalse(Collection.class.isAssignableFrom(type),
                         field.getName() + " must hold no collection: " + TABLE_NAME
-                                + " declares five scalar columns"));
+                                + " declares six scalar columns"));
                 checks.add(() -> assertFalse(Map.class.isAssignableFrom(type),
                         field.getName() + " must hold no map"));
             }
@@ -922,9 +940,9 @@ final class NotificationLogEntityTest {
                 for (String fragment : FORBIDDEN_FRAGMENTS) {
                     checks.add(() -> assertFalse(folded.contains(fragment),
                             "name '" + name + "' contains '" + fragment + "'. One attempt row "
-                                    + "carries an identifier, a masked card number, a "
+                                    + "carries an identifier, an account identifier, a masked card number, a "
                                     + "transaction identifier, a rendered format and a moment. "
-                                    + "The account service owns an account, a balance and a "
+                                    + "The account service owns a balance and a "
                                     + "customer, and the card service owns the three-digit field "
                                     + "at app/cpy/CVACT02Y.cpy:L7"));
                 }

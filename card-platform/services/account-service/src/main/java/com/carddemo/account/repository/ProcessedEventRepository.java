@@ -18,14 +18,14 @@ import org.springframework.data.repository.query.Param;
  * {@code app/cbl/CBSTM03B.CBL:L106} and {@link #save(ProcessedEventEntity)} reproduces the write
  * {@code 'W'} at {@code L107}.
  *
- * <p>ADDITIVE: no Customer Information Control System (CICS) program and no Job Control Language
- * (JCL) member declares this marker, and every file definition in {@code app/csd/CARDDEMO.CSD}
- * carries {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
+ * <p>No COBOL ancestor: no Customer Information Control System (CICS) program and no Job Control
+ * Language (JCL) member declares this marker, and every file definition in {@code
+ * app/csd/CARDDEMO.CSD} carries {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
  *
  * <p>The account service publishes {@code AccountStateChanged} and consumes nothing at this
  * boundary, so no caller writes a marker yet. The table and this interface carry the idempotency
  * contract every consumer of this platform honours, so a consumer added to this service inherits
- * both unchanged. {@code card-platform/docs/decision-log.md} (planned) records that choice.
+ * both unchanged.
  *
  * <p>The interface extends {@link Repository} rather than a full create-read-update-delete base,
  * because a marker has exactly three operations. Nothing updates a marker and nothing deletes one
@@ -46,7 +46,7 @@ public interface ProcessedEventRepository extends Repository<ProcessedEventEntit
      *
      * <p>The caller writes the marker in the same local transaction as the side effects it guards.
      * A marker written in its own transaction leaves a window in which the side effects have
-     * committed and the marker has not, and a redelivery inside that window applies them twice.
+     * committed and the marker has not. A redelivery inside that window applies them twice.
      *
      * @param marker the marker to write
      * @return the written marker
@@ -72,14 +72,15 @@ public interface ProcessedEventRepository extends Repository<ProcessedEventEntit
      * do so.
      *
      * <p>{@code ON CONFLICT DO NOTHING} is the whole guarantee. A consumer that reads first and
-     * then inserts has a window between the two in which a second delivery of the same event reads
-     * nothing, and both deliveries then apply their side effects; one statement that inserts or
-     * declines to has no such window, because the primary key decides the race inside the database.
+     * then inserts has a window between the two. A second delivery of the same event reads
+     * nothing inside that window, and both deliveries apply their side effects. One statement
+     * that inserts or
+     * declines to has no such window: the primary key decides the race inside the database.
      *
      * <p>The caller runs this in the same transaction as its side effects and acknowledges the
      * message only after that transaction commits. A crash before the commit rolls back the marker
      * along with the side effects, so the redelivery that follows is the first to claim the event
-     * again; a crash after the commit but before the acknowledgement leaves the marker, so the
+     * again. A crash after the commit but before the acknowledgement leaves the marker, so the
      * redelivery is refused here and the consumer skips straight to acknowledging. Neither order
      * double-processes and neither loses the event.
      *

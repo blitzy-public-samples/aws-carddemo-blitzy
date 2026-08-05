@@ -6,10 +6,10 @@ import jakarta.validation.ConstraintValidatorContext;
 /**
  * Runs the edit a {@link DomainEdit} names and reports the message that edit produced.
  *
- * <p>ADDITIVE as a mechanism. Every rule reached from here already lives in a validator class of
- * this package, translated from the field edits of {@code app/cbl/COACTUPC.cbl}. This class adds no
- * rule and changes none: it is the wire that makes Bean Validation run them, which is what
- * {@code CustomerDataRequest} and {@code AccountDataRequest} previously lacked.
+ * <p>The mechanism has no COBOL ancestor. Every rule reached from here already lives in a validator
+ * class of this package, translated from the field edits of {@code app/cbl/COACTUPC.cbl}. This
+ * class adds no rule and changes none: it is the wire that makes Bean Validation run them, which is
+ * what {@code CustomerDataRequest} and {@code AccountDataRequest} previously lacked.
  *
  * <p>A failure replaces the default template with the text the validator returned, so the caller
  * reads the source's own wording. {@code app/cbl/COACTUPC.cbl} builds each message from a field label

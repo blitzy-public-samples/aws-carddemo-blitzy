@@ -24,11 +24,11 @@ import java.util.regex.Pattern;
  * in its own terms: {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a reject record whose eighty-byte
  * trailer at {@code app/cbl/CBTRN02C.cbl:L180-L182} carries the reject code and its text.
  *
- * <p>The card number is stored masked. ADDITIVE: no source program masks a Primary Account Number
- * (PAN), and {@code app/bms/COCRDSL.bms:L96-L99} renders the card field at its full sixteen
- * characters. The lookup that failed ran on the full number, and only this record carries the masked
- * form. {@link PanMasker#maskCardNumber(String)} produces it, and the constructor rejects an unmasked
- * value.
+ * <p>The card number is stored masked. No COBOL ancestor: no source program masks a Primary Account
+ * Number (PAN), and {@code app/bms/COCRDSL.bms:L96-L99} renders the card field at its full sixteen
+ * characters. The lookup that failed ran on the full number, and only this record carries the
+ * masked form. {@link PanMasker#maskCardNumber(String)} produces it, and the constructor rejects an
+ * unmasked value.
  *
  * <p>No column carries a card verification value. This service never reads the card record, so it
  * holds none.

@@ -20,7 +20,7 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Registers the meters the authorization service reports, and the one tag each of them carries.
  *
- * <p>ADDITIVE. No CardDemo program declares a meter and none times its own work. The batch posting
+ * <p>No CardDemo program declares a meter and none times its own work. The batch posting
  * program counts with two working-storage fields, {@code WS-TRANSACTION-COUNT} and
  * {@code WS-REJECT-COUNT} at {@code app/cbl/CBTRN02C.cbl:L184-L186}.
  *
@@ -36,18 +36,19 @@ import org.springframework.context.annotation.Configuration;
  * four-digit reject code, whose ancestor is the reject count of {@code app/cbl/CBTRN02C.cbl:L214},
  * printed at {@code app/cbl/CBTRN02C.cbl:L228}. A decline is expected traffic, and
  * {@code app/cbl/CBTRN02C.cbl:L229-L230} ends the batch job with return code 4 once that count
- * passes zero. An infrastructure fault lands on {@link #FAILURES_COUNTER}, which no decline reaches.
+ * passes zero. No decline reaches {@link #FAILURES_COUNTER}.
  *
- * <p>{@link #FAILURES_COUNTER} counts a decision that could not commit and an outbox row the relay
- * could not publish. The source answer to either is {@code 9999-ABEND-PROGRAM} at
+ * <p>{@link #FAILURES_COUNTER} pre-registers a {@link #PERSIST_STAGE} series and a
+ * {@link #PUBLISH_STAGE} series at zero. No current code records either one: a decision that cannot
+ * commit and an outbox row the relay cannot publish both surface as a log entry and an uncommitted
+ * transaction. The source answer to either is {@code 9999-ABEND-PROGRAM} at
  * {@code app/cbl/CBTRN02C.cbl:L707-L711}, four statements that display one message, move 999 into an
  * abend code and call {@code CEE3ABD}. Neither that routine nor the file-status formatter at
  * {@code app/cbl/CBTRN02C.cbl:L714-L727} is reproduced.
  *
  * <p>{@code domain/AuthorizationService} records against {@link #EVENTS_WRITTEN_COUNTER},
  * {@link #DECISION_TIMER} and {@link #DECISIONS_COUNTER} under these names, so one meter serves the
- * registration here and the recording there. A fault records against {@link #FAILURES_COUNTER} under
- * {@link #PERSIST_STAGE} or {@link #PUBLISH_STAGE}.
+ * registration here and the recording there.
  *
  * <p>Every meter registers while the context builds, so a scrape taken before the first request
  * lists each series at zero. Each tag value set is closed and small: five outcomes, two event types,
@@ -61,7 +62,6 @@ import org.springframework.context.annotation.Configuration;
  * {@code src/main/resources/application.yml}. This class configures none of the three, and this
  * module ships no Logback configuration file.
  *
- * <p>Decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
 public class ObservabilityConfig {
@@ -84,17 +84,29 @@ public class ObservabilityConfig {
     /** Timer over one decision, from request entry to commit. */
     public static final String DECISION_TIMER = "carddemo.authorization.decision.duration";
 
-    /** Counter carrying one infrastructure fault. No decline reaches it. */
+    /** Counter reserved for an infrastructure fault. No current code records it. */
     public static final String FAILURES_COUNTER = "carddemo.authorization.failures";
 
     /** Tag key that names the stage which raised a fault on {@link #FAILURES_COUNTER}. */
     public static final String STAGE_TAG = "stage";
 
-    /** The {@link #STAGE_TAG} value of a decision and event row that could not commit. */
+    /** The {@link #STAGE_TAG} value reserved for a decision and event row that could not commit. */
     public static final String PERSIST_STAGE = "persist";
 
-    /** The {@link #STAGE_TAG} value of an outbox row the relay could not publish. */
+    /** The {@link #STAGE_TAG} value reserved for an outbox row the relay could not publish. */
     public static final String PUBLISH_STAGE = "publish";
+
+    /**
+     * The {@link #STAGE_TAG} value of a call refused because the replica rows it resolved had not
+     * been observed recently enough to authorize against.
+     *
+     * <p>This stage is a fault and not a decline, and the distinction is the reason it is here. The
+     * card was valid and the account was valid; this service was the component unable to answer,
+     * because {@code card_xref} and {@code account_credit_snapshot} are replicas whose state-change
+     * events had stopped arriving. Counting the refusal under a reject reason would attribute a
+     * service fault to a cardholder.
+     */
+    public static final String REPLICA_STAGE = "replica";
 
     /** Tag key that names this service on every meter it reports. */
     public static final String SERVICE_TAG = "service";
@@ -203,12 +215,19 @@ public class ObservabilityConfig {
     }
 
     /**
-     * Registers one failure series per stage that can raise an infrastructure fault.
+     * Registers one failure series per stage that can raise an infrastructure fault. Each series
+     * registers at zero and no current code records against it.
+     *
+     * <p>Each series is registered eagerly so it reads zero before the first fault, which is what
+     * lets a dashboard tell "no faults" apart from "no such series". Every one of the three has a
+     * recording site: the persist stage in {@code AuthorizationService.authorize}, the publish stage
+     * in {@code OutboxRelay.publishPendingEvents}, and the replica stage in
+     * {@code AuthorizationService.requireFreshReplicaData}.
      *
      * @param registry the registry each series registers against
      */
     private static void registerFailureStages(MeterRegistry registry) {
-        for (String stage : List.of(PERSIST_STAGE, PUBLISH_STAGE)) {
+        for (String stage : List.of(PERSIST_STAGE, PUBLISH_STAGE, REPLICA_STAGE)) {
             Counter.builder(FAILURES_COUNTER)
                     .tag(STAGE_TAG, stage)
                     .description("Infrastructure faults, tagged by the stage that raised one. A "

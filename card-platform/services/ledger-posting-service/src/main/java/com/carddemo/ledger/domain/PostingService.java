@@ -26,6 +26,12 @@ import org.springframework.transaction.annotation.Transactional;
  * {@link CobolDecimal#formatProcessingTimestamp} per posting replaces {@code :L437-L438}, and that
  * one value reaches the transaction row and {@link TransactionPosted#postedAt()} alike.
  *
+ * <p>The published event carries the same nine descriptive values the row does, under
+ * {@link TransactionPosted#DETAIL_SCHEMA_VERSION}.
+ * {@link TransactionPosted#forPostedAuthorization} reads them from the authorized event this
+ * method received, so a downstream read model needs no second source and receives no substituted
+ * value in place of a transaction field.
+ *
  * <p>Deviations for this class are recorded in {@code card-platform/docs/decision-log.md} and
  * {@code card-platform/docs/traceability-matrix.md}.
  */
@@ -70,19 +76,31 @@ public class PostingService {
     /**
      * Posts one authorized transaction and enqueues one {@link TransactionPosted} event.
      *
-     * <p>The three updates and the outbox row join the transaction the caller opened, so they
-     * commit together or roll back together. A store failure reaches the caller unchanged.
+     * <p>The three updates and the outbox row share one required transaction, so they commit
+     * together or roll back together. A store failure reaches the caller unchanged.
+     *
+     * <p>The enqueued event carries the whole posted transaction record, not the balance alone.
+     * {@link TransactionPosted#forAuthorized(TransactionAuthorized, BigDecimal, String)} copies the
+     * ten values the authorized event already holds, so the notification service builds its
+     * card-keyed read model from facts rather than from blanks.
+     * {@code app/jcl/CREASTMT.JCL} sorts and copies the same whole record, and this event is what
+     * replaces that job.
      *
      * @param event the authorized transaction to post
      * @throws NullPointerException when {@code event} is {@code null}
+     * @throws IllegalArgumentException when {@code messageKey} is absent or names another aggregate
      * @throws AccountBalanceUpdater.AccountBalanceRowMissingException when no balance row carries
      *                                  the account identifier the event names
      * @throws IllegalArgumentException when a value the event carries does not fit the column or
      *                                  the contract that holds it
      */
     @Transactional
-    public void postTransaction(TransactionAuthorized event) {
+    public void postTransaction(TransactionAuthorized event, String messageKey) {
         Objects.requireNonNull(event, "event is required");
+        if (messageKey == null || !messageKey.equals(event.aggregateId())) {
+            throw new IllegalArgumentException(
+                    "the message key must equal the payload aggregate identifier");
+        }
 
         String accountId = event.accountId();
         BigDecimal amount = event.amount();
@@ -94,8 +112,7 @@ public class PostingService {
         BigDecimal newBalance = accountBalanceUpdater.updateBalances(accountId, amount);
         transactionRepository.save(postedRow);
 
-        outboxWriter.write(TransactionPosted.forAccount(accountId, event.transactionId(),
-                newBalance, processedTimestamp, amount, event.maskedCardNumber()));
+        outboxWriter.write(TransactionPosted.forAuthorized(event, newBalance, processedTimestamp));
     }
 
     /**

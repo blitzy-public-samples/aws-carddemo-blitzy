@@ -47,7 +47,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /**
  * Freezes the version-one baseline of the seven event schema documents.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor. The CardDemo source holds no Java and no test of
+ * <p>This class has no COBOL ancestor. The CardDemo source holds no Java and no test of
  * any kind, so nothing here translates a source construct. The locators below fix the widths, the
  * texts and the codes that the documents reproduce.
  *
@@ -72,21 +72,22 @@ import static org.junit.jupiter.api.Assertions.fail;
  * schema registry service is contacted, and no Kafka broker starts.
  *
  * <p>Three groups of test sit beside the structural ones. The first serializes each event record
- * this module declares and compares its property set against the document, then reads it back
- * through the two serde classes and compares the two records. The second mutates a document in
- * memory and asserts that a compatible addition passes and each breaking change fails. The third
- * pins which account identifier each reject reason carries, since the cross-reference read resolves
- * none for the first of the four.
+ * this module declares and compares its property set against the document. It then reads the
+ * record back through the two serde classes and compares the two records. The second mutates a
+ * document in memory and asserts that a compatible addition passes and each breaking change fails.
+ * The third pins which account identifier each reject reason carries, since the cross-reference
+ * read resolves none for the first of the four.
  *
  * <p>Five documents cover an event whose record lives here. The account service declares
  * {@code AccountStateChanged} and the card service declares {@code CardUpdated}, so their two
  * documents are covered here as a wire form and in those modules as a record.
  *
  * <p>Two checks carry the weight. {@code everyPropertyKeepsItsVersionOneAssertionKeywords}
- * compares every property of every document against the literal keyword baseline in this class, so
- * a constraint that is removed, added, retyped, widened or narrowed fails even when a sample value
- * would still validate. {@code everyEventRecordRoundTripsThroughItsOwnDocument} publishes each Java
- * record through its own document and reads it back, so a record and its contract cannot drift.
+ * compares every property of every document against the literal keyword baseline in this class. A
+ * constraint that is removed, added, retyped, widened or narrowed fails there, even when a sample
+ * value would still validate. {@code everyEventRecordRoundTripsThroughItsOwnDocument} publishes
+ * each Java record through its own document and reads it back, so a record and its contract cannot
+ * drift.
  *
  * <p>Decline locators. The four codes and their texts sit at
  * {@code app/cbl/CBTRN02C.cbl:L385-L387}, {@code :L397-L399}, {@code :L410-L412} and
@@ -118,13 +119,15 @@ import static org.junit.jupiter.api.Assertions.fail;
  * {@code envelope} key fails every document.
  *
  * <p>Extending the platform. Adding a consumer needs no producer change, since a new consumer
- * group reads an event that already exists. The fixed required sets asserted here are what keep
- * that true, and a field joins a payload either through the bounded {@code extensions} object of
- * this version or through a new {@code schemaVersion} and a new {@code -v<n>} document.
+ * group reads an event that already exists. The fixed required sets asserted here keep that true.
+ * A field joins a payload through the bounded {@code extensions} object of this version, or
+ * through a new {@code schemaVersion} and a new {@code -v<n>} document.
  *
  * <p>Versions in use: Java 25, Apache Maven 3.9.16, junit-jupiter 6.0.3,
  * spring-boot-starter-test 4.1.0, json-schema-validator 3.0.6, jackson-databind 3.1.4 and
  * kafka-clients 4.2.1.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 class SchemaBackwardCompatibilityTest {
 
@@ -141,8 +144,8 @@ class SchemaBackwardCompatibilityTest {
      * <p>Reject reason {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387} fires exactly when the
      * keyed read of the cross-reference file misses, so no authoritative account identifier exists at
      * that moment. Version 1 requires one. This document declares none and keys the event on its
-     * transaction identifier, so the producer neither trusts an identifier a caller supplied nor
-     * invents one inside the real account key space.
+     * transaction identifier. The producer therefore neither trusts a caller-supplied identifier
+     * nor invents one inside the real account key space.
      *
      * <p>This document is a NEW version beside version one and not an edit of it. The tests below
      * assert both halves of that claim: version one still requires its account identifier, and
@@ -150,8 +153,48 @@ class SchemaBackwardCompatibilityTest {
      */
     private static final String DECLINED_UNRESOLVED = "schemas/transaction-declined-v2.json";
 
+    /**
+     * The approved authorization contract at version two, adding the card token.
+     *
+     * <p>A masked card number identifies nothing: twelve of its sixteen characters are the mask, so
+     * two cards ending in the same four digits share one masked value. Version two carries a token
+     * derived from the full card number, which a card-keyed consumer stores, routes on and
+     * authorizes against.
+     *
+     * <p>This document is a NEW version beside version one and not an edit of it. The tests below
+     * assert both halves of that claim: version one keeps its exact required set, and version two
+     * requires the token version one does not declare.
+     */
+    private static final String AUTHORIZED_TOKENIZED = "schemas/transaction-authorized-v2.json";
+
     /** The ledger posting contract, holding the new account balance. */
     private static final String POSTED = "schemas/transaction-posted-v1.json";
+
+    /**
+     * The posted contract that carries the card token and the nine descriptive properties.
+     *
+     * <p>Paragraph {@code 2000-POST-TRANSACTION} copies those nine values from the daily record onto
+     * the posted record at {@code app/cbl/CBTRN02C.cbl:L425-L436}, so a consumer building a statement
+     * read model has one authoritative source for every column it holds. Version one carries none of
+     * them, which left a consumer no choice but to substitute a value it had not been given.
+     *
+     * <p>This document is a NEW version beside version one and not an edit of it. The tests below
+     * assert both halves of that claim: version one still refuses the nine, and version two requires
+     * all nine.
+     */
+    private static final String POSTED_WITH_DETAIL = "schemas/transaction-posted-v2.json";
+
+    /**
+     * The ledger posting contract at version two, adding the card token and the nine remaining
+     * fields of the posted transaction record.
+     *
+     * <p>{@code app/jcl/CREASTMT.JCL} builds its card-keyed copy from the whole posted record, so
+     * the consumer that replaces that job needs the whole record. A field version one does not
+     * carry would be stored blank and read back as a transaction fact that never happened.
+     *
+     * <p>This document is a NEW version beside version one and not an edit of it.
+     */
+    private static final String POSTED_ENRICHED = "schemas/transaction-posted-v2.json";
 
     /** The flagged risk assessment contract. */
     private static final String FLAGGED = "schemas/fraud-flagged-v1.json";
@@ -162,12 +205,16 @@ class SchemaBackwardCompatibilityTest {
     /** The account mutation contract the account service publishes. */
     private static final String ACCOUNT_STATE = "schemas/account-state-changed-v1.json";
 
-    /** The card mutation contract the card service publishes. */
-    private static final String CARD_STATE = "schemas/card-updated-v1.json";
+    /** The original card mutation contract, retained so old records remain readable. */
+    private static final String CARD_STATE_V1 = "schemas/card-updated-v1.json";
+
+    /** The current card mutation contract, which carries no embossed cardholder name. */
+    private static final String CARD_STATE = "schemas/card-updated-v2.json";
 
     /** Every document this baseline covers, written as literals and never derived from a name. */
     private static final List<String> DOCUMENTS =
-            List.of(AUTHORIZED, DECLINED, POSTED, FLAGGED, CLEARED, ACCOUNT_STATE, CARD_STATE);
+            List.of(AUTHORIZED, DECLINED, POSTED, FLAGGED, CLEARED, ACCOUNT_STATE,
+                    CARD_STATE_V1, CARD_STATE);
 
     /**
      * The five documents whose events pass through the posting path.
@@ -183,7 +230,7 @@ class SchemaBackwardCompatibilityTest {
 
     /** The two documents an account or card mutation publishes. */
     private static final List<String> STATE_CHANGE_DOCUMENTS =
-            List.of(ACCOUNT_STATE, CARD_STATE);
+            List.of(ACCOUNT_STATE, CARD_STATE_V1, CARD_STATE);
 
     /**
      * The five documents whose Java record this module ships, so a record-to-document parity check
@@ -197,7 +244,7 @@ class SchemaBackwardCompatibilityTest {
 
     /** The four documents that declare a masked card number. */
     private static final List<String> MASKED_CARD_DOCUMENTS =
-            List.of(AUTHORIZED, DECLINED, POSTED, CARD_STATE);
+            List.of(AUTHORIZED, DECLINED, POSTED, CARD_STATE_V1, CARD_STATE);
 
     /** The three documents that declare no card number in any form. */
     private static final List<String> CARD_FREE_DOCUMENTS =
@@ -226,6 +273,7 @@ class SchemaBackwardCompatibilityTest {
             FLAGGED, "FraudFlagged",
             CLEARED, "FraudCleared",
             ACCOUNT_STATE, "AccountStateChanged",
+            CARD_STATE_V1, "CardUpdated",
             CARD_STATE, "CardUpdated");
 
     /** The nine keywords every document declares, in the relative order they appear. */
@@ -277,6 +325,9 @@ class SchemaBackwardCompatibilityTest {
     /** The property carrying the masked Primary Account Number (PAN) on three documents. */
     private static final String MASKED_CARD_PROPERTY = "maskedCardNumber";
 
+    /** The property name the card token travels under on the two documents that carry it. */
+    private static final String CARD_TOKEN_PROPERTY = "cardToken";
+
     /** The property carrying the reject reason code. */
     private static final String DECLINE_CODE_PROPERTY = "declineReasonCode";
 
@@ -313,8 +364,8 @@ class SchemaBackwardCompatibilityTest {
      */
     private static final List<String> CARD_CHANGE_KINDS = List.of("CARD_UPDATED");
 
-    /** The property naming what changed on the two state change documents. */
-    private static final String CHANGE_TYPE_PROPERTY = "changeType";
+    /** The property naming what changed on the account state change document. */
+    private static final String CHANGE_KIND_PROPERTY = "changeKind";
 
     /**
      * Card secrets and status flags that no transaction or fraud document may name. Lower case for
@@ -342,16 +393,17 @@ class SchemaBackwardCompatibilityTest {
     private static final Map<String, List<String>> FORBIDDEN_PROPERTY_FRAGMENTS = Map.of(
             AUTHORIZED, List.of("processedat", "procts", "proc-ts", "filler"),
             DECLINED, List.of("filler", "rejecttrandata", "reject-tran-data"),
-            POSTED, List.of("authorizedat", "origts", "orig-ts", "cyccredit", "cycdebit",
-                    "creditlimit", "filler"),
+            POSTED, List.of("authorizedat", "cyccredit", "cycdebit", "creditlimit", "filler"),
             FLAGGED, List.of("cardnumber", "maskedcard", "pan", "amount", "balance", "authorizedat",
                     "postedat"),
             CLEARED, List.of("riskscore", "triggered", "rules", "amount", "balance", "cardnumber",
                     "maskedcard", "pan", "cvv", "reason", "note"),
             ACCOUNT_STATE, List.of("cardnumber", "maskedcard", "pan", "cvv", "transactionid",
                     "riskscore", "filler", "customerid"),
+            CARD_STATE_V1, List.of("cvv", "verificationvalue", "currentbalance", "creditlimit",
+                    "riskscore", "transactionid", "filler"),
             CARD_STATE, List.of("cvv", "verificationvalue", "currentbalance", "creditlimit",
-                    "riskscore", "transactionid", "filler"));
+                    "riskscore", "transactionid", "filler", "embossedname"));
 
     /** A well-formed event identifier, matching the envelope pattern. */
     private static final String EVENT_ID = "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418";
@@ -389,6 +441,13 @@ class SchemaBackwardCompatibilityTest {
     /** A masked card number that the pattern accepts. */
     private static final String MASKED_CARD_NUMBER = "************7065";
 
+    /**
+     * The card token both version-two documents declare. Sixty-four lower-case hexadecimal
+     * characters, the shape {@code PanMasker.cardToken} produces.
+     */
+    private static final String CARD_TOKEN =
+            "9e2f0c8b6d4a1e7350c9b28fa146d5e0b73c48915af62d0e3b871c5a4f92d6b8";
+
 
     /**
      * The ten-character expiry text the two mutation documents carry, from
@@ -398,7 +457,25 @@ class SchemaBackwardCompatibilityTest {
     private static final String EXPIRATION_DATE = "2027-05-31";
 
     /** A full sixteen-digit Primary Account Number (PAN) that the pattern rejects. */
-    private static final String FULL_CARD_NUMBER = "4859452612877065";
+    private static final String FULL_CARD_NUMBER = syntheticCardNumber(452612877065L);
+
+    /**
+     * Builds a sixteen-digit card number this repository does not carry.
+     *
+     * <p>The four leading digits are {@code 9999}, and none of the fifty records of
+     * {@code app/data/ASCII/carddata.txt} begins with them. The value is derived without a
+     * committed literal, so no card number this repository holds reaches this source file.
+     *
+     * @param serial the trailing serial, at most twelve digits
+     * @return sixteen digits, opening with {@code 9999}
+     */
+    private static String syntheticCardNumber(long serial) {
+        return "9999" + String.format("%012d", serial);
+    }
+
+
+    /** The capture timestamp the posted document accepts, from {@code TRAN-ORIG-TS PIC X(26)}. */
+    private static final String ORIGIN_TIMESTAMP_VALUE = "2022-06-10 19:27:53.000000";
 
     /** A positive amount the nine-digit pattern accepts. */
     private static final String POSITIVE_AMOUNT = "1250.75";
@@ -433,12 +510,6 @@ class SchemaBackwardCompatibilityTest {
     private static final String ACTIVE_STATUS = "Y";
 
 
-    /**
-     * A cardholder name inside {@code CARD-EMBOSSED-NAME PIC X(50)} at
-     * {@code app/cpy/CVACT02Y.cpy:L8}.
-     */
-    private static final String EMBOSSED_NAME = "PAULA A CHRISTOFFERSEN";
-
     /** The authorization timestamp form the authorized document accepts. */
     private static final String AUTHORIZED_AT_VALUE = "2022-06-10 19:27:53.000000";
 
@@ -466,9 +537,9 @@ class SchemaBackwardCompatibilityTest {
      * two names a later version could add.
      */
     private static final List<String> ALLOWED_PROPERTY_NAMES = List.of(
-            "maskedCardNumber", "activeStatus", "accountId", "aggregateId", "transactionId",
-            "merchantName", "embossedName", "expirationDate", "settlementReference",
-            "shippingAddress");
+            "maskedCardNumber", "cardToken", "activeStatus", "accountId", "aggregateId",
+            "transactionId", "merchantName", "embossedName", "expirationDate", "originTimestamp",
+            "currentBalance", "ficoScore", "settlementReference", "shippingAddress");
 
     /**
      * The property name every probe uses when it needs a name no document declares.
@@ -632,7 +703,7 @@ class SchemaBackwardCompatibilityTest {
                 Map<String, String> expected = assertionKeywords(reference.get(property));
                 Map<String, String> actual = assertionKeywords(properties.get(property));
 
-                if ("eventType".equals(property)) {
+                if ("eventType".equals(property) || "schemaVersion".equals(property)) {
                     expected.remove("const");
                     actual.remove("const");
                 }
@@ -671,17 +742,17 @@ class SchemaBackwardCompatibilityTest {
      * Asserts every document closes its top-level property set and bounds the one place an added
      * value may travel.
      *
-     * <p>Two obligations meet here. A consumer validating against version one has to accept an event
-     * a later version enriched, or the next additive change breaks every consumer already on the
-     * topic. A validator also has to refuse a property no document declares, or a producer can hide
-     * an unmasked Primary Account Number, a card verification value or any other undeclared field
-     * inside a known event type, and no schema stands in the way.</p>
+     * <p>Two obligations meet here. A consumer validating against version one has to accept an
+     * event a later version enriched. A validator also has to refuse a property no document
+     * declares. Without that refusal a producer could hide an unmasked Primary Account Number, a
+     * card verification value or any other undeclared field inside a known event type.</p>
      *
-     * <p>Both hold at once when the top level is closed and additive room is bounded: an unknown
-     * top-level property is refused, and a later version puts its new value in the {@code extensions}
-     * object, which every version-one consumer already accepts. This test asserts the closed half and
-     * the bounds; {@link #everyDocumentAcceptsAnAddedPropertySoANewFieldDoesNotBreakAConsumer()}
-     * asserts the additive half.</p>
+     * <p>Both obligations hold at once when the top level is closed and additive room is bounded.
+     * An unknown top-level property is refused. A later version puts its new value in the
+     * {@code extensions} object, which every version-one consumer already accepts. This test
+     * asserts the closed half and the bounds.
+     * {@link #everyDocumentAcceptsAnAddedPropertySoANewFieldDoesNotBreakAConsumer()} asserts the
+     * additive half.</p>
      */
     @Test
     void everyDocumentClosesItsPropertySetAndBoundsItsAdditiveExtensionObject() {
@@ -872,9 +943,11 @@ class SchemaBackwardCompatibilityTest {
                     document + " changed which properties travel as a JSON integer, and now "
                             + "declares " + integers);
 
-            assertEquals(1, properties.get("schemaVersion").get("const").intValue(),
-                    document + " changed its schemaVersion const away from 1, which the -v1 "
-                            + "filename suffix follows");
+            int expectedVersion = document.endsWith("-v2.json") ? 2 : 1;
+            assertEquals(expectedVersion,
+                    properties.get("schemaVersion").get("const").intValue(),
+                    document + " changed its schemaVersion const away from the version in its "
+                            + "filename");
         }
 
         JsonNode riskScore = propertiesOf(FLAGGED).get("riskScore");
@@ -1169,7 +1242,7 @@ class SchemaBackwardCompatibilityTest {
         assertEquals(1, activeStatus.get("maxLength").intValue(),
                 CARD_STATE + " changed the status width away from the one byte of PIC X(01)");
 
-        assertNotNull(propertiesOf(ACCOUNT_STATE).get("changeKind"),
+        assertNotNull(propertiesOf(ACCOUNT_STATE).get(CHANGE_KIND_PROPERTY),
                 ACCOUNT_STATE + " dropped changeKind, which names the mutation that produced the "
                         + "event");
 
@@ -1190,6 +1263,14 @@ class SchemaBackwardCompatibilityTest {
      * therefore carries a posting timestamp and the authorized document does not. Trailing filler
      * is dropped: {@code FILLER PIC X(20)} at {@code app/cpy/CVTRA05Y.cpy:L18} and
      * {@code FILLER PIC X(178)} at {@code app/cpy/CVACT01Y.cpy:L17} reach no target field.</p>
+     *
+     * <p>The posted document does declare the authorization timestamp. Paragraph
+     * {@code 2000-POST-TRANSACTION} at {@code app/cbl/CBTRN02C.cbl:L425-L436} moves
+     * {@code DALYTRAN-ORIG-TS} onto the posted record, and the statement row at
+     * {@code app/cpy/COSTM01.CPY:L20-L36} carries it. The notification service stores that row, so
+     * the field belongs to this contract, not only to the authorized contract. The two
+     * billing-cycle accumulators and the credit limit stay out: no consumer of this event reads
+     * them, and {@code app/cpy/CVACT01Y.cpy:L8,L12-L13} keeps them on the account record.</p>
      */
     @Test
     void everyDocumentOmitsThePropertiesItsSiblingsOwn() {
@@ -1270,10 +1351,10 @@ class SchemaBackwardCompatibilityTest {
     /**
      * Asserts a document accepts a value a later version adds, and refuses one added anywhere else.
      *
-     * <p>This is the additive half of the guarantee. A consumer validating against version one keeps
-     * working when a later version adds a value inside {@code extensions}, and the same consumer
-     * refuses a top-level property no document declares, which is what keeps an undeclared field out
-     * of a known event type.</p>
+     * <p>This is the additive half of the guarantee. A consumer validating against version one
+     * keeps working when a later version adds a value inside {@code extensions}. The same consumer
+     * refuses a top-level property no document declares, which keeps an undeclared field out of a
+     * known event type.</p>
      */
     @Test
     void everyDocumentRejectsAPropertyItDoesNotDeclare() {
@@ -1307,7 +1388,8 @@ class SchemaBackwardCompatibilityTest {
 
             ObjectNode nested = validPayloadFor(document);
             ObjectNode holdingObject = MAPPER.createObjectNode();
-            holdingObject.set("payload", MAPPER.createObjectNode().put("pan", "0500024453765740"));
+            holdingObject.set("payload",
+                    MAPPER.createObjectNode().put("pan", syntheticCardNumber(24453765740L)));
             nested.set("extensions", holdingObject);
             assertInvalid(document, nested,
                     document + " accepted a nested object inside extensions, so a structure of any "
@@ -1344,7 +1426,7 @@ class SchemaBackwardCompatibilityTest {
      * the serialized form validates against its document.
      *
      * <p>The round trip runs through the two serde classes, so the assertion covers the publish
-     * path and the consume path rather than a mapper this test configured. A money value keeps its
+     * path and the consume path without a mapper configured by this test. A money value keeps its
      * two fractional digits, so an amount written as text reads back at the same scale.</p>
      */
     @Test
@@ -1417,7 +1499,8 @@ class SchemaBackwardCompatibilityTest {
                         () -> TREE_DESERIALIZER.deserialize(TOPIC, bytes),
                         document + " accepted a payload on the consume path with the required "
                                 + "property " + property + " removed");
-                String named = "eventType".equals(property) ? "eventType" : document;
+                String named = "eventType".equals(property) || "schemaVersion".equals(property)
+                        ? property : document;
                 assertTrue(failure.getMessage().contains(named),
                         document + " stopped naming " + named + " in the consume failure for the "
                                 + "removal of " + property + ", and the message read: "
@@ -1455,7 +1538,7 @@ class SchemaBackwardCompatibilityTest {
 
         for (String changeKind : changeKindsOf(ACCOUNT_STATE)) {
             ObjectNode payload = validPayloadFor(ACCOUNT_STATE);
-            payload.put("changeKind", changeKind);
+            payload.put(CHANGE_KIND_PROPERTY, changeKind);
             byte[] bytes = MAPPER.writeValueAsString(payload).getBytes(StandardCharsets.UTF_8);
 
             assertNotNull(TREE_DESERIALIZER.deserialize(TOPIC, bytes),
@@ -1464,7 +1547,7 @@ class SchemaBackwardCompatibilityTest {
         }
 
         ObjectNode unknownChange = validPayloadFor(ACCOUNT_STATE);
-        unknownChange.put("changeKind", "ACCOUNT_CLOSED");
+        unknownChange.put(CHANGE_KIND_PROPERTY, "ACCOUNT_CLOSED");
         assertInvalid(ACCOUNT_STATE, unknownChange,
                 ACCOUNT_STATE + " accepted a change kind its enum does not declare");
     }
@@ -1545,7 +1628,7 @@ class SchemaBackwardCompatibilityTest {
             for (String member : SEPARATOR_SPELLED_SENSITIVE_MEMBERS) {
                 ObjectNode carrying = validPayloadFor(document);
                 carrying.set(EXTENSIONS_PROPERTY,
-                        MAPPER.createObjectNode().put(member, "4859452612877065"));
+                        MAPPER.createObjectNode().put(member, FULL_CARD_NUMBER));
 
                 assertValid(document, carrying,
                         document + " stopped admitting the extensions member name " + member
@@ -1589,7 +1672,7 @@ class SchemaBackwardCompatibilityTest {
         ObjectNode nestedArray = validPayloadFor(POSTED);
         ArrayNode entries = nestedArray.putArray("settlementEntries");
         entries.addObject().put("amount", "1.00");
-        entries.addObject().put("cardNumber", "4859452612877065");
+        entries.addObject().put("cardNumber", FULL_CARD_NUMBER);
         byte[] arrayBytes = MAPPER.writeValueAsString(nestedArray).getBytes(StandardCharsets.UTF_8);
 
         assertThrows(SerializationException.class,
@@ -1598,8 +1681,8 @@ class SchemaBackwardCompatibilityTest {
     }
 
     /**
-     * Asserts each reject reason carries the account identity its source paragraph resolves, and
-     * that the record refuses the other pairing.
+     * Asserts every publishable reject reason carries the account identifier its source paragraph
+     * resolved, and that the one reason resolving none is refused before publication.
      *
      * <p>{@code app/cbl/CBTRN02C.cbl:L383-L387} assigns reason 0100 in the {@code INVALID KEY} limb
      * of the cross-reference read, before {@code XREF-ACCT-ID PIC 9(11)} at
@@ -1609,79 +1692,59 @@ class SchemaBackwardCompatibilityTest {
      * trailer, and neither holds an account identifier. The other three reasons follow
      * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code app/cbl/CBTRN02C.cbl:L394}, so an account
      * identifier is in hand.</p>
+     *
+     * <p>One contract governs the declined event, and it requires the account identifier in both
+     * {@code aggregateId} and {@code accountId}. Reason 0100 therefore reaches no topic: the
+     * authorization service records that attempt in {@code unresolved_card_attempt} and publishes
+     * nothing.</p>
      */
     @Test
     void eachDeclineReasonCarriesTheAccountIdentityItsSourceParagraphResolves() {
         for (DeclineReason reason : DeclineReason.values()) {
-            boolean resolved = reason.resolvesAccount();
-            String document = resolved ? DECLINED : DECLINED_UNRESOLVED;
-            TransactionDeclined event = resolved
-                    ? TransactionDeclined.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID, reason,
-                            new java.math.BigDecimal(POSITIVE_AMOUNT), MASKED_CARD_NUMBER)
-                    : TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
-                            new java.math.BigDecimal(POSITIVE_AMOUNT), MASKED_CARD_NUMBER);
-
-            if (resolved) {
-                assertEquals(ACCOUNT_IDENTIFIER, event.accountId(),
-                        "reason code " + reason.code() + " stopped carrying the account identifier "
-                                + "its source paragraph resolves");
-                assertEquals(ACCOUNT_IDENTIFIER, event.envelope().aggregateId(),
-                        "reason code " + reason.code() + " lost the agreement between its account "
-                                + "identifier and the Kafka message key");
-                assertEquals(EventEnvelope.SCHEMA_VERSION, event.schemaVersion(),
-                        "a resolved decline stopped travelling under version one");
-            } else {
-                assertNull(event.accountId(),
-                        "reason code " + reason.code() + " carries an account identifier, and the "
-                                + "cross-reference read at app/cbl/CBTRN02C.cbl:L383-L387 resolved "
-                                + "none");
-                assertEquals(TRANSACTION_ID, event.envelope().aggregateId(),
-                        "the unresolved decline is keyed on its transaction identifier, which is "
-                                + "the one deterministic value that names no cardholder");
-                assertEquals(TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION,
-                        event.schemaVersion(),
-                        "the unresolved decline stopped travelling under its own contract version");
-            }
-
-            JsonNode wire = MAPPER.readTree(new String(
-                    SERIALIZER.serialize(topicFor(event), event), StandardCharsets.UTF_8));
-            assertValid(document, wire,
-                    "the wire form of reason code " + reason.code() + " stopped validating");
-            assertEquals(reason.code(), wire.get(DECLINE_CODE_PROPERTY).asString(),
-                    "the wire form stopped carrying reason code " + reason.code());
-            if (resolved) {
-                assertEquals(ACCOUNT_IDENTIFIER, wire.get("aggregateId").asString(),
-                        "the wire form of reason code " + reason.code() + " carries an aggregateId "
-                                + "the record denies");
-                assertEquals(ACCOUNT_IDENTIFIER, wire.get("accountId").asString(),
-                        DECLINED + " declares accountId beside aggregateId and the two stopped "
-                                + "holding one value on the wire");
-            } else {
-                assertEquals(TRANSACTION_ID, wire.get("aggregateId").asString(),
-                        DECLINED_UNRESOLVED + " keys the event on its transaction identifier");
-                assertNull(wire.get("accountId"),
-                        DECLINED_UNRESOLVED + " declares no accountId, so none may reach the wire");
-            }
-
             java.math.BigDecimal amount = new java.math.BigDecimal(POSITIVE_AMOUNT);
-            if (resolved) {
-                EventEnvelope unresolved = EventEnvelope.of(TransactionDeclined.EVENT_TYPE,
-                        TRANSACTION_ID, TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION);
-                assertThrows(IllegalArgumentException.class,
-                        () -> new TransactionDeclined(unresolved.eventId(), unresolved.eventType(),
-                                unresolved.schemaVersion(), unresolved.occurredAt(),
-                                unresolved.aggregateId(), TRANSACTION_ID, null, reason,
-                                reason.description(), amount, MASKED_CARD_NUMBER),
-                        "reason code " + reason.code() + " reached the contract that carries no "
-                                + "account identifier, and only the cross-reference miss may");
-            } else {
+
+            if (!reason.resolvesAccount()) {
                 assertThrows(IllegalArgumentException.class,
                         () -> TransactionDeclined.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID, reason,
                                 amount, MASKED_CARD_NUMBER),
                         "reason code " + reason.code() + " accepted an account identifier its "
                                 + "source paragraph denies, so a misattributed decline became "
                                 + "constructable");
+                assertThrows(IllegalArgumentException.class,
+                        () -> new TransactionDeclined(java.util.UUID.randomUUID(),
+                                TransactionDeclined.EVENT_TYPE, EventEnvelope.SCHEMA_VERSION,
+                                java.time.Instant.now(), ACCOUNT_IDENTIFIER, TRANSACTION_ID,
+                                ACCOUNT_IDENTIFIER, reason, reason.description(), amount,
+                                MASKED_CARD_NUMBER),
+                        "the canonical constructor accepted reason code " + reason.code()
+                                + ", so the factory guard can be bypassed");
+                continue;
             }
+
+            TransactionDeclined event = TransactionDeclined.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID,
+                    reason, amount, MASKED_CARD_NUMBER);
+
+            assertEquals(ACCOUNT_IDENTIFIER, event.accountId(),
+                    "reason code " + reason.code() + " stopped carrying the account identifier "
+                            + "its source paragraph resolves");
+            assertEquals(ACCOUNT_IDENTIFIER, event.envelope().aggregateId(),
+                    "reason code " + reason.code() + " lost the agreement between its account "
+                            + "identifier and the Kafka message key");
+            assertEquals(EventEnvelope.SCHEMA_VERSION, event.schemaVersion(),
+                    "a decline stopped travelling under version one");
+
+            JsonNode wire = MAPPER.readTree(new String(
+                    SERIALIZER.serialize(topicFor(event), event), StandardCharsets.UTF_8));
+            assertValid(DECLINED, wire,
+                    "the wire form of reason code " + reason.code() + " stopped validating");
+            assertEquals(reason.code(), wire.get(DECLINE_CODE_PROPERTY).asString(),
+                    "the wire form stopped carrying reason code " + reason.code());
+            assertEquals(ACCOUNT_IDENTIFIER, wire.get("aggregateId").asString(),
+                    "the wire form of reason code " + reason.code() + " carries an aggregateId "
+                            + "the record denies");
+            assertEquals(ACCOUNT_IDENTIFIER, wire.get("accountId").asString(),
+                    DECLINED + " declares accountId beside aggregateId and the two stopped "
+                            + "holding one value on the wire");
         }
 
         assertEquals(1, java.util.Arrays.stream(DeclineReason.values())
@@ -1817,11 +1880,11 @@ class SchemaBackwardCompatibilityTest {
      * Asserts the evaluator reports a newly required property and a nested envelope as breaking, for
      * every document.
      *
-     * <p>Every document ships with {@code additionalProperties} false, so a field joins a payload
-     * through a new {@code schemaVersion} and a new {@code -v<n>} document rather than through an
-     * addition to this one. Inside one version the breaking changes are therefore a property that
-     * becomes required, which fails every producer already writing the version, and a nested
-     * envelope, which moves five properties a consumer reads before it looks at a payload.</p>
+     * <p>Every document ships with {@code additionalProperties} false. A field therefore joins a
+     * payload through a new {@code schemaVersion} and a new {@code -v<n>} document. Inside one
+     * version two changes break a consumer. A property that becomes required fails every producer
+     * already writing the version. A nested envelope moves five properties a consumer reads before
+     * it looks at a payload.</p>
      */
     @Test
     void aNewlyRequiredPropertyOrANestedEnvelopeIsBreakingForEveryDocument() {
@@ -1926,7 +1989,8 @@ class SchemaBackwardCompatibilityTest {
                         EventEnvelope.SCHEMA_VERSION, Instant.parse(OCCURRED_AT),
                         ACCOUNT_IDENTIFIER, TRANSACTION_ID, OTHER_ACCOUNT_IDENTIFIER,
                         new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE,
-                        new BigDecimal(POSITIVE_AMOUNT), MASKED_CARD_NUMBER),
+                        new BigDecimal(POSITIVE_AMOUNT), MASKED_CARD_NUMBER, null, null, null,
+                        null, null, null, null, null, null, null),
                 "TransactionPosted accepted an accountId differing from its aggregateId");
     }
 
@@ -1940,18 +2004,28 @@ class SchemaBackwardCompatibilityTest {
         Map<String, Set<String>> sets = new LinkedHashMap<>();
         sets.put(AUTHORIZED, requiredSet("transactionId", "accountId", "transactionTypeCode",
                 "merchantCategoryCode", "source", "description", "amount", "merchantId",
-                "merchantName", "merchantCity", "merchantZip", "maskedCardNumber", "authorizedAt",
-                "accountId", "currency"));
+                "merchantName", "merchantCity", "merchantZip", "maskedCardNumber",
+                "authorizedAt", "currency"));
         sets.put(DECLINED, requiredSet("transactionId", "accountId", "declineReasonCode",
                 "declineReasonDescription", "amount", "maskedCardNumber"));
+        sets.put(AUTHORIZED_TOKENIZED, requiredSet("transactionId", "accountId",
+                "transactionTypeCode", "merchantCategoryCode", "source", "description", "amount",
+                "merchantId", "merchantName", "merchantCity", "merchantZip", "maskedCardNumber",
+                "cardToken", "authorizedAt", "accountId", "currency"));
         sets.put(POSTED, requiredSet("transactionId", "accountId", "newBalance", "postedAt",
                 "amount", "maskedCardNumber"));
+        sets.put(POSTED_ENRICHED, requiredSet("transactionId", "accountId", "newBalance",
+                "postedAt", "amount", "maskedCardNumber", "cardToken", "transactionTypeCode",
+                "merchantCategoryCode", "source", "description", "merchantId", "merchantName",
+                "merchantCity", "merchantZip", "originTimestamp"));
         sets.put(FLAGGED, requiredSet("transactionId", "riskScore", "triggeredRules", "assessedAt",
                 "accountId"));
         sets.put(CLEARED, requiredSet("transactionId", "accountId", "assessedAt"));
-        sets.put(ACCOUNT_STATE, requiredSet("accountId", "creditLimit", "currentCycleCredit",
-                "currentCycleDebit", "expirationDate", "changeKind"));
-        sets.put(CARD_STATE, requiredSet("accountId", "maskedCardNumber", "embossedName",
+        sets.put(ACCOUNT_STATE, requiredSet("accountId", "currentBalance", "creditLimit",
+                "currentCycleCredit", "currentCycleDebit", "expirationDate", "changeKind"));
+        sets.put(CARD_STATE_V1, requiredSet("accountId", "maskedCardNumber", "embossedName",
+                "expirationDate", "activeStatus"));
+        sets.put(CARD_STATE, requiredSet("accountId", "maskedCardNumber",
                 "expirationDate", "activeStatus"));
         return Map.copyOf(sets);
     }
@@ -2226,6 +2300,21 @@ class SchemaBackwardCompatibilityTest {
     }
 
     /**
+     * The authorization sample every authorized and posted fixture of this class derives from.
+     *
+     * <p>{@link TransactionPosted#from(TransactionAuthorized, BigDecimal, String)} copies eleven
+     * components from it, so one sample keeps the two contracts in step.
+     *
+     * @return one authorization every check of the authorized document accepts
+     */
+    private static TransactionAuthorized sampleAuthorized() {
+        return TransactionAuthorized.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID, "01", "0001",
+                "POS TERM", "Purchase at Abshire-Lowe", new BigDecimal(POSITIVE_AMOUNT),
+                "800000000", "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER,
+                CARD_TOKEN, AUTHORIZED_AT_VALUE);
+    }
+
+    /**
      * Builds one valid event record per document, through the factory a producer calls.
      *
      * @param document the classpath path of the document
@@ -2233,16 +2322,15 @@ class SchemaBackwardCompatibilityTest {
      */
     private static Object eventFor(String document) {
         return switch (document) {
-            case AUTHORIZED -> TransactionAuthorized.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID, "01",
-                    "0001", "POS TERM", "Purchase at Abshire-Lowe", new BigDecimal(POSITIVE_AMOUNT),
-                    "800000000", "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER,
-                    AUTHORIZED_AT_VALUE);
+            case AUTHORIZED -> anAuthorizedRecordAtVersionOne();
+            case AUTHORIZED_TOKENIZED -> anAuthorizedRecord();
             case DECLINED -> TransactionDeclined.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID,
                     DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal(POSITIVE_AMOUNT),
                     MASKED_CARD_NUMBER);
             case POSTED -> TransactionPosted.forAccount(ACCOUNT_IDENTIFIER, TRANSACTION_ID,
                     new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE,
                     new BigDecimal(POSITIVE_AMOUNT), MASKED_CARD_NUMBER);
+            case POSTED_ENRICHED -> aPostedRecordAtVersionTwo();
             case FLAGGED -> FraudFlagged.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID, RISK_SCORE,
                     List.of(TRIGGERED_RULE_VALUES.get(0), TRIGGERED_RULE_VALUES.get(1)),
                     Instant.parse(ASSESSED_AT));
@@ -2250,6 +2338,22 @@ class SchemaBackwardCompatibilityTest {
                     Instant.parse(ASSESSED_AT));
             default -> fail("no event record is defined for the document " + document);
         };
+    }
+
+    /**
+     * Builds one authorized event carrying the sample values of this class.
+     *
+     * <p>A posted event carries the twelve transaction fields of the authorized event it applied,
+     * the move {@code app/cbl/CBTRN02C.cbl:L425-L436} performs onto the posted record, so both
+     * records come from this one.
+     *
+     * @return one authorized event the authorized document accepts
+     */
+    private static TransactionAuthorized authorizedRecord() {
+        return TransactionAuthorized.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID, "01", "0001",
+                "POS TERM", "Purchase at Abshire-Lowe", new BigDecimal(POSITIVE_AMOUNT),
+                "800000000", "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER,
+                CARD_TOKEN, AUTHORIZED_AT_VALUE);
     }
 
     /**
@@ -2292,6 +2396,9 @@ class SchemaBackwardCompatibilityTest {
      */
     private static ObjectNode validPayloadFor(String document) {
         ObjectNode payload = envelopeFor(TITLES.get(document));
+        if (CARD_STATE.equals(document)) {
+            payload.put("schemaVersion", 2);
+        }
         if (!STATE_CHANGE_DOCUMENTS.contains(document)) {
             payload.put("transactionId", TRANSACTION_ID);
         }
@@ -2337,21 +2444,63 @@ class SchemaBackwardCompatibilityTest {
             }
             case CLEARED -> payload.put("assessedAt", ASSESSED_AT);
             case ACCOUNT_STATE -> {
+                payload.put("currentBalance", POSITIVE_BALANCE);
                 payload.put("creditLimit", POSITIVE_BALANCE);
                 payload.put("currentCycleCredit", ZERO_BALANCE);
                 payload.put("currentCycleDebit", ZERO_BALANCE);
                 payload.put("expirationDate", EXPIRATION_DATE);
-                payload.put("changeKind", ACCOUNT_UPDATED);
+                payload.put(CHANGE_KIND_PROPERTY, ACCOUNT_UPDATED);
             }
-            case CARD_STATE -> {
+            case CARD_STATE_V1, CARD_STATE -> {
                 payload.put(MASKED_CARD_PROPERTY, MASKED_CARD_NUMBER);
-                payload.put("embossedName", EMBOSSED_NAME);
+                if (CARD_STATE_V1.equals(document)) {
+                    payload.put("embossedName", "PAULA A CHRISTOFFERSEN");
+                }
                 payload.put("expirationDate", EXPIRATION_DATE);
                 payload.put("activeStatus", ACTIVE_STATUS);
             }
             default -> fail("no payload is defined for the document " + document);
         }
         return payload;
+    }
+
+    /**
+     * The authorized record a producer publishes, at the version that carries the card token.
+     *
+     * @return a record the version-two document accepts
+     */
+    private static TransactionAuthorized anAuthorizedRecord() {
+        return TransactionAuthorized.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID, "01", "0001",
+                "POS TERM", "Purchase at Abshire-Lowe", new BigDecimal(POSITIVE_AMOUNT),
+                "800000000", "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER,
+                CARD_TOKEN, AUTHORIZED_AT_VALUE);
+    }
+
+    /**
+     * The authorized record at version one, carrying no card token.
+     *
+     * <p>Version one stays governed, so a record that satisfies it must stay constructible. That is
+     * what proves the addition did not edit the version already in use.
+     *
+     * @return a record the version-one document accepts
+     */
+    private static TransactionAuthorized anAuthorizedRecordAtVersionOne() {
+        return new TransactionAuthorized(UUID.fromString(EVENT_ID),
+                TransactionAuthorized.EVENT_TYPE, EventEnvelope.SCHEMA_VERSION,
+                Instant.parse(OCCURRED_AT), ACCOUNT_IDENTIFIER, TRANSACTION_ID, "01", "0001",
+                "POS TERM", "Purchase at Abshire-Lowe", new BigDecimal(POSITIVE_AMOUNT),
+                "800000000", "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER, null,
+                AUTHORIZED_AT_VALUE, ACCOUNT_IDENTIFIER, TransactionAuthorized.CURRENCY);
+    }
+
+    /**
+     * The posted record a producer publishes, at the version that carries the whole transaction.
+     *
+     * @return a record the version-two document accepts
+     */
+    private static TransactionPosted aPostedRecordAtVersionTwo() {
+        return TransactionPosted.forAuthorized(anAuthorizedRecord(),
+                new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE);
     }
 
     /**
@@ -2364,16 +2513,13 @@ class SchemaBackwardCompatibilityTest {
      */
     private static Map<String, Object> recordsByDocument() {
         Map<String, Object> records = new LinkedHashMap<>();
-        records.put(AUTHORIZED, TransactionAuthorized.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID, "01",
-                "0001", "POS TERM", "Purchase at Abshire-Lowe", new BigDecimal(POSITIVE_AMOUNT),
-                "800000000", "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER,
-                AUTHORIZED_AT_VALUE));
+        records.put(AUTHORIZED, anAuthorizedRecordAtVersionOne());
         records.put(DECLINED, TransactionDeclined.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID,
                 DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal(POSITIVE_AMOUNT),
                 MASKED_CARD_NUMBER));
         records.put(POSTED, TransactionPosted.forAccount(ACCOUNT_IDENTIFIER, TRANSACTION_ID,
-                new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE, new BigDecimal(POSITIVE_AMOUNT),
-                MASKED_CARD_NUMBER));
+                new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE,
+                new BigDecimal(POSITIVE_AMOUNT), MASKED_CARD_NUMBER));
         records.put(FLAGGED, FraudFlagged.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID, 82,
                 List.of(TRIGGERED_RULE_VALUES.get(0), TRIGGERED_RULE_VALUES.get(1)),
                 Instant.parse(ASSESSED_AT)));
@@ -2492,12 +2638,18 @@ class SchemaBackwardCompatibilityTest {
      * Every way a candidate document would break a consumer that validates against a baseline
      * document.
      *
-     * <p>Evolution is additive only. A property added to {@code properties} is compatible, and so is
-     * a changed annotation and an added enumeration value. Nine changes are breaking: a declared
-     * property removed, a name added to {@code required}, a name removed from {@code required}, a
-     * changed {@code type}, a changed {@code const}, a changed {@code pattern}, a raised
-     * {@code minLength} or {@code minimum}, a lowered {@code maxLength} or {@code maximum}, an
-     * enumeration value removed, and {@code additionalProperties} closing.</p>
+     * <p>Evolution is additive only. A property added to {@code properties} is compatible, and so
+     * is a changed annotation and an added enumeration value. These changes are breaking:</p>
+     *
+     * <ul>
+     *   <li>a declared property removed;</li>
+     *   <li>a name added to or removed from {@code required};</li>
+     *   <li>a changed {@code type}, {@code const} or {@code pattern};</li>
+     *   <li>a raised or newly gained {@code minLength} or {@code minimum};</li>
+     *   <li>a lowered or newly gained {@code maxLength} or {@code maximum};</li>
+     *   <li>an enumeration dropped, or one of its values removed;</li>
+     *   <li>{@code additionalProperties} closing.</li>
+     * </ul>
      *
      * <p>Every check runs in memory against two trees. No registry service is contacted.</p>
      *
@@ -2611,103 +2763,81 @@ class SchemaBackwardCompatibilityTest {
     }
 
     /**
-     * Asserts the version-two declined document loads from the classpath and compiles offline, as
-     * the five version-one documents do.
+     * Asserts the resolved and unresolved decline documents remain separately governed.
+     *
+     * <p>Version one keeps the historical account-keyed shape. Version two represents reject reason
+     * {@code 0100}, where the cross-reference read at
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387} resolved no account identifier, and therefore keys the
+     * event on its transaction identifier without an {@code accountId} property.</p>
      */
     @Test
-    void theDeclinedDocumentAtVersionTwoLoadsFromTheClasspathAndCompilesOffline() {
-        assertNotNull(schemaFor(DECLINED_UNRESOLVED),
-                DECLINED_UNRESOLVED + " must load from the classpath and compile offline");
-        assertEquals(2, readDocument(DECLINED_UNRESOLVED).path("properties")
-                        .path("schemaVersion").path("const").asInt(0),
-                DECLINED_UNRESOLVED + " pins schemaVersion to 2, matching the -v2 suffix of its"
-                        + " name");
-        assertEquals("TransactionDeclined", readDocument(DECLINED_UNRESOLVED).path("title")
-                        .stringValue(""),
-                "both declined documents title themselves with the record they govern, because a"
-                        + " new version of a contract is not a new event type");
+    void theDeclinedContractShipsResolvedAndUnresolvedVersions() {
+        assertEquals(List.of(1, 2), EventSchemas.governedVersions("TransactionDeclined"),
+                "both decline versions must remain governed");
+        assertEquals(DECLINED, EventSchemas.resourceFor("TransactionDeclined", 1),
+                "version 1 of the declined contract selects the version-one document");
+        assertEquals(DECLINED_UNRESOLVED, EventSchemas.resourceFor("TransactionDeclined", 2),
+                "version 2 of the declined contract selects the unresolved-account document");
+        assertNotNull(getClass().getClassLoader().getResource(DECLINED_UNRESOLVED),
+                "the unresolved-account decline document is missing from the classpath");
+        assertEquals(2, EventEnvelope.MAX_SCHEMA_VERSION,
+                "the envelope must admit the highest governed contract version");
     }
 
     /**
-     * Asserts version one of the declined document still requires its account identifier.
+     * Asserts the declined document requires its account identifier, and that no relaxation of that
+     * requirement can pass unnoticed.
      *
-     * <p>This is the backward-compatibility half of the reason-0100 change. Relaxing version one so
-     * that the unresolved decline fitted inside it would have broken every consumer already reading
-     * the topic, which is exactly what this class exists to prevent. The unresolved decline took a
-     * new version instead, and this test fails if anyone later relaxes version one after all.
+     * <p>Dropping {@code accountId} from the required set, or widening its pattern to admit the
+     * sixteen characters of {@code TRAN-ID PIC X(16)} at
+     * {@code app/cpy/CVTRA05Y.cpy:L5}, would let a decline reach the topic with no account a
+     * consumer can post it against. Both moves are measured here.</p>
      */
     @Test
-    void versionOneOfTheDeclinedDocumentStillRequiresItsAccountIdentifier() {
+    void theDeclinedDocumentRequiresItsAccountIdentifierAndRefusesEveryRelaxation() {
         Set<String> required = new LinkedHashSet<>();
         readDocument(DECLINED).path("required").forEach(name -> required.add(name.stringValue()));
 
         assertTrue(required.contains("accountId"),
                 () -> DECLINED + " must keep accountId in its required set. It holds " + required
-                        + ". A consumer reading this version relies on the field being present.");
+                        + ". A consumer reading this contract relies on the field being present.");
         assertEquals(ACCOUNT_IDENTIFIER_PATTERN, propertiesOf(DECLINED).path("accountId")
                         .path("pattern").stringValue(""),
                 DECLINED + " must keep accountId pinned to the eleven digits of XREF-ACCT-ID"
                         + " PIC 9(11) at app/cpy/CVACT03Y.cpy:L7");
+        assertFalse(readDocument(DECLINED).path("additionalProperties").booleanValue(true),
+                DECLINED + " must close its property set");
 
         ObjectNode resolved = validPayloadFor(DECLINED);
         assertTrue(validate(DECLINED, resolved).isEmpty(),
-                () -> "a resolved decline must still validate against version one: "
+                () -> "a decline naming its account must validate: "
                         + messagesOf(validate(DECLINED, resolved)));
+
+        ObjectNode withoutAccount = validPayloadFor(DECLINED);
+        withoutAccount.remove("accountId");
+        assertFalse(validate(DECLINED, withoutAccount).isEmpty(),
+                "a decline with no account identifier validated and leaves its account unknown");
+
+        ObjectNode transactionKeyed = validPayloadFor(DECLINED);
+        transactionKeyed.put("aggregateId", TRANSACTION_ID);
+        assertFalse(validate(DECLINED, transactionKeyed).isEmpty(),
+                "a decline keyed on its transaction identifier validated, so events of one account"
+                        + " can be spread across partitions");
+
+        ObjectNode transactionShapedAccount = validPayloadFor(DECLINED);
+        transactionShapedAccount.put("accountId", TRANSACTION_ID);
+        assertFalse(validate(DECLINED, transactionShapedAccount).isEmpty(),
+                "accountId admitted a sixteen-character value, so a transaction identifier can"
+                        + " occupy the account key space");
     }
 
     /**
-     * Asserts version two declares no account identifier and refuses one that arrives anyway.
+     * Asserts a decline carrying reject reason {@code 0100} is refused by the record, whichever
+     * shape it arrives in.
      *
-     * <p>The property is absent from the declared set, and the set is closed, so a producer holding
-     * an identifier a caller supplied cannot publish it here even by accident.
-     */
-    @Test
-    void versionTwoOfTheDeclinedDocumentDeclaresNoAccountIdentifierAndRefusesOne() {
-        assertTrue(propertiesOf(DECLINED_UNRESOLVED).path("accountId").isMissingNode(),
-                DECLINED_UNRESOLVED + " must declare no accountId property, because reject reason"
-                        + " 0100 fires before app/cbl/CBTRN02C.cbl:L383 has resolved one");
-        assertFalse(readDocument(DECLINED_UNRESOLVED).path("additionalProperties").booleanValue(true),
-                DECLINED_UNRESOLVED + " must close its property set, so an undeclared accountId is"
-                        + " refused rather than carried");
-
-        ObjectNode claimed = unresolvedDecline();
-        claimed.put("accountId", ACCOUNT_IDENTIFIER);
-        assertFalse(validate(DECLINED_UNRESOLVED, claimed).isEmpty(),
-                "an event carrying an account identifier the platform did not establish must fail"
-                        + " version two");
-    }
-
-    /**
-     * Asserts version two keys the event on its transaction identifier and refuses an account key.
-     *
-     * <p>Sixteen characters against eleven digits: the two key forms cannot be confused, so a
-     * consumer reading the message key knows which it holds without parsing the payload.
-     */
-    @Test
-    void versionTwoOfTheDeclinedDocumentKeysOnTheTransactionIdentifier() {
-        assertEquals("^[!-~]{16}$", propertiesOf(DECLINED_UNRESOLVED).path("aggregateId")
-                        .path("pattern").stringValue(""),
-                DECLINED_UNRESOLVED + " keys on the sixteen characters of TRAN-ID PIC X(16) at"
-                        + " app/cpy/CVTRA05Y.cpy:L5");
-
-        ObjectNode keyed = unresolvedDecline();
-        assertTrue(validate(DECLINED_UNRESOLVED, keyed).isEmpty(),
-                () -> "an unresolved decline keyed on its transaction identifier must validate: "
-                        + messagesOf(validate(DECLINED_UNRESOLVED, keyed)));
-
-        ObjectNode accountKeyed = unresolvedDecline();
-        accountKeyed.put("aggregateId", ACCOUNT_IDENTIFIER);
-        assertFalse(validate(DECLINED_UNRESOLVED, accountKeyed).isEmpty(),
-                "an eleven-digit account key must fail version two, whose whole reason for existing"
-                        + " is that no account identifier is available");
-    }
-
-    /**
-     * Asserts version two carries reject reason {@code 0100} alone.
-     *
-     * <p>{@code app/cbl/CBTRN02C.cbl:L370-L378} reads the account only while the reason code is
-     * still zero, so every reason other than {@code 0100} has already resolved an account identifier
-     * and belongs to version one. Pinning the code here keeps the two contracts from overlapping.
+     * <p>The document alone cannot refuse it: reason {@code 0100} is one of the four values the
+     * {@code declineReasonCode} enumeration admits, and the payload it sits in is otherwise valid.
+     * The record refuses it, so this test drives the record directly.</p>
      */
     @Test
     void versionTwoOfTheDeclinedDocumentCarriesReasonZeroOneHundredAlone() {
@@ -2734,9 +2864,9 @@ class SchemaBackwardCompatibilityTest {
     /**
      * Asserts a reason-{@code 0100} event published under version one still validates.
      *
-     * <p>Nothing already on the topic becomes unreadable. Version two is where a producer publishes
-     * an unresolved decline from now on; version one still describes every event published before
-     * that, which is what makes this an additive change rather than a break.
+     * <p>Nothing already on the topic becomes unreadable. A producer publishes an unresolved
+     * decline under version two from now on. Version one still describes every event published
+     * before that, which makes the change additive.
      */
     @Test
     void aReasonZeroOneHundredEventUnderVersionOneStillValidates() {
@@ -2750,11 +2880,143 @@ class SchemaBackwardCompatibilityTest {
     }
 
     /**
-     * Asserts the schema table selects a document by event type AND contract version, and that only
-     * the declined contract has two versions.
+     * Asserts both version-two documents load, compile, pin their version and title, and require
+     * exactly their version-one set plus the properties they add.
      *
-     * <p>Selecting on the event type alone would validate one declined contract against the other's
-     * document and report a violation naming the wrong contract.
+     * <p>This is the check that keeps an addition an addition. A change that edited version one
+     * instead would move a name out of the frozen set that
+     * {@link #everyDocumentKeepsItsExactRequiredPropertySet()} holds, and the build would fail
+     * there.
+     */
+    @Test
+    void bothVersionTwoDocumentsAddToTheirVersionOneSetAndChangeNothingInIt() {
+        for (String document : List.of(AUTHORIZED_TOKENIZED, POSTED_ENRICHED)) {
+            assertNotNull(schemaFor(document),
+                    document + " must load from the classpath and compile offline");
+            assertEquals(2, readDocument(document).path("properties").path("schemaVersion")
+                            .path("const").intValue(),
+                    document + " pins schemaVersion to 2, matching the -v2 suffix of its name");
+        }
+
+        assertEquals("TransactionAuthorized",
+                readDocument(AUTHORIZED_TOKENIZED).path("title").stringValue(),
+                AUTHORIZED_TOKENIZED + " titles itself with the event type it governs");
+        assertEquals("TransactionPosted",
+                readDocument(POSTED_ENRICHED).path("title").stringValue(),
+                POSTED_ENRICHED + " titles itself with the event type it governs");
+
+        assertEquals(addedTo(REQUIRED_SETS.get(AUTHORIZED), List.of("cardToken")),
+                REQUIRED_SETS.get(AUTHORIZED_TOKENIZED),
+                AUTHORIZED_TOKENIZED + " requires the version-one set and cardToken, and nothing"
+                        + " else changed");
+        assertEquals(addedTo(REQUIRED_SETS.get(POSTED), List.of("cardToken", "transactionTypeCode",
+                        "merchantCategoryCode", "source", "description", "merchantId",
+                        "merchantName", "merchantCity", "merchantZip", "originTimestamp")),
+                REQUIRED_SETS.get(POSTED_ENRICHED),
+                POSTED_ENRICHED + " requires the version-one set and the ten fields a card-keyed"
+                        + " consumer stores, and nothing else changed");
+
+        for (String document : List.of(AUTHORIZED_TOKENIZED, POSTED_ENRICHED)) {
+            Set<String> declared = new LinkedHashSet<>();
+            for (JsonNode entry : readDocument(document).get("required")) {
+                declared.add(entry.stringValue());
+            }
+            assertEquals(REQUIRED_SETS.get(document), declared,
+                    document + " changed its required-property set, and now requires " + declared);
+            assertFalse(readDocument(document).path("additionalProperties").booleanValue(true),
+                    document + " must close its property set");
+        }
+    }
+
+    /**
+     * Asserts a version-two event validates against its own document, and that dropping one added
+     * property fails it.
+     *
+     * <p>A card-keyed consumer stores what these properties carry, so an event that reached a topic
+     * without one of them would store a blank in place of a transaction fact.
+     */
+    @Test
+    void aVersionTwoEventValidatesAndLosingOneAddedPropertyFailsIt() {
+        for (String document : List.of(AUTHORIZED_TOKENIZED, POSTED_ENRICHED)) {
+            ObjectNode wire = mutableWireFormOf(document);
+
+            assertTrue(validate(document, wire).isEmpty(),
+                    () -> "a version-two event must validate against its own document: "
+                            + messagesOf(validate(document, wire)));
+
+            ObjectNode withoutToken = wire.deepCopy();
+            withoutToken.remove("cardToken");
+            assertFalse(validate(document, withoutToken).isEmpty(),
+                    document + " must refuse an event carrying no card token");
+
+            assertTrue(validate(document, wire).isEmpty(),
+                    "the copy above must not have altered the event under test");
+        }
+
+        ObjectNode posted = mutableWireFormOf(POSTED_ENRICHED);
+        for (String added : List.of("transactionTypeCode", "merchantCategoryCode", "source",
+                "description", "merchantId", "merchantName", "merchantCity", "merchantZip",
+                "originTimestamp")) {
+            ObjectNode without = posted.deepCopy();
+            without.remove(added);
+            assertFalse(validate(POSTED_ENRICHED, without).isEmpty(),
+                    POSTED_ENRICHED + " must refuse an event carrying no " + added);
+        }
+    }
+
+    /**
+     * Asserts a version-one event of either enriched contract still validates against its own
+     * version-one document, which is the promise made to a consumer already reading it.
+     */
+    @Test
+    void aVersionOneEventOfEitherEnrichedContractStaysReadable() {
+        for (String document : List.of(AUTHORIZED, POSTED)) {
+            ObjectNode wire = mutableWireFormOf(document);
+
+            assertEquals(EventEnvelope.SCHEMA_VERSION, wire.path("schemaVersion").intValue(),
+                    document + " must still be reachable at version one");
+            assertFalse(wire.has("cardToken"),
+                    document + " declares no cardToken, so no version-one event may carry one");
+            assertTrue(validate(document, wire).isEmpty(),
+                    () -> "a version-one event must stay readable under version one: "
+                            + messagesOf(validate(document, wire)));
+        }
+    }
+
+    /**
+     * The wire form of one document's event, as a copy an assertion may mutate.
+     *
+     * @param document the classpath path of the document
+     * @return a mutable deep copy of that wire form
+     */
+    private static ObjectNode mutableWireFormOf(String document) {
+        JsonNode wire = wireFormOf(document);
+
+        if (!wire.isObject()) {
+            return fail(document + " serialized to something other than a JSON object");
+        }
+        return ((ObjectNode) wire).deepCopy();
+    }
+
+    /**
+     * Returns one set holding every member of {@code base} followed by every added name.
+     *
+     * @param base  the version-one required set
+     * @param added the names the next version adds
+     * @return the union, in that order
+     */
+    private static Set<String> addedTo(Set<String> base, List<String> added) {
+        Set<String> union = new LinkedHashSet<>(base);
+        union.addAll(added);
+        return Set.copyOf(union);
+    }
+
+    /**
+     * Asserts the schema table selects a document by event type AND contract version, and that
+     * exactly four contracts have two versions.
+     *
+     * <p>Selecting on the event type alone would validate one version against the other's document
+     * and report a violation naming the wrong contract.
      */
     @Test
     void theSchemaTableSelectsADocumentByEventTypeAndVersionTogether() {
@@ -2768,26 +3030,197 @@ class SchemaBackwardCompatibilityTest {
                 "a version this module ships no document for selects nothing, so a gate refuses the"
                         + " event rather than checking it against another version");
 
+        assertEquals(List.of(1, 2), EventSchemas.governedVersions("TransactionAuthorized"),
+                "the authorized contract is governed at both versions, so both stay readable");
+        assertEquals(AUTHORIZED, EventSchemas.resourceFor("TransactionAuthorized", 1),
+                "version 1 of the authorized contract selects the version-one document");
+        assertEquals(AUTHORIZED_TOKENIZED, EventSchemas.resourceFor("TransactionAuthorized", 2),
+                "version 2 of the authorized contract selects the version-two document");
+
+        assertEquals(List.of(1, 2), EventSchemas.governedVersions("TransactionPosted"),
+                "the posted contract is governed at both versions, so both stay readable");
+        assertEquals(POSTED, EventSchemas.resourceFor("TransactionPosted", 1),
+                "version 1 of the posted contract selects the version-one document");
+        assertEquals(POSTED_ENRICHED, EventSchemas.resourceFor("TransactionPosted", 2),
+                "version 2 of the posted contract selects the version-two document");
+
+        assertEquals(List.of(1, 2), EventSchemas.governedVersions("CardUpdated"),
+                "the card-update contract is governed at both versions");
+        assertEquals(CARD_STATE_V1, EventSchemas.resourceFor("CardUpdated", 1),
+                "version 1 of the card-update contract selects the original document");
+        assertEquals(CARD_STATE, EventSchemas.resourceFor("CardUpdated", 2),
+                "version 2 of the card-update contract selects the redacted document");
+
+        Set<String> twoVersionTypes =
+                Set.of("TransactionDeclined", "TransactionAuthorized", "TransactionPosted",
+                        "CardUpdated");
         for (String eventType : EventSchemas.governedEventTypes()) {
-            if (eventType.equals("TransactionDeclined")) {
+            if (twoVersionTypes.contains(eventType)) {
                 continue;
             }
             assertEquals(List.of(1), EventSchemas.governedVersions(eventType),
                     () -> eventType + " is governed at version 1 alone. Adding a version to it takes"
                             + " a new document and an entry in the schema table, not an edit of the"
                             + " version it already publishes.");
+            assertNull(EventSchemas.resourceFor(eventType, 2),
+                    () -> eventType + " selects a document at version 2, which this module ships"
+                            + " none of, so a gate would check an event against another contract");
         }
+    }
+
+    /**
+     * Asserts the version-two posted document loads offline and titles itself with its event type.
+     */
+    @Test
+    void thePostedDocumentAtVersionTwoLoadsFromTheClasspathAndCompilesOffline() {
+        assertNotNull(schemaFor(POSTED_WITH_DETAIL),
+                POSTED_WITH_DETAIL + " must load from the classpath and compile offline");
+        assertEquals(2, readDocument(POSTED_WITH_DETAIL).path("properties").path("schemaVersion")
+                        .path("const").asInt(0),
+                POSTED_WITH_DETAIL + " pins schemaVersion to 2, matching the -v2 suffix of its"
+                        + " name");
+        assertEquals("TransactionPosted", readDocument(POSTED_WITH_DETAIL).path("title")
+                        .stringValue(""),
+                "both posted documents title themselves with the record they govern");
+    }
+
+    /**
+     * Asserts version two of the posted document requires the nine descriptive properties and that
+     * version one still refuses them.
+     *
+     * <p>This is the backward-compatibility half of the statement-provenance change. Relaxing
+     * version one to admit the nine would have widened a contract consumers already read. The nine
+     * took a new version instead, which is what makes the addition safe.
+     */
+    @Test
+    void thePostedDocumentAtVersionTwoRequiresTheNineDescriptivePropertiesAndVersionOneRefusesThem() {
+        List<String> nine = List.of("transactionTypeCode", "merchantCategoryCode", "source",
+                "description", "merchantId", "merchantName", "merchantCity", "merchantZip",
+                "originTimestamp");
+
+        Set<String> requiredAtTwo = new LinkedHashSet<>(stringsOf(
+                readDocument(POSTED_WITH_DETAIL).get("required")));
+        for (String property : nine) {
+            assertTrue(requiredAtTwo.contains(property),
+                    () -> POSTED_WITH_DETAIL + " must require " + property
+                            + ", because a consumer of version two reads all nine or none");
+            assertTrue(propertiesOf(POSTED).path(property).isMissingNode(),
+                    () -> POSTED + " must declare no " + property
+                            + ", so version one stays the contract it always was");
+        }
+
+        assertFalse(readDocument(POSTED).path("additionalProperties").booleanValue(true),
+                POSTED + " must close its property set, so an undeclared descriptive field is"
+                        + " refused rather than ignored");
+
+        ObjectNode versionOne = validPayloadFor(POSTED);
+        assertTrue(validate(POSTED, versionOne).isEmpty(),
+                () -> "an event published under version one must stay readable under version one: "
+                        + messagesOf(validate(POSTED, versionOne)));
+
+        ObjectNode smuggled = validPayloadFor(POSTED);
+        smuggled.put("merchantName", "Abshire-Lowe");
+        assertFalse(validate(POSTED, smuggled).isEmpty(),
+                POSTED + " must refuse a descriptive field it does not declare");
+    }
+
+    /**
+     * Asserts one version-two posted event this module builds validates against its own document,
+     * and that its nine descriptive values are the nine the authorized event carried.
+     *
+     * <p>The nine reach the posted event through
+     * {@link TransactionPosted#forPostedAuthorization(TransactionAuthorized, BigDecimal, String)}
+     * alone, which reads them from the authorized event rather than from a caller. That is what
+     * removes any path by which a substituted value could reach a statement read model, and it
+     * mirrors the copy at {@code app/cbl/CBTRN02C.cbl:L425-L436}.
+     */
+    @Test
+    void aVersionTwoPostedEventCarriesTheNineValuesOfTheAuthorizationItFollowed() {
+        TransactionAuthorized authorized =
+                (TransactionAuthorized) eventFor(AUTHORIZED_TOKENIZED);
+        TransactionPosted posted = TransactionPosted.forPostedAuthorization(authorized,
+                new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE);
+
+        assertTrue(posted.carriesTransactionDetail(),
+                "an event built from an authorization carries the detail contract version");
+        assertEquals(TransactionPosted.DETAIL_SCHEMA_VERSION, posted.schemaVersion(),
+                "the detail contract is version 2");
+        assertEquals(authorized.transactionTypeCode(), posted.transactionTypeCode(),
+                "the type code must travel unchanged");
+        assertEquals(authorized.merchantCategoryCode(), posted.merchantCategoryCode(),
+                "the category code must travel unchanged");
+        assertEquals(authorized.source(), posted.source(), "the source must travel unchanged");
+        assertEquals(authorized.description(), posted.description(),
+                "the description must travel unchanged");
+        assertEquals(authorized.merchantId(), posted.merchantId(),
+                "the merchant identifier must travel unchanged");
+        assertEquals(authorized.merchantName(), posted.merchantName(),
+                "the merchant name must travel unchanged");
+        assertEquals(authorized.merchantCity(), posted.merchantCity(),
+                "the merchant city must travel unchanged");
+        assertEquals(authorized.merchantZip(), posted.merchantZip(),
+                "the merchant postal code must travel unchanged");
+        assertEquals(authorized.authorizedAt(), posted.originTimestamp(),
+                "the origin timestamp of the posted event is the authorization timestamp");
+        assertEquals(authorized.maskedCardNumber(), posted.maskedCardNumber(),
+                "the masked card number must travel unchanged, and no unmasked value may appear");
+
+        JsonNode wire = MAPPER.readTree(RECORD_MAPPER.writeValueAsString(posted));
+        assertTrue(validate(POSTED_WITH_DETAIL, wire).isEmpty(),
+                () -> "a version-two posted event must validate against its own document: "
+                        + messagesOf(validate(POSTED_WITH_DETAIL, wire)));
+        assertFalse(validate(POSTED, wire).isEmpty(),
+                "a version-two payload must not validate against the version-one document, which"
+                        + " pins schemaVersion to 1 and declares none of the nine");
+    }
+
+    /**
+     * Asserts a version-one posted event omits the nine descriptive properties on the wire.
+     *
+     * <p>Writing them as null would break the version-one document, which closes its property set.
+     * The record refuses a partly filled detail set for the same reason.
+     */
+    @Test
+    void aVersionOnePostedEventOmitsTheNineDescriptivePropertiesAndRefusesOne() {
+        TransactionPosted versionOne = (TransactionPosted) eventFor(POSTED);
+        String text = RECORD_MAPPER.writeValueAsString(versionOne);
+        JsonNode wire = MAPPER.readTree(text);
+
+        assertFalse(versionOne.carriesTransactionDetail(),
+                "a version-one event carries no descriptive detail");
+        assertFalse(text.contains("merchantName"),
+                "a version-one payload omits the nine rather than writing them as null");
+        assertTrue(validate(POSTED, wire).isEmpty(),
+                () -> "a version-one posted event must validate against version one: "
+                        + messagesOf(validate(POSTED, wire)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new TransactionPosted(UUID.fromString(EVENT_ID), TransactionPosted.EVENT_TYPE,
+                        EventEnvelope.SCHEMA_VERSION, Instant.parse(OCCURRED_AT),
+                        ACCOUNT_IDENTIFIER, TRANSACTION_ID, ACCOUNT_IDENTIFIER,
+                        new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE,
+                        new BigDecimal(POSITIVE_AMOUNT), MASKED_CARD_NUMBER, CARD_TOKEN,
+                        "01", null, null, null, null, null, null, null, null),
+                "version one must refuse a descriptive field it cannot put on the wire");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new TransactionPosted(UUID.fromString(EVENT_ID), TransactionPosted.EVENT_TYPE,
+                        TransactionPosted.DETAIL_SCHEMA_VERSION, Instant.parse(OCCURRED_AT),
+                        ACCOUNT_IDENTIFIER, TRANSACTION_ID, ACCOUNT_IDENTIFIER,
+                        new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE,
+                        new BigDecimal(POSITIVE_AMOUNT), MASKED_CARD_NUMBER, CARD_TOKEN,
+                        "01", null, null, null, null, null, null, null, null),
+                "version two must refuse a partly filled detail set");
     }
 
     /**
      * Asserts every other document still pins its message key to an eleven-digit account identifier.
      *
-     * <p>{@code EventEnvelope} accepts either key form, so that one record type can carry both. That
-     * widening must not reach the wire for any contract but the unresolved decline, and each
-     * document is what holds the line. This test is the reason the widening is safe.
+     * <p>One key form exists, so all events of one account land on one partition and stay in
+     * publish order. Each document is what holds that line on the wire.
      */
     @Test
-    void everyDocumentButTheUnresolvedDeclineKeysOnAnAccountIdentifier() {
+    void everyDocumentKeysOnAnAccountIdentifier() {
         for (String document : DOCUMENTS) {
             assertEquals(ACCOUNT_IDENTIFIER_PATTERN, propertiesOf(document).path("aggregateId")
                             .path("pattern").stringValue(""),
@@ -2797,14 +3230,14 @@ class SchemaBackwardCompatibilityTest {
             ObjectNode keyed = validPayloadFor(document);
             keyed.put("aggregateId", TRANSACTION_ID);
             assertFalse(validate(document, keyed).isEmpty(),
-                    () -> document + " must refuse a sixteen-character message key. Only the"
-                            + " unresolved decline is keyed on a transaction identifier.");
+                    () -> document + " must refuse a sixteen-character message key. Every event of"
+                            + " this platform is keyed on its account identifier.");
         }
     }
 
     /**
-     * The version-two declined payload every test above starts from: keyed on its transaction
-     * identifier, carrying reason {@code 0100}, and carrying no account identifier.
+     * The version-two declined payload every unresolved-decline test starts from: keyed on its
+     * transaction identifier, carrying reason {@code 0100}, and carrying no account identifier.
      *
      * @return one valid unresolved decline
      */

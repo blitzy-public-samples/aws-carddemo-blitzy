@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
  * event. {@link #getPayload()} returns that event as one JavaScript Object Notation (JSON)
  * document, and {@link #getAggregateId()} returns the account identifier that keys it.</p>
  *
- * <p>ADDITIVE. No COBOL (Common Business Oriented Language) record corresponds to this table.</p>
+ * <p>No COBOL (Common Business Oriented Language) record corresponds to this table.</p>
  */
 @Entity
 @Table(name = "outbox_event",
@@ -153,8 +153,8 @@ public class OutboxEventEntity {
      * boolean would be refused by the database rather than quietly leave a published row looking
      * pending. The claim is released, because a published row needs none.
      *
-     * <p>A second call on an already published row is ignored, so a relay that publishes and then
-     * fails before its own transaction commits does not corrupt the row on the retry that follows.
+     * <p>A second call on an already published row is ignored. A relay that publishes and then
+     * fails before its own transaction commits therefore leaves the row intact for the retry.
      *
      * @param publishedAt when the publish succeeded
      * @throws NullPointerException  if {@code publishedAt} is null
@@ -229,16 +229,12 @@ public class OutboxEventEntity {
     }
 
     // ------------------------------------------------------------------------------------
-    // Relay state. ADDITIVE: the CardDemo source has no relay and therefore no lease. Its one
-    // asynchronous handoff, the transient data queue write at app/cbl/CORPT00C.cbl:L517, is
-    // picked up by a single scheduled job, so nothing there can claim a row twice or give up on
-    // one. The enum, the four constants, the seven columns and the three operations below are
-    // one concern and are kept together rather than scattered through the class.
-    //
-    // Two failures are what these columns exist to prevent. Without a claim, two relay instances
-    // read the same unpublished row and publish the same event twice, which a consumer then has
-    // to deduplicate. Without an attempt count and a next-attempt time, one undeliverable row is
-    // retried forever and every row behind it waits.
+    // Relay state. No COBOL ancestor: the source's one asynchronous handoff is the transient data
+    // queue write at app/cbl/CORPT00C.cbl:L517, which carries no lease. The enum, the four
+    // constants, the seven columns and the three operations below hold two invariants. A row is
+    // claimed by at most one relay instance, so one event is published once. A row carries an
+    // attempt count and a next-attempt time, so an undeliverable row is abandoned rather than
+    // retried forever ahead of the rows behind it.
     // ------------------------------------------------------------------------------------
 
     /**
@@ -267,17 +263,17 @@ public class OutboxEventEntity {
     /**
      * How many attempts a row takes before the relay abandons it.
      *
-     * <p>The ceiling lives here and not in a check constraint on purpose: abandoning a row is a
-     * decision the relay records, and a constraint would instead turn the attempt that crosses
-     * the ceiling into a failed statement.
+     * <p>The ceiling lives here and not in a check constraint. Abandoning a row is a decision
+     * the relay records, whereas a constraint would turn the attempt that crosses the ceiling
+     * into a failed statement.
      */
     public static final int MAX_DELIVERY_ATTEMPTS = 10;
 
     /**
      * Widest value {@code last_error} holds, from {@code last_error VARCHAR(500)} in
-     * {@code src/main/resources/db/migration/V1__schema.sql}. The column is bounded so that a
-     * stack trace cannot be stored in it by accident, and a longer reason is truncated rather
-     * than refused: losing the tail of a diagnostic is better than losing the row.
+     * {@code src/main/resources/db/migration/V1__schema.sql}. The bound keeps a stack trace out
+     * of the column by accident. A longer reason is truncated rather than refused, so the row
+     * survives and only the tail of the diagnostic is lost.
      */
     public static final int LAST_ERROR_MAX_LENGTH = 500;
 

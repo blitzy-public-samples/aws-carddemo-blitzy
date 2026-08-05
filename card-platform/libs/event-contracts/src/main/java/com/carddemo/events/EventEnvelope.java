@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
 /**
  * The five fields every event in this module carries beside its own payload fields.
  *
- * <p>ADDITIVE IN FULL. No COBOL program and no copybook defines this record. One borrowed width:
+ * <p>No COBOL program and no copybook defines this record. One borrowed width:
  * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} gives {@code aggregateId}
  * eleven digits.
  *
@@ -20,18 +20,20 @@ import java.util.regex.Pattern;
  *
  * <p>A consumer routes and deduplicates on these five fields and parses no payload to do it. Each
  * consumer checks {@code eventId} against its own {@code processed_event} table before it acts. It
- * then writes its side effects and the marker row in one local transaction, and acknowledges the
+ * then writes its side effects and the marker row in one local transaction. It acknowledges the
  * message only after that transaction commits, so a duplicate delivery changes nothing and a crash
- * mid-way loses no work. {@code eventType} tells a consumer which
- * payload arrived, which the {@code fraud.assessed} topic needs: {@code FraudFlagged} and
- * {@code FraudCleared} both travel there.
+ * part-way through loses no work. {@code eventType} tells a consumer which payload arrived, which
+ * the {@code fraud.assessed} topic needs: {@code FraudFlagged} and {@code FraudCleared} both
+ * travel there.
  *
  * <p>{@code aggregateId} is always the Kafka message key. Kafka orders messages within one
  * partition, so every event for one account lands on one partition and arrives in publish order.
- * The key carries the account identifier on every contract but one: a declined event whose account
+ * The key carries the account identifier on every contract but one. A declined event whose account
  * identity the card cross-reference could not resolve is keyed on its transaction identifier
- * instead, because reject reason {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387} fires
- * exactly when that lookup misses and no authoritative account identifier exists to key on.
+ * instead. Reject reason {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387} fires exactly when
+ * that lookup misses, so no authoritative account identifier exists to key on.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  *
  * @param eventId       the idempotency key, a Universally Unique Identifier (UUID) that serializes
  *                      as thirty-six lower-case characters
@@ -42,8 +44,7 @@ import java.util.regex.Pattern;
  * @param occurredAt    the moment the producer wrote the event, serialized in Coordinated
  *                      Universal Time with seconds and up to nine fractional digits
  * @param aggregateId   the Kafka message key: the eleven-digit account identifier the event belongs
- *                      to, or, on the one contract published when no account identifier exists, the
- *                      sixteen-character transaction identifier. Leading zeros belong to the value
+ *                      to. Leading zeros belong to the value
  */
 public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, Instant occurredAt,
         String aggregateId) {
@@ -52,35 +53,26 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      * The contract version a producer stamps unless it names another, and the version every
      * {@code -v1.json} document of this module pins with {@code "const": 1}.
      *
-     * <p>{@link #of(String, String)} stamps this constant. Seven of the eight documents this module
-     * ships are version 1 and no producer of those seven names a version by hand.
+     * <p>{@link #of(String, String)} stamps this constant. A producer whose current contract is a
+     * later version calls {@link #of(String, String, int)} with the version its record declares.
      */
     public static final int SCHEMA_VERSION = 1;
 
     /**
      * The highest contract version this module ships a schema document for.
      *
-     * <p>Version 2 exists for exactly one contract: {@code schemas/transaction-declined-v2.json},
-     * the declined event whose account identity the card cross-reference could not resolve. Reject
-     * reason {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387} fires precisely when the keyed
-     * read of the cross-reference file misses, so at that moment no authoritative account
-     * identifier exists. Version 1 requires one, so publishing that decline under version 1 would
-     * mean trusting the identifier the caller supplied or inventing one. Version 2 keys the event
-     * on its transaction identifier instead and declares no account identifier at all.
-     *
      * <p>The canonical constructor accepts any version from {@link #SCHEMA_VERSION} through this
-     * one. Which pairs of event type and version actually exist is decided by the schema table in
-     * {@code com.carddemo.events.serde.EventSchemas}, and a pair with no document is refused at the
-     * serialize and deserialize gates. Widening the range here therefore admits nothing on its own.
+     * one. {@code com.carddemo.events.serde.EventSchemas} decides which pairs of event type and
+     * version exist. A pair with no document is refused at the serialize and deserialize gates, so
+     * widening the range here admits nothing on its own.
      */
     public static final int MAX_SCHEMA_VERSION = 2;
 
     /**
-     * The form {@code aggregateId} takes when it carries an account identifier: exactly eleven
-     * decimal digits.
+     * The form {@code aggregateId} takes: exactly eleven decimal digits, the account identifier.
      *
-     * <p>Width from {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. The same
-     * pattern constrains {@code aggregateId} in seven of the eight schema documents of this module.
+     * <p>Width from {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. Every
+     * account-keyed schema constrains {@code aggregateId} to this form.
      */
     public static final String AGGREGATE_ID_PATTERN = "^[0-9]{11}$";
 
@@ -90,9 +82,9 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      *
      * <p>Width from {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5} and
      * {@code DALYTRAN-ID} at {@code app/cpy/CVTRA06Y.cpy:L5}. A transaction identifier is the one
-     * key available before the cross-reference resolves, it is deterministic, and it names no
-     * cardholder, no account and no card, so using it discloses nothing a masked event does not
-     * already carry.
+     * key available before the cross-reference resolves, and it is deterministic. It names no
+     * cardholder, no account and no card, so it discloses nothing a masked event does not already
+     * carry.
      *
      * <p>The two forms cannot be confused: eleven characters against sixteen, and this one admits
      * no value the account form admits.
@@ -115,19 +107,23 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
     /** {@link #AGGREGATE_KEY_PATTERN} compiled, and the check the canonical constructor runs. */
     private static final Pattern AGGREGATE_KEY_MATCHER = Pattern.compile(AGGREGATE_KEY_PATTERN);
 
+    /** {@link #UNRESOLVED_AGGREGATE_KEY_PATTERN} compiled, and the check for the transaction form. */
+    private static final Pattern UNRESOLVED_AGGREGATE_KEY_MATCHER =
+            Pattern.compile(UNRESOLVED_AGGREGATE_KEY_PATTERN);
+
     /**
      * Checks all five components and rejects a value no schema document accepts.
      *
      * <p>Every exception message names the component that failed. The three reference components
      * must be present, {@code eventType} must hold one non-blank character, {@code schemaVersion}
      * must fall between {@link #SCHEMA_VERSION} and {@link #MAX_SCHEMA_VERSION}, and
-     * {@code aggregateId} must match {@link #AGGREGATE_KEY_PATTERN}. A message reports the length
+     * {@code aggregateId} must match {@link #AGGREGATE_ID_PATTERN}. A message reports the length
      * of a rejected {@code aggregateId} and never the value, so no account identifier reaches a log
      * through a failure.
      *
      * <p>Accepting either key form here does not let an event type choose one. A record checks the
-     * form its own contract allows, and its schema document constrains the same form on the wire, so
-     * only the declined event of version 2 reaches a topic keyed on a transaction identifier.
+     * form its own contract allows, and its schema document constrains the same form on the wire.
+     * Only the declined event of version 2 reaches a topic keyed on a transaction identifier.
      *
      * <p>This constructor changes no value it accepts. A component therefore survives a serialize
      * and deserialize round trip unchanged, down to the fractional digits of {@code occurredAt}.
@@ -137,7 +133,7 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      * @throws IllegalArgumentException when {@code eventType} is blank, when {@code schemaVersion}
      *                                  falls outside {@link #SCHEMA_VERSION} through
      *                                  {@link #MAX_SCHEMA_VERSION}, or when {@code aggregateId} is
-     *                                  {@code null} or matches neither key form
+     *                                  {@code null} or is not eleven decimal digits
      */
     public EventEnvelope {
         Objects.requireNonNull(eventId, "eventId must be present");
@@ -172,6 +168,21 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
     }
 
     /**
+     * Reports whether {@code aggregateId} carries a transaction identifier because no account
+     * identifier existed to key on.
+     *
+     * <p>This is the companion of {@link #carriesAccountKey()}, and exactly one of the two answers
+     * {@code true} for any envelope the canonical constructor accepted: the two patterns admit
+     * different widths and share no value. A producer uses this to check that the key form matches
+     * the contract it publishes under, and a store uses it to check the key against its column.
+     *
+     * @return {@code true} when {@code aggregateId} is sixteen printable characters
+     */
+    public boolean carriesTransactionKey() {
+        return UNRESOLVED_AGGREGATE_KEY_MATCHER.matcher(aggregateId).matches();
+    }
+
+    /**
      * Builds an envelope, stamping the three components a producer never chooses by hand.
      *
      * <p>{@code eventId} takes a fresh {@link UUID#randomUUID()} value, {@code schemaVersion} takes
@@ -193,17 +204,16 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
     }
 
     /**
-     * Builds an envelope under a named contract version, for a record whose contract is not
-     * version 1.
+     * Builds an envelope under a named contract version, and the target
+     * {@link #of(String, String)} delegates to.
      *
      * <p>{@code eventId} and {@code occurredAt} are stamped exactly as
-     * {@link #of(String, String)} stamps them. The one caller today is
-     * {@link TransactionDeclined#ofUnresolvedAccount(String, java.math.BigDecimal, String)}, whose
-     * contract is version 2 because reject reason {@code 0100} carries no account identifier.
+     * {@link #of(String, String)} stamps them. A version outside {@link #SCHEMA_VERSION} through
+     * {@link #MAX_SCHEMA_VERSION} is refused by the canonical constructor.
      *
      * @param eventType     the simple name of the event type this envelope labels
-     * @param aggregateId   the Kafka message key: either an eleven-digit account identifier or, when
-     *                      no account identifier exists, a sixteen-character transaction identifier
+     * @param aggregateId   the Kafka message key: the eleven-digit account identifier the event
+     *                      belongs to
      * @param schemaVersion the contract version, between {@link #SCHEMA_VERSION} and
      *                      {@link #MAX_SCHEMA_VERSION}
      * @return an envelope carrying the three supplied components and two stamped ones

@@ -11,7 +11,7 @@ import java.util.Set;
 /**
  * The one shape every dead-letter topic on this platform carries.
  *
- * <p>ADDITIVE in its routing, borrowed in its four diagnostic fields. Those four reproduce the abend
+ * <p>The routing has no COBOL ancestor. The four diagnostic fields reproduce the abend
  * reporting record {@code 01 ABEND-DATA} at {@code app/cpy/CSMSG02Y.cpy:L21-L29} field for field and
  * width for width: {@code ABEND-CODE PIC X(4)} at L22, {@code ABEND-CULPRIT PIC X(8)} at L24,
  * {@code ABEND-REASON PIC X(50)} at L26 and {@code ABEND-MSG PIC X(72)} at L28.

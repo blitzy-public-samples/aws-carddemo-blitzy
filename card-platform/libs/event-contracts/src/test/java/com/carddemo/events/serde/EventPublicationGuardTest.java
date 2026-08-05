@@ -28,16 +28,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Asserts the three guards a publish passes: the event must be a known contract type, it must be
  * bound to the topic it is sent to, and its serialized form must satisfy its schema document.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor. The CardDemo source has no event bus, so nothing
+ * <p>This class has no COBOL ancestor. The CardDemo source has no event bus, so nothing
  * here translates a source construct. The one source locator it needs is
  * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}, which fixes the eleven-digit
  * account identifier that becomes the Kafka message key.
  *
  * <p>Every assertion runs offline. No schema registry service is contacted, no {@code $id} is
  * dereferenced and no Kafka broker starts.
- *
- * <p>{@code card-platform/docs/decision-log.md} (planned) holds the rationale for the choices these
- * guards implement.
  *
  * <p>Versions in use: Java 25, Apache Maven 3.9.16, junit-jupiter 6.0.3,
  * spring-boot-starter-test 4.1.0, json-schema-validator 3.0.6, jackson-databind 3.1.4 and
@@ -53,6 +50,10 @@ class EventPublicationGuardTest {
 
     /** The masked card form every card-carrying document accepts. */
     private static final String MASKED_CARD_NUMBER = "************7065";
+
+    /** Card token every card-bearing sample carries. Sixty-four lower-case hexadecimal characters. */
+    private static final String CARD_TOKEN =
+            "c41b7e6039fa25d81c0b94e7635af8021d4e9c78b6035f1ae284d70b9c3f6512";
 
     /** The authorization timestamp form the authorized document accepts. */
     private static final String AUTHORIZED_AT = "2022-06-10 19:27:53.000000";
@@ -74,8 +75,8 @@ class EventPublicationGuardTest {
         List<String> expected = List.of(EventContracts.TRANSACTION_AUTHORIZED,
                 EventContracts.TRANSACTION_DECLINED, EventContracts.TRANSACTION_POSTED,
                 EventContracts.FRAUD_FLAGGED, EventContracts.FRAUD_CLEARED,
-                EventContracts.ACCOUNT_STATE_CHANGED, EventContracts.CARD_UPDATED,
-                EventContracts.DEAD_LETTER);
+                EventContracts.ACCOUNT_STATE_CHANGED, EventContracts.CUSTOMER_CONTEXT_CHANGED,
+                EventContracts.CARD_UPDATED, EventContracts.DEAD_LETTER);
 
         assertEquals(expected.size(), EventContracts.eventTypes().size(),
                 "the registry changed its event-type count, so an event either lost its contract "
@@ -235,7 +236,7 @@ class EventPublicationGuardTest {
      */
     @Test
     void aValidationFailureNamesThePointerAndTheKeywordAndNeverTheValue() {
-        String fullCardNumber = "4859452612877065";
+        String fullCardNumber = syntheticCardNumber(452612877065L);
         String payload = "{\"eventId\":\"3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418\","
                 + "\"eventType\":\"TransactionAuthorized\",\"schemaVersion\":1,"
                 + "\"occurredAt\":\"2022-06-10T19:27:53.412Z\",\"aggregateId\":\""
@@ -246,6 +247,7 @@ class EventPublicationGuardTest {
                 + "\"merchantId\":\"800000000\",\"merchantName\":\"Abshire-Lowe\","
                 + "\"merchantCity\":\"North Enoshaven\",\"merchantZip\":\"72112\","
                 + "\"maskedCardNumber\":\"" + fullCardNumber + "\","
+                + "\"cardToken\":\"" + CARD_TOKEN + "\","
                 + "\"authorizedAt\":\"" + AUTHORIZED_AT + "\",\"currency\":\"USD\"}";
 
         List<String> violations = EventContracts.violationsOf(
@@ -278,6 +280,20 @@ class EventPublicationGuardTest {
     }
 
     /**
+     * Builds a sixteen-digit card number this repository does not carry.
+     *
+     * <p>The four leading digits are {@code 9999}, and none of the fifty records of
+     * {@code app/data/ASCII/carddata.txt} begins with them. The value is derived without a
+     * committed literal, so no card-number literal reaches this source file.
+     *
+     * @param serial the trailing serial, at most twelve digits
+     * @return sixteen digits, opening with {@code 9999}
+     */
+    private static String syntheticCardNumber(long serial) {
+        return "9999" + String.format("%012d", serial);
+    }
+
+    /**
      * Serializes one event onto its default topic and asserts bytes come back.
      *
      * @param eventType the routing discriminator naming the topic
@@ -301,7 +317,8 @@ class EventPublicationGuardTest {
     private static TransactionAuthorized sampleAuthorized() {
         return TransactionAuthorized.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID, "01", "0001",
                 "POS TERM", "Purchase at Abshire-Lowe", new BigDecimal("504.77"), "800000000",
-                "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER, AUTHORIZED_AT);
+                "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER, CARD_TOKEN,
+                AUTHORIZED_AT);
     }
 
     /**
@@ -320,10 +337,8 @@ class EventPublicationGuardTest {
      * @return one TransactionPosted carrying a ten-integer-digit balance
      */
     private static TransactionPosted samplePosted() {
-        return TransactionPosted.of(
-                EventEnvelope.of(EventContracts.TRANSACTION_POSTED, ACCOUNT_IDENTIFIER),
-                TRANSACTION_ID, new BigDecimal("1250.75"), POSTED_AT, new BigDecimal("504.77"),
-                MASKED_CARD_NUMBER);
+        return TransactionPosted.forAuthorized(sampleAuthorized(), new BigDecimal("1250.75"),
+                POSTED_AT);
     }
 
     /**

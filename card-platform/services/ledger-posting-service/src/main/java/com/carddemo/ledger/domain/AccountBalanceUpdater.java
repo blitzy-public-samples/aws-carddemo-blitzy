@@ -22,10 +22,6 @@ import org.springframework.stereotype.Service;
  * <p>The {@code REWRITE} at {@code app/cbl/CBTRN02C.cbl:L554} becomes a save of a replacement row.
  * Alone among that program's writes, this paragraph tests no file status and calls no abend
  * routine. A missing row throws {@link AccountBalanceRowMissingException}.
- *
- * <p>Deviations and flagged findings for this class are recorded in
- * {@code card-platform/docs/decision-log.md} and
- * {@code card-platform/docs/business-rule-flags.md}.
  */
 @Service
 public class AccountBalanceUpdater {
@@ -45,6 +41,10 @@ public class AccountBalanceUpdater {
     /**
      * Adds {@code amount} to the stored balance and to one cycle accumulator, then saves the row.
      *
+     * <p>The read takes a write lock on the row and the caller's commit releases it, so a second
+     * event for the same account waits and then reads the balance this call stored. Without that
+     * lock two events read one balance and the second store overwrites the first amount.
+     *
      * @param accountId the eleven-digit account identifier, padded as {@code ACCT-ID PIC 9(11)} at
      *                  {@code app/cpy/CVACT01Y.cpy:L5} holds it
      * @param amount    the posted amount, from {@code DALYTRAN-AMT PIC S9(09)V99} at
@@ -53,7 +53,7 @@ public class AccountBalanceUpdater {
      * @throws AccountBalanceRowMissingException when no row carries {@code accountId}
      */
     public BigDecimal updateBalances(String accountId, BigDecimal amount) {
-        AccountBalanceProjectionEntity stored = accountBalances.findById(accountId)
+        AccountBalanceProjectionEntity stored = accountBalances.findForUpdateById(accountId)
                 .orElseThrow(() -> new AccountBalanceRowMissingException(accountId));
 
         BigDecimal postedBalance = CobolDecimal.add(stored.getCurrentBalance(), amount,
@@ -86,13 +86,28 @@ public class AccountBalanceUpdater {
         /** Serialization identity of this exception type. */
         private static final long serialVersionUID = 1L;
 
+        /** The one message this exception carries, holding no identifier of any kind. */
+        static final String MESSAGE =
+                "account_balance_projection holds no row for the account this event names";
+
         /**
-         * Names the account whose balance row is absent.
+         * States that the balance row is absent, and withholds which account it was.
          *
-         * @param accountId the account identifier that matched no row
+         * <p>An exception message reaches a log, a stack trace and a dead-letter record. An account
+         * identifier is stable and reaches every one of those three the moment it appears here, so
+         * the message names none. {@code messaging/DeadLetterMetadata} carries the event identifier
+         * that correlates the failure back to its delivery.
+         *
+         * @param accountId the account identifier that matched no row, read for its shape alone and
+         *                  never rendered
+         * @throws IllegalArgumentException when {@code accountId} is {@code null} or blank, which
+         *                                  would mean the posting path lost the key before the read
          */
         public AccountBalanceRowMissingException(String accountId) {
-            super("no account_balance_projection row for account " + accountId);
+            super(MESSAGE);
+            if (accountId == null || accountId.isBlank()) {
+                throw new IllegalArgumentException("accountId must be present at the failing read");
+            }
         }
     }
 }

@@ -11,7 +11,6 @@ import org.junit.jupiter.api.Test;
 import com.carddemo.cobol.PanMasker;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -73,14 +72,11 @@ final class CardSummaryTest {
     /** Twelve mask characters followed by four digits. */
     private static final Pattern MASKED_CARD_NUMBER_PATTERN = Pattern.compile("^\\*{12}[0-9]{4}$");
 
-    /**
-     * A synthetic token at the width of {@code CARD-NUM PIC X(16)}: twelve zeros and four distinct
-     * trailing characters. No card number begins with a zero, so this token is not one.
-     */
-    private static final String SYNTHETIC_CARD_NUMBER = "0".repeat(12) + "5740";
+    /** Generated card number at the width of {@code CARD-NUM PIC X(16)}. */
+    private static final String SYNTHETIC_CARD_NUMBER = syntheticCardNumber(5740L);
 
     /** A synthetic account identifier, eleven digits padded on the left with zeros. */
-    private static final String SYNTHETIC_ACCOUNT_ID = "00000000050";
+    private static final String SYNTHETIC_ACCOUNT_ID = syntheticDigits(11, 500_001L);
 
     /** A synthetic active status. */
     private static final String SYNTHETIC_ACTIVE_STATUS = "Y";
@@ -88,8 +84,8 @@ final class CardSummaryTest {
     /** Width of {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6}. */
     private static final int ACCOUNT_ID_LENGTH = 11;
 
-    /** A synthetic value at the width of CARD-CVV-CD PIC 9(03). Its three characters appear in no value a row below carries. */
-    private static final String SYNTHETIC_VERIFICATION_VALUE = "451";
+    /** A synthetic value at the width of {@code CARD-CVV-CD PIC 9(03)}. */
+    private static final String SYNTHETIC_VERIFICATION_VALUE = syntheticDigits(3, 451L);
 
     /** Locator of the row declaration. */
     private static final String DECLARATION_LOCATOR =
@@ -329,8 +325,9 @@ final class CardSummaryTest {
                         + "app/cpy/CVACT02Y.cpy:L6.");
         assertEquals(ACCOUNT_ID_LENGTH, row.accountId().length(),
                 "The account identifier occupies " + ACCOUNT_ID_LENGTH + " characters.");
-        assertTrue(row.toString().contains(SYNTHETIC_ACCOUNT_ID),
-                () -> "Row '" + row + "' shows the account identifier as written.");
+        assertFalse(row.toString().contains(SYNTHETIC_ACCOUNT_ID),
+                () -> "Row '" + row + "' renders the account identifier. The accessor returns it "
+                        + "and the rendering withholds it.");
     }
 
     @Test
@@ -368,5 +365,15 @@ final class CardSummaryTest {
 
     private static String normalize(String componentName) {
         return componentName.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+
+    /** Builds a clearly synthetic sixteen-digit card value. */
+    private static String syntheticCardNumber(long serial) {
+        return "9999" + syntheticDigits(12, serial);
+    }
+
+    /** Builds a zero-padded synthetic digit string. */
+    private static String syntheticDigits(int width, long serial) {
+        return String.format(Locale.ROOT, "%0" + width + "d", serial);
     }
 }

@@ -36,8 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * formed and lands inside the span those field edits admit.
  * {@code CalendarDateValidatorTest} owns the field edits, and
  * {@code com.carddemo.cobol.CobolDateValidatorTest} owns the day-count conversions of
- * app/cpy/CSUTLDPY.cpy:L345-L348. The gate itself is orchestration, and belongs to the planned
- * account update service, which is not authored yet.</p>
+ * app/cpy/CSUTLDPY.cpy:L345-L348. {@code domain/AccountUpdateService} owns that orchestration
+ * gate.</p>
  *
  * <p>One message reaches the caller. app/cpy/CSUTLDPY.cpy:L361-L365 builds it from
  * {@code FUNCTION TRIM} over the {@code PIC X(25)} label field at app/cbl/COACTUPC.cbl:L53, joined
@@ -50,6 +50,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * byte reaches it.</p>
  *
  * <p>No Spring context, no container and no database take part.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("DateOfBirthValidator, the reasonableness check that rejects today's own date")
 class DateOfBirthValidatorTest {

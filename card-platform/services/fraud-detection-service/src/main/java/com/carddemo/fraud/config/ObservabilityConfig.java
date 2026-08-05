@@ -5,13 +5,15 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
  * Supplies the one bean the fraud detection service records its measurements through.
  *
- * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. Searching {@code app/cbl/} for {@code fraud},
+ * <p>No COBOL ancestor. Searching {@code app/cbl/} for {@code fraud},
  * {@code velocit}, {@code risk} and {@code scoring} matches zero of its 28 programs.
  *
  * <p>{@link FraudMeters} holds seven meters under four names, covering the three families a
@@ -42,6 +44,9 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class ObservabilityConfig {
 
+    /** Tag key that names this service on every application and framework meter. */
+    public static final String SERVICE_TAG = "service";
+
     /**
      * Registers the seven fraud meters and publishes them as one injectable bean.
      *
@@ -53,18 +58,35 @@ public class ObservabilityConfig {
         return new FraudMeters(registry);
     }
 
+    /** Adds the service name to application, Java Virtual Machine, and web meters alike. */
+    @Bean
+    public MeterRegistryCustomizer<MeterRegistry> fraudCommonTags(
+            @Value("${spring.application.name:fraud-detection-service}") String applicationName) {
+        if (applicationName == null || applicationName.isBlank()) {
+            throw new IllegalStateException("spring.application.name must hold a value");
+        }
+        return registry -> registry.config().commonTags(SERVICE_TAG, applicationName);
+    }
+
     /**
      * The recording surface of this service. One method names one measured path.
      *
      * <p>The path that calls each method, in the order the methods appear below:
      * {@code messaging/TransactionAuthorizedConsumer.java} calls
-     * {@link FraudMeters#recordEventConsumed()}, {@link FraudMeters#recordProcessingLatency(Duration)},
-     * {@link FraudMeters#recordDeserializeFailure()} and
-     * {@link FraudMeters#recordProcessFailure()}; {@code domain/RiskScoringService.java} calls
-     * {@link FraudMeters#recordAssessmentFlagged()} and
-     * {@link FraudMeters#recordAssessmentCleared()}; and {@code outbox/OutboxRelay.java} calls
+     * {@link FraudMeters#recordEventConsumed()},
+     * {@link FraudMeters#recordProcessingLatency(Duration)},
+     * {@link FraudMeters#recordProcessFailure()}, and — once the outbox row for one assessment has
+     * been written — {@link FraudMeters#recordAssessmentFlagged()} or
+     * {@link FraudMeters#recordAssessmentCleared()}; {@code config/KafkaConsumerConfig.java} calls
+     * {@link FraudMeters#recordDeserializeFailure()}; and {@code outbox/OutboxRelay.java} calls
      * {@link FraudMeters#recordPublishFailure()}. Every meter registers at start-up, so each series
      * is scrapable before its caller records against it.</p>
+     *
+     * <p>{@link FraudMeters#recordDeserializeFailure()} is called from the consumer configuration
+     * rather than from a listener because a payload that did not read never reaches a listener: the
+     * container raises that failure first, and the recoverer is the only place it is observable.
+     * {@link FraudMeters#recordProcessFailure()} counts once per delivery attempt and the recoverer
+     * adds nothing to it, so one business failure is never reported as several.</p>
      */
     public static final class FraudMeters {
 
@@ -84,11 +106,11 @@ public class ObservabilityConfig {
                     .register(registry);
             this.assessmentsFlagged = Counter.builder("carddemo.fraud.assessments.produced")
                     .tag("outcome", "flagged")
-                    .description("Assessments published to topic fraud.assessed")
+                    .description("Assessment events written to the outbox, by outcome")
                     .register(registry);
             this.assessmentsCleared = Counter.builder("carddemo.fraud.assessments.produced")
                     .tag("outcome", "cleared")
-                    .description("Assessments published to topic fraud.assessed")
+                    .description("Assessment events written to the outbox, by outcome")
                     .register(registry);
             this.processingLatency = Timer.builder("carddemo.fraud.processing.latency")
                     .description("Wall time of one event, from listener entry to commit")
@@ -131,12 +153,23 @@ public class ObservabilityConfig {
             processingLatency.record(elapsed);
         }
 
-        /** Counts one message the deserializer or the schema validator rejected. */
+        /**
+         * Counts one message the deserializer or the schema validator rejected.
+         *
+         * <p>Called from {@code config/KafkaConsumerConfig}, which is where such a failure is
+         * observable. The container raises it before invoking a listener, so a listener cannot see
+         * one.
+         */
         public void recordDeserializeFailure() {
             deserializeFailures.increment();
         }
 
-        /** Counts one event whose scoring or whose database write did not complete. */
+        /**
+         * Counts one event whose scoring or whose database write did not complete.
+         *
+         * <p>One increment per delivery attempt, which is what makes a retry storm visible. The
+         * terminal recovery adds nothing here.
+         */
         public void recordProcessFailure() {
             processFailures.increment();
         }

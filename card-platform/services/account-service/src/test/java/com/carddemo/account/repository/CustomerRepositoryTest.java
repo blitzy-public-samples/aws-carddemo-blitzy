@@ -2,19 +2,29 @@ package com.carddemo.account.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.MethodOrderer;
-import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.carddemo.account.entity.CustomerEntity;
 
@@ -39,14 +49,7 @@ import jakarta.persistence.LockModeType;
  * <p>Every value assertion cites its one-based fixture offsets and its copybook line. The seed
  * migration stores each character column at its full declared width, so a value shorter than its
  * field arrives padded with spaces. These tests read the database and read no fixture byte.</p>
- *
- * <p>{@code card-platform/docs/traceability-matrix.md} records one rename:
- * {@code CUST-ADDR-LINE-3} at {@code app/cpy/CVCUS01Y.cpy:L11} maps to column
- * {@code address_city}. {@code card-platform/docs/decision-log.md} holds the reasoning for the
- * column types the migration declares. {@code card-platform/docs/data-model.md} draws the
- * table.</p>
  */
-@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class CustomerRepositoryTest extends AbstractAccountPostgresTest {
 
     /** Key of record one, offsets (1,9), {@code app/cpy/CVCUS01Y.cpy:L5}. */
@@ -55,11 +58,27 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
     /** A well-formed nine-digit key that no seeded row carries. */
     private static final String ABSENT_KEY = "999999999";
 
+    /** Fingerprint of record one's nine-character sensitive identifier. */
+    private static final String SOCIAL_SECURITY_NUMBER_FINGERPRINT =
+            "c3a05208e3334aa2ef6d98f16f04b86590dbf8b6f176bbc512f151c1c5011334";
+
+    /** Fingerprint of the same identifier after its leading zero is removed. */
+    private static final String SHORT_SOCIAL_SECURITY_NUMBER_FINGERPRINT =
+            "9b69c8362c77bf4eaa4b0093492931a54ffece5b98aa078ad7f09b67481918f6";
+
+    /** Fingerprint of record one's government-issued identifier. */
+    private static final String GOVERNMENT_ISSUED_ID_FINGERPRINT =
+            "4efbc1d41c7f9ba0ecc66f8283852099c2bcb233e4e1930b4692a711df4066a6";
+
     @Autowired
     private CustomerRepository repository;
 
     @Autowired
     private EntityManagerFactory entityManagerFactory;
+
+    /** Opens the independent transactions used by the lock-exclusion test. */
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     /**
      * Resolves record one through the finder under test.
@@ -85,7 +104,6 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
     }
 
     @Test
-    @Order(1)
     @DisplayName("findByCustomerId resolves seeded customer 000000001 and returns a present"
             + " Optional")
     void findByCustomerIdResolvesRecordOne() {
@@ -95,7 +113,6 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
     }
 
     @Test
-    @Order(2)
     @DisplayName("findByCustomerId returns an empty Optional for a key no row carries")
     void findByCustomerIdReturnsEmptyOptionalForAnAbsentKey() {
         Optional<CustomerEntity> found = repository.findByCustomerId(ABSENT_KEY);
@@ -104,7 +121,6 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
     }
 
     @Test
-    @Order(3)
     @DisplayName("the inherited findById takes the same nine-character key and resolves the same"
             + " customer row")
     void findByIdResolvesTheSameRowAsFindByCustomerId() {
@@ -123,7 +139,6 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
      * eight leading zeros survive only in a text column.</p>
      */
     @Test
-    @Order(4)
     @DisplayName("the customer identifier is String on the finder parameter and on the Jakarta"
             + " Persistence mapping, and is no number type")
     void theCustomerIdentifierIsTextAndNoNumberType() {
@@ -147,7 +162,6 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
      * annotation of each finder and then the resolved row.</p>
      */
     @Test
-    @Order(5)
     @Transactional
     @DisplayName("findForUpdateByCustomerId declares the PESSIMISTIC_WRITE lock mode,"
             + " findByCustomerId declares none, and the locking finder resolves customer"
@@ -167,6 +181,47 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
         assertThat(locked.orElseThrow().getCustomerId()).isEqualTo(RECORD_ONE_KEY);
     }
 
+    @Test
+    @DisplayName("a second transaction waits until the first customer write lock is released")
+    void aSecondTransactionWaitsForTheCustomerWriteLock() throws Exception {
+        CountDownLatch firstLocked = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch secondStarted = new CountDownLatch(1);
+        CountDownLatch secondLocked = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<String> first = workers.submit(() -> inTransaction(() -> {
+                String identifier = repository.findForUpdateByCustomerId(RECORD_ONE_KEY)
+                        .orElseThrow()
+                        .getCustomerId();
+                firstLocked.countDown();
+                await(releaseFirst, "the first customer lock was not released");
+                return identifier;
+            }));
+            assertThat(firstLocked.await(5, TimeUnit.SECONDS)).isTrue();
+
+            Future<String> second = workers.submit(() -> inTransaction(() -> {
+                secondStarted.countDown();
+                String identifier = repository.findForUpdateByCustomerId(RECORD_ONE_KEY)
+                        .orElseThrow()
+                        .getCustomerId();
+                secondLocked.countDown();
+                return identifier;
+            }));
+            assertThat(secondStarted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(secondLocked.await(300, TimeUnit.MILLISECONDS)).isFalse();
+
+            releaseFirst.countDown();
+            assertThat(first.get(5, TimeUnit.SECONDS)).isEqualTo(RECORD_ONE_KEY);
+            assertThat(second.get(5, TimeUnit.SECONDS)).isEqualTo(RECORD_ONE_KEY);
+            assertThat(secondLocked.getCount()).isZero();
+        } finally {
+            releaseFirst.countDown();
+            workers.shutdownNow();
+        }
+    }
+
     /**
      * The three name columns hold record one at their full declared widths.
      *
@@ -177,7 +232,6 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
      * | last name | 60-84 | {@code app/cpy/CVCUS01Y.cpy:L8} | {@code Kessler} and 18 spaces |</p>
      */
     @Test
-    @Order(6)
     @DisplayName("the first, middle and last name columns hold record one padded to twenty-five"
             + " characters")
     void theNameColumnsHoldRecordOneInStoredForm() {
@@ -204,7 +258,6 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
      * | postal code | 240-249 | {@code app/cpy/CVCUS01Y.cpy:L14} | {@code 12546} and 5 spaces |</p>
      */
     @Test
-    @Order(7)
     @DisplayName("the two address lines, the city, state, country and postal code columns hold"
             + " record one in stored form")
     void theAddressColumnsHoldRecordOneInStoredForm() {
@@ -232,7 +285,6 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
      * 2 spaces |</p>
      */
     @Test
-    @Order(8)
     @DisplayName("both telephone number columns hold record one padded to fifteen characters")
     void theTelephoneColumnsHoldRecordOneInStoredForm() {
         CustomerEntity customer = recordOne();
@@ -256,15 +308,17 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
      * or a failure message, and every assertion here keeps the default description.</p>
      */
     @Test
-    @Order(9)
     @DisplayName("the Social Security Number and government-issued identifier columns keep every"
             + " leading zero the fixture encodes")
     void theSensitiveIdentifierColumnsKeepEveryLeadingZero() {
         CustomerEntity customer = recordOne();
+        String socialSecurityFingerprint = fingerprint(customer.getSocialSecurityNumber());
+        String governmentIssuedFingerprint = fingerprint(customer.getGovernmentIssuedId());
 
-        assertThat(customer.getSocialSecurityNumber()).isEqualTo("020973888");
-        assertThat(customer.getSocialSecurityNumber()).isNotEqualTo("20973888");
-        assertThat(customer.getGovernmentIssuedId()).isEqualTo("00000000000049368437");
+        assertThat(socialSecurityFingerprint).isEqualTo(SOCIAL_SECURITY_NUMBER_FINGERPRINT);
+        assertThat(socialSecurityFingerprint)
+                .isNotEqualTo(SHORT_SOCIAL_SECURITY_NUMBER_FINGERPRINT);
+        assertThat(governmentIssuedFingerprint).isEqualTo(GOVERNMENT_ISSUED_ID_FINGERPRINT);
     }
 
     /**
@@ -283,7 +337,6 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
      * magnitude.</p>
      */
     @Test
-    @Order(10)
     @DisplayName("the date of birth, transfer account identifier, primary card-holder flag and"
             + " credit score columns hold record one values")
     void theRemainingColumnsHoldRecordOneValues() {
@@ -296,17 +349,43 @@ class CustomerRepositoryTest extends AbstractAccountPostgresTest {
     }
 
     /**
-     * The row count after every other test in the class.
+     * The seeded row count.
      *
      * <p>{@code app/data/ASCII/custdata.txt} holds fifty records of 500 bytes, and the seed
-     * migration loads each one. The method order places this test last, and no test above writes a
-     * row, so the same count also reports that the table came through the class untouched.</p>
+     * migration loads each one. Every test in this class arranges and reads its own state.</p>
      */
     @Test
-    @Order(11)
-    @DisplayName("the inherited count reads 50 seeded customers after every other test in the"
-            + " class")
+    @DisplayName("the inherited count reads 50 seeded customers")
     void countReadsFiftySeededCustomers() {
         assertThat(repository.count()).isEqualTo(50L);
+    }
+
+    /** Runs one callback in a new transaction. */
+    private <T> T inTransaction(Supplier<T> callback) {
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        return transaction.execute(status -> callback.get());
+    }
+
+    /** Waits for one test latch and preserves interruption. */
+    private static void await(CountDownLatch latch, String failureMessage) {
+        try {
+            if (!latch.await(5, TimeUnit.SECONDS)) {
+                throw new AssertionError(failureMessage);
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("the customer lock wait was interrupted", interrupted);
+        }
+    }
+
+    /** Returns a one-way fingerprint suitable for non-echoing assertions. */
+    private static String fingerprint(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("SHA-256 is unavailable", unavailable);
+        }
     }
 }

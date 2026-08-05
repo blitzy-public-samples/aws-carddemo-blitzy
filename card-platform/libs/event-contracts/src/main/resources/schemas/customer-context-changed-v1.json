@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://carddemo.example.com/schemas/customer-context-changed-v1.json",
+  "title": "CustomerContextChanged",
+  "description": "The account service publishes one CustomerContextChanged event whenever it rewrites the customer record beside an account, and publishes nothing on a read. app/cbl/COACTUPC.cbl:L4086 rewrites the customer record in the same unit of work as the account rewrite at app/cbl/COACTUPC.cbl:L4066, and this event carries the customer half while AccountStateChanged carries the account half. Ten payload fields carry the cardholder after the change, with widths from the 500-byte customer record at app/cpy/CVCUS01Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. app/cbl/CBSTM03A.CBL:L461-L484 renders every one of the ten fields on a statement, so a consumer that renders a cardholder alert keeps its own projection current from this event. Evolution is additive only, and it is bounded. additionalProperties is false and maxProperties is declared, so an unknown top-level property is refused and a producer cannot hide an undeclared field inside a known event type. Additive evolution inside this version travels in the optional extensions object, whose property names, property count and value lengths are all bounded, so a consumer validating against this version still accepts an event a later version enriched. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
+  "$comment": "The customer identifier is deliberately absent. CUST-ID PIC 9(09) at app/cpy/CVCUS01Y.cpy:L5 identifies a person, and every consumer of this event reads the cardholder context by account. Four further fields of the customer record reach no event at all: CUST-PHONE-NUM-1 and CUST-PHONE-NUM-2 at :L15-L16, CUST-SSN at :L17, CUST-GOVT-ISSUED-ID at :L18, CUST-DOB-YYYY-MM-DD at :L19, CUST-EFT-ACCOUNT-ID at :L20 and CUST-PRI-CARD-HOLDER-IND at :L21. The 168-byte trailing FILLER at :L23 carries no data.",
+  "type": "object",
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid",
+      "minLength": 36,
+      "maxLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The idempotency key. A consumer checks this identifier against its own processed_event table before it acts. It then writes its side effects and the marker row in one local transaction, and acknowledges the message only after that transaction commits. Additive. No source field exists.",
+      "examples": [
+        "8c4b1e07-5d2a-42f6-9b18-6e05c3a7d914"
+      ]
+    },
+    "eventType": {
+      "type": "string",
+      "const": "CustomerContextChanged",
+      "description": "The routing discriminator. A consumer reads this field to learn which payload arrived. Additive. No source field exists.",
+      "examples": [
+        "CustomerContextChanged"
+      ]
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "The contract version. The number matches the -v1 suffix in this file name, and a later version only adds fields. Additive. No source field exists.",
+      "examples": [
+        1
+      ]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time",
+      "minLength": 20,
+      "maxLength": 30,
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?Z$",
+      "description": "The publish timestamp, in Coordinated Universal Time. The account service stamps it when it writes the event to its outbox. Additive. No source field exists.",
+      "examples": [
+        "2022-06-10T19:27:53.412Z"
+      ]
+    },
+    "aggregateId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, and always the Kafka message key. Width from ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5. The Kafka message key, this field and the payload field accountId all carry one value, so account identity has a single source. A publisher compares the key against this field and against accountId, and rejects the message on any difference.",
+      "examples": [
+        "00000000007"
+      ]
+    },
+    "accountId": {
+      "type": "string",
+      "pattern": "^[0-9]{11}$",
+      "description": "The account identifier, eleven digits. From ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5, the key the account dataset is defined on at app/jcl/ACCTFILE.jcl. A text field keeps a leading zero.",
+      "examples": [
+        "00000000007"
+      ]
+    },
+    "firstName": {
+      "type": "string",
+      "maxLength": 25,
+      "description": "The cardholder first name. From CUST-FIRST-NAME PIC X(25) at app/cpy/CVCUS01Y.cpy:L6. app/cbl/CBSTM03A.CBL:L461-L468 joins it with the middle and last names into one rendered line.",
+      "examples": ["PAULA"]
+    },
+    "middleName": {
+      "type": "string",
+      "maxLength": 25,
+      "description": "The cardholder middle name. From CUST-MIDDLE-NAME PIC X(25) at app/cpy/CVCUS01Y.cpy:L7.",
+      "examples": ["A"]
+    },
+    "lastName": {
+      "type": "string",
+      "maxLength": 25,
+      "description": "The cardholder last name. From CUST-LAST-NAME PIC X(25) at app/cpy/CVCUS01Y.cpy:L8.",
+      "examples": ["CHRISTOFFERSEN"]
+    },
+    "addressLine1": {
+      "type": "string",
+      "maxLength": 50,
+      "description": "The first address line. From CUST-ADDR-LINE-1 PIC X(50) at app/cpy/CVCUS01Y.cpy:L9. app/cbl/CBSTM03A.CBL:L470 renders it on a statement.",
+      "examples": ["715 Nicolette Isle Apt. 992"]
+    },
+    "addressLine2": {
+      "type": "string",
+      "maxLength": 50,
+      "description": "The second address line. From CUST-ADDR-LINE-2 PIC X(50) at app/cpy/CVCUS01Y.cpy:L10. app/cbl/CBSTM03A.CBL:L471 renders it on a statement.",
+      "examples": ["Suite 400"]
+    },
+    "addressLine3": {
+      "type": "string",
+      "maxLength": 50,
+      "description": "The third address line. From CUST-ADDR-LINE-3 PIC X(50) at app/cpy/CVCUS01Y.cpy:L11. app/cbl/CBSTM03A.CBL:L472-L481 joins it with the state code, the country code and the postal code into one rendered line.",
+      "examples": ["North Enoshaven"]
+    },
+    "stateCode": {
+      "type": "string",
+      "maxLength": 2,
+      "description": "The state code. From CUST-ADDR-STATE-CD PIC X(02) at app/cpy/CVCUS01Y.cpy:L12. app/cbl/COACTUPC.cbl:L2493 validates it against the 56 codes app/cpy/CSLKPCDY.cpy declares.",
+      "examples": ["AR"]
+    },
+    "countryCode": {
+      "type": "string",
+      "maxLength": 3,
+      "description": "The country code. From CUST-ADDR-COUNTRY-CD PIC X(03) at app/cpy/CVCUS01Y.cpy:L13.",
+      "examples": ["USA"]
+    },
+    "zipCode": {
+      "type": "string",
+      "maxLength": 10,
+      "description": "The postal code. From CUST-ADDR-ZIP PIC X(10) at app/cpy/CVCUS01Y.cpy:L14. app/cbl/COACTUPC.cbl:L2536 validates its first character pair against the 240 state and postal-prefix combinations app/cpy/CSLKPCDY.cpy declares.",
+      "examples": ["72112"]
+    },
+    "ficoScore": {
+      "type": "string",
+      "pattern": "^[0-9]{3}$",
+      "description": "The credit score, three digits. From CUST-FICO-CREDIT-SCORE PIC 9(03) at app/cpy/CVCUS01Y.cpy:L22. app/cbl/COACTUPC.cbl:L848-L849 compares the value against 300 and 850, and app/cbl/CBSTM03A.CBL:L484 renders it on a statement. A text field keeps a leading zero.",
+      "examples": ["705"]
+    },
+    "extensions": {
+      "type": "object",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction: at most 16 members, each name a short identifier, each value a string of at most 256 characters, and no nested object or array. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "propertyNames": {
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 256
+      },
+      "maxProperties": 16,
+      "examples": [{"replayOf": "3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"}]
+    }
+  },
+  "required": [
+    "eventId",
+    "eventType",
+    "schemaVersion",
+    "occurredAt",
+    "aggregateId",
+    "accountId",
+    "firstName",
+    "middleName",
+    "lastName",
+    "addressLine1",
+    "addressLine2",
+    "addressLine3",
+    "stateCode",
+    "countryCode",
+    "zipCode",
+    "ficoScore"
+  ],
+  "maxProperties": 17,
+  "additionalProperties": false
+}

@@ -15,9 +15,9 @@ import java.util.Optional;
  * <p>The chain comes from paragraph {@code 1500-VALIDATE-TRAN} at
  * {@code app/cbl/CBTRN02C.cbl:L370-L378}. The comment {@code * ADD MORE VALIDATIONS HERE} at
  * {@code app/cbl/CBTRN02C.cbl:L377} marks its extension point, and this interface is that point.
- * One more decline rule is one more class in {@code domain/rules} implementing this interface. The
- * planned orchestrator is to collect every implementation it finds. Neither that orchestrator nor
- * any rule class is authored yet, so this interface has no implementation in the tree.
+ * One more decline rule is one more class in {@code domain/rules} implementing this interface.
+ * {@link AuthorizationService} collects the four current implementations from the application
+ * context, so adding another bean extends the chain without changing this interface or that class.
  *
  * <p>An implementation answers with the one reject reason it assigns, or with nothing. It also
  * declares its {@link Segment}, which fixes what the chain does with that answer.
@@ -25,6 +25,8 @@ import java.util.Optional;
  * <p>A decline is expected traffic. {@code app/cbl/CBTRN02C.cbl:L229-L230} ends the batch job with
  * return code 4 when any record was rejected, so {@link #evaluate(Context)} returns a value and
  * throws nothing when a rule declines.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public interface DeclineRule {
 
@@ -189,7 +191,7 @@ public interface DeclineRule {
          * <p>The value comes from the cross-reference row and from nowhere else.
          * {@code app/cbl/CBTRN02C.cbl:L383} reads that row into {@code CARD-XREF-RECORD} and
          * {@code app/cbl/CBTRN02C.cbl:L396} keys the account read on the {@code XREF-ACCT-ID} it
-         * holds. No context of this class ever receives an account identifier from a caller: the
+         * holds. No context of this class ever receives an account identifier from a caller. The
          * constructor takes the card number, the amount and the capture timestamp, so an identifier
          * a caller sent cannot reach a rule even by mistake. That is the whole reason the
          * constructor's parameter list is shaped the way it is.
@@ -197,9 +199,10 @@ public interface DeclineRule {
          * <p>A {@code null} result is meaningful rather than an error. Reject reason
          * {@link DeclineReason#INVALID_CARD_NUMBER} is assigned at
          * {@code app/cbl/CBTRN02C.cbl:L385-L387} when that keyed read misses, so at that point no
-         * account identifier exists. A producer publishing that decline calls
-         * {@code TransactionDeclined.ofUnresolvedAccount}, which keys the event on the transaction
-         * identifier and carries no account identifier at all. Every other reason runs after the
+         * account identifier exists. That decline reaches no topic:
+         * {@code domain/AuthorizationService} records the attempt in
+         * {@code unresolved_card_attempt} and publishes nothing, and the canonical constructor
+         * of {@code TransactionDeclined} refuses the reason. Every other reason runs after the
          * cross-reference resolved, so this accessor answers with a value for each of them.
          *
          * @return the eleven-digit account identifier the cross-reference row held, or {@code null}
@@ -226,8 +229,8 @@ public interface DeclineRule {
          * Reports whether both replica rows this context resolved were observed recently enough to
          * authorize against.
          *
-         * <p>ADDITIVE, and it exists because the target reads copies where the source read the
-         * datasets themselves. {@code app/cbl/CBTRN02C.cbl:L382} and
+         * <p>No COBOL ancestor: the target reads copies where the source read the datasets
+         * themselves. {@code app/cbl/CBTRN02C.cbl:L382} and
          * {@code app/cbl/CBTRN02C.cbl:L395} issue keyed reads against the cross-reference and
          * account files, so the source has nothing that can go stale and therefore nothing to
          * check. {@code card_xref} and {@code account_credit_snapshot} are replicas kept current by
@@ -235,9 +238,9 @@ public interface DeclineRule {
          * whatever it last knew.
          *
          * <p>Which makes the failure silent rather than loud, and that is why this method is here.
-         * A stale credit limit or a stale pair of cycle accumulators does not raise an error: the
+         * A stale credit limit or a stale pair of cycle accumulators raises no error. The
          * credit-limit rule at {@code app/cbl/CBTRN02C.cbl:L403-L407} computes an answer from
-         * obsolete numbers and approves a transaction that the current numbers would have declined.
+         * obsolete numbers, and approves a transaction the current numbers would have declined.
          * An expiry date that was updated and never replicated does the same.
          *
          * <p>A row with no observation time is reported stale rather than fresh, and a row that is

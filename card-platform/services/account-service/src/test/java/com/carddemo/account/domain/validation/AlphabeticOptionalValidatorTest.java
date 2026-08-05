@@ -41,6 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>The one call site is app/cbl/COACTUPC.cbl:L1571, which edits the middle name with the label
  * {@code 'Middle Name'} and a width of 25. Every test builds its own input and runs with no Spring
  * context, no container and no database.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("AlphabeticOptionalValidator, the edit for an optional alphabetic field")
 class AlphabeticOptionalValidatorTest {
@@ -86,7 +88,7 @@ class AlphabeticOptionalValidatorTest {
     private static final String CALL_SITE_MESSAGE = "Middle Name can have alphabets only.";
 
     /**
-     * ADDITIVE message text for a value wider than the edited field. No source literal carries this
+     * Message text for a value wider than the edited field. No source literal carries this
      * text: the source moves a fixed-width screen field into its edit field, so a wider value
      * cannot reach paragraph 1235.
      */
@@ -397,8 +399,8 @@ class AlphabeticOptionalValidatorTest {
         // MOVE that fills it reads a screen field of that exact width, so it drops nothing but
         // padding.
         //
-        // ADDITIVE. A caller of this edit can supply a wider value, and the edit refuses one that
-        // carries a character the slice would not cover.
+        // No COBOL ancestor. A caller of this edit can supply a wider value, and the edit refuses
+        // one that carries a character the slice would not cover.
         EditResult pastWidth =
                 AlphabeticOptionalValidator.validate(CALL_SITE_LABEL, VALUE_WITH_A_DIGIT, 4);
         EditResult atWidth =

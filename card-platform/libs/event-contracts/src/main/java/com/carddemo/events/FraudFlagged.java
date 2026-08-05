@@ -13,8 +13,8 @@ import java.util.regex.Pattern;
  * The event the fraud detection service publishes when its risk rules flag an authorized
  * transaction.
  *
- * <p>ADDITIVE IN FULL. No COBOL program and no copybook defines this event, and the CardDemo
- * source holds no risk scoring, no pattern analysis and no velocity checking. Two borrowed widths
+ * <p>No COBOL program and no copybook defines this event, and the CardDemo source holds no risk
+ * scoring, no pattern analysis and no velocity checking. Two borrowed widths
  * are the only source citations this record carries. {@code TRAN-ID PIC X(16)} at
  * {@code app/cpy/CVTRA05Y.cpy:L5} gives {@code transactionId} sixteen characters.
  * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} gives the envelope's
@@ -24,7 +24,7 @@ import java.util.regex.Pattern;
  * payload fields that follow them, so one serialized event is a single JavaScript Object Notation
  * (JSON) object. Ten fields reach the topic and no {@code envelope} key does.
  * {@code schemas/fraud-flagged-v1.json} names all ten in its required array and sets
- * {@code additionalProperties} to {@code false}, so a field a later version adds joins the
+ * {@code additionalProperties} to {@code false}. A field a later version adds therefore joins the
  * document as a new version rather than arriving unannounced.
  *
  * <p>{@code aggregateId} and {@code accountId} both hold the account identifier, and
@@ -40,16 +40,19 @@ import java.util.regex.Pattern;
  * record carries no monetary field, no card number, no card verification value and no card or
  * account status.
  *
- * <p>{@code assessedAt} is ADDITIVE and holds the moment the rules finished, in Coordinated
- * Universal Time. It serializes as an ISO-8601 timestamp, unlike the two fixed-width COBOL
- * timestamps that {@code TransactionAuthorized} and {@code TransactionPosted} carry.
+ * <p>{@code assessedAt} has no source counterpart and holds the moment the rules finished, in
+ * Coordinated Universal Time. It serializes as an ISO-8601 timestamp, unlike the two
+ * fixed-width COBOL timestamps that {@code TransactionAuthorized} and
+ * {@code TransactionPosted} carry.
  *
  * <p>The fraud detection service reads {@code transaction.authorized} and publishes this event
- * afterwards, so it never sits in the authorization response path. The notification service reads
- * the event under the {@code notification-fraud} consumer group.
+ * afterwards, so it never sits in the authorization response path. No service consumes
+ * {@code fraud.assessed} today: the {@code notification-fraud} consumer group is declared in
+ * {@code card-platform/.env.example} and no listener is registered against it.
  *
- * @param eventId        the idempotency key each consumer records before it applies side effects,
- *                       a Universally Unique Identifier (UUID)
+ * @param eventId        the idempotency key, a Universally Unique Identifier (UUID). A consumer
+ *                       records it in its own marker table inside the same local transaction as
+ *                       its side effects, marker after effects
  * @param eventType      the routing discriminator, always {@link #EVENT_TYPE}
  * @param schemaVersion  the contract version, always {@link EventEnvelope#SCHEMA_VERSION}
  * @param occurredAt     the moment the producer wrote the event, in Coordinated Universal Time
@@ -68,9 +71,6 @@ import java.util.regex.Pattern;
  *                       each one a member of {@link #RULE_IDENTIFIERS}. The list is immutable and
  *                       its order carries no meaning
  * @param assessedAt     the moment the rules finished, in Coordinated Universal Time
- * @param accountId      the same eleven-digit account identifier {@code aggregateId} carries. From
- *                       {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. Leading
- *                       zeros belong to the value
  */
 public record FraudFlagged(
         UUID eventId,
@@ -116,13 +116,13 @@ public record FraudFlagged(
     /** The highest {@code riskScore} an instance may carry, matching the schema {@code maximum}. */
     public static final int MAXIMUM_RISK_SCORE = 100;
 
-    /** The rule identifier the planned velocity rule reports. */
+    /** The rule identifier the velocity rule reports. */
     public static final String VELOCITY_RULE = "VELOCITY";
 
-    /** The rule identifier the planned amount-anomaly rule reports. */
+    /** The rule identifier the amount-anomaly rule reports. */
     public static final String AMOUNT_ANOMALY_RULE = "AMOUNT_ANOMALY";
 
-    /** The rule identifier the planned merchant-category rule reports. */
+    /** The rule identifier the merchant-category rule reports. */
     public static final String MERCHANT_CATEGORY_RULE = "MERCHANT_CATEGORY";
 
     /**

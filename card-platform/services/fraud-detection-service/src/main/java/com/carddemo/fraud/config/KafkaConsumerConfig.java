@@ -2,22 +2,24 @@ package com.carddemo.fraud.config;
 
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.serde.JsonSchemaValidatingDeserializer;
-
+import com.carddemo.fraud.messaging.DeadLetterMetadata;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
-
+import java.util.Objects;
+import java.util.Set;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.SerializationException;
+import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
+import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
-
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
@@ -30,10 +32,12 @@ import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.listener.ConsumerRecordRecoverer;
 import org.springframework.kafka.listener.ContainerProperties;
-import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer.HeaderNames.HeadersToAdd;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.serializer.DeserializationException;
 import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
 import org.springframework.util.backoff.FixedBackOff;
@@ -52,10 +56,10 @@ import org.springframework.util.backoff.FixedBackOff;
  * ErrorHandlingDeserializer}. A record that fails to parse reaches the listener with a
  * {@code null} value, and the failure travels in a header.
  *
- * <p>Two failures, two behaviours. A deserialization or schema failure routes straight to topic
- * {@code carddemo.dead-letter} and is not retried. An infrastructure failure is retried, three
- * attempts at 1000 ms, and then routes to the same topic. That route replaces the four-line abend
- * at {@code app/cbl/CBTRN02C.cbl:L707-L711} (shape only, no logic).
+ * <p>Two failures, two behaviours. A deserialization or schema failure routes straight to the
+ * source topic's dead-letter topic and is not retried. An infrastructure failure is retried, three
+ * attempts at 1000 ms, and then takes the same source-specific route. That route replaces the
+ * four-line abend at {@code app/cbl/CBTRN02C.cbl:L707-L711} (shape only, no logic).
  *
  * <p>A key holds the eleven-digit account identifier from {@code XREF-ACCT-ID PIC 9(11)} at
  * {@code app/cpy/CVACT03Y.cpy:L7} (shape only, no logic) and travels as text, so a leading zero
@@ -66,7 +70,7 @@ import org.springframework.util.backoff.FixedBackOff;
  * <p>A listener names {@link #LISTENER_CONTAINER_FACTORY_BEAN} in
  * {@code @KafkaListener(containerFactory = ...)}, and that one bean also answers to
  * {@code kafkaListenerContainerFactory}. The dead-letter template is
- * {@code deadLetterKafkaTemplate} and writes raw bytes; the outbox template is
+ * {@code deadLetterKafkaTemplate} and writes sanitized diagnostic bytes; the outbox template is
  * {@code fraudEventKafkaTemplate} in {@code config/KafkaProducerConfig.java}. Adding a consumer
  * means adding a listener that names the factory, and adding a topic means adding one binding.
  *
@@ -80,7 +84,7 @@ import org.springframework.util.backoff.FixedBackOff;
  * {@code messaging/DeadLetterMetadata.java} builds the diagnostic record and
  * {@code config/ObservabilityConfig.java} declares the meters.
  *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
 public class KafkaConsumerConfig {
@@ -110,7 +114,7 @@ public class KafkaConsumerConfig {
     /** Acknowledgement from every in-sync replica, the setting all six services carry. */
     private static final String ACKS_FROM_ALL_REPLICAS = "all";
 
-    /** Destination partition the producer selects from the message key. */
+    /** Destination partition the broker selects from the sanitized coordinate key. */
     private static final int PARTITION_BY_KEY = -1;
 
     /** The delivery every record takes before the first retry. */
@@ -119,10 +123,25 @@ public class KafkaConsumerConfig {
     /** Opening characters of a placeholder no property source resolved. */
     private static final String UNRESOLVED_PLACEHOLDER = "${";
 
+    static final String HEADER_ABEND_CODE = "carddemo-dl-code";
+    static final String HEADER_CULPRIT = "carddemo-dl-culprit";
+    static final String HEADER_REASON = "carddemo-dl-reason";
+    static final String HEADER_MESSAGE = "carddemo-dl-message";
+    static final String ABEND_CODE = "0999";
+    static final String SERVICE_CULPRIT = "FRAUDSVC";
+    static final String UNCLASSIFIED_REASON = "UNCLASSIFIED";
+    static final String SAFE_FAILURE_MESSAGE = "record rejected; inspect broker coordinates";
+
+    static final Set<String> ALLOWED_HEADERS = Set.of(
+            HEADER_ABEND_CODE, HEADER_CULPRIT, HEADER_REASON, HEADER_MESSAGE,
+            KafkaHeaders.DLT_ORIGINAL_TOPIC, KafkaHeaders.DLT_ORIGINAL_PARTITION,
+            KafkaHeaders.DLT_ORIGINAL_OFFSET, KafkaHeaders.DLT_ORIGINAL_TIMESTAMP);
+
     private final String bootstrapServers;
     private final String consumedTopic;
     private final String consumerGroup;
     private final String deadLetterTopic;
+    private final String deadLetterSuffix;
     private final long deliveryAttempts;
     private final long retryBackoffMs;
 
@@ -140,6 +159,7 @@ public class KafkaConsumerConfig {
      * @param consumedTopic    the read topic, from the {@code carddemo.kafka.topics} block
      * @param consumerGroup    the consumer group, from {@code spring.kafka.consumer.group-id}
      * @param deadLetterTopic  the dead-letter topic, from the {@code carddemo.kafka.topics} block
+     * @param deadLetterSuffix suffix appended to the source topic for its dead-letter topic
      * @param deliveryAttempts delivery attempts, from the {@code carddemo.consumer.retry} block
      * @param retryBackoffMs   the wait between two attempts, from the same block
      * @throws IllegalArgumentException when a name resolves to no usable value
@@ -151,6 +171,7 @@ public class KafkaConsumerConfig {
             @Value("${spring.kafka.consumer.group-id:fraud-detection}") String consumerGroup,
             @Value("${carddemo.kafka.topics.dead-letter:carddemo.dead-letter}")
                     String deadLetterTopic,
+            @Value("${carddemo.kafka.topics.dead-letter-suffix:.DLT}") String deadLetterSuffix,
             @Value("${carddemo.consumer.retry.max-attempts:3}") long deliveryAttempts,
             @Value("${carddemo.consumer.retry.backoff-ms:1000}") long retryBackoffMs) {
         this.bootstrapServers = resolved(bootstrapServers, "spring.kafka.bootstrap-servers");
@@ -158,6 +179,8 @@ public class KafkaConsumerConfig {
                 resolved(consumedTopic, "carddemo.kafka.topics.transaction-authorized");
         this.consumerGroup = resolved(consumerGroup, "spring.kafka.consumer.group-id");
         this.deadLetterTopic = resolved(deadLetterTopic, "carddemo.kafka.topics.dead-letter");
+        this.deadLetterSuffix =
+                resolved(deadLetterSuffix, "carddemo.kafka.topics.dead-letter-suffix");
         this.deliveryAttempts = deliveryAttempts;
         this.retryBackoffMs = retryBackoffMs;
     }
@@ -211,8 +234,8 @@ public class KafkaConsumerConfig {
      * Builds the template a failed record is published through.
      *
      * <p>Production is idempotent and acknowledged by every in-sync replica. The key serializer
-     * writes text and the value serializer writes raw bytes, so a record that broke its schema
-     * document travels as it arrived.
+     * writes text and the value serializer writes raw bytes. The recoverer writes a fixed-width,
+     * sanitized diagnostic record and never republishes refused payload bytes.
      *
      * @param kafkaProperties the bound {@code spring.kafka} block
      * @return the template the error handler injects as {@code deadLetterKafkaTemplate}
@@ -242,23 +265,30 @@ public class KafkaConsumerConfig {
      *
      * <p>The backoff carries the bound attempt count and the bound wait, and both deserialization
      * exception types are registered as not retryable. The recoverer publishes every failed record
-     * on the dead-letter topic, and the producer selects the partition from the message key. The
-     * outgoing record names the failing exception class and its cause class. Its exception message
-     * header and its stack-trace header are excluded. A parse failure names the fragment it stopped
-     * on.
+     * on the dead-letter topic belonging to its source topic. The outgoing key is the source
+     * coordinates, the value is fixed-width diagnostic metadata, and the headers are rebuilt from an
+     * allowlist.
+     *
+     * <p>The recoverer is also where a deserialization or schema failure is counted, because it is
+     * the only place that observes one. {@code ErrorHandlingDeserializer} records the failure on the
+     * record it produces and the container raises it before invoking any listener, so a listener
+     * cannot see and cannot count it.
      *
      * @param deadLetterTemplate the raw-byte template, resolved by bean name
+     * @param meters             the recording surface, so a failure the listener cannot see is still
+     *                           counted
      * @return the error handler the container factory carries
      */
     @Bean(name = ERROR_HANDLER_BEAN)
     public DefaultErrorHandler transactionAuthorizedErrorHandler(
             @Qualifier(DEAD_LETTER_TEMPLATE_BEAN)
-                    KafkaTemplate<String, byte[]> deadLetterTemplate) {
-        RawBytesDeadLetterRecoverer recoverer =
-                new RawBytesDeadLetterRecoverer(deadLetterTemplate, deadLetterTopic);
-        recoverer.excludeHeader(HeadersToAdd.EX_MSG, HeadersToAdd.EX_STACKTRACE);
+                    KafkaTemplate<String, byte[]> deadLetterTemplate,
+            ObservabilityConfig.FraudMeters meters) {
+        ByteValuedRecoverer recoverer =
+                new ByteValuedRecoverer(deadLetterTemplate, deadLetterTopic, deadLetterSuffix);
 
-        DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer,
+        DefaultErrorHandler errorHandler = new DefaultErrorHandler(
+                new DeserializeCountingRecoverer(recoverer, meters),
                 new FixedBackOff(retryBackoffMs, deliveryAttempts - FIRST_ATTEMPT));
         errorHandler.addNotRetryableExceptions(DeserializationException.class,
                 SerializationException.class);
@@ -270,8 +300,15 @@ public class KafkaConsumerConfig {
      *
      * <p>Both names on the annotation resolve to this single bean.
      *
+     * <p>A hand-built factory replaces the auto-configured one, so nothing applies the bound
+     * {@code spring.kafka.listener} block on its behalf. {@code auto-startup} is applied here for
+     * that reason: a factory that ignored it would start a consumer whatever the property said, so a
+     * context that has to load without a broker could not.
+     *
      * @param consumerFactory the pinned consumer factory, resolved by bean name
      * @param errorHandler    the retry and dead-letter handler, resolved by bean name
+     * @param kafkaProperties the bound {@code spring.kafka} block, read for
+     *                        {@code listener.auto-startup}
      * @return the factory a listener of this service names
      */
     @Bean(name = {LISTENER_CONTAINER_FACTORY_BEAN, DEFAULT_LISTENER_CONTAINER_FACTORY_BEAN})
@@ -279,12 +316,14 @@ public class KafkaConsumerConfig {
             transactionAuthorizedListenerContainerFactory(
                     @Qualifier(CONSUMER_FACTORY_BEAN)
                             ConsumerFactory<String, TransactionAuthorized> consumerFactory,
-                    @Qualifier(ERROR_HANDLER_BEAN) DefaultErrorHandler errorHandler) {
+                    @Qualifier(ERROR_HANDLER_BEAN) DefaultErrorHandler errorHandler,
+                    KafkaProperties kafkaProperties) {
         ConcurrentKafkaListenerContainerFactory<String, TransactionAuthorized> factory =
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
         factory.setCommonErrorHandler(errorHandler);
         factory.setBatchListener(Boolean.FALSE);
+        factory.setAutoStartup(kafkaProperties.getListener().isAutoStartup());
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
         return factory;
     }
@@ -305,40 +344,188 @@ public class KafkaConsumerConfig {
         return value.trim();
     }
 
-    /**
-     * Publishes a failed record whose value is raw bytes.
-     *
-     * <p>A record that broke its schema document carries the bytes that arrived. A record that
-     * parsed carries no body, and its key, its original topic, its partition, its offset and the
-     * failing exception class travel with it. Nothing here composes a value of its own.
-     */
-    private static final class RawBytesDeadLetterRecoverer extends DeadLetterPublishingRecoverer {
+    /** Builds the fixed-width metadata headers attached before a dead letter is rebuilt. */
+    private static Headers diagnosticHeaders(Exception failure) {
+        DeadLetterMetadata metadata = metadataOf(failure);
+        Headers headers = new RecordHeaders();
+        headers.add(HEADER_ABEND_CODE, utf8(metadata.abendCode()));
+        headers.add(HEADER_CULPRIT, utf8(metadata.culprit()));
+        headers.add(HEADER_REASON, utf8(metadata.reason()));
+        headers.add(HEADER_MESSAGE, utf8(metadata.message()));
+        return headers;
+    }
 
-        /** Sends every failed record to {@code deadLetterTopic} through {@code template}. */
-        private RawBytesDeadLetterRecoverer(KafkaOperations<?, ?> template, String deadLetterTopic) {
-            super(template,
-                    (record, failure) -> new TopicPartition(deadLetterTopic, PARTITION_BY_KEY));
+    /** Maps one failure to bounded metadata without copying its message. */
+    static DeadLetterMetadata metadataOf(Exception failure) {
+        Throwable cause = deepestCause(failure);
+        if (cause == null) {
+            return DeadLetterMetadata.of(
+                    ABEND_CODE, SERVICE_CULPRIT, UNCLASSIFIED_REASON, null);
+        }
+        return DeadLetterMetadata.of(ABEND_CODE, SERVICE_CULPRIT,
+                cause.getClass().getSimpleName(), SAFE_FAILURE_MESSAGE);
+    }
+
+    /** Returns the deepest cause, ending safely on a self-referencing chain. */
+    private static Throwable deepestCause(Throwable failure) {
+        Throwable cause = failure;
+        while (cause != null && cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause;
+    }
+
+    /** One metadata component as UTF-8 bytes. */
+    private static byte[] utf8(String component) {
+        return component.getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** Resolves the source-specific dead-letter topic, or the fallback where no source exists. */
+    static String resolveDeadLetterDestination(ConsumerRecord<?, ?> failedRecord,
+            String fallbackTopic, String suffix) {
+        String sourceTopic = failedRecord == null ? null : failedRecord.topic();
+        return sourceTopic == null || sourceTopic.isBlank()
+                ? fallbackTopic
+                : sourceTopic + suffix;
+    }
+
+    /** Rebuilds a failed record from broker coordinates and allowlisted diagnostics alone. */
+    static ProducerRecord<Object, Object> sanitizedDeadLetterRecord(
+            ConsumerRecord<?, ?> failedRecord, TopicPartition topicPartition, Headers headers) {
+        int partition = topicPartition.partition();
+        return new ProducerRecord<>(topicPartition.topic(),
+                partition < 0 ? null : partition,
+                recordCoordinates(failedRecord),
+                diagnosticRecord(headers),
+                allowedDeadLetterHeaders(headers));
+    }
+
+    /** The source coordinates, replacing any producer-controlled key. */
+    private static String recordCoordinates(ConsumerRecord<?, ?> failedRecord) {
+        return failedRecord == null
+                ? null
+                : failedRecord.topic() + "-" + failedRecord.partition() + "-"
+                        + failedRecord.offset();
+    }
+
+    /** A fresh header set carrying one final value for each allowed name. */
+    private static Headers allowedDeadLetterHeaders(Headers headers) {
+        Headers permitted = new RecordHeaders();
+        if (headers == null) {
+            return permitted;
+        }
+        for (String allowed : ALLOWED_HEADERS) {
+            Header header = headers.lastHeader(allowed);
+            if (header != null) {
+                permitted.add(allowed,
+                        header.value() == null ? null : header.value().clone());
+            }
+        }
+        return permitted;
+    }
+
+    /** The source-shaped diagnostic value rebuilt from sanitized metadata headers. */
+    private static byte[] diagnosticRecord(Headers headers) {
+        return DeadLetterMetadata.of(headerText(headers, HEADER_ABEND_CODE),
+                        headerText(headers, HEADER_CULPRIT),
+                        headerText(headers, HEADER_REASON),
+                        headerText(headers, HEADER_MESSAGE))
+                .toFixedWidthRecord().getBytes(StandardCharsets.UTF_8);
+    }
+
+    /** One header as UTF-8 text, or {@code null} where it is absent. */
+    private static String headerText(Headers headers, String name) {
+        if (headers == null) {
+            return null;
+        }
+        Header header = headers.lastHeader(name);
+        return header == null || header.value() == null
+                ? null
+                : new String(header.value(), StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Publishes a sanitized diagnostic record to the dead-letter topic of the source topic.
+     *
+     * <p>The superclass supplies refused key and value bytes, but this implementation discards both.
+     * It also discards every unapproved header, including producer-controlled duplicates.
+     */
+    private static final class ByteValuedRecoverer extends DeadLetterPublishingRecoverer {
+
+        private ByteValuedRecoverer(KafkaOperations<?, ?> template, String deadLetterTopic,
+                String deadLetterSuffix) {
+            super(template, (record, failure) -> new TopicPartition(
+                    resolveDeadLetterDestination(record, deadLetterTopic, deadLetterSuffix),
+                    PARTITION_BY_KEY));
+            excludeHeader(HeadersToAdd.EX_MSG, HeadersToAdd.EX_STACKTRACE);
+            setHeadersFunction((record, failure) -> diagnosticHeaders(failure));
         }
 
-        /**
-         * Builds the outgoing record, with a text key and a {@code byte[]} value. The two byte
-         * arrays hold the raw key and the raw value of a deserialization failure, and are
-         * {@code null} for a record that parsed.
-         */
         @Override
         protected ProducerRecord<Object, Object> createProducerRecord(ConsumerRecord<?, ?> record,
                 TopicPartition topicPartition, Headers headers, byte[] key, byte[] value) {
-            Integer partition = topicPartition.partition() < 0 ? null : topicPartition.partition();
-            Object outgoingKey =
-                    key != null ? new String(key, StandardCharsets.UTF_8) : record.key();
-            Object outgoingValue = asBytes(value != null ? value : record.value());
-            return new ProducerRecord<>(topicPartition.topic(), partition, outgoingKey,
-                    outgoingValue, headers);
+            return sanitizedDeadLetterRecord(record, topicPartition, headers);
+        }
+    }
+
+    /**
+     * Counts one deserialization or schema failure, then hands the record to the real recoverer.
+     *
+     * <p>This is the only point in the service that observes such a failure. It is raised inside the
+     * container before a listener is invoked, so the listener that would otherwise count it never
+     * runs.
+     *
+     * <p>Only that class of failure is counted. A failure a listener reached is counted there, once
+     * per attempt, and counting it again here would report one business failure as several. The count
+     * happens before the delegate publishes, so a dead-letter send that itself fails still leaves the
+     * failure counted rather than losing it.
+     */
+    private static final class DeserializeCountingRecoverer implements ConsumerRecordRecoverer {
+
+        /** Publishes the failed record on the dead-letter topic. */
+        private final ConsumerRecordRecoverer delegate;
+
+        /** The recording surface this recoverer counts against. */
+        private final ObservabilityConfig.FraudMeters meters;
+
+        /**
+         * Wraps {@code delegate}, counting a deserialization or schema failure against
+         * {@code meters} first.
+         */
+        private DeserializeCountingRecoverer(ConsumerRecordRecoverer delegate,
+                ObservabilityConfig.FraudMeters meters) {
+            this.delegate = Objects.requireNonNull(delegate, "delegate must be present");
+            this.meters = Objects.requireNonNull(meters, "meters must be present");
         }
 
-        /** Returns {@code value} when it is raw bytes, and {@code null} for anything else. */
-        private static byte[] asBytes(Object value) {
-            return value instanceof byte[] bytes ? bytes : null;
+        @Override
+        public void accept(ConsumerRecord<?, ?> record, Exception failure) {
+            if (isPayloadFailure(failure)) {
+                meters.recordDeserializeFailure();
+            }
+            delegate.accept(record, failure);
+        }
+
+        /**
+         * Reports whether one failure names a payload that did not read.
+         *
+         * <p>The walk follows the cause chain, because the container wraps the failure it caught, and
+         * it ends on a chain naming itself as its own cause.
+         *
+         * @param failure the failure the container recovered from
+         * @return true when the chain carries a deserialization or a serialization failure
+         */
+        private static boolean isPayloadFailure(Throwable failure) {
+            Throwable cause = failure;
+            while (cause != null) {
+                if (cause instanceof DeserializationException
+                        || cause instanceof SerializationException) {
+                    return true;
+                }
+                Throwable next = cause.getCause();
+                cause = next == cause ? null : next;
+            }
+            return false;
         }
     }
 }

@@ -27,6 +27,8 @@ package com.carddemo.card.api.dto;
  *
  * <p>Constants appear in source line order. The six constants in the last group of
  * this class never reach a caller.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public final class CardValidationMessages {
 
@@ -250,7 +252,7 @@ public final class CardValidationMessages {
     // carries. It states a transport width and nothing about the calendar.
 
     /**
-     * ADDITIVE. Text for an expiry day outside the transport width.
+     * No COBOL ancestor. Text for an expiry day outside the transport width.
      *
      * <p>No source literal exists. The card update program moves
      * {@code CCUP-NEW-EXPDAY PIC X(2)} at {@code app/cbl/COCRDUPC.cbl:L312} into the reassembled
@@ -258,13 +260,72 @@ public final class CardValidationMessages {
      * {@code 1260-EDIT-EXPIRY-YEAR-EXIT.} closes the edit chain at L945 and
      * {@code 2000-DECIDE-ACTION.} opens at L948, so no paragraph between them reaches the day. A
      * 3270 field two characters wide cannot deliver a third character, and a Representational State
-     * Transfer request can, so this text answers a value the source screen could not have produced.
+     * Transfer request can. This text answers a value the source screen could not have produced.
      *
      * <p>This constant adds no calendar rule. It states the two-character width of the source field
      * and nothing more, which is why the name carries the additive prefix.
      */
     public static final String ADDITIVE_CARD_EXPIRY_DAY_WIDTH =
             "Card expiry day must be two digits";
+
+    /**
+     * ADDITIVE. Text for a year, month and day that name no day of the calendar.
+     *
+     * <p>No source literal exists, and the source needs none. {@code app/cbl/COCRDUPC.cbl:L1467-L1474}
+     * joins the year, the month and the day with hyphens into
+     * {@code CARD-EXPIRAION-DATE PIC X(10)} at {@code app/cpy/CVACT02Y.cpy:L9}, which is ten
+     * characters of text. Ten characters hold {@code 2026-02-31} as readily as they hold
+     * {@code 2026-02-28}, so the source stores an impossible day and reports nothing.
+     *
+     * <p>Column {@code expiration_date} is a {@code DATE}. Section 0.3.1 of the plan requires that
+     * type for this one field, because the field is positionally a calendar date and the source
+     * itself decomposes it into a year, a month and a day at
+     * {@code app/cbl/COCRDUPC.cbl:L117-L121}. A {@code DATE} column cannot store a day that does
+     * not exist, so this platform refuses what the source would have stored, and this text says so.
+     *
+     * <p>This is the one divergence the card update path carries, and it is a divergence the column
+     * type forces rather than a rule this platform added.
+     * {@code card-platform/docs/business-rule-flags.md} carries it for a human decision on whether
+     * the source behaviour or the column type should win.
+     */
+    public static final String ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE =
+            "Card expiry year, month and day must name a day of the calendar";
+
+    /**
+     * ADDITIVE. Reported when a paging cursor is not the token the card list issues.
+     *
+     * <p>The source keeps a full card number in working storage between screen turns. A REST
+     * response cannot publish that Primary Account Number, so the target carries the irreversible
+     * card token from {@code PanMasker} instead. No source message corresponds because the source
+     * has no token-shaped input.
+     */
+    public static final String ADDITIVE_CARD_CURSOR_MALFORMED =
+            "Card cursor must be a 64-character lower-case hexadecimal token";
+
+    /**
+     * ADDITIVE. Reported when a requested row count falls outside the range the card list admits.
+     *
+     * <p>{@code WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7} at
+     * {@code app/cbl/COCRDLIC.cbl:L177-L178} fixes the row count of a 3270 screen, and the source
+     * accepts no other. A caller of {@code GET /cards} names its own row count, and
+     * {@code domain/CardQueryService} holds the range.
+     *
+     * <p>No source message corresponds.
+     */
+    public static final String ADDITIVE_PAGE_SIZE_OUT_OF_RANGE =
+            "Page size falls outside the range this list admits";
+
+    /**
+     * ADDITIVE. Reported when one request names both browse directions.
+     *
+     * <p>The source browses in one direction per screen turn. {@code 9000-READ-FORWARD} at
+     * {@code app/cbl/COCRDLIC.cbl:L1123} and {@code 9100-READ-BACKWARDS} at {@code :L1264} are
+     * reached from different function keys, and neither runs alongside the other.
+     *
+     * <p>No source message corresponds.
+     */
+    public static final String ADDITIVE_ONE_BROWSE_DIRECTION =
+            "A request names one browse direction, forward or backward";
 
     private CardValidationMessages() {
     }

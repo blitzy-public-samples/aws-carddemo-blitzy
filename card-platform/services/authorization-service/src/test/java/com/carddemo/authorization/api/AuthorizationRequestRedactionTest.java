@@ -92,17 +92,18 @@ class AuthorizationRequestRedactionTest {
     }
 
     @Test
-    @DisplayName("a short card number is widened to sixteen digits and then masked")
-    void masksCanonicalFormOfShortCardNumber() {
+    @DisplayName("a short card number is withheld rather than widened")
+    void withholdsShortCardNumber() {
         String rendered = new AuthorizationRequest(null, null, null, null, null, "-00001234.56",
                 "000000123", null, null, null, "12345", "2026-08-03 18:31:53.613000", null, null)
                 .toString();
 
-        // canonicalCardNumber widens 12345 to 0000000000012345, which is the value the
-        // cross-reference lookup keys on. The masker then keeps that value's last four digits,
-        // which is the whole of what app/cpy/CVACT03Y.cpy:L5 requires a caller to supply.
-        assertThat(rendered).contains("cardNumber=************2345");
-        assertThat(rendered).doesNotContain("0000000000012345");
+        // canonicalCardNumber refuses five digits, because app/bms/COTRN02.bms:L104-L108 declares
+        // the field at LENGTH=16 with neither JUSTIFY nor PICIN and app/cbl/COTRN02C.cbl:L211 fails
+        // a short entry on the numeric class test. A value the rendering cannot mask is withheld
+        // whole, so nothing partial reaches a log line.
+        assertThat(rendered).contains("cardNumber=" + AuthorizationRequest.WITHHELD);
+        assertThat(rendered).doesNotContain("12345");
     }
 
     @Test

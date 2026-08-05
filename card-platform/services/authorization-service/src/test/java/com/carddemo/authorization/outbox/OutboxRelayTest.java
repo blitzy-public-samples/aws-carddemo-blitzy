@@ -13,6 +13,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.authorization.config.AuthorizationProperties;
 import com.carddemo.authorization.entity.OutboxEventEntity;
 import com.carddemo.authorization.messaging.EventPublisherPort;
 import com.carddemo.authorization.repository.OutboxEventRepository;
@@ -22,7 +23,9 @@ import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionDeclined;
 import com.carddemo.events.serde.EventContracts;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -32,13 +35,15 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Write and relay tests for {@link OutboxWriter} and {@link OutboxRelay}.
  *
- * <p>ADDITIVE in full. The source's one asynchronous handoff is the transient data queue write at
+ * <p>The source's one asynchronous handoff is the transient data queue write at
  * {@code app/cbl/CORPT00C.cbl:L515-L523}, where one program writes a record and a separate job reads
  * it later. These two classes play those two halves.
  *
@@ -58,8 +63,24 @@ final class OutboxRelayTest {
     /** The account every row below is keyed on. */
     private static final String ACCOUNT_ID = "00000000077";
 
-    /** The card of fixture record one, from {@code app/data/ASCII/dailytran.txt}. */
-    private static final String FIXTURE_CARD_NUMBER = "4859452612877065";
+    /**
+     * A sixteen-digit card number this repository does not carry.
+     *
+     * <p>The four leading digits are {@code 9999}, and none of the fifty records of
+     * {@code app/data/ASCII/carddata.txt} begins with them. The value is derived without a
+     * committed literal, so no card number this repository holds reaches this source file.
+     */
+    private static final String FIXTURE_CARD_NUMBER = syntheticCardNumber(452612877065L);
+
+    /**
+     * Builds a sixteen-digit card number this repository does not carry.
+     *
+     * @param serial the trailing serial, at most twelve digits
+     * @return sixteen digits, opening with {@code 9999}
+     */
+    private static String syntheticCardNumber(long serial) {
+        return "9999" + String.format("%012d", serial);
+    }
 
     /** Reads a stored payload back. Jackson 3, as the writer writes it. */
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
@@ -68,6 +89,9 @@ final class OutboxRelayTest {
     private EventPublisherPort publisher;
     private List<OutboxEventEntity> stored;
     private OutboxWriter writer;
+    private SimpleMeterRegistry meters;
+    private TransactionTemplate transactionTemplate;
+
     private OutboxRelay relay;
 
     /** Builds the writer and the relay over a stubbed repository and publisher. */
@@ -85,7 +109,15 @@ final class OutboxRelayTest {
         });
 
         writer = new OutboxWriter(outboxEvents);
-        relay = new OutboxRelay(outboxEvents, publisher, 100, AUTHORIZED_TOPIC, DECLINED_TOPIC);
+        meters = new SimpleMeterRegistry();
+        transactionTemplate = mock(TransactionTemplate.class);
+        when(transactionTemplate.execute(any())).thenAnswer(call -> {
+            TransactionCallback<?> callback = call.getArgument(0);
+            return callback.doInTransaction(mock(org.springframework.transaction.TransactionStatus.class));
+        });
+        when(outboxEvents.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
+                any(), any(), any())).thenReturn(List.of());
+        relay = new OutboxRelay(outboxEvents, publisher, meters, transactionTemplate, properties());
     }
 
     /** Asserts one write stores one unpublished row carrying the envelope's own identifier. */
@@ -120,31 +152,28 @@ final class OutboxRelayTest {
                 "the payload carries the reject code as its four-character text");
     }
 
-    /**
-     * Asserts the contract that carries no account key is refused before the row is stored.
-     *
-     * <p>Reject code {@code 0100} follows a cross-reference read that resolved no account, so that
-     * decline is keyed on its transaction identifier and column {@code aggregate_id} has no account
-     * key to record. Rejecting at write time lets the caller's transaction roll back.
-     */
+    /** Asserts reject reason 0100 is stored under the transaction key of its version-two event. */
     @Test
-    void aDeclineCarryingNoAccountKeyIsRefusedBeforeStorage() {
-        TransactionDeclined unresolved = TransactionDeclined.ofUnresolvedAccount(
-                "0000000000683580", new BigDecimal("504.77"), "************7065");
+    void aDeclineThatResolvedNoAccountIsStoredUnderItsTransactionKey() {
+        String transactionId = "0000000000683580";
+        TransactionDeclined event = TransactionDeclined.ofUnresolvedAccount(transactionId,
+                new BigDecimal("504.77"), "************7065");
 
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> writer.writeDeclined(unresolved),
-                "a decline naming no account is not one the outbox stores");
+        OutboxEventEntity row = writer.writeDeclined(event);
 
-        assertTrue(thrown.getMessage().contains(EventEnvelope.AGGREGATE_ID_PATTERN),
-                "the rejection names the pattern the account key column records");
-        assertEquals(List.of(), stored, "nothing is stored for a refused event");
+        assertEquals(1, stored.size(), "one authorization call stores one event");
+        assertEquals(transactionId, row.getAggregateId(),
+                "the transaction identifier is the message key when no account exists");
+        assertTrue(row.getPayload().contains("\"schemaVersion\":2"),
+                "the payload names the unresolved-account contract");
+        assertFalse(row.getPayload().contains("\"accountId\""),
+                "the unresolved-account contract carries no invented account identifier");
     }
 
     /**
      * Asserts each payload is one flat object carrying the envelope beside the payload properties.
      *
-     * <p>{@code transaction-authorized-v1.json} names nineteen required properties and
+     * <p>{@code transaction-authorized-v1.json} names twenty required properties and
      * {@code transaction-declined-v1.json} names eleven. A payload nested under an envelope key
      * would fail both documents on the {@code required} array and never reach a topic.
      */
@@ -154,7 +183,7 @@ final class OutboxRelayTest {
         stored.clear();
         JsonNode decline = MAPPER.readTree(writer.writeDeclined(declineEvent()).getPayload());
 
-        assertEquals(19, approval.size(), "fourteen payload properties beside five envelope ones");
+        assertEquals(20, approval.size(), "fifteen payload properties beside five envelope ones");
         assertEquals(11, decline.size(), "six payload properties beside five envelope ones");
         assertTrue(approval.path("envelope").isMissingNode(), "no nested envelope object");
         assertTrue(decline.path("envelope").isMissingNode(), "no nested envelope object");
@@ -192,7 +221,8 @@ final class OutboxRelayTest {
         assertTrue(event.path("occurredAt").isString(), "an epoch number would fail the document");
         assertTrue(event.path("occurredAt").asString().endsWith("Z"), "Coordinated Universal Time");
         assertTrue(event.path("schemaVersion").isNumber(), "the version stays an integer");
-        assertEquals("************7065", event.path("maskedCardNumber").asString(), "ADDITIVE");
+        assertEquals("************7065", event.path("maskedCardNumber").asString(),
+                "only the last four digits travel");
         assertFalse(payload.contains(FIXTURE_CARD_NUMBER), "no full card number travels");
     }
 
@@ -232,7 +262,7 @@ final class OutboxRelayTest {
     void theRelaySendsEachRowToTheTopicItsEventTypeBelongsOn() {
         OutboxEventEntity authorized = row(EventContracts.TRANSACTION_AUTHORIZED);
         OutboxEventEntity declined = row(EventContracts.TRANSACTION_DECLINED);
-        when(outboxEvents.claimPendingBatch(any()))
+        when(outboxEvents.claimDueRows(any(), any()))
                 .thenReturn(List.of(authorized, declined));
 
         relay.publishPendingEvents();
@@ -249,7 +279,7 @@ final class OutboxRelayTest {
     /** Asserts the message key is the aggregate identifier the row recorded. */
     @Test
     void theMessageKeyIsTheAggregateIdentifierTheRowRecorded() {
-        when(outboxEvents.claimPendingBatch(any()))
+        when(outboxEvents.claimDueRows(any(), any()))
                 .thenReturn(List.of(row(EventContracts.TRANSACTION_AUTHORIZED)));
 
         relay.publishPendingEvents();
@@ -267,7 +297,7 @@ final class OutboxRelayTest {
     void aFailedSendLeavesItsRowUnpublishedAndStopsTheSweep() {
         OutboxEventEntity first = row(EventContracts.TRANSACTION_AUTHORIZED);
         OutboxEventEntity second = row(EventContracts.TRANSACTION_AUTHORIZED);
-        when(outboxEvents.claimPendingBatch(any()))
+        when(outboxEvents.claimDueRows(any(), any()))
                 .thenReturn(List.of(first, second));
         doThrow(new IllegalStateException("the broker is unreachable")).when(publisher)
                 .publish(anyString(), anyString(), anyString());
@@ -275,6 +305,9 @@ final class OutboxRelayTest {
         relay.publishPendingEvents();
 
         assertFalse(first.isPublished(), "a row whose send failed stays unpublished");
+        assertEquals(OutboxEventEntity.RelayState.PENDING, first.getRelayState(),
+                "a refused row releases its claim for a later attempt");
+        assertEquals(1, first.getAttemptCount(), "the refused attempt is recorded once");
         assertFalse(second.isPublished(), "the sweep stops, so the later row is not attempted");
         verify(publisher, times(1)).publish(anyString(), anyString(),
                 anyString());
@@ -284,42 +317,52 @@ final class OutboxRelayTest {
     @Test
     void aRowWithNoConfiguredTopicStaysUnpublished() {
         OutboxEventEntity foreign = row(EventContracts.TRANSACTION_POSTED);
-        when(outboxEvents.claimPendingBatch(any()))
+        when(outboxEvents.claimDueRows(any(), any()))
                 .thenReturn(List.of(foreign));
 
         relay.publishPendingEvents();
 
         verify(publisher, never()).publish(anyString(), anyString(), anyString());
         assertFalse(foreign.isPublished(), "the row stays unpublished rather than reaching a topic");
+        assertEquals(1, foreign.getAttemptCount(), "the unpublishable row records one attempt");
     }
 
     /** Asserts a sweep finding no pending row sends nothing. */
     @Test
     void aSweepFindingNoPendingRowSendsNothing() {
-        when(outboxEvents.claimPendingBatch(any())).thenReturn(List.of());
+        when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of());
 
         relay.publishPendingEvents();
 
         verify(publisher, never()).publish(anyString(), anyString(), anyString());
     }
 
-    /**
-     * Proves the sweep runs in a transaction, which its locking claim cannot do without.
-     *
-     * <p>This is a declaration test rather than a behavioural one, and deliberately so: a mocked
-     * repository answers a locking query happily, so no test on this level can observe the absence of
-     * a transaction. A real datasource answers it with {@code TransactionRequiredException} on every
-     * tick, the scheduler logs the failure, and the relay publishes nothing while appearing to run.
-     * Asserting the annotation is what keeps that failure from returning silently.
-     *
-     * @throws NoSuchMethodException never, because the method asserted on is declared below
-     */
+    /** Asserts a claim left by a stopped instance is recovered before the row is published. */
     @Test
-    void theSweepDeclaresATransactionItsRowLockRequires() throws NoSuchMethodException {
-        assertTrue(OutboxRelay.class.getDeclaredMethod("publishPendingEvents")
-                        .isAnnotationPresent(org.springframework.transaction.annotation.Transactional.class),
-                "publishPendingEvents must be transactional: claimPendingBatch takes a pessimistic "
-                        + "write lock, and a lock outside a transaction cannot be taken at all");
+    void aStrandedClaimIsRecoveredBeforePublication() {
+        OutboxEventEntity stranded = row(EventContracts.TRANSACTION_AUTHORIZED);
+        stranded.claim("stopped-instance", Instant.now().minus(Duration.ofMinutes(3L)));
+        when(outboxEvents.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
+                any(), any(), any())).thenReturn(List.of(stranded));
+        when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(stranded));
+
+        relay.publishPendingEvents();
+
+        assertTrue(stranded.isPublished(), "the recovered row reaches its configured topic");
+        assertEquals(1, stranded.getAttemptCount(), "recovering the expired claim records an attempt");
+        verify(publisher).publish(AUTHORIZED_TOPIC, ACCOUNT_ID, "{}");
+    }
+
+    /** Proves the scheduled method opens an explicit transaction for the locking claim. */
+    @Test
+    void theSweepOpensItsTransactionExplicitly() throws NoSuchMethodException {
+        assertFalse(OutboxRelay.class.getDeclaredMethod("publishPendingEvents")
+                        .isAnnotationPresent(Transactional.class),
+                "the explicit boundary keeps meter writes outside the database transaction");
+
+        relay.publishPendingEvents();
+
+        verify(transactionTemplate).execute(any());
     }
 
     /**
@@ -341,7 +384,7 @@ final class OutboxRelayTest {
         return TransactionAuthorized.of(ACCOUNT_ID, "0000000000683580", "01", "0001", "POS TERM",
                 "Purchase at Abshire-Lowe", amount, "800000000", "Abshire-Lowe",
                 "North Enoshaven", "72112", PanMasker.maskCardNumber(FIXTURE_CARD_NUMBER),
-                "2022-06-10 19:27:53.412000");
+                PanMasker.cardToken(FIXTURE_CARD_NUMBER), "2022-06-10 19:27:53.412000");
     }
 
     /**
@@ -366,5 +409,30 @@ final class OutboxRelayTest {
      */
     private static OutboxEventEntity row(String eventType) {
         return new OutboxEventEntity(UUID.randomUUID(), eventType, ACCOUNT_ID, "{}", Instant.now());
+    }
+
+    /** Builds the typed settings the relay reads. */
+    private static AuthorizationProperties properties() {
+        return new AuthorizationProperties(
+                new AuthorizationProperties.Kafka(
+                        new AuthorizationProperties.Kafka.Topics(
+                                AUTHORIZED_TOPIC,
+                                DECLINED_TOPIC,
+                                "account.state-changed",
+                                "card.updated",
+                                "carddemo.dead-letter"),
+                        new AuthorizationProperties.Kafka.Groups(
+                                "authorization-account-state",
+                                "authorization-card-updated")),
+                new AuthorizationProperties.Outbox(
+                        new AuthorizationProperties.Outbox.Relay(
+                                500L,
+                                100,
+                                "authorization-relay",
+                                Duration.ofMinutes(2L)),
+                        168L),
+                new AuthorizationProperties.ProcessedEvent(168L),
+                new AuthorizationProperties.Retention(3_600_000L, 365L),
+                new AuthorizationProperties.Replica(Duration.ofDays(1L)));
     }
 }

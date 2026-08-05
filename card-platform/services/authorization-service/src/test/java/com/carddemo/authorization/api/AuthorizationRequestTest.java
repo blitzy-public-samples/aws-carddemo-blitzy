@@ -54,7 +54,7 @@ final class AuthorizationRequestTest {
      * satisfies the rule that a request names its subject exactly once.
      */
     private static final AuthorizationRequest VALID = new AuthorizationRequest(
-            "0000000000683580", "01", "0001", "POS TERM", "Purchase at Abshire-Lowe",
+            null, "01", "0001", "POS TERM", "Purchase at Abshire-Lowe",
             "+00000504.77", "800000000", "Abshire-Lowe", "North Enoshaven", "72112",
             CARD_NUMBER, "2022-06-10 19:27:53.412000", "2022-06-10-19.27.53.410000",
             null);
@@ -195,56 +195,67 @@ final class AuthorizationRequestTest {
     }
 
     /**
-     * Asserts a request carrying neither identifier reports the identifier text, and one carrying
-     * either identifier reports none.
+     * Asserts the card number is the only identifier that names a subject.
+     *
+     * <p>{@code app/cbl/COTRN02C.cbl:L206-L209} also accepts an account identifier and resolves a
+     * card from the alternate index, and that branch is not reproduced: the card it returns is
+     * whichever one the index holds first rather than one the caller presented, so a caller naming
+     * an account authorizes a card the caller never held. The record the decision reproduces carries
+     * a card number and no account identifier at all ({@code app/cpy/CVTRA06Y.cpy:L4-L18}).
      */
     @Test
-    void theIdentifierPairAcceptsEitherComponentAndRejectsNeither() {
+    void onlyACardNumberNamesTheSubject() {
         assertEquals(Set.of(AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE),
                 messages(withIdentifiers(null, null)),
-                "a request naming no account and no card is rejected");
-        assertEquals(Set.of(), messages(withIdentifiers(ACCOUNT_ID, null)),
-                "an account identifier alone is enough");
+                "a request naming no card is rejected");
+        assertEquals(Set.of(AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE),
+                messages(withIdentifiers(ACCOUNT_ID, null)),
+                "an account identifier does not substitute for a card number");
         assertEquals(Set.of(), messages(withIdentifiers(null, CARD_NUMBER)),
-                "a card number alone is enough");
+                "a card number alone names the subject");
     }
 
     /**
-     * Asserts both identifiers together are refused rather than one being silently preferred.
+     * Asserts a caller-supplied transaction identifier is refused rather than ignored.
      *
-     * <p>{@code app/cbl/COTRN02C.cbl:L195-L230} keeps the account branch and discards the card
-     * field. This request declines to reproduce that silent preference, because the discarded field
-     * is the one the decision keys on at {@code app/cbl/CBTRN02C.cbl:L382-L383}.
+     * <p>{@code app/cbl/COTRN02C.cbl:L444-L451} allocates the identifier by browsing the file
+     * backwards from high values and adding one, so no screen field offers it. An identifier a
+     * caller chooses is one a caller can repeat, and a repeated identifier merges one payment with
+     * another in the ledger, the alert history and the fraud assessment while every consumer sees a
+     * fresh event identifier and no duplicate to skip.
      */
     @Test
-    void bothIdentifiersTogetherAreRefused() {
-        Set<ConstraintViolation<AuthorizationRequest>> reported =
-                violations(withIdentifiers(ACCOUNT_ID, CARD_NUMBER));
-
-        assertEquals(1, reported.size(),
-                () -> "exactly one violation reports the ambiguity: " + messagesOf(reported));
-        assertEquals(AuthorizationRequest.IDENTIFIER_AMBIGUOUS_MESSAGE,
-                reported.iterator().next().getMessage(),
-                "a caller naming both an account and a card names no subject at all");
+    void aCallerSuppliedTransactionIdentifierIsRefused() {
+        assertEquals(Set.of(AuthorizationRequest.TRANSACTION_ID_NOT_ACCEPTED_MESSAGE),
+                messages(withTransactionId("0000000000683580")),
+                "a caller-supplied transaction identifier reached the decision");
+        assertEquals(Set.of(), messages(withTransactionId(null)),
+                "an absent transaction identifier is the only accepted form");
     }
 
     /**
-     * Asserts a space-filled identifier component raises no ambiguity.
+     * Asserts a valid account identifier may accompany the required card as a domain cross-check.
+     */
+    @Test
+    void bothIdentifiersTogetherReachTheDomainCrossCheck() {
+        assertEquals(Set.of(), messages(withIdentifiers(ACCOUNT_ID, CARD_NUMBER)),
+                "the card is the lookup key and the account is an optional cross-check");
+    }
+
+    /**
+     * Asserts a space-filled account component is absent.
      *
      * <p>The source reads the field from a space-filled map area, so it tests {@code NOT = SPACES}
      * at {@code app/cbl/COTRN02C.cbl:L196} before reading it. This payload reaches the same outcome
      * one step earlier: the canonical constructor turns a blank component into an absent one, so a
      * space-filled account identifier is an absence and the card number alone decides the subject.
-     * The ambiguity check must therefore stay quiet.
      */
     @Test
-    void aSpaceFilledIdentifierComponentRaisesNoAmbiguity() {
+    void aSpaceFilledAccountIdentifierLeavesOnlyTheCard() {
         Set<String> reported = messages(withIdentifiers("   ", CARD_NUMBER));
 
         assertEquals(Set.of(), reported,
-                () -> "a space-filled component is an absence, not a second identifier: " + reported);
-        assertFalse(reported.contains(AuthorizationRequest.IDENTIFIER_AMBIGUOUS_MESSAGE),
-                "the ambiguity check reads content and not spaces");
+                () -> "a space-filled account component is absent: " + reported);
     }
 
     /**
@@ -280,18 +291,23 @@ final class AuthorizationRequestTest {
     /**
      * Asserts every text component refuses a control character, not the description alone.
      *
-     * <p>Six components carry the printable-text guard and report
+     * <p>Five components carry the printable-text guard and report
      * {@value AuthorizationRequest#CONTROL_CHARACTER_MESSAGE}. The type code and the category code
      * carry a numeric class test instead, which admits digits only and so excludes a control
-     * character by a narrower rule and its own verbatim text. Each value below stays inside its own
-     * component width, so the one violation reported is the character class and not the size.
+     * character by a narrower rule and its own verbatim text. The transaction identifier carries an
+     * exact-width printable pattern, which excludes a control character and a wrong width together
+     * and reports {@value AuthorizationRequest#TRANSACTION_ID_WIDTH_MESSAGE}. Each value below stays
+     * inside its own component width, so the one violation reported is the character class and not
+     * the size.
      */
     @Test
     void everyTextComponentRefusesAControlCharacter() {
         String withReturn = "A\rB";
 
-        assertSingleViolation(withTransactionId(withReturn),
-                AuthorizationRequest.CONTROL_CHARACTER_MESSAGE, "transactionId");
+        assertTrue(messages(withTransactionId(withReturn))
+                        .contains(AuthorizationRequest.CONTROL_CHARACTER_MESSAGE),
+                "transactionId no longer reports the character class; it reports that text and the "
+                        + "refusal of any supplied identifier together");
         assertSingleViolation(withSource(withReturn),
                 AuthorizationRequest.CONTROL_CHARACTER_MESSAGE, "source");
         assertSingleViolation(withDescription(withReturn),
@@ -393,18 +409,40 @@ final class AuthorizationRequestTest {
     /** Asserts an account identifier that is not all digits reports its own verbatim text. */
     @Test
     void anAccountIdentifierThatIsNotAllDigitsReportsItsOwnText() {
-        assertEquals(Set.of(AuthorizationRequest.ACCOUNT_ID_NOT_NUMERIC_MESSAGE),
-                messages(withIdentifiers("0000000007X", null)),
+        assertTrue(messages(withIdentifiers("0000000007X", null))
+                        .contains(AuthorizationRequest.ACCOUNT_ID_NOT_NUMERIC_MESSAGE),
                 "the account identifier carries digits only");
+        assertEquals(Set.of(AuthorizationRequest.ACCOUNT_ID_NOT_NUMERIC_MESSAGE),
+                messages(withIdentifiers("0000000007X", CARD_NUMBER)),
+                "the account shape is reported before the domain cross-check runs");
     }
 
-    /** Asserts a short identifier widens to the digits its record field holds. */
+    /**
+     * Asserts a short identifier is refused rather than widened.
+     *
+     * <p>{@code app/bms/COTRN02.bms:L85-L90} declares the account field at {@code LENGTH=11} and
+     * {@code :L104-L108} declares the card field at {@code LENGTH=16}, neither with {@code JUSTIFY}
+     * nor {@code PICIN}. Only {@code app/bms/COMEN01.bms:L147} and {@code app/bms/COADM01.bms:L147}
+     * carry {@code JUSTIFY=(RIGHT,ZERO)} anywhere in {@code app/bms/}, so a short entry arrives
+     * left-aligned with trailing spaces and fails the numeric class test at
+     * {@code app/cbl/COTRN02C.cbl:L197} and {@code :L211}.
+     *
+     * <p>Widening would authorize a different identifier. Zero-padding {@code 4111} produces
+     * {@code 0000000000004111}, a valid sixteen-digit key belonging to whichever cardholder holds it.
+     */
     @Test
-    void aShortIdentifierWidensToTheDigitsItsRecordFieldHolds() {
-        assertEquals("00000000007", withIdentifiers("7", null).canonicalAccountId(),
-                "seven reaches the decision rules as eleven digits");
-        assertEquals("0000000000004111", withIdentifiers(null, "4111").canonicalCardNumber(),
-                "a short card number reaches the decision rules as sixteen digits");
+    void aShortIdentifierIsRefusedRatherThanWidened() {
+        assertNull(withIdentifiers("7", null).canonicalAccountId(),
+                "one digit is not the eleven-digit identifier the record field holds");
+        assertNull(withIdentifiers(null, "4111").canonicalCardNumber(),
+                "four digits are not the sixteen-digit card number the key holds");
+        assertEquals(Set.of(AuthorizationRequest.ACCOUNT_ID_NOT_NUMERIC_MESSAGE,
+                        AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE),
+                messages(withIdentifiers("7", null)),
+                "the short account reports its shape and that no usable identifier remains");
+        assertEquals(Set.of(AuthorizationRequest.CARD_NUMBER_NOT_NUMERIC_MESSAGE),
+                messages(withIdentifiers(null, "4111")),
+                "the present but short card reports its shape");
     }
 
     /**

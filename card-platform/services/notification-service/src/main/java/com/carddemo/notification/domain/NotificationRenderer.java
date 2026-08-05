@@ -10,12 +10,9 @@ import java.util.Objects;
  * Contract for rendering one cardholder alert in one output format, with the fixed-width
  * formatting helpers an implementation calls.
  *
- * <p>ADDITIVE. No COBOL program declares this abstraction. {@code app/cbl/CBSTM03A.CBL} writes
- * two formats from a single procedure division, and the helpers below carry the field assembly and
- * the numeric editing of {@code 5000-CREATE-STATEMENT} at
- * {@code app/cbl/CBSTM03A.CBL:L458-L504}. The abstraction is recorded in
- * {@code card-platform/docs/decision-log.md} (planned) and the record-by-record mapping in
- * {@code card-platform/docs/traceability-matrix.md} (planned).</p>
+ * <p>No COBOL program declares this abstraction. {@code app/cbl/CBSTM03A.CBL} writes two formats
+ * from a single procedure division, and the helpers below carry the field assembly and the numeric
+ * editing of {@code 5000-CREATE-STATEMENT} at {@code app/cbl/CBSTM03A.CBL:L458-L504}.
  *
  * <p>Four COBOL terms recur below. A Picture clause, written {@code PIC}, fixes a field's width
  * and form. A {@code Z} digit position renders a leading zero as a space. A trailing sign
@@ -49,8 +46,7 @@ public interface NotificationRenderer {
     String LINE_SEPARATOR = "\n";
 
     /**
-     * Text a diagnostic rendering carries in place of a component value. ADDITIVE, with no COBOL
-     * ancestor.
+     * Text a diagnostic rendering carries in place of a component value. No COBOL ancestor.
      *
      * <p>{@link CardholderContext#toString()} and {@link TransactionRow#toString()} carry this
      * text in place of every component that names a cardholder, an account, or an amount. Each
@@ -199,9 +195,9 @@ public interface NotificationRenderer {
     /**
      * Renders a fraud alert covering one flagged transaction.
      *
-     * <p>ADDITIVE. {@code app/cbl/CBSTM03A.CBL} carries no fraud concept, so this operation has
-     * no COBOL ancestor. The cardholder fields it renders are the fields of
-     * {@code 5000-CREATE-STATEMENT} at {@code app/cbl/CBSTM03A.CBL:L458-L504}.</p>
+     * <p>No COBOL ancestor. {@code app/cbl/CBSTM03A.CBL} carries no fraud concept, so this
+     * operation has no COBOL ancestor. The cardholder fields it renders are the fields of {@code
+     * 5000-CREATE-STATEMENT} at {@code app/cbl/CBSTM03A.CBL:L458-L504}.</p>
      *
      * <p>The parameters match the payload of the {@code FraudFlagged} event, which carries no
      * amount and no card number. The result carries every record in one string, separated by
@@ -221,10 +217,11 @@ public interface NotificationRenderer {
     /**
      * Escapes the five characters that carry meaning in markup, so a value renders as text.
      *
-     * <p>ADDITIVE. {@code app/cbl/CBSTM03A.CBL} escapes nothing. Its markup path moves cardholder
-     * values straight into {@code FD-HTMLFILE-REC} at {@code app/cbl/CBSTM03A.CBL:L558-L669}. An
-     * implementation reporting {@link RenderedFormat#HTML} routes every value-bearing field
-     * through this method. {@link RenderedFormat#PLAIN_TEXT} does not.</p>
+     * <p>No COBOL ancestor. {@code app/cbl/CBSTM03A.CBL} escapes nothing. Its markup path moves
+     * cardholder values straight into {@code FD-HTMLFILE-REC} at {@code
+     * app/cbl/CBSTM03A.CBL:L558-L669}. An implementation reporting {@link RenderedFormat#HTML}
+     * routes every value-bearing field through this method. {@link RenderedFormat#PLAIN_TEXT} does
+     * not.</p>
      *
      * <p>Five characters are replaced, in this order: {@code &} first, then {@code <},
      * {@code >}, {@code "} and {@code '}. A field of spaces, a field of digits and a field of
@@ -273,8 +270,8 @@ public interface NotificationRenderer {
      *
      * <p>Every control character becomes a space first, through
      * {@link #normalizeControlCharacters(String)}. This method is the one gate every text value
-     * passes on its way into a fixed-width record, so normalizing here covers every record of both
-     * renderers rather than one field of one of them.</p>
+     * passes on its way into a fixed-width record. Normalizing here therefore covers every record
+     * of both renderers, and not one field of one of them.</p>
      *
      * @param value the value to render, or {@code null} for an all-spaces field
      * @param width the field width, taken from a Picture clause; must not be negative
@@ -300,9 +297,9 @@ public interface NotificationRenderer {
      *
      * <p>A record of this renderer is a fixed-width line, laid out by column at
      * {@code app/cbl/CBSTM03A.CBL:L86-L159}. A carriage return or a line feed inside a description
-     * would end that line early and let the characters after it read as a further record, so a
-     * caller could add or forge a line of a cardholder's alert. A tab shifts every column after it,
-     * and an escape opens a terminal control sequence in whatever reads the output.
+     * would end that line early, and the characters after it would read as a further record. A
+     * caller could then add or forge a line of a cardholder's alert. A tab shifts every column
+     * after it, and an escape opens a terminal control sequence in whatever reads the output.
      *
      * <p>The source cannot carry any of them. Each field arrives from a fixed-width map area or a
      * {@code PIC X(n)} display field, and every character of all three hundred records of
@@ -312,9 +309,9 @@ public interface NotificationRenderer {
      * <p>Substitution rather than refusal is deliberate here. The authorization request and the
      * event record both refuse a control character outright, so this renderer runs on text that two
      * earlier gates already accepted. Refusing a third time would turn a value that should never
-     * have arrived into a failed alert for a cardholder, while a space keeps the layout exact and
-     * removes the injection. One character in, one character out: the width cannot change and no
-     * line can be added.
+     * have arrived into a failed alert for a cardholder. A space keeps the layout exact and removes
+     * the injection. One character in, one character out: the width cannot change and no line can
+     * be added.
      *
      * @param value the text to normalize; must not be {@code null}
      * @return the text with every control character replaced by a space, and the same length

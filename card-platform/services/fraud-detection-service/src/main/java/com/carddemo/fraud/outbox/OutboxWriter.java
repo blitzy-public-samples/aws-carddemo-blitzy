@@ -5,8 +5,10 @@ import com.carddemo.events.FraudCleared;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.fraud.entity.OutboxEventEntity;
 import com.carddemo.fraud.repository.OutboxEventRepository;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.Objects;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,7 +20,7 @@ import tools.jackson.databind.json.JsonMapper;
  * Inserts one row of {@code outbox_event} for one fraud assessment event, inside the transaction
  * its caller already opened. Nothing here publishes.
  *
- * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. The outbox pattern's one ancestor construct is
+ * <p>No COBOL ancestor. The outbox pattern's one ancestor construct is
  * the Customer Information Control System (CICS) transient data queue write at
  * {@code app/cbl/CORPT00C.cbl:L517-L523}, in paragraph {@code WIRTE-JOBSUB-TDQ}. There one program
  * writes a Job Control Language (JCL) record and a separate job picks that record up. Shape only,
@@ -32,8 +34,6 @@ import tools.jackson.databind.json.JsonMapper;
  * properties sit at the top level beside the payload properties, so a written {@link FraudFlagged}
  * holds ten properties and a written {@link FraudCleared} holds eight. A nested {@code envelope}
  * property fails both schema documents, which close their property sets.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 public class OutboxWriter {
@@ -49,15 +49,30 @@ public class OutboxWriter {
     /** Writes one event record to text. Jackson 3, matching the platform. */
     private final ObjectMapper objectMapper;
 
+    /** Supplies the creation instant of each stored row. */
+    private final Clock clock;
+
     /**
      * Takes the store this writer saves through and builds the one mapper it writes payloads with.
      *
      * @param outboxEvents store of unpublished events
      * @throws NullPointerException if {@code outboxEvents} is null
      */
+    @Autowired
     public OutboxWriter(OutboxEventRepository outboxEvents) {
+        this(outboxEvents, Clock.systemUTC());
+    }
+
+    /**
+     * Takes the store and the clock used to stamp each row.
+     *
+     * @param outboxEvents store of unpublished events
+     * @param clock        source of row creation instants
+     */
+    OutboxWriter(OutboxEventRepository outboxEvents, Clock clock) {
         this.outboxEvents = Objects.requireNonNull(outboxEvents, "outboxEvents must be present");
         this.objectMapper = eventMapper();
+        this.clock = Objects.requireNonNull(clock, "clock must be present");
     }
 
     /**
@@ -90,7 +105,7 @@ public class OutboxWriter {
         String payload = objectMapper.writeValueAsString(event);
 
         return outboxEvents.save(new OutboxEventEntity(envelope.eventId(), envelope.eventType(),
-                envelope.aggregateId(), payload, Instant.now()));
+                envelope.aggregateId(), payload, Instant.now(clock)));
     }
 
     /**

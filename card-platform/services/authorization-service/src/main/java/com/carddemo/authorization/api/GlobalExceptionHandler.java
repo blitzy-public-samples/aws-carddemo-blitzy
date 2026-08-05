@@ -1,5 +1,6 @@
 package com.carddemo.authorization.api;
 
+import com.carddemo.authorization.domain.AuthorizationService;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import java.util.ArrayList;
@@ -134,6 +135,37 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_CONTENT)
                 .body(ApiErrorResponse.of(HttpStatus.UNPROCESSABLE_CONTENT.value(),
                         ApiErrorResponse.UNPROCESSABLE, INTERNAL_FAILURE_MESSAGE));
+    }
+
+    /**
+     * Answers {@code 503} when this service refused to authorize against a replica it cannot vouch for
+     * the age of.
+     *
+     * <p>This is the one fault a caller should retry, and the status says so. The decline rules read
+     * {@code card_xref} and {@code account_credit_snapshot}, which are copies kept current by
+     * state-change events, and a copy whose events stopped arriving keeps answering with whatever it
+     * last knew. Once the replica catches up the same request receives a real decision, which is why a
+     * retryable status is the honest answer and {@code 500} is not.
+     *
+     * <p>It is deliberately not a decline. {@code app/cbl/CBTRN02C.cbl:L385-L420} defines exactly four
+     * reject reasons and the published contract enumerates those four, so there is no fifth to report;
+     * and a decline would tell the caller something false about the cardholder, whose card and account
+     * were both valid. This service was the component unable to answer.
+     *
+     * <p>The message names the account and the window and no card number, so it is safe to log. The
+     * body still carries one fixed text, because a caller learns nothing useful from the window.
+     *
+     * @param failure the refusal
+     * @return {@code 503} carrying one fixed text
+     */
+    @ExceptionHandler(AuthorizationService.StaleReplicaException.class)
+    public ResponseEntity<ApiErrorResponse> onStaleReplica(
+            AuthorizationService.StaleReplicaException failure) {
+
+        log.error("Refusing an authorization call: {}", failure.getMessage());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiErrorResponse.of(HttpStatus.SERVICE_UNAVAILABLE.value(),
+                        ApiErrorResponse.INTERNAL_FAILURE, INTERNAL_FAILURE_MESSAGE));
     }
 
     /**

@@ -45,6 +45,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>No Spring context, no broker and no database take part, so {@code mvn test} passes on a clean
  * machine. The two render operations belong to their own implementations, and no assertion here
  * reads the content of a rendered alert.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("NotificationRenderer, the fixed-width edits and field assembly of CBSTM03A")
 class NotificationRendererTest {

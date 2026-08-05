@@ -16,7 +16,11 @@ import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.EventEnvelope;
 import java.lang.reflect.RecordComponent;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -43,6 +47,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * the one failing text from the label at {@code app/cbl/COACTUPC.cbl:L1545}.</p>
  *
  * <p>Every comparison is exact string equality and no failure text carries a fixture value.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 class ValidationEquivalenceTest {
 
@@ -99,32 +105,32 @@ class ValidationEquivalenceTest {
     private static final int ONE_STEP_OUTSIDE_THE_RANGE = 1;
 
     /**
-     * ADDITIVE. Constructed score one step below the lower bound. No record of
+     * No COBOL ancestor. Constructed score one step below the lower bound. No record of
      * {@code app/data/ASCII/custdata.txt} holds it.
      */
     private static final int SCORE_BELOW_LOWER_BOUND =
             LOWEST_PASSING_SCORE - ONE_STEP_OUTSIDE_THE_RANGE;
 
     /**
-     * ADDITIVE. Constructed score one step above the upper bound. No record of
+     * No COBOL ancestor. Constructed score one step above the upper bound. No record of
      * {@code app/data/ASCII/custdata.txt} holds it.
      */
     private static final int SCORE_ABOVE_UPPER_BOUND =
             HIGHEST_PASSING_SCORE + ONE_STEP_OUTSIDE_THE_RANGE;
 
     /**
-     * ADDITIVE. Constructed score whose leading character is a zero. The {@code PIC 9(03)} redefine
-     * at {@code app/cbl/COACTUPC.cbl:L846-L847} reads the three characters in place.
+     * No COBOL ancestor. Constructed score whose leading character is a zero. The {@code PIC 9(03)}
+     * redefine at {@code app/cbl/COACTUPC.cbl:L846-L847} reads the three characters in place.
      */
     private static final String SCORE_WITH_A_LEADING_ZERO = "030";
 
     /**
-     * ADDITIVE. Constructed score narrower than
+     * No COBOL ancestor. Constructed score narrower than
      * {@link PicClause#CUST_FICO_CREDIT_SCORE_WIDTH}.
      */
     private static final String SCORE_OF_ANOTHER_WIDTH = "50";
 
-    /** ADDITIVE. Constructed score holding one character outside the digit class. */
+    /** No COBOL ancestor. Constructed score holding one character outside the digit class. */
     private static final String SCORE_WITH_A_NON_DIGIT = "3x0";
 
     /** Label {@code 'FICO Score'} moved at {@code app/cbl/COACTUPC.cbl:L1545}. */
@@ -185,23 +191,23 @@ class ValidationEquivalenceTest {
     /**
      * The number of components {@code CardUpdated.toString()} replaces with
      * {@link EventEnvelope#WITHHELD}: the aggregate identifier, the account identifier, the masked
-     * card number, the embossed name, the expiry date and the active status.
+     * card number, the expiry date and the active status.
      *
      * <p>The rendering prints the event identifier and withholds everything else, so this count is
      * the guarantee that rendering carries. A component added to the record without a withholding
      * entry in the rendering moves this count and fails the test below.
      */
-    private static final int WITHHELD_RENDERED_COMPONENTS = 6;
+    private static final int WITHHELD_RENDERED_COMPONENTS = 5;
 
     /**
      * Stands in for the event identifier while a rendering is measured for a card value.
      *
      * <p>{@code CardUpdated.toString()} prints {@code eventId}, a random {@link java.util.UUID}
      * whose hexadecimal digits are drawn from {@code 0-9a-f}. A three-digit
-     * {@code CARD-CVV-CD} at {@code app/cpy/CVACT02Y.cpy:L7} is therefore a substring of roughly one
-     * rendering in every one hundred and thirty by coincidence alone, which a bare containment check
-     * over the whole rendering reports as a leak. Eliding the identifier first leaves the check
-     * measuring the components this contract is about.
+     * {@code CARD-CVV-CD} at {@code app/cpy/CVACT02Y.cpy:L7} is therefore a substring of roughly
+     * one rendering in every one hundred and thirty by coincidence alone. A bare containment check
+     * over the whole rendering reports that coincidence as a leak. Eliding the identifier first
+     * leaves the check measuring the components this contract is about.
      */
     private static final String ELIDED_EVENT_IDENTIFIER = "<eventId>";
 
@@ -262,6 +268,40 @@ class ValidationEquivalenceTest {
             occurrences++;
         }
         return occurrences;
+    }
+
+    /** Returns a one-way fingerprint for a sensitive fixture value. */
+    private static String sensitiveFingerprint(String value) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new AssertionError("SHA-256 must be available", unavailable);
+        }
+    }
+
+    /** Compares two sensitive values without placing either value in an assertion result. */
+    private static void assertSameSensitiveValue(
+            String expected,
+            String actual,
+            String message) {
+        assertTrue(sensitiveFingerprint(expected).equals(sensitiveFingerprint(actual)), message);
+    }
+
+    /** Proves two sensitive values differ without placing either value in an assertion result. */
+    private static void assertDifferentSensitiveValue(
+            String first,
+            String second,
+            String message) {
+        assertFalse(sensitiveFingerprint(first).equals(sensitiveFingerprint(second)), message);
+    }
+
+    /** Proves one sensitive value is absent without placing it in an assertion result. */
+    private static void assertSensitiveValueAbsent(
+            String rendering,
+            String sensitiveValue,
+            String message) {
+        assertFalse(rendering.contains(sensitiveValue), message);
     }
 
     /**
@@ -583,7 +623,7 @@ class ValidationEquivalenceTest {
     @DisplayName("FICO-RANGE-IS-VALID at COACTUPC L848-L849")
     class CreditScoreRange {
 
-        /** ADDITIVE. Holds the score one step below the lower bound outside the range. */
+        /** No COBOL ancestor. Holds the score one step below the lower bound outside the range. */
         @Test
         @DisplayName("a score one step below the lower bound fails")
         void aScoreOneStepBelowTheLowerBoundFails() {
@@ -614,7 +654,7 @@ class ValidationEquivalenceTest {
                     + "inclusive");
         }
 
-        /** ADDITIVE. Holds the score one step above the upper bound outside the range. */
+        /** No COBOL ancestor. Holds the score one step above the upper bound outside the range. */
         @Test
         @DisplayName("a score one step above the upper bound fails")
         void aScoreOneStepAboveTheUpperBoundFails() {
@@ -626,8 +666,8 @@ class ValidationEquivalenceTest {
         }
 
         /**
-         * ADDITIVE. Holds a leading zero read in place, which the {@code PIC 9(03)} redefine at
-         * {@code app/cbl/COACTUPC.cbl:L846-L847} gives.
+         * No COBOL ancestor. Holds a leading zero read in place, which the {@code PIC 9(03)}
+         * redefine at {@code app/cbl/COACTUPC.cbl:L846-L847} gives.
          */
         @Test
         @DisplayName("a leading zero reads in place and fails the range")
@@ -641,9 +681,9 @@ class ValidationEquivalenceTest {
         }
 
         /**
-         * ADDITIVE. Holds a score outside the digit class inside the one message slot, with no
-         * exception and no parse. {@code app/cbl/COACTUPC.cbl:L1549-L1550} runs the numeric edit
-         * and {@code app/cbl/COACTUPC.cbl:L1553} gates the range paragraph on its verdict.
+         * No COBOL ancestor. Holds a score outside the digit class inside the one message slot,
+         * with no exception and no parse. {@code app/cbl/COACTUPC.cbl:L1549-L1550} runs the numeric
+         * edit and {@code app/cbl/COACTUPC.cbl:L1553} gates the range paragraph on its verdict.
          */
         @Test
         @DisplayName("a score outside the digit class needs no parse and raises nothing")
@@ -657,7 +697,7 @@ class ValidationEquivalenceTest {
                             + "text the STRING at app/cbl/COACTUPC.cbl:L2521-L2526 builds");
         }
 
-        /** ADDITIVE. Holds a score of another width inside the same single message slot. */
+        /** No COBOL ancestor. Holds a score of another width in the same single message slot. */
         @Test
         @DisplayName("a score of another width carries the same one text")
         void aScoreOfAnotherWidthCarriesTheSameText() {
@@ -803,7 +843,7 @@ class ValidationEquivalenceTest {
      * Number (PAN) out of every production output boundary the card service ships.
      *
      * <p>Each test below starts from the full values of {@code app/data/ASCII/carddata.txt} and
-     * drives them through production code: the masking step of
+     * drives them through production code. Three boundaries are measured: the masking step of
      * {@code CardUpdated.ofUnmaskedCardNumber}, the masked form the response records carry, and the
      * component sets those records declare. A rendering produced by a helper of this module proves
      * nothing about what production emits, so no test here reads one.</p>
@@ -834,10 +874,10 @@ class ValidationEquivalenceTest {
             int ordinal = FIRST_RECORD_ORDINAL;
             for (CopybookRecordParser.CardRecord card : cards) {
                 CardUpdated published = CardUpdated.ofUnmaskedCardNumber(
-                        card.cardNumber(), card.accountId(), card.embossedName(),
-                        card.expirationDate(), card.activeStatus());
+                        card.cardNumber(), card.accountId(), card.expirationDate(),
+                        card.activeStatus());
 
-                assertFalse(published.maskedCardNumber().equals(card.cardNumber()),
+                assertDifferentSensitiveValue(published.maskedCardNumber(), card.cardNumber(),
                         "the masking step of CardUpdated.ofUnmaskedCardNumber returned the "
                                 + "full CARD-NUM at app/cpy/CVACT02Y.cpy:L5 of "
                                 + "app/data/ASCII/carddata.txt record " + ordinal);
@@ -853,13 +893,14 @@ class ValidationEquivalenceTest {
                         "the rendering of the published event of app/data/ASCII/carddata.txt "
                                 + "record " + ordinal + " stopped withholding every payload "
                                 + "component");
-                assertFalse(rendered.contains(card.cardVerificationValue()),
+                assertSensitiveValueAbsent(rendered, card.cardVerificationValue(),
                         "CARD-CVV-CD at app/cpy/CVACT02Y.cpy:L7 reached the published event of "
                                 + "app/data/ASCII/carddata.txt record " + ordinal);
-                assertFalse(rendered.contains(card.cardNumber()),
+                assertSensitiveValueAbsent(rendered, card.cardNumber(),
                         "CARD-NUM at app/cpy/CVACT02Y.cpy:L5 reached the published event of "
                                 + "app/data/ASCII/carddata.txt record " + ordinal);
-                assertFalse(published.maskedCardNumber().contains(card.cardVerificationValue()),
+                assertSensitiveValueAbsent(
+                        published.maskedCardNumber(), card.cardVerificationValue(),
                         "CARD-CVV-CD at app/cpy/CVACT02Y.cpy:L7 reached the masked card number of "
                                 + "app/data/ASCII/carddata.txt record " + ordinal);
                 ordinal++;
@@ -868,10 +909,10 @@ class ValidationEquivalenceTest {
 
         /**
          * Holds the response and event records away from both card values by construction. No
-         * component of any of the three reaches a verification value, and every component that
-         * reaches a card number is either named for the masked form or is one of the components
-         * listed in {@link #MASKED_BY_CONTRACT}, whose carried value the test below measures against
-         * the masked pattern for every record of the fixture.
+         * component of any of the three reaches a verification value. Every component that reaches
+         * a card number is either named for the masked form or listed in
+         * {@link #MASKED_BY_CONTRACT}. The test below measures each listed component against the
+         * masked pattern for every record of the fixture.
          */
         @Test
         @DisplayName("no card response record declares a verification value or an unmasked number")
@@ -936,13 +977,16 @@ class ValidationEquivalenceTest {
                                 card.activeStatus()).maskedCardNumber());
 
                 for (String carried : carriedValues) {
+                    assertSameSensitiveValue(masked, carried,
+                            "the response slot of app/data/ASCII/carddata.txt record " + ordinal
+                                    + " stopped carrying the production mask");
                     assertEquals(CardUpdated.MASKED_CARD_NUMBER_LENGTH, carried.length(),
                             "the masked form of app/data/ASCII/carddata.txt record " + ordinal
                                     + " stopped holding the width CardUpdated publishes");
                     assertTrue(carried.endsWith(lastFour),
                             "the masked form of app/data/ASCII/carddata.txt record " + ordinal
                                     + " stopped keeping the last four characters");
-                    assertNotEquals(card.cardNumber(), carried,
+                    assertDifferentSensitiveValue(card.cardNumber(), carried,
                             "the masked form of app/data/ASCII/carddata.txt record " + ordinal
                                     + " equals the full CARD-NUM at app/cpy/CVACT02Y.cpy:L5");
                     assertTrue(carried.matches(CardUpdated.MASKED_CARD_NUMBER_PATTERN),

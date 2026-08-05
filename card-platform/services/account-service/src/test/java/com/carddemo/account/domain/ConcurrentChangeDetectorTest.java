@@ -1,5 +1,16 @@
 package com.carddemo.account.domain;
 
+import com.carddemo.account.config.ObservabilityConfig;
+import com.carddemo.account.entity.AccountEntity;
+import com.carddemo.account.entity.CustomerEntity;
+import com.carddemo.account.outbox.OutboxWriter;
+import com.carddemo.account.repository.AccountRepository;
+import com.carddemo.account.repository.CardCrossReferenceRepository;
+import com.carddemo.account.repository.CustomerRepository;
+import com.carddemo.cobol.CobolDecimal;
+import com.carddemo.cobol.PicClause;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import jakarta.persistence.Version;
 import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -9,9 +20,6 @@ import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Stream;
-
-import jakarta.persistence.Version;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -19,14 +27,13 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
-
-import com.carddemo.account.entity.AccountEntity;
-import com.carddemo.account.entity.CustomerEntity;
-import com.carddemo.cobol.CobolDecimal;
-import com.carddemo.cobol.PicClause;
-
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 /**
  * Tests for {@link ConcurrentChangeDetector}, the re-read comparison of paragraph
@@ -42,11 +49,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * <p>The customer count closes at seventeen. app/cpy/CVCUS01Y.cpy:L5-L22 declares eighteen mapped
  * fields, and the condition reads every one except the {@code CUST-ID} key.</p>
  *
- * <p>Two findings the tests below exercise carry their citations in
- * card-platform/docs/business-rule-flags.md. The date of birth reads one offset set on the re-read
- * side and a second on the saved side, at app/cbl/COACTUPC.cbl:L4174-L4179. Both failure branches,
- * at app/cbl/COACTUPC.cbl:L4144 and app/cbl/COACTUPC.cbl:L4190, jump to
- * app/cbl/COACTUPC.cbl:L4105, which precedes them.</p>
+ * <p>The date of birth reads one offset set on the re-read side and a second on the saved side, at
+ * app/cbl/COACTUPC.cbl:L4174-L4179. Both failure branches, at app/cbl/COACTUPC.cbl:L4144 and
+ * app/cbl/COACTUPC.cbl:L4190, jump to app/cbl/COACTUPC.cbl:L4105, which precedes them.</p>
  *
  * <p>Paragraph {@code 1205-COMPARE-OLD-NEW} sits outside this class. That paragraph asks whether
  * the caller supplied a new value, and {@code 9700-CHECK-CHANGE-IN-REC} asks whether the stored
@@ -54,6 +59,8 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  *
  * <p>No Spring context, no container and no database take part. Every value here is a literal, and
  * no method reads a file.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("ConcurrentChangeDetector, the re-read comparison at app/cbl/COACTUPC.cbl:L4109-L4195")
 class ConcurrentChangeDetectorTest {
@@ -166,17 +173,18 @@ class ConcurrentChangeDetectorTest {
      * Social Security Number, {@value PicClause#CUST_SSN_WIDTH} digits from
      * app/cpy/CVCUS01Y.cpy:L17.
      */
-    private static final String SOCIAL_SECURITY_NUMBER = "020973888";
+    private static final String SOCIAL_SECURITY_NUMBER = syntheticSocialSecurityNumber(1);
 
     /** Government-issued identifier, twenty characters from app/cpy/CVCUS01Y.cpy:L18. */
-    private static final String GOVERNMENT_ISSUED_ID = "00000000000049368437";
+    private static final String GOVERNMENT_ISSUED_ID = syntheticGovernmentIssuedId("TEST", 1);
 
     /**
      * A government-issued identifier opening with two letters, within the twenty characters
      * app/cpy/CVCUS01Y.cpy:L18 declares. A case fold reaches the two letters and leaves the
      * digits.
      */
-    private static final String LETTER_BEARING_GOVERNMENT_ISSUED_ID = "AB0000000049368437";
+    private static final String LETTER_BEARING_GOVERNMENT_ISSUED_ID =
+            syntheticGovernmentIssuedId("AB", 2);
 
     /**
      * Date of birth from app/cpy/CVCUS01Y.cpy:L19, {@value PicClause#CUST_DOB_WIDTH} characters
@@ -383,18 +391,72 @@ class ConcurrentChangeDetectorTest {
     }
 
     @Test
-    @DisplayName("A changed account identifier reports no change, absent from "
-            + "app/cbl/COACTUPC.cbl:L4115-L4140")
-    void accountIdentifierChangeReportsNoChange() {
+    @DisplayName("the source comparator omits the account identifier; the update boundary owns it")
+    void sourceComparatorOmitsTheAccountIdentifier() {
         assertThat(accountChanged(account -> account.setAccountId(OTHER_ACCOUNT_ID))).isFalse();
     }
 
     @Test
-    @DisplayName("A changed customer identifier reports no change, absent from "
-            + "app/cbl/COACTUPC.cbl:L4152-L4186")
-    void customerIdentifierChangeReportsNoChange() {
+    @DisplayName("the source comparator omits the customer identifier; the update boundary owns it")
+    void sourceComparatorOmitsTheCustomerIdentifier() {
         assertThat(customerChanged(customer -> customer.setCustomerId(OTHER_CUSTOMER_ID)))
                 .isFalse();
+    }
+
+    @Nested
+    @DisplayName("Identifier ownership at the update boundary")
+    class IdentifierOwnership {
+
+        @Test
+        @DisplayName("a submitted customer identifier outside the fetched pair is refused")
+        void aMismatchedCustomerIdentifierIsRefusedBeforeAnyWrite() {
+            AccountRepository accounts = mock(AccountRepository.class);
+            CustomerRepository customers = mock(CustomerRepository.class);
+            OutboxWriter outbox = mock(OutboxWriter.class);
+            AccountUpdateService updateService = updateService(accounts, customers, outbox);
+            AccountEntity proposedAccount = account();
+            CustomerEntity proposedCustomer = customer();
+            AccountEntity fetchedAccount = account();
+            CustomerEntity fetchedCustomer = customer();
+            proposedCustomer.setCustomerId(OTHER_CUSTOMER_ID);
+
+            var result = updateService.updateAccount(
+                    proposedAccount, proposedCustomer, fetchedAccount, fetchedCustomer);
+
+            assertThat(result.valid()).isFalse();
+            assertThat(result.message())
+                    .isEqualTo(AccountUpdateService.IDENTIFIER_OWNERSHIP_MISMATCH);
+            verifyNoInteractions(accounts, customers, outbox);
+        }
+
+        @Test
+        @DisplayName("a submitted account identifier outside the fetched pair is refused")
+        void aMismatchedAccountIdentifierIsRefusedBeforeAnyWrite() {
+            AccountRepository accounts = mock(AccountRepository.class);
+            CustomerRepository customers = mock(CustomerRepository.class);
+            OutboxWriter outbox = mock(OutboxWriter.class);
+            AccountUpdateService updateService = updateService(accounts, customers, outbox);
+            AccountEntity proposedAccount = account();
+            CustomerEntity proposedCustomer = customer();
+            AccountEntity fetchedAccount = account();
+            CustomerEntity fetchedCustomer = customer();
+            proposedAccount.setAccountId(OTHER_ACCOUNT_ID);
+
+            var result = updateService.updateAccount(
+                    proposedAccount, proposedCustomer, fetchedAccount, fetchedCustomer);
+
+            assertThat(result.valid()).isFalse();
+            assertThat(result.message())
+                    .isEqualTo(AccountUpdateService.IDENTIFIER_OWNERSHIP_MISMATCH);
+            verifyNoInteractions(accounts, customers, outbox);
+        }
+
+        private AccountUpdateService updateService(AccountRepository accounts,
+                CustomerRepository customers, OutboxWriter outbox) {
+            return new AccountUpdateService(accounts, customers,
+                    mock(CardCrossReferenceRepository.class), DETECTOR, outbox,
+                    immediateTransactions(), accountMeters());
+        }
     }
 
     /**
@@ -876,4 +938,33 @@ class ConcurrentChangeDetectorTest {
     void absentRecordsOnBothSidesReportNoChange() {
         assertThat(DETECTOR.storedRecordChanged(null, null, null, null)).isFalse();
     }
+
+    /** Builds a clearly synthetic nine-digit Social Security Number. */
+    private static String syntheticSocialSecurityNumber(long serial) {
+        return "999" + String.format("%06d", serial);
+    }
+
+    /** Builds a clearly synthetic twenty-character government identifier. */
+    private static String syntheticGovernmentIssuedId(String prefix, long serial) {
+        return prefix + String.format("%0" + (20 - prefix.length()) + "d", serial);
+    }
+
+    /** Runs a transaction callback directly, so no transaction manager takes part. */
+    private static TransactionTemplate immediateTransactions() {
+        return new TransactionTemplate() {
+
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public <T> T execute(TransactionCallback<T> action) {
+                return action.doInTransaction(new SimpleTransactionStatus());
+            }
+        };
+    }
+
+    /** The shared meter holder this service records through. */
+    private static ObservabilityConfig.AccountMeters accountMeters() {
+        return new ObservabilityConfig().accountMeters(new SimpleMeterRegistry());
+    }
+
 }

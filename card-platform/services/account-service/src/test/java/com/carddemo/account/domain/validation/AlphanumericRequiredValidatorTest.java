@@ -61,13 +61,13 @@ class AlphanumericRequiredValidatorTest {
     private static final String NOT_ALPHANUMERIC = " can have numbers or alphabets only.";
 
     /**
-     * ADDITIVE message text for a value wider than the edited field. No source literal carries
+     * Message text for a value wider than the edited field. No source literal carries
      * this text: the source moves a fixed-width screen field into its edit field, so a wider
      * value cannot reach paragraph 1230.
      */
     private static final String NO_LONGER_THAN = " must be no longer than ";
 
-    /** ADDITIVE. Closes the text {@link #NO_LONGER_THAN} opens. */
+    /** No COBOL ancestor. Closes the text {@link #NO_LONGER_THAN} opens. */
     private static final String CHARACTERS = " characters.";
 
     /**
@@ -330,7 +330,7 @@ class AlphanumericRequiredValidatorTest {
         }
 
         // The first two texts are source literals at app/cbl/COACTUPC.cbl:L1972 and L1999. The
-        // third is ADDITIVE and reports the edited width.
+        // third has no COBOL ancestor and reports the edited width.
         assertThat(messages).containsExactlyInAnyOrder(
                 LABEL + NOT_SUPPLIED,
                 LABEL + NOT_ALPHANUMERIC,
@@ -352,9 +352,9 @@ class AlphanumericRequiredValidatorTest {
         assertThat(insideWindow.valid()).isFalse();
         assertThat(insideWindow.message()).isEqualTo(LABEL + NOT_ALPHANUMERIC);
 
-        // ADDITIVE. A caller of this edit can supply a value wider than the edited field, and the
-        // edit refuses one that carries a character the window would not cover. It therefore never
-        // passes a verdict on the first characters of a longer value.
+        // No COBOL ancestor. A caller of this edit can supply a value wider than the edited field,
+        // and the edit refuses one that carries a character the window would not cover. It
+        // therefore never passes a verdict on the first characters of a longer value.
         assertThat(pastWindow.valid()).isFalse();
         assertThat(pastWindow.message())
                 .isEqualTo(LABEL + NO_LONGER_THAN + (value.length() - 1) + CHARACTERS);

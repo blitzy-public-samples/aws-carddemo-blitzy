@@ -1,22 +1,11 @@
-# card-platform ledger-posting-service.
-#
-# The Representational State Transfer (REST) interface this module serves.
-# One read-only endpoint, hand-written and checked in.
-# api/BalanceQueryController serves the path below, and no documentation
-# generator joins the classpath.
-#
-# Field provenance. Paragraph 1200-SETUP-SCREEN-VARS at
-# app/cbl/COACTVWC.cbl:L460-L491 moves ten account fields to the account
-# view screen. Three of them belong to this service: ACCT-CURR-BAL at
-# :L475, ACCT-CURR-CYC-CREDIT at :L482 and ACCT-CURR-CYC-DEBIT at :L485.
-# The account service owns the other seven, together with the whole
-# 300-byte record they sit in. The account identifier this response echoes
-# is the value moved at :L468.
-#
-# Field-by-field mapping and every omitted field:
-# card-platform/docs/traceability-matrix.md
-# Flagged source findings: card-platform/docs/business-rule-flags.md
-# Design decisions: card-platform/docs/decision-log.md
+# card-platform ledger-posting-service. The Representational State Transfer (REST) interface this
+# module serves. One read-only endpoint, hand-written and checked in. api/BalanceQueryController
+# serves the path below, and no documentation generator joins the classpath. Field provenance.
+# Paragraph 1200-SETUP-SCREEN-VARS at app/cbl/COACTVWC.cbl:L460-L491 moves ten account fields to the
+# account view screen. Three of them belong to this service: ACCT-CURR-BAL at :L475,
+# ACCT-CURR-CYC-CREDIT at :L482 and ACCT-CURR-CYC-DEBIT at :L485. The account service owns the other
+# seven, together with the whole 300-byte record they sit in. The account identifier this response
+# echoes is the value moved at :L468.
 ---
 openapi: 3.1.0
 

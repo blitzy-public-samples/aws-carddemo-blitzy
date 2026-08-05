@@ -19,20 +19,21 @@ import org.springframework.kafka.core.ProducerFactory;
  * Producer wiring for the authorization service: the producer factory and the template that carry
  * every published event to the broker.
  *
- * <p>ADDITIVE. No COBOL program declares an event bus. The nearest source construct is the
+ * <p>No COBOL program declares an event bus. The nearest source construct is the
  * transient data queue write at {@code app/cbl/CORPT00C.cbl:L517-L518}.
  *
  * <p>Four settings are pinned in this class: text serialization on the key, text serialization on
- * the value, {@code acks=all} and {@code enable.idempotence=true}. Idempotent production is
- * ADDITIVE as well. The source detects no duplicate delivery anywhere, and a replayed feed drives
- * the transaction write at {@code app/cbl/CBTRN02C.cbl:L562-L579} into a duplicate-key condition
- * and on to its abend routine. All eight file definitions in {@code app/csd/CARDDEMO.CSD} carry
- * {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
+ * the value, {@code acks=all} and {@code enable.idempotence=true}. Idempotent production has no
+ * COBOL ancestor either. The source detects no duplicate delivery anywhere, and a replayed feed
+ * drives the transaction write at {@code app/cbl/CBTRN02C.cbl:L562-L579} into a duplicate-key
+ * condition and on to its abend routine. All eight file definitions in {@code app/csd/CARDDEMO.CSD}
+ * carry {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
  *
- * <p>The message key is the eleven-digit account identifier of {@code XREF-ACCT-ID PIC 9(11)} at
- * {@code app/cpy/CVACT03Y.cpy:L7}. The key travels as text, so a leading zero survives. A broker
- * keeps message order inside one partition and the key selects the partition, so every event of one
- * account lands on one partition and stays in order.
+ * <p>Most message keys are the eleven-digit account identifier of
+ * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. The unresolved-card decline
+ * has no account and uses its sixteen-character transaction identifier. Both travel as text, so
+ * leading zeros survive. A broker keeps message order inside one partition and the key selects the
+ * partition.
  *
  * <p>Neither bean below reaches the broker while the context builds, and a producer connects on its
  * first send. A send that finds no broker fails, and the outbox row it came from stays unpublished
@@ -41,7 +42,6 @@ import org.springframework.kafka.core.ProducerFactory;
  * <p>{@code messaging/KafkaEventPublisher} is the one component that takes the template, and a
  * different event bus needs one more implementation of {@code messaging/EventPublisherPort}.
  *
- * <p>Decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
 public class KafkaProducerConfig {

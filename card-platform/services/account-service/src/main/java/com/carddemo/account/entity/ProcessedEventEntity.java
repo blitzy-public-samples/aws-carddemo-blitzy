@@ -13,26 +13,25 @@ import java.util.UUID;
  * Jakarta Persistence entity for the {@code processed_event} table: the identifier of one consumed
  * event and the time a consumer processed it.
  *
- * <p>Additive, with no COBOL ancestor. No copybook and no program declares this record, and the
+ * <p>No COBOL ancestor. No copybook and no program declares this record, and the
  * source application detects no duplicate anywhere. {@code app/cbl/CBTRN02C.cbl:L562-L579} writes
  * each posted transaction with no duplicate check and routes every file status other than
  * {@code '00'} to {@code 9999-ABEND-PROGRAM}.</p>
  *
- * <p>The account service registers no listener, so it writes no row here today.
- * {@code card-platform/.env.example} declares four consumer groups and none of them is an account
- * group. The table is declared because every service of this platform declares the same marker with
- * the same two columns, so a consumer added to this service inherits the contract unchanged rather
+ * <p>The account service registers no listener, so it writes no row here today. {@code
+ * card-platform/.env.example} declares four consumer groups and none of them is an account group.
+ * The table is declared because every service of this platform declares the same marker with the
+ * same three columns, so a consumer added to this service inherits the contract unchanged rather
  * than inventing one.</p>
  *
- * <p>Two columns carry the marker: {@code event_id}, a Universally Unique Identifier (UUID) that is
- * also the primary key, and {@code processed_at}, the moment a consumer's side effects committed. A
- * second insert of one identifier violates that primary key. A consumer inserts the row in the same
- * local transaction as those side effects, and {@code repository/ProcessedEventRepository} owns the
- * existence check, the insert and the retention purge. Configuration supplies the schema name, and
- * the table annotation names none.</p>
- *
- * <p>{@code card-platform/docs/decision-log.md} (planned) records the idempotent-consumer
- * decision.</p>
+ * <p>Three columns carry the marker: {@code event_id}, a Universally Unique Identifier (UUID) that
+ * is also the primary key, {@code processed_at}, the moment a consumer's side effects committed,
+ * and {@code consumed_topic}, the topic the delivery arrived on. An index over {@code processed_at}
+ * serves the retention purge. {@code V1__schema.sql} is authoritative for all four. A second insert
+ * of one identifier violates the primary key. A consumer commits the row in the same local
+ * transaction as those side effects, marker after effects, and {@code
+ * repository/ProcessedEventRepository} owns the existence check, the insert and the retention
+ * purge. Configuration supplies the schema name, and the table annotation names none.</p>
  */
 @Entity
 @Table(name = "processed_event",
@@ -63,10 +62,10 @@ public class ProcessedEventEntity {
      * Which topic the delivery that first handled this event arrived on, or null when the
      * marker was written without one.
      *
-     * <p>A marker on its own says an event was handled and nothing about where it came from, which
-     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
-     * came from or arrive on a dead-letter topic during a recovery, and those are different
-     * situations. Recording the topic separates them.
+     * <p>A marker on its own says an event was handled and nothing about where it came from,
+     * which is not enough to investigate a replay. The same identifier can be redelivered on the
+     * topic it came from, or arrive on a dead-letter topic during a recovery. Those are different
+     * situations, and recording the topic separates them.
      */
     @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
     private String consumedTopic;
@@ -140,8 +139,8 @@ public class ProcessedEventEntity {
     }
 
     /**
-     * Renders both columns. Neither one carries a card number, a card verification value or a
-     * monetary value.
+     * Renders the event identifier and the processing time, and omits {@code consumedTopic}.
+     * Neither rendered value carries a card number, a card verification value or a monetary value.
      *
      * @return the event identifier and the processing time
      */

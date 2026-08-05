@@ -17,8 +17,8 @@ import java.util.Objects;
 /**
  * One event row in the {@code outbox_event} table.
  *
- * <p>ADDITIVE. This entity has no COBOL ancestor. No copybook and no program in the CardDemo
- * source declares an outbox record. The locators below are references, not ancestors.
+ * <p>No COBOL ancestor. This entity has no COBOL ancestor. No copybook and no program in the
+ * CardDemo source declares an outbox record. The locators below are references, not ancestors.
  *
  * <p>The source carries one asynchronous handoff, {@code EXEC CICS WRITEQ TD} with
  * {@code QUEUE ('JOBS')} at {@code app/cbl/CORPT00C.cbl:L517-L518}. All eight file definitions in
@@ -28,25 +28,25 @@ import java.util.Objects;
  * reaches {@code SYNCPOINT ROLLBACK} at {@code app/cbl/COACTUPC.cbl:L4100}.
  * {@code app/cbl/CBTRN02C.cbl:L440-L442} runs three writes with no rollback.
  *
- * <p>The planned outbox writer is to insert one row in the same local transaction as the domain
- * write. The planned relay is to publish the row, then mark it sent in a separate transaction. An
- * account update is to write one row, and a cycle-close one row. A read writes none, and no
- * account-read event exists. Neither component is authored yet, so the table is empty.
- *
  * <p>{@code outbox/OutboxWriter} inserts one row in the same local transaction as the domain write.
  * {@code outbox/OutboxRelay} publishes the row, then marks it sent in a separate transaction. An
  * account update writes one row, and a cycle-close writes one row. A read writes none, and no
- * account-read event exists. {@code card-platform/docs/event-flow.md} (planned) draws the path.
+ * account-read event exists.
  *
- * <p>The relay claims unpublished rows ordered by {@code created_at} ascending, then
- * {@code event_id} ascending. Two rows can hold one timestamp, and the primary key completes the
- * order. {@code V1__schema.sql} declares the partial index {@code ix_outbox_event_pending} on
- * {@code (created_at, event_id)} over pending rows alone, which serves that claim. Flyway owns
- * every Data Definition Language (DDL) statement for the table, and this class declares no index.
+ * <p>The relay reads unpublished rows through {@code
+ * findByPublishedFalseOrderByCreatedAtAscEventIdAsc}, which takes no lock, ordered by {@code
+ * created_at} ascending then {@code event_id} ascending. Two rows can hold one timestamp, and the
+ * primary key completes the order. The sweep delay of 500 milliseconds and the limit of 100 rows
+ * are hard-coded in that class rather than read from configuration.
  *
- * <p>Configuration supplies the sweep delay of 500 milliseconds, the batch size of 100 rows, the
- * schema, and the topic name. {@link #getAggregateId()} holds the account identifier, which is
- * also the message key.
+ * <p>{@code V1__schema.sql} owns every Data Definition Language (DDL) statement for the table and
+ * is authoritative for its columns, indexes and constraints. The {@link Table} annotation below
+ * repeats three of those indexes so Hibernate can validate the mapping: {@code
+ * ix_outbox_event_pending} over {@code (created_at, event_id)}, {@code ix_outbox_event_claimable}
+ * over {@code (relay_state, next_attempt_at)}, and {@code ix_outbox_event_published_at} over {@code
+ * published_at}.
+ *
+ * <p>{@link #getAggregateId()} holds the account identifier, which is also the message key.
  */
 @Entity
 @Table(name = "outbox_event",
@@ -95,9 +95,9 @@ public class OutboxEventEntity {
 
     /**
      * One complete event, serialized as JavaScript Object Notation (JSON) before it reaches this
-     * row, envelope included. The writer is to serialize and validate the document against its
-     * schema, and this row stores the text it receives. Every monetary amount inside the document
-     * is a decimal string.
+     * row, envelope included. {@code outbox/OutboxWriter} serializes the event and validates the
+     * document against its schema, and this row stores the text it receives. Every monetary amount
+     * inside the document is a decimal string.
      */
     @Column(name = "payload", nullable = false, columnDefinition = "text")
     private String payload;
@@ -174,8 +174,8 @@ public class OutboxEventEntity {
      * boolean would be refused by the database rather than quietly leave a published row looking
      * pending. The claim is released, because a published row needs none.
      *
-     * <p>A second call on an already published row is ignored, so a relay that publishes and then
-     * fails before its own transaction commits does not corrupt the row on the retry that follows.
+     * <p>A second call on an already published row is ignored. A relay that publishes and then
+     * fails before its own transaction commits therefore leaves the row intact for the retry.
      *
      * @param publishedAt when the publish succeeded
      * @throws NullPointerException  if {@code publishedAt} is null
@@ -431,16 +431,12 @@ public class OutboxEventEntity {
     }
 
     // ------------------------------------------------------------------------------------
-    // Relay state. ADDITIVE: the CardDemo source has no relay and therefore no lease. Its one
-    // asynchronous handoff, the transient data queue write at app/cbl/CORPT00C.cbl:L517, is
-    // picked up by a single scheduled job, so nothing there can claim a row twice or give up on
-    // one. The enum, the four constants, the seven columns and the three operations below are
-    // one concern and are kept together rather than scattered through the class.
-    //
-    // Two failures are what these columns exist to prevent. Without a claim, two relay instances
-    // read the same unpublished row and publish the same event twice, which a consumer then has
-    // to deduplicate. Without an attempt count and a next-attempt time, one undeliverable row is
-    // retried forever and every row behind it waits.
+    // Relay state. No COBOL ancestor: the source's one asynchronous handoff is the transient data
+    // queue write at app/cbl/CORPT00C.cbl:L517, which carries no lease. The enum, the four
+    // constants, the seven columns and the three operations below hold two invariants. A row is
+    // claimed by at most one relay instance, so one event is published once. A row carries an
+    // attempt count and a next-attempt time, so an undeliverable row is abandoned rather than
+    // retried forever ahead of the rows behind it.
     // ------------------------------------------------------------------------------------
 
     /**
@@ -469,17 +465,17 @@ public class OutboxEventEntity {
     /**
      * How many attempts a row takes before the relay abandons it.
      *
-     * <p>The ceiling lives here and not in a check constraint on purpose: abandoning a row is a
-     * decision the relay records, and a constraint would instead turn the attempt that crosses
-     * the ceiling into a failed statement.
+     * <p>The ceiling lives here and not in a check constraint. Abandoning a row is a decision
+     * the relay records, whereas a constraint would turn the attempt that crosses the ceiling
+     * into a failed statement.
      */
     public static final int MAX_DELIVERY_ATTEMPTS = 10;
 
     /**
      * Widest value {@code last_error} holds, from {@code last_error VARCHAR(500)} in
-     * {@code src/main/resources/db/migration/V1__schema.sql}. The column is bounded so that a
-     * stack trace cannot be stored in it by accident, and a longer reason is truncated rather
-     * than refused: losing the tail of a diagnostic is better than losing the row.
+     * {@code src/main/resources/db/migration/V1__schema.sql}. The bound keeps a stack trace out
+     * of the column by accident. A longer reason is truncated rather than refused, so the row
+     * survives and only the tail of the diagnostic is lost.
      */
     public static final int LAST_ERROR_MAX_LENGTH = 500;
 

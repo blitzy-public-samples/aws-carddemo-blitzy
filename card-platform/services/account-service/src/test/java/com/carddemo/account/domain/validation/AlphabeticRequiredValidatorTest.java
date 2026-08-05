@@ -110,13 +110,13 @@ class AlphabeticRequiredValidatorTest {
     private static final String CAN_HAVE_ALPHABETS_ONLY = " can have alphabets only.";
 
     /**
-     * ADDITIVE message text for a value wider than the edited field. No source literal carries
+     * Message text for a value wider than the edited field. No source literal carries
      * this text: the source moves a fixed-width screen field into its edit field, so a wider
      * value cannot reach paragraph 1225.
      */
     private static final String NO_LONGER_THAN = " must be no longer than ";
 
-    /** ADDITIVE. Closes the text {@link #NO_LONGER_THAN} opens. */
+    /** No COBOL ancestor. Closes the text {@link #NO_LONGER_THAN} opens. */
     private static final String CHARACTERS = " characters.";
 
     /** The width message a State call site produces. */
@@ -485,9 +485,9 @@ class AlphabeticRequiredValidatorTest {
         // line 1926 bounds the window the State call site inspects at line 1594. The source moves
         // a PIC X(02) screen field into that window, so it drops nothing but padding.
         //
-        // ADDITIVE: a caller of this edit can supply a wider value, and the edit refuses one that
-        // carries a character the window would not cover. It therefore never passes a verdict on
-        // the first characters of a longer value.
+        // No COBOL ancestor: a caller of this edit can supply a wider value, and the edit refuses
+        // one that carries a character the window would not cover. It therefore never passes a
+        // verdict on the first characters of a longer value.
         EditResult insideWindow = AlphabeticRequiredValidator.validate(STATE_LABEL, "N1", STATE_LENGTH);
         EditResult pastWindow = AlphabeticRequiredValidator.validate(STATE_LABEL, "NY1", STATE_LENGTH);
         EditResult markupPastWindow =
@@ -511,8 +511,8 @@ class AlphabeticRequiredValidatorTest {
     @Test
     @DisplayName("A value wider than the edited field is refused whatever it holds")
     void aValueWiderThanTheEditedFieldIsRefused() {
-        // ADDITIVE. No source path supplies a value wider than WS-EDIT-ALPHANUM-LENGTH: the MOVE
-        // at app/cbl/COACTUPC.cbl:L61 reads a screen field of that exact width.
+        // No COBOL ancestor. No source path supplies a value wider than WS-EDIT-ALPHANUM-LENGTH:
+        // the MOVE at app/cbl/COACTUPC.cbl:L61 reads a screen field of that exact width.
         String[] wider = {
             "Johnsonn",
             "Jo hnsonn",

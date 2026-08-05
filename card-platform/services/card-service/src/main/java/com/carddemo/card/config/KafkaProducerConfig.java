@@ -20,7 +20,7 @@ import org.springframework.kafka.core.ProducerFactory;
  * Kafka producer wiring for the card service: one producer factory, one template, and the name of
  * the topic a card update travels on.
  *
- * <p>ADDITIVE. No COBOL program and no copybook declares an event bus. The nearest source
+ * <p>No COBOL program and no copybook declares an event bus. The nearest source
  * construct is the transient data queue write at {@code app/cbl/CORPT00C.cbl:L517-L518}. All eight
  * {@code DEFINE FILE} blocks of {@code app/csd/CARDDEMO.CSD} carry {@code RECOVERY(NONE)} and
  * {@code JOURNAL(NO)}.
@@ -43,8 +43,6 @@ import org.springframework.kafka.core.ProducerFactory;
  * <p>This service consumes no event, so it registers no listener and joins no consumer group.
  * Neither bean below reaches the broker while the context builds, so this service starts with the
  * broker down and answers on {@code /actuator/health}.
- *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Configuration
 public class KafkaProducerConfig {

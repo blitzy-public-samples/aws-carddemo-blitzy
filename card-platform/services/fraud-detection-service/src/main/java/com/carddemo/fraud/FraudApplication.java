@@ -8,14 +8,17 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 /**
  * Spring Boot entry point for the fraud detection service.
  *
- * <p>ADDITIVE IN FULL: net new; no COBOL ancestor. Searching {@code app/cbl/} for {@code fraud},
- * {@code velocit}, {@code risk}, {@code scoring} and {@code luhn} matches zero of its 28 programs.
+ * <p>No Common Business Oriented Language (COBOL) ancestor. Searching {@code app/cbl/} for
+ * {@code fraud}, {@code velocit}, {@code risk}, {@code scoring} and {@code luhn} matches zero of
+ * its 28 programs.
  *
- * <p>The service is planned to read {@code TransactionAuthorized} from topic
- * {@code transaction.authorized} in consumer group {@code fraud-detection}, and to write
- * {@code FraudFlagged} and {@code FraudCleared} to topic {@code fraud.assessed}. It is to stay out
- * of the authorization response path. No listener and no endpoint is authored yet, so this
- * application starts, exposes the actuator endpoints, and consumes nothing.
+ * <p>{@code messaging.TransactionAuthorizedConsumer} reads {@code TransactionAuthorized} from
+ * topic {@code transaction.authorized} in consumer group {@code fraud-detection}, scores it against
+ * the three rules in {@code domain.rules}, and writes one assessment row and one
+ * {@code FraudFlagged} or {@code FraudCleared} outbox row in a single local transaction.
+ * {@code outbox.OutboxRelay} publishes those rows to topic {@code fraud.assessed} on the schedule
+ * {@link EnableScheduling} starts. {@code api.FraudAssessmentController} answers read-only queries
+ * over the stored assessments. Nothing here sits in the authorization response path.
  */
 @SpringBootApplication
 @EnableScheduling

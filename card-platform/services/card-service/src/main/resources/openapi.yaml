@@ -1,0 +1,984 @@
+# card-platform card-service — the Representational State Transfer (REST) interface
+# this module serves.
+#
+# Three routes: list one account's cards, read one card, update one card. The document
+# is hand-written and checked in. api/CardController serves all three, no documentation
+# generator joins the classpath, and the tests under src/test/java are what keep this
+# file and that controller in step.
+#
+# Three properties of these routes are security decisions rather than style, and each is
+# stated on the operation it governs.
+#
+# No route carries a card number in its path or in its query string. A path and a query
+# string reach an access log, a reverse proxy log, a distributed trace and a browser
+# history, and none of those is a place for a full Primary Account Number (PAN). The two
+# routes that name one card take it in the request body, which is why the read is a POST
+# that changes nothing, and the paging cursor of the list route travels in a request
+# header as the irreversible card token of a row.
+#
+# Every card number that leaves this service is masked. api/dto/CardSummary and
+# api/dto/CardDetailResponse both refuse an unmasked value in their own constructors.
+# Lookups and filters run on the full sixteen characters before a response is built,
+# which is what app/cbl/CBTRN02C.cbl:L383-L387 keys its cross-reference read on and what
+# section 0.6.4 of the plan requires.
+#
+# The card verification value is stored and never returned. app/cpy/CVACT02Y.cpy:L7
+# declares it, column card_verification_value holds it, entity/CardEntity publishes no
+# accessor for it, and no schema below names it.
+---
+openapi: 3.1.0
+
+info:
+  title: CardDemo Card Service
+  description: >-
+    Serves the three card operations of CardDemo. The list route reproduces the
+    card list screen of app/cbl/COCRDLIC.cbl, the read route reproduces the card
+    detail screen of app/cbl/COCRDSLC.cbl, and the update route reproduces the
+    card update screen of app/cbl/COCRDUPC.cbl.
+
+
+    Every request carries an identity. The scheme is the basicIdentity below, the
+    chain in config/SecurityConfig denies by default, and each route names the
+    authority it requires. The demo stack binds the published port to the
+    loopback address and seeds only synthetic fixture data.
+
+
+    Field widths come from the card record copybook app/cpy/CVACT02Y.cpy, and
+    every refusal text comes from api/dto/CardValidationMessages, which records
+    the source line that writes each one.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8086
+    description: The port docker-compose.yml maps for this service.
+
+tags:
+  - name: card
+    description: Listing, reading and updating cards.
+
+security:
+  - basicIdentity: []
+
+paths:
+
+  /cards:
+
+    get:
+      tags:
+        - card
+      operationId: listCards
+      summary: List one page of the cards belonging to one account.
+      description: >-
+        Returns one page of cards in ascending card-number order. The page size
+        defaults to seven, the count WS-MAX-SCREEN-LINES declares at
+        app/cbl/COCRDLIC.cbl:L177-L178, and the further-page flag comes from one
+        lookahead row, which app/cbl/COCRDLIC.cbl:L1197-L1205 reads and
+        app/cbl/COCRDLIC.cbl:L1191-L1216 tests. Neither this route nor the read
+        side runs a count query.
+
+
+        The account is required, because the rule that admits this route reads
+        the same parameter to decide ownership. The card filter of the source
+        screen is deliberately absent from this route: it would put a card number
+        in a query string.
+
+
+        Paging is by cursor and never by page number, so an insert between two
+        requests renumbers nothing. The cursor is exclusive, so no row is
+        returned twice, and it continues the browse in the direction it was
+        walking: a forward page hands back the token of its last card number,
+        whose source value
+        app/cbl/COCRDLIC.cbl:L1194-L1195 writes into WS-CA-LAST-CARDKEY, and a
+        backward page hands back the token of its first card number, whose source value
+        app/cbl/COCRDLIC.cbl:L1350-L1353 writes into WS-CA-FIRST-CARDKEY. A
+        request with no cursor asks for the first page going forward and the last
+        page going back.
+
+
+        An account with no card returns 200 with an empty array. A browse that
+        reaches end of file is not an error: app/cbl/COCRDLIC.cbl:L1235 clears
+        the further-page flag and the screen shows no row.
+      parameters:
+
+        - name: accountId
+          in: query
+          required: true
+          description: >-
+            The account whose cards to list. Eleven digits, from
+            CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6. Column account_id
+            is CHAR(11) and matches on text, so all eleven digits are required
+            and a shorter value is refused rather than answered with an empty
+            page. The rule in config/SecurityConfig reads this parameter to
+            decide whether the caller owns the account.
+          schema:
+            type: string
+            minLength: 11
+            maxLength: 11
+            pattern: '^[0-9]{11}$'
+          examples:
+            seeded:
+              value: '00000000050'
+
+        - name: X-Card-Cursor
+          in: header
+          required: false
+          description: >-
+            The paging position from a previous response: the 64-character,
+            irreversible card token of one row. The read side resolves it to the
+            source browse key without publishing the full card number. Omit it
+            to ask for the first page going forward or the last page going back.
+          schema:
+            type: string
+            minLength: 64
+            maxLength: 64
+            pattern: '^[0-9a-f]{64}$'
+
+        - name: direction
+          in: query
+          required: false
+          description: >-
+            Which way the browse walks from the cursor. forward reproduces
+            9000-READ-FORWARD at app/cbl/COCRDLIC.cbl:L1123 and backward
+            reproduces 9100-READ-BACKWARDS at app/cbl/COCRDLIC.cbl:L1264. The
+            source carries the same choice as a function key, PF8 forward and PF7
+            back.
+          schema:
+            type: string
+            default: forward
+            enum:
+              - forward
+              - backward
+
+        - name: pageSize
+          in: query
+          required: false
+          description: >-
+            Rows on the page. Omit it for seven, the count the source screen
+            holds. The read side accepts 1 through 100 and refuses anything
+            outside that range.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 7
+
+      responses:
+
+        '200':
+          description: >-
+            One page of cards, in ascending card-number order. Every card number
+            is masked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardList'
+
+        '400':
+          description: >-
+            A query parameter or the cursor header missed its constraint, or the
+            required account parameter did not arrive. The body carries one text
+            and the route template. The account texts are
+            "Account number not provided" for an absent value and
+            "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER" for one that is
+            not eleven digits, both from app/cbl/COCRDLIC.cbl. A malformed cursor
+            reads "Card cursor must be a 64-character lower-case hexadecimal token" and a
+            direction naming neither way reads
+            "Direction must be forward or backward", which is additive because a
+            terminal cannot deliver a third function key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+        '401':
+          description: >-
+            The request carried no usable credential. config/SecurityConfig
+            refuses it before the handler runs, and the body names neither the
+            account nor the route.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+        '403':
+          description: >-
+            The identity does not hold this account. config/SecurityConfig grants
+            this route only to an identity carrying the SCOPE_ACCOUNT_ authority
+            for the account in the query, or to an administrator.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+        '500':
+          description: A fault inside this service. The body names no submitted value.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+    put:
+      tags:
+        - card
+      operationId: updateCard
+      summary: Update the name, the expiry date and the active status of one card.
+      description: >-
+        Updates one card and publishes one CardUpdated event. The card row and
+        the event row commit together, which is ADDITIVE: every file definition
+        of app/csd/CARDDEMO.CSD carries RECOVERY(NONE) and JOURNAL(NO), so the
+        source offers no atomicity to reproduce.
+
+
+        Three values are written: the embossed name, the expiry date assembled
+        from its three parts, and the active status. app/bms/COCRDUP.bms declares
+        exactly five editable fields, CRDNAME at L107, CRDSTCD at L117, EXPMON at
+        L127, EXPYEAR at L135 and EXPDAY at L142. The account identifier and the
+        card verification value are never written, and the cross-reference row is
+        never touched: every column of app/cpy/CVACT03Y.cpy is a card number, a
+        customer identifier or an account identifier, and none of the three
+        changes here.
+
+
+        The checks run in the order app/cbl/COCRDUPC.cbl performs them, because
+        the order decides which answer a caller receives. The card number is
+        edited first, the row is read second, the submitted values are compared
+        against the stored ones third, the four field edits run fourth, the row
+        is locked fifth, the locked row is compared against what the caller last
+        saw sixth, and the rewrite runs last. A caller that submits a bad month
+        for a card number that names no row therefore reads the not-found text
+        and not the month text.
+
+
+        No checksum rule, no card-status test and no account-status test.
+        app/cbl/COCRDUPC.cbl:L784 tests a card number for sixteen digits and
+        nothing else, and adding a rule the source lacks would refuse an update
+        the source applies.
+      requestBody:
+        required: true
+        description: >-
+          The card number and the five values the update carries, in the order
+          CCUP-NEW-CARDDATA declares them at app/cbl/COCRDUPC.cbl:L305-L313.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CardUpdateRequest'
+            examples:
+              activate:
+                summary: Rename the card and leave it active.
+                value:
+                  cardNumber: '4111111111111111'
+                  embossedName: 'ALEXANDER J MORGAN'
+                  expiryYear: '2028'
+                  expiryMonth: '11'
+                  expiryDay: '30'
+                  activeStatus: 'Y'
+
+      responses:
+
+        '200':
+          description: >-
+            The card was rewritten, or the submitted values matched the stored
+            ones and nothing was written. The outcome property separates the two:
+            UPDATED carries no message and NO_CHANGE_DETECTED carries
+            "No change detected with respect to values fetched.", the text
+            app/cbl/COCRDUPC.cbl:L682 sets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardUpdateResponse'
+
+        '400':
+          description: >-
+            The request body could not be read as one card update. Nothing of the
+            unreadable body reaches the response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+        '401':
+          description: The request carried no usable credential.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+        '403':
+          description: >-
+            The identity is not an administrator. config/SecurityConfig grants
+            this route to ROLE_ADMIN alone, because app/cbl/COCRDUPC.cbl is
+            reached from the administrator path.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+        '404':
+          description: >-
+            The table holds no card carrying that number. The outcome property
+            reads CARD_NOT_FOUND and the message is
+            "Did not find cards for this search condition", the text
+            app/cbl/COCRDUPC.cbl:L1400 sets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardUpdateResponse'
+
+        '409':
+          description: >-
+            The update lost a race. CHANGED_BEFORE_UPDATE reads
+            "Record changed by some one else. Please review", the text
+            app/cbl/COCRDUPC.cbl:L1511 sets, and it carries the row as it now
+            stands so a caller can show a reader what changed. LOCK_NOT_ACQUIRED
+            reads "Could not lock record for update", the text
+            app/cbl/COCRDUPC.cbl:L1446 sets, and the row could not be held for the
+            rewrite. Both invite the same retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardUpdateResponse'
+
+        '422':
+          description: >-
+            One field edit refused its value. The message is that edit's text,
+            reproduced character for character from the source line
+            api/dto/CardValidationMessages cites for it. The five texts are
+            "Card name not provided" and
+            "Card name can only contain alphabets and spaces" for the name,
+            "Card Active Status must be Y or N" for the status,
+            "Card expiry month must be between 1 and 12" for the month and
+            "Invalid card expiry year" for the year. Two texts are additive,
+            because column expiration_date is a DATE where the source stored ten
+            characters of text:
+            "Card expiry day must be two digits" and
+            "Card expiry year, month and day must name a day of the calendar".
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardUpdateResponse'
+
+        '500':
+          description: >-
+            The rewrite failed after the row had been locked. The outcome property
+            reads UPDATE_FAILED_AFTER_LOCK, the message is
+            "Update of record failed", the text app/cbl/COCRDUPC.cbl:L1491 sets,
+            and nothing was written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardUpdateResponse'
+
+  /cards/detail:
+
+    post:
+      tags:
+        - card
+      operationId: readCard
+      summary: Read one card, named by the full card number in the request body.
+      description: >-
+        Returns one card. The route is a POST and changes nothing: the full card
+        number arrives in the body because a path and a query string reach an
+        access log, a proxy log, a trace and a browser history.
+
+
+        Two edits run first, in the order 2200-EDIT-MAP-INPUTS performs them at
+        app/cbl/COCRDSLC.cbl:L630-L634, and each tests absence before it tests
+        the character class. One rule spans both fields: when neither value
+        arrived the answer is the text app/cbl/COCRDSLC.cbl:L637-L640 sets, which
+        runs under no guard and overwrites whichever text an edit had written.
+
+
+        The read keys on the card number alone.
+        app/cbl/COCRDSLC.cbl:L740 moves it into the read key and the account move
+        above it at app/cbl/COCRDSLC.cbl:L739 is commented out, so the account is
+        edited and then unused. Nothing here compares the account of the row
+        against the account the caller supplied: that comparison would refuse a
+        request the source answers.
+
+
+        Ownership is decided by the handler rather than by the chain, because the
+        identifier sits in the body and a chain that read the body would consume
+        the stream the handler needs. The predicate is the one
+        config/SecurityConfig declares, so the whole of the access control is
+        still stated in that one file. A caller that does not own the card reads
+        403 with the same text an absent row returns, so the two answers differ in
+        status alone and neither discloses which cards this service holds.
+      requestBody:
+        required: true
+        description: The account identifier and the full card number.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CardDetailRequest'
+            examples:
+              seeded:
+                summary: Read one seeded card.
+                value:
+                  accountId: '00000000050'
+                  cardNumber: '4111111111111111'
+
+      responses:
+
+        '200':
+          description: >-
+            The card. The card number is masked, and the embossed name arrives at
+            the fifty-character width CARD-EMBOSSED-NAME PIC X(50) declares at
+            app/cpy/CVACT02Y.cpy:L8, which is the width the published event
+            carries too.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardDetail'
+
+        '400':
+          description: >-
+            The request body could not be read as one search condition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+        '401':
+          description: The request carried no usable credential.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+        '403':
+          description: >-
+            Either the chain refused the role, or the handler found the caller
+            holds no SCOPE_CARD_ authority for the masked form of the card it
+            named. The second case carries
+            "Did not find cards for this search condition", the same text as a
+            404, so a refusal discloses nothing about which cards are stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+        '404':
+          description: >-
+            The table holds no card carrying that number. The text is
+            "Did not find cards for this search condition", the one
+            app/cbl/COCRDSLC.cbl:L760 sets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+        '422':
+          description: >-
+            One of the four edits refused a submitted value. The message is that
+            edit's text, reproduced character for character. The four texts are
+            "No input received" when neither value arrived,
+            "Account number not provided" and
+            "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER" for the
+            account, and "Card number not provided" and
+            "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER" for the card.
+            api/CardController.firstSearchFailure applies them in the order
+            2200-EDIT-MAP-INPUTS performs them at
+            app/cbl/COCRDSLC.cbl:L630-L640.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+        '500':
+          description: A fault inside this service. The body names no submitted value.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+components:
+
+  securitySchemes:
+
+    basicIdentity:
+      type: http
+      scheme: basic
+      description: >-
+        An identity configured under carddemo.security.users, carrying one of the
+        roles ADMIN or USER and, for USER, one SCOPE_ACCOUNT_ authority per
+        account it holds and one SCOPE_CARD_ authority per card. The password is
+        stored already encoded, so no plaintext password is compared:
+        config/SecurityConfig declines to reproduce the plaintext comparison at
+        app/cbl/COSGN00C.cbl:L223. Basic sends a credential as base-64 text,
+        which is encoding and not encryption, so this scheme requires an
+        encrypted transport.
+
+  schemas:
+
+    ApiError:
+      type: object
+      description: >-
+        A failing response from an endpoint of this service. Three properties.
+        The route property holds the route template with each path variable left
+        as its brace-delimited name, and its constructor refuses a value holding
+        a run of more than four digits, so no resolved card number or account
+        identifier can appear in it.
+      additionalProperties: false
+      required:
+        - status
+        - message
+        - route
+      properties:
+
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+          description: The status code of the failing response.
+          examples:
+            - 404
+
+        message:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: >-
+            One text describing the failure, taken from
+            api/dto/CardValidationMessages where the source declares one. It
+            names no value read from the request.
+          examples:
+            - 'Did not find cards for this search condition'
+
+        route:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: The route template of the failing endpoint.
+          examples:
+            - '/cards/detail'
+
+    Problem:
+      type: object
+      description: >-
+        A refusal written by the filter chain rather than by an endpoint, as RFC
+        9457 describes it. config/SecurityConfig writes the four members by hand,
+        so the body of a security failure depends on no serializer configuration.
+        The detail names no account, no card and not the route.
+      additionalProperties: false
+      required:
+        - type
+        - title
+        - status
+        - detail
+      properties:
+
+        type:
+          type: string
+          description: Always about:blank. The status code carries the meaning.
+          examples:
+            - 'about:blank'
+
+        title:
+          type: string
+          description: A short, fixed phrase naming the class of failure.
+          examples:
+            - 'Forbidden'
+
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+          description: The status code of the response.
+          examples:
+            - 403
+
+        detail:
+          type: string
+          minLength: 1
+          description: Fixed text. It names no identifier and no route.
+          examples:
+            - 'This identity is not entitled to the requested resource.'
+
+    CardSummary:
+      type: object
+      description: >-
+        One row of the card list. Three properties, the three the forward browse
+        projects into its screen row table at app/cbl/COCRDLIC.cbl:L1165-L1171
+        and the backward browse repeats at app/cbl/COCRDLIC.cbl:L1338-L1344. The
+        source list carries no embossed name, no expiry date and no card
+        verification value, and neither does this schema.
+      additionalProperties: false
+      required:
+        - cardNumber
+        - accountId
+        - activeStatus
+      properties:
+
+        cardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^\*{12}[0-9]{4}$'
+          description: >-
+            Masked card number: twelve asterisks then the last four digits. Width
+            from CARD-NUM PIC X(16) at app/cpy/CVACT02Y.cpy:L5.
+          examples:
+            - '************1111'
+
+        accountId:
+          type: string
+          minLength: 11
+          maxLength: 11
+          pattern: '^[0-9]{11}$'
+          description: >-
+            The account the card belongs to, carried as text so its leading zeros
+            survive. From CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6.
+          examples:
+            - '00000000050'
+
+        activeStatus:
+          type: string
+          minLength: 1
+          maxLength: 1
+          description: >-
+            The one-character active status, carried through with no
+            interpretation. From CARD-ACTIVE-STATUS PIC X(01) at
+            app/cpy/CVACT02Y.cpy:L10.
+          examples:
+            - 'Y'
+
+    CardList:
+      type: object
+      description: >-
+        One page of the card list, with the paging state the next request needs.
+        The source holds the same state across its screen turns in
+        WS-CA-FIRST-CARDKEY and WS-CA-LAST-CARDKEY at
+        app/cbl/COCRDLIC.cbl:L230-L235 and in WS-CA-NEXT-PAGE-IND at
+        app/cbl/COCRDLIC.cbl:L242-L244.
+      additionalProperties: false
+      required:
+        - cards
+        - nextPageExists
+      properties:
+
+        cards:
+          type: array
+          description: >-
+            The cards on this page, in ascending card-number order. A page
+            matching no card carries an empty array.
+          items:
+            $ref: '#/components/schemas/CardSummary'
+
+        nextPageExists:
+          type: boolean
+          description: >-
+            Whether a further page follows this one in the direction of travel,
+            derived from the one lookahead row at
+            app/cbl/COCRDLIC.cbl:L1191-L1216.
+          examples:
+            - false
+
+        nextCursor:
+          type: ['string', 'null']
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
+          description: >-
+            The cursor to send back in the X-Card-Cursor header to continue in the
+            same direction. It is present exactly when nextPageExists is true, and
+            it is the irreversible card token of one row. A masked value names no
+            row and a full card number must not be published, so the read side
+            resolves this token to its internal browse position.
+
+    CardDetail:
+      type: object
+      description: >-
+        One card, as the card detail screen of app/cbl/COCRDSLC.cbl shows it, less
+        the card verification value that screen does not show either.
+      additionalProperties: false
+      required:
+        - maskedCardNumber
+        - accountId
+        - embossedName
+        - expirationDate
+        - activeStatus
+      properties:
+
+        maskedCardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^\*{12}[0-9]{4}$'
+          description: >-
+            Masked card number: twelve asterisks then the last four digits.
+          examples:
+            - '************1111'
+
+        accountId:
+          type: string
+          minLength: 11
+          maxLength: 11
+          pattern: '^[0-9]{11}$'
+          description: >-
+            The account the card belongs to. From CARD-ACCT-ID PIC 9(11) at
+            app/cpy/CVACT02Y.cpy:L6.
+          examples:
+            - '00000000050'
+
+        embossedName:
+          type: string
+          maxLength: 50
+          description: >-
+            The embossed cardholder name, at the fifty-character width
+            CARD-EMBOSSED-NAME PIC X(50) declares at app/cpy/CVACT02Y.cpy:L8.
+            Column embossed_name is fixed-width character storage, so the value
+            arrives padded to that width, and the published CardUpdated event
+            carries the same padded value.
+          examples:
+            - 'ALEXANDER J MORGAN                                '
+
+        expirationDate:
+          type: string
+          format: date
+          description: >-
+            The expiry date. From CARD-EXPIRAION-DATE PIC X(10) at
+            app/cpy/CVACT02Y.cpy:L9, whose spelling the target corrects, sliced
+            into a year, a month and a day at app/cbl/COCRDUPC.cbl:L117-L121.
+          examples:
+            - '2028-11-30'
+
+        activeStatus:
+          type: string
+          minLength: 1
+          maxLength: 1
+          description: >-
+            The one-character active status. From CARD-ACTIVE-STATUS PIC X(01) at
+            app/cpy/CVACT02Y.cpy:L10.
+          examples:
+            - 'Y'
+
+    CardDetailRequest:
+      type: object
+      description: >-
+        The search condition of the read route. Both properties are required:
+        app/cbl/COCRDSLC.cbl:L651-L657 refuses a missing account and
+        app/cbl/COCRDSLC.cbl:L691-L697 refuses a missing card. An all-zero value
+        counts as absent rather than malformed, from the third condition of each
+        absence test at app/cbl/COCRDSLC.cbl:L653 and L693.
+      additionalProperties: false
+      required:
+        - accountId
+        - cardNumber
+      properties:
+
+        accountId:
+          type: string
+          minLength: 11
+          maxLength: 11
+          pattern: '^[0-9]{11}$'
+          description: >-
+            The account identifier. From CC-ACCT-ID PIC X(11) at
+            app/cpy/CVCRD01Y.cpy:L34. The test at app/cbl/COCRDSLC.cbl:L665 reads
+            IS NOT NUMERIC on an eleven-character alphanumeric field, so a shorter
+            value arrives space-padded and fails it.
+          examples:
+            - '00000000050'
+
+        cardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^[0-9]{16}$'
+          description: >-
+            The full card number, sixteen digits. From CC-CARD-NUM PIC X(16) at
+            app/cpy/CVCRD01Y.cpy:L37. app/cbl/COCRDSLC.cbl:L706 tests the width
+            and the character class and nothing else, so no checksum rule applies.
+          examples:
+            - '4111111111111111'
+
+    CardUpdateRequest:
+      type: object
+      description: >-
+        The six values of the update route, in the order CCUP-NEW-CARDDATA
+        declares them at app/cbl/COCRDUPC.cbl:L305-L313. The card verification
+        value of that source group is deliberately absent: app/bms/COCRDUP.bms
+        declares no field for it and entity/CardEntity never writes it.
+      additionalProperties: false
+      required:
+        - cardNumber
+        - embossedName
+        - expiryYear
+        - expiryMonth
+        - expiryDay
+        - activeStatus
+      properties:
+
+        cardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^[0-9]{16}$'
+          description: >-
+            The full card number, which is the search key of the update. From
+            CCUP-NEW-CARDID PIC X(16) at app/cbl/COCRDUPC.cbl:L305. Sixteen zeros
+            count as absent, from CC-CARD-NUM-N EQUAL ZEROS at
+            app/cbl/COCRDUPC.cbl:L770.
+          examples:
+            - '4111111111111111'
+
+        embossedName:
+          type: string
+          minLength: 1
+          maxLength: 50
+          pattern: '^[A-Za-z ]{0,50}$'
+          description: >-
+            The embossed cardholder name. From CCUP-NEW-CRDNAME PIC X(50) at
+            app/cbl/COCRDUPC.cbl:L308. Letters and spaces only, matching the
+            52-character LIT-ALL-ALPHA-FROM literal at
+            app/cbl/COCRDUPC.cbl:L255-L257, which 1230-EDIT-NAME uses at
+            app/cbl/COCRDUPC.cbl:L823-L828.
+          examples:
+            - 'ALEXANDER J MORGAN'
+
+        expiryYear:
+          type: string
+          minLength: 4
+          maxLength: 4
+          pattern: '^[0-9]{4}$'
+          description: >-
+            The four-digit expiry year, 1950 through 2099 from
+            88 VALID-YEAR VALUES 1950 THRU 2099 at app/cbl/COCRDUPC.cbl:L99.
+          examples:
+            - '2028'
+
+        expiryMonth:
+          type: string
+          minLength: 2
+          maxLength: 2
+          pattern: '^(0[1-9]|1[0-2])$'
+          description: >-
+            The two-digit expiry month, 1 through 12 from
+            88 VALID-MONTH VALUES 1 THRU 12 at app/cbl/COCRDUPC.cbl:L95.
+          examples:
+            - '11'
+
+        expiryDay:
+          type: string
+          minLength: 2
+          maxLength: 2
+          pattern: '^[0-9]{2}$'
+          description: >-
+            The two-digit expiry day. The source edits no day: 1260-EDIT-EXPIRY-YEAR-EXIT
+            closes the edit chain at app/cbl/COCRDUPC.cbl:L945 and 2000-DECIDE-ACTION
+            opens at L948, so no paragraph between them reaches it. This property
+            therefore carries a width rule alone. One calendar rule does apply, and
+            it is the one divergence of this route: column expiration_date is a
+            DATE, so a year, month and day that name no day of the calendar are
+            refused where the source would have stored the ten characters as text.
+          examples:
+            - '30'
+
+        activeStatus:
+          type: string
+          minLength: 1
+          maxLength: 1
+          pattern: '^[YN]$'
+          description: >-
+            The one-character active status, upper-case Y or upper-case N from
+            88 FLG-YES-NO-VALID VALUES 'Y', 'N' at app/cbl/COCRDUPC.cbl:L91.
+            1240-EDIT-CARDSTATUS folds no case.
+          examples:
+            - 'Y'
+
+    RefreshedCard:
+      type: object
+      description: >-
+        The stored card as it stands after another writer changed it, which
+        app/cbl/COCRDUPC.cbl:L1512-L1517 refreshes once the comparison at
+        L1503-L1508 fails. Five values, each carried as text to match the
+        character slices the source compares. The card verification value of that
+        source comparison is absent: it is immutable here and no response of this
+        service carries it.
+      additionalProperties: false
+      required:
+        - embossedName
+        - expiryYear
+        - expiryMonth
+        - expiryDay
+        - activeStatus
+      properties:
+
+        embossedName:
+          type: string
+          maxLength: 50
+          description: The stored embossed name, padded to fifty characters.
+
+        expiryYear:
+          type: string
+          minLength: 4
+          maxLength: 4
+          description: The stored four-character year slice.
+
+        expiryMonth:
+          type: string
+          minLength: 2
+          maxLength: 2
+          description: The stored two-character month slice.
+
+        expiryDay:
+          type: string
+          minLength: 2
+          maxLength: 2
+          description: The stored two-character day slice.
+
+        activeStatus:
+          type: string
+          minLength: 1
+          maxLength: 1
+          description: The stored one-character active status.
+
+    CardUpdateResponse:
+      type: object
+      description: >-
+        The outcome of one update. Seven outcomes, each mapped to a status code by
+        api/CardController. UPDATED carries no message.
+        VALIDATION_REJECTED carries the text of the failing edit. Each of the five
+        remaining outcomes carries one fixed text.
+        CHANGED_BEFORE_UPDATE is the one outcome that carries a refreshed
+        snapshot, and it always carries one.
+      additionalProperties: false
+      required:
+        - outcome
+      properties:
+
+        outcome:
+          type: string
+          description: >-
+            Which of the seven answers this is. UPDATED is the rewrite at
+            app/cbl/COCRDUPC.cbl:L1477-L1483, NO_CHANGE_DETECTED the comparison at
+            L680-L682, VALIDATION_REJECTED the guarded edit chain from L730 to
+            L1445, CARD_NOT_FOUND the read at L1394-L1400,
+            CHANGED_BEFORE_UPDATE the comparison at L1503-L1511,
+            LOCK_NOT_ACQUIRED the read for update at L1441-L1446, and
+            UPDATE_FAILED_AFTER_LOCK the rewrite test at L1488-L1491.
+          enum:
+            - UPDATED
+            - NO_CHANGE_DETECTED
+            - VALIDATION_REJECTED
+            - CARD_NOT_FOUND
+            - CHANGED_BEFORE_UPDATE
+            - LOCK_NOT_ACQUIRED
+            - UPDATE_FAILED_AFTER_LOCK
+          examples:
+            - 'UPDATED'
+
+        message:
+          type: ['string', 'null']
+          maxLength: 200
+          description: >-
+            The one text the outcome carries, absent for UPDATED. Every value
+            comes from api/dto/CardValidationMessages, which records the source
+            line that writes it.
+
+        refreshedCard:
+          oneOf:
+            - $ref: '#/components/schemas/RefreshedCard'
+            - type: 'null'
+          description: >-
+            The stored card as it now stands, present for CHANGED_BEFORE_UPDATE
+            and absent for every other outcome.

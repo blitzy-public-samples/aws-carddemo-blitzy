@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AWS CardDemo Modernization — Executive Summary</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&amp;family=Inter:wght@400;500;600;700&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <style>
+    :root {
+      --blitzy-primary: #5B39F3;
+      --blitzy-primary-dark: #4626D3;
+      --blitzy-primary-navy: #15112B;
+      --blitzy-primary-light: #F2F0FE;
+      --blitzy-primary-deep: #2D176D;
+      --blitzy-accent-teal: #2CE0C5;
+      --blitzy-surface-0: #FFFFFF;
+      --blitzy-surface-1: #FAF9FD;
+      --blitzy-surface-2: #F4EFF6;
+      --blitzy-surface-3: #F8F7FB;
+      --blitzy-border: #D8D3E3;
+      --blitzy-border-soft: #ECE9F2;
+      --blitzy-text: #333333;
+      --blitzy-text-muted: #6F6A7A;
+      --blitzy-text-invert: #FFFFFF;
+      --ff-body: "Inter", sans-serif;
+      --ff-display: "Space Grotesk", sans-serif;
+      --ff-mono: "Fira Code", monospace;
+      --gradient-hero: linear-gradient(135deg, #2D176D 0%, #5B39F3 55%, #2CE0C5 100%);
+      --gradient-divider: linear-gradient(135deg, #15112B 0%, #2D176D 100%);
+      --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #2CE0C5 100%);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      background: var(--blitzy-surface-1);
+      color: var(--blitzy-text);
+      font-family: var(--ff-body);
+    }
+
+    .reveal {
+      color: var(--blitzy-text);
+      font-family: var(--ff-body);
+      font-size: 32px;
+    }
+
+    .reveal .slides {
+      text-align: left;
+    }
+
+    .reveal .slides section {
+      height: 100%;
+      padding: 70px 92px;
+    }
+
+    .reveal h1,
+    .reveal h2,
+    .reveal h3 {
+      color: var(--blitzy-primary-navy);
+      font-family: var(--ff-display);
+      letter-spacing: -0.035em;
+      margin: 0;
+      text-transform: none;
+    }
+
+    .reveal h1 {
+      font-size: 2.6em;
+      line-height: 1.02;
+    }
+
+    .reveal h2 {
+      font-size: 1.62em;
+      line-height: 1.08;
+      margin-bottom: 28px;
+    }
+
+    .reveal p,
+    .reveal li,
+    .reveal td,
+    .reveal th {
+      font-family: var(--ff-body);
+      line-height: 1.35;
+    }
+
+    .reveal p {
+      margin: 0.45em 0;
+    }
+
+    .reveal ul {
+      margin: 0.55em 0 0 1.1em;
+    }
+
+    .reveal code {
+      background: var(--blitzy-primary-light);
+      border-radius: 8px;
+      color: var(--blitzy-primary-deep);
+      font-family: var(--ff-mono);
+      font-size: 0.83em;
+      padding: 0.08em 0.34em;
+    }
+
+    .slide-title {
+      background: var(--gradient-hero);
+      color: var(--blitzy-text-invert);
+      display: grid !important;
+      grid-template-columns: minmax(0, 1fr) 370px;
+      gap: 72px;
+      place-items: center;
+    }
+
+    .slide-title h1,
+    .slide-title h2,
+    .slide-title p {
+      color: var(--blitzy-text-invert);
+    }
+
+    .slide-title .eyebrow {
+      color: var(--blitzy-accent-teal);
+    }
+
+    .slide-closing .eyebrow {
+      color: var(--blitzy-accent-teal);
+    }
+
+    .slide-divider {
+      align-content: center;
+      background: var(--gradient-divider);
+      color: var(--blitzy-text-invert);
+      display: grid !important;
+      justify-items: center;
+      text-align: center;
+    }
+
+    .slide-divider h2 {
+      color: var(--blitzy-text-invert);
+      font-size: 2.15em;
+      margin-top: 34px;
+    }
+
+    .slide-closing {
+      align-content: center;
+      background: var(--gradient-divider);
+      color: var(--blitzy-text-invert);
+      display: grid !important;
+      gap: 28px;
+    }
+
+    .slide-closing h2,
+    .slide-closing p,
+    .slide-closing li {
+      color: var(--blitzy-text-invert);
+    }
+
+    .kpi-grid {
+      display: grid;
+      gap: 22px;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      margin-top: 62px;
+      width: 100%;
+    }
+
+    .kpi-card {
+      background: var(--blitzy-surface-0);
+      border: 1px solid var(--blitzy-border-soft);
+      border-radius: 22px;
+      box-shadow: 0 16px 42px rgba(45, 23, 109, 0.09);
+      min-height: 220px;
+      padding: 28px;
+    }
+
+    .kpi-value {
+      color: var(--blitzy-primary);
+      font-family: var(--ff-display);
+      font-size: 2.15em;
+      font-weight: 700;
+      letter-spacing: -0.055em;
+      line-height: 1;
+      margin: 24px 0 14px;
+    }
+
+    .kpi-label {
+      color: var(--blitzy-text-muted);
+      font-size: 0.72em;
+      font-weight: 600;
+      line-height: 1.25;
+    }
+
+    .kpi-icon {
+      color: var(--blitzy-primary);
+      height: 36px;
+      width: 36px;
+    }
+
+    .eyebrow {
+      color: var(--blitzy-primary);
+      font-family: var(--ff-mono);
+      font-size: 0.56em;
+      font-weight: 500;
+      letter-spacing: 0.16em;
+      margin-bottom: 22px;
+      text-transform: uppercase;
+    }
+
+    .accent-bar {
+      background: var(--gradient-accent-bar);
+      border-radius: 999px;
+      height: 8px;
+      width: 230px;
+    }
+
+    .brand-lockup {
+      color: var(--blitzy-text-invert);
+      font-family: var(--ff-display);
+      font-size: 0.92em;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      margin-top: 10px;
+    }
+
+    .hero-icon {
+      color: rgba(255, 255, 255, 0.92);
+      height: 280px;
+      stroke-width: 1.25;
+      width: 280px;
+    }
+
+    .icon-row {
+      display: grid;
+      gap: 28px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      margin-top: 54px;
+      width: 100%;
+    }
+
+    .icon-row > div {
+      background: var(--blitzy-surface-0);
+      border: 1px solid var(--blitzy-border-soft);
+      border-radius: 20px;
+      min-height: 190px;
+      padding: 30px;
+      text-align: center;
+    }
+
+    .icon-row svg {
+      color: var(--blitzy-primary);
+      height: 54px;
+      margin-bottom: 20px;
+      width: 54px;
+    }
+
+    .icon-row strong {
+      display: block;
+      font-family: var(--ff-display);
+      font-size: 0.8em;
+      line-height: 1.2;
+    }
+
+    .divider-icon {
+      color: var(--blitzy-accent-teal);
+      height: 112px;
+      stroke-width: 1.4;
+      width: 112px;
+    }
+
+    .mermaid-frame {
+      align-items: center;
+      background: var(--blitzy-surface-0);
+      border: 1px solid var(--blitzy-border-soft);
+      border-radius: 20px;
+      display: flex;
+      justify-content: center;
+      margin: 20px auto 12px;
+      max-height: 690px;
+      max-width: 1680px;
+      min-height: 500px;
+      overflow: hidden;
+      padding: 18px 28px;
+      width: 100%;
+    }
+
+    .mermaid {
+      align-items: center;
+      display: flex;
+      justify-content: center;
+      margin: 0;
+      max-height: 650px;
+      max-width: 1600px;
+      width: 100%;
+    }
+
+    .mermaid svg {
+      height: auto;
+      max-height: 640px;
+      max-width: 100%;
+      width: auto;
+    }
+
+    .reveal .mermaid .nodeLabel {
+      white-space: normal !important;
+    }
+
+    .diagram-legend {
+      color: var(--blitzy-text-muted);
+      font-family: var(--ff-mono);
+      font-size: 0.48em;
+      line-height: 1.45;
+      margin-top: 8px;
+      text-align: center;
+    }
+
+    .reveal table {
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 0.64em;
+      margin: 34px auto 0;
+      width: 100%;
+    }
+
+    .reveal table th {
+      background: var(--blitzy-surface-2);
+      border-bottom: 4px solid var(--blitzy-primary);
+      color: var(--blitzy-primary-navy);
+      font-weight: 700;
+      padding: 18px 22px;
+      text-align: left;
+    }
+
+    .reveal table td {
+      border-bottom: 1px solid var(--blitzy-border);
+      color: var(--blitzy-text);
+      padding: 17px 22px;
+      vertical-align: top;
+    }
+
+    .reveal table tbody tr:nth-child(odd) td {
+      background: var(--blitzy-surface-0);
+    }
+
+    .reveal table tbody tr:nth-child(even) td {
+      background: var(--blitzy-surface-3);
+    }
+
+    .reveal table th:first-child {
+      border-top-left-radius: 16px;
+    }
+
+    .reveal table th:last-child {
+      border-top-right-radius: 16px;
+    }
+
+    .split-correctness {
+      display: grid;
+      gap: 34px;
+      grid-template-columns: 330px minmax(0, 1fr);
+      margin-top: 34px;
+    }
+
+    .split-correctness .kpi-card {
+      min-height: 300px;
+    }
+
+    .split-correctness table {
+      margin-top: 0;
+    }
+
+    .closing-links {
+      font-size: 0.78em;
+      max-width: 1120px;
+    }
+
+    .closing-links li {
+      margin: 0.5em 0;
+    }
+
+    .reveal .slide-number {
+      background: none;
+      bottom: auto;
+      color: var(--blitzy-text-muted);
+      font-family: var(--ff-mono);
+      font-size: 0.43em;
+      padding: 0;
+      position: absolute;
+      right: 54px;
+      top: 42px;
+    }
+
+    .reveal .progress {
+      display: none !important;
+    }
+
+    .slide-title .slide-number,
+    .slide-divider .slide-number,
+    .slide-closing .slide-number {
+      color: rgba(255, 255, 255, 0.55);
+    }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+      <section class="slide-title">
+        <span class="slide-number">01</span>
+        <div>
+          <div class="eyebrow">AWS CardDemo modernization</div>
+          <h1>One authorization.<br>Independent reactions.</h1>
+          <p>Modernizing Customer Information Control System (CICS), Virtual Storage Access Method (VSAM), and Job Control Language (JCL) card processing.</p>
+          <p>Six event-driven services with a Representational State Transfer (REST) authorization entry point.</p>
+        </div>
+        <i class="hero-icon" data-lucide="workflow" aria-hidden="true"></i>
+      </section>
+
+      <section>
+        <span class="slide-number">02</span>
+        <div class="eyebrow">Delivered scope</div>
+        <h2>Measured from source to demo</h2>
+        <div class="kpi-grid" aria-label="Headline modernization metrics">
+          <div class="kpi-card">
+            <i class="kpi-icon" data-lucide="file-text" aria-hidden="true"></i>
+            <div class="kpi-value">28</div>
+            <div class="kpi-label">COBOL programs analysed</div>
+          </div>
+          <div class="kpi-card">
+            <i class="kpi-icon" data-lucide="database" aria-hidden="true"></i>
+            <div class="kpi-value">8 → 6</div>
+            <div class="kpi-label">Shared datasets to private schemas</div>
+          </div>
+          <div class="kpi-card">
+            <i class="kpi-icon" data-lucide="package" aria-hidden="true"></i>
+            <div class="kpi-value">5</div>
+            <div class="kpi-label">Core event contracts</div>
+          </div>
+          <div class="kpi-card">
+            <i class="kpi-icon" data-lucide="shield-alert" aria-hidden="true"></i>
+            <div class="kpi-value">26</div>
+            <div class="kpi-label">Business-rule findings surfaced</div>
+          </div>
+          <div class="kpi-card">
+            <i class="kpi-icon" data-lucide="list-checks" aria-hidden="true"></i>
+            <div class="kpi-value">300</div>
+            <div class="kpi-label">Primary posting fixture records</div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <span class="slide-number">03</span>
+        <div class="eyebrow">Architecture</div>
+        <h2>Figure 1 — From shared files to owned schemas</h2>
+        <p>Figure 1 pairs the source state with the delivered event-driven state. The full view is in <code>docs/architecture-before-after.md</code>.</p>
+        <div class="mermaid-frame">
+          <pre class="mermaid">
+graph LR
+  subgraph B["Before"]
+    direction TB
+    T["3270 terminal"] --> C["CICS region"]
+    J["Nightly JCL batch chain"]
+    C -.-> V[("8 shared VSAM datasets")]
+    J -.-> V
+    X["Recovery and journalling disabled"] -.-> V
+  end
+  subgraph A["After"]
+    direction TB
+    R["REST client"] --> U["authorization-service"]
+    U ==> K{{"transaction.authorized keyed by account"}}
+    K ==> L["ledger-posting-service"]
+    K ==> F["fraud-detection-service"]
+    K ==> N["notification-service via downstream topics"]
+    U -.-> D[("6 private schemas")]
+    L -.-> D
+    F -.-> D
+    N -.-> D
+  end
+  V ~~~ R
+          </pre>
+        </div>
+        <div class="diagram-legend">Legend: solid arrow = synchronous call · double arrow = asynchronous event · dotted arrow = datastore access · cylinder = datastore</div>
+      </section>
+
+      <section class="slide-divider">
+        <span class="slide-number">04</span>
+        <i class="divider-icon" data-lucide="share-2" aria-hidden="true"></i>
+        <h2>How the event flow works</h2>
+      </section>
+
+      <section>
+        <span class="slide-number">05</span>
+        <div class="eyebrow">Independent reactions</div>
+        <h2>Figure 2 — One outcome event starts the work</h2>
+        <p>Each call emits one outcome event. No consumer calls another; topics carry every downstream handoff.</p>
+        <div class="mermaid-frame">
+          <pre class="mermaid">
+graph LR
+  C["REST client"] --> A["authorization-service"]
+  A ==> TA{{"transaction.authorized account key"}}
+  A ==> TD{{"transaction.declined"}}
+  TA ==> L["ledger-posting-service"]
+  TA ==> F["fraud-detection-service"]
+  L ==> TP{{"transaction.posted"}}
+  F ==> FA{{"fraud.assessed"}}
+  TP ==> N["notification-service"]
+  FA ==> N
+  TA -.-> DL{{"carddemo.dead-letter"}}
+  TP -.-> DL
+  FA -.-> DL
+          </pre>
+        </div>
+        <div class="diagram-legend">Legend: solid arrow = request · double arrow = publish or consume · dotted arrow = failed-message route · Figure 2 is detailed in docs/event-flow.md</div>
+      </section>
+
+      <section class="slide-divider">
+        <span class="slide-number">06</span>
+        <i class="divider-icon" data-lucide="trending-up" aria-hidden="true"></i>
+        <h2>Business value</h2>
+      </section>
+
+      <section>
+        <span class="slide-number">07</span>
+        <div class="eyebrow">What changed</div>
+        <h2>The architecture creates room to change safely</h2>
+        <table aria-label="Business value of the modernization">
+          <thead>
+            <tr>
+              <th>What changed</th>
+              <th>What it makes possible</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Balance updates begin at authorization instead of a nightly batch window.</td>
+              <td>Account state can reflect accepted transactions without waiting for the scheduled chain.</td>
+            </tr>
+            <tr>
+              <td>Fraud detection consumes an existing event and has no legacy ancestor.</td>
+              <td>A new capability can arrive without changing the authorization service.</td>
+            </tr>
+            <tr>
+              <td>Each service owns its datastore.</td>
+              <td>Deployments and schema changes stay inside an explicit boundary.</td>
+            </tr>
+            <tr>
+              <td>Twenty-six ambiguous rules carry file and line citations.</td>
+              <td>Owners can approve behavior changes without guessing at source intent.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="slide-divider">
+        <span class="slide-number">08</span>
+        <i class="divider-icon" data-lucide="calculator" aria-hidden="true"></i>
+        <h2>Correctness and parity</h2>
+      </section>
+
+      <section>
+        <span class="slide-number">09</span>
+        <div class="eyebrow">Highest-risk finding</div>
+        <h2>Money truncates; it never rounds</h2>
+        <p><code>ROUNDED</code> appears zero times across all 28 programs. The services pin <code>RoundingMode.DOWN</code>, and a test proves <code>HALF_UP</code> changes the cent.</p>
+        <div class="split-correctness">
+          <div class="kpi-card">
+            <i class="kpi-icon" data-lucide="scale" aria-hidden="true"></i>
+            <div class="kpi-value">0</div>
+            <div class="kpi-label">Occurrences across 28 source programs</div>
+          </div>
+          <table aria-label="Truncation compared with half-up rounding">
+            <thead>
+              <tr>
+                <th>Mode</th>
+                <th>Value stored from 10.005 at scale two</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>RoundingMode.DOWN</code></td>
+                <td>10.00</td>
+              </tr>
+              <tr>
+                <td><code>HALF_UP</code></td>
+                <td>10.01</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <span class="slide-number">10</span>
+        <div class="eyebrow">Coverage</div>
+        <h2>Every source class has a disposition</h2>
+        <p>The complete bidirectional inventory is in <code>docs/traceability-matrix.md</code>.</p>
+        <table aria-label="Source coverage and mapping summary">
+          <thead>
+            <tr>
+              <th>Source inventory</th>
+              <th>Measured disposition</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>28 COBOL programs</td>
+              <td>12 primary migration sources, 8 reference inputs, 2 partial sources, 6 exclusions</td>
+            </tr>
+            <tr>
+              <td>28 copybooks</td>
+              <td>12 record layouts, 8 semantics inputs, 1 divergent fork, 6 exclusions, 1 dead copy</td>
+            </tr>
+            <tr>
+              <td>29 job members</td>
+              <td>Read for keys and record sizes; none becomes a scheduled job</td>
+            </tr>
+            <tr>
+              <td>Resource definitions</td>
+              <td>8 files, 17 mapsets, 18 programs, 18 transactions</td>
+            </tr>
+            <tr>
+              <td>9 sample data files</td>
+              <td>Reused as fixtures by 6 required equivalence test classes</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="slide-divider">
+        <span class="slide-number">11</span>
+        <i class="divider-icon" data-lucide="shield-alert" aria-hidden="true"></i>
+        <h2>Risk and mitigation</h2>
+      </section>
+
+      <section>
+        <span class="slide-number">12</span>
+        <div class="eyebrow">Known risk</div>
+        <h2>Risk is visible and testable</h2>
+        <table aria-label="Modernization risks and mitigations">
+          <thead>
+            <tr>
+              <th>Risk</th>
+              <th>Mitigation</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Parity uses documented behavior and checked-in sample data, not a live original run.</td>
+              <td>The equivalence suite is a required build stage with published fixture results.</td>
+            </tr>
+            <tr>
+              <td>Two known source defects remain for parity.</td>
+              <td>Each defect is reproduced, cited, and held for an owner decision.</td>
+            </tr>
+            <tr>
+              <td>The sample data cannot reach the narrowed-precision boundary.</td>
+              <td>A synthetic boundary test now covers the source behavior directly.</td>
+            </tr>
+            <tr>
+              <td>A later edit could change monetary rounding.</td>
+              <td>A dedicated test fails when truncation changes.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="slide-divider">
+        <span class="slide-number">13</span>
+        <i class="divider-icon" data-lucide="git-branch" aria-hidden="true"></i>
+        <h2>Delivery and continued development</h2>
+      </section>
+
+      <section>
+        <span class="slide-number">14</span>
+        <div class="eyebrow">Dependency order</div>
+        <h2>Figure 3 — Each capability starts from a proven contract</h2>
+        <div class="mermaid-frame">
+          <pre class="mermaid">
+graph LR
+  E["event-contracts library compiles"] --> A["First authorization service and event bus"]
+  C["Continuous equivalence suite with fixtures and compatibility library"] --> A
+  A --> L["Second ledger posting"]
+  A --> F["Third fraud detection"]
+  L --> N["Fourth notification"]
+  F --> N
+  C --> L
+  C --> F
+  C --> N
+          </pre>
+        </div>
+        <div class="diagram-legend">Legend: an arrow means the destination cannot start until the source contract or verification foundation exists</div>
+      </section>
+
+      <section>
+        <span class="slide-number">15</span>
+        <div class="eyebrow">Ready to extend</div>
+        <h2>Developers get a tested path into the system</h2>
+        <p><code>docs/onboarding.md</code> starts the demo; <code>docs/suggested-next-tasks.md</code> carries the approved follow-on queue.</p>
+        <div class="icon-row" aria-label="Onboarding and extension paths">
+          <div>
+            <i data-lucide="zap" aria-hidden="true"></i>
+            <strong>One command starts the demo</strong>
+          </div>
+          <div>
+            <i data-lucide="gauge" aria-hidden="true"></i>
+            <strong>Tool and image versions are pinned</strong>
+          </div>
+          <div>
+            <i data-lucide="network" aria-hidden="true"></i>
+            <strong>A consumer needs no producer change</strong>
+          </div>
+          <div>
+            <i data-lucide="layers" aria-hidden="true"></i>
+            <strong>A decline rule is one new class</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="slide-closing">
+        <span class="slide-number">16</span>
+        <div class="eyebrow">Executive takeaway</div>
+        <h2>One event, three independent consumers</h2>
+        <ul class="closing-links">
+          <li>Run the platform from <code>docs/onboarding.md</code>.</li>
+          <li>Review owner decisions in <code>docs/suggested-next-tasks.md</code>.</li>
+          <li>Audit every non-trivial choice in <code>docs/decision-log.md</code>.</li>
+        </ul>
+        <div class="brand-lockup">Blitzy · AWS CardDemo modernization</div>
+        <div class="accent-bar" aria-hidden="true"></div>
+      </section>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.esm.min.mjs";
+
+    window.mermaid = mermaid;
+
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: "base",
+      htmlLabels: false,
+      flowchart: {
+        htmlLabels: false,
+        wrappingWidth: 420
+      },
+      themeVariables: {
+        primaryColor: "#F2F0FE",
+        primaryTextColor: "#333333",
+        primaryBorderColor: "#5B39F3",
+        lineColor: "#999999",
+        secondaryColor: "#F4EFF6"
+      }
+    });
+
+    const mermaidSources = new WeakMap();
+    document.querySelectorAll("pre.mermaid").forEach((node) => {
+      mermaidSources.set(node, node.textContent.trim());
+    });
+
+    let mermaidRenderQueue = Promise.resolve();
+
+    function renderMermaidFor(slide) {
+      if (!slide || !window.mermaid) {
+        return;
+      }
+      const nodes = Array.from(slide.querySelectorAll("pre.mermaid"));
+      if (nodes.length === 0) {
+        return;
+      }
+      nodes.forEach((node) => {
+        node.textContent = mermaidSources.get(node);
+        node.removeAttribute("data-processed");
+      });
+      mermaidRenderQueue = mermaidRenderQueue.then(async () => {
+        const slides = document.querySelector(".reveal .slides");
+        const originalTransform = slides.style.transform;
+        slides.style.transform = "translate(-50%, -50%) scale(1)";
+        try {
+          await window.mermaid.run({ nodes });
+        } catch (error) {
+          console.error("Mermaid rendering failed", error);
+        } finally {
+          slides.style.transform = originalTransform;
+        }
+      });
+    }
+
+    function renderLucideIcons() {
+      if (window.lucide) {
+        window.lucide.createIcons();
+      }
+    }
+
+    Reveal.on("ready", (event) => {
+      renderMermaidFor(event.currentSlide);
+      renderLucideIcons();
+    });
+
+    Reveal.on("slidechanged", (event) => {
+      renderMermaidFor(event.currentSlide);
+      renderLucideIcons();
+    });
+
+    Reveal.initialize({
+      hash: true,
+      transition: "slide",
+      controlsTutorial: false,
+      width: 1920,
+      height: 1080
+    });
+  </script>
+</body>
+</html>

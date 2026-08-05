@@ -2,6 +2,7 @@ package com.carddemo.account;
 
 import com.carddemo.account.api.dto.CustomerDataRequest;
 import com.carddemo.account.entity.AccountEntity;
+import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.account.entity.OutboxEventEntity;
 
 import java.lang.reflect.RecordComponent;
@@ -25,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Asserts that nothing this service can hand to a logger carries a cardholder field, an account
  * identifier or a monetary amount.
  *
- * <p>ADDITIVE. No COBOL program renders a record for a log. This class has no ancestor.
+ * <p>No COBOL program renders a record for a log. This class has no ancestor.
  *
  * <p>{@link CustomerDataRequest} is the highest-value target on the platform. It is a record, so the
  * compiler writes a {@code toString} that prints every component unless the record overrides it, and
@@ -195,11 +196,14 @@ class DiagnosticRedactionTest {
     }
 
     @Nested
-    @DisplayName("AccountEntity and OutboxEventEntity")
+    @DisplayName("AccountEntity, CustomerEntity and OutboxEventEntity")
     class EntityDiagnostics {
 
         /** Eleven digits, the width {@code ACCT-ID PIC 9(11)} declares. */
         private static final String ACCOUNT_ID = "98765432109";
+
+        /** Nine digits, the width {@code CUST-ID PIC 9(09)} declares. */
+        private static final String CUSTOMER_ID = "123456789";
 
         @Test
         @DisplayName("the account rendering withholds the identifier and keeps the status flag")
@@ -221,6 +225,39 @@ class DiagnosticRedactionTest {
             assertThat(rendered).isEqualTo("AccountEntity[accountId=" + EventEnvelope.WITHHELD
                     + ", activeStatus=" + EventEnvelope.WITHHELD + "]");
             assertThat(account.getAccountId()).isEqualTo(ACCOUNT_ID);
+        }
+
+        /**
+         * Renders one customer row carrying a cardholder name, an address and a credit score.
+         *
+         * <p>The customer identifier is stable and names one cardholder across every table of this
+         * platform, so the rendering reports it as withheld beside every other column.
+         */
+        @Test
+        @DisplayName("the customer rendering withholds the identifier and every other column")
+        void theCustomerRenderingWithholdsTheIdentifier() {
+            CustomerEntity customer = new CustomerEntity();
+            customer.setCustomerId(CUSTOMER_ID);
+            customer.setFirstName("Aniya");
+            customer.setLastName("Von");
+            customer.setAddressLine1("742 Evergreen Terrace");
+            customer.setSocialSecurityNumber("111223333");
+            customer.setFicoCreditScore(new BigDecimal("720"));
+
+            String rendered = customer.toString();
+
+            assertThat(rendered)
+                    .withFailMessage("the customer identifier reached a log line")
+                    .doesNotContain(CUSTOMER_ID);
+            assertThat(rendered)
+                    .withFailMessage("a cardholder value reached a log line")
+                    .doesNotContain("Aniya").doesNotContain("Von")
+                    .doesNotContain("742 Evergreen Terrace").doesNotContain("111223333")
+                    .doesNotContain("720");
+            assertThat(rendered)
+                    .isEqualTo("CustomerEntity[customerId=" + EventEnvelope.WITHHELD + "]");
+            assertThat(customer.getCustomerId()).isEqualTo(CUSTOMER_ID);
+            assertThat(customer.getFirstName()).isEqualTo("Aniya");
         }
 
         @Test

@@ -10,8 +10,6 @@
     libs/*             no dependency on another module of this build
     services/*         the two libraries only, never another service
     equivalence-tests  every module, at test scope
-
-  Rationale for the choices in this file: card-platform/docs/decision-log.md (planned)
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -96,10 +94,10 @@
       </dependency>
 
       <!--
-        The two artifacts the bill of materials does not manage, so each carries a
+        The two artifacts the bill of materials does not manage. Each carries a
         version here and no module repeats one. json-schema-validator reads JSON
         Schema Draft 2020-12 in event-contracts. logstash-logback-encoder is pinned
-        and available to any module that declares it; the six services take their
+        and available to any module that declares it. The six services take their
         structured log output from the Spring Boot logging starter instead, through
         the logging.structured.format.console property of application.yml, and none
         of them ships a Logback configuration file.

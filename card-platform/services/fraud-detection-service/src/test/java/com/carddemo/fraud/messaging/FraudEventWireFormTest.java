@@ -48,7 +48,7 @@ import tools.jackson.databind.json.JsonMapper;
  * timestamp, one outside International Organization for Standardization (ISO) 8601. Each assertion
  * reads a schema document from the classpath or the bytes one serde class wrote, never a record
  * component through reflection. Every test runs in memory and reaches no broker, no database and no
- * network. Reasoning sits in {@code card-platform/docs/decision-log.md}.
+ * network.
  *
  * <p>Versions: Java 25, JUnit Jupiter 6.0.3, {@code json-schema-validator 3.0.6} for JSON Schema
  * Draft 2020-12, and {@code kafka-clients 4.2.1} for the two serde interfaces.
@@ -56,14 +56,24 @@ import tools.jackson.databind.json.JsonMapper;
 @DisplayName("fraud event wire form")
 class FraudEventWireFormTest {
 
-    /** The classpath resource holding the contract of an approved authorization. */
-    private static final String AUTHORIZED_SCHEMA = "schemas/transaction-authorized-v1.json";
+    /**
+     * Card token of the fixture card number, sixty-four lower-case hexadecimal characters.
+     *
+     * <p>Additive. No source field exists. {@code com.carddemo.cobol.PanMasker#tokenOf} writes this
+     * value from the full card number {@code 4859452612877065}, and the width and case are that
+     * method's.</p>
+     */
+    private static final String CARD_TOKEN =
+            "f8da0217fb8bd2e172d427a2ef66d54656a59baa9fe8f9bc2ce9d383b90e1173";
+
+    /** The classpath resource holding the tokenized contract an approved producer now writes. */
+    private static final String AUTHORIZED_SCHEMA = "schemas/transaction-authorized-v2.json";
 
     /** The classpath resource holding the version 1 contract of a refused authorization. */
     private static final String DECLINED_SCHEMA = "schemas/transaction-declined-v1.json";
 
-    /** The classpath resource holding the contract of a posted transaction. */
-    private static final String POSTED_SCHEMA = "schemas/transaction-posted-v1.json";
+    /** The classpath resource holding the enriched posted-transaction contract. */
+    private static final String POSTED_SCHEMA = "schemas/transaction-posted-v2.json";
 
     /** The classpath resource holding the contract of a flagged assessment. */
     private static final String FLAGGED_SCHEMA = "schemas/fraud-flagged-v1.json";
@@ -77,9 +87,9 @@ class FraudEventWireFormTest {
 
     /** The count of names each document lists in its top-level {@code required} array. */
     private static final Map<String, Integer> REQUIRED_COUNTS = Map.of(
-            AUTHORIZED_SCHEMA, 19,
+            AUTHORIZED_SCHEMA, 20,
             DECLINED_SCHEMA, 11,
-            POSTED_SCHEMA, 11,
+            POSTED_SCHEMA, 21,
             FLAGGED_SCHEMA, 10,
             CLEARED_SCHEMA, 8);
 
@@ -169,12 +179,12 @@ class FraudEventWireFormTest {
               "assessedAt": "2022-06-10T19:27:53.512Z"
             }""".formatted(TRANSACTION_ID);
 
-    /** A flat authorization carrying all nineteen required properties at the top level. */
+    /** A flat authorization carrying all twenty version-two properties at the top level. */
     private static final String AUTHORIZED_DOCUMENT = """
             {
               "eventId": "7a2e4c18-5b39-4f07-9d6a-1c8b3e5f7042",
               "eventType": "TransactionAuthorized",
-              "schemaVersion": 1,
+              "schemaVersion": 2,
               "occurredAt": "2022-06-10T19:27:53.412Z",
               "aggregateId": "00000000007",
               "transactionId": "%s",
@@ -189,6 +199,7 @@ class FraudEventWireFormTest {
               "merchantCity": "North Enoshaven",
               "merchantZip": "72112     ",
               "maskedCardNumber": "************7065",
+              "cardToken": "87a66184e8551b4490858314b32730140e680761f8280a47cfc19c3d81577db4",
               "authorizedAt": "2022-06-10 19:27:53.000000",
               "currency": "USD"
             }""".formatted(TRANSACTION_ID);
@@ -231,7 +242,7 @@ class FraudEventWireFormTest {
               "envelope": {
                 "eventId": "7a2e4c18-5b39-4f07-9d6a-1c8b3e5f7042",
                 "eventType": "TransactionAuthorized",
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "occurredAt": "2022-06-10T19:27:53.412Z",
                 "aggregateId": "00000000007"
               },
@@ -247,6 +258,7 @@ class FraudEventWireFormTest {
               "merchantCity": "North Enoshaven",
               "merchantZip": "72112     ",
               "maskedCardNumber": "************7065",
+              "cardToken": "87a66184e8551b4490858314b32730140e680761f8280a47cfc19c3d81577db4",
               "authorizedAt": "2022-06-10 19:27:53.000000",
               "currency": "USD"
             }""".formatted(TRANSACTION_ID);
@@ -422,7 +434,7 @@ class FraudEventWireFormTest {
     private static TransactionAuthorized anAuthorization() {
         return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS TERM  ",
                 "Purchase at Abshire-Lowe", new BigDecimal(AMOUNT), "800000000", "Abshire-Lowe",
-                "North Enoshaven", "72112     ", MASKED_CARD_NUMBER, AUTHORIZED_AT);
+                "North Enoshaven", "72112     ", MASKED_CARD_NUMBER, CARD_TOKEN, AUTHORIZED_AT);
     }
 
     /**
@@ -478,16 +490,15 @@ class FraudEventWireFormTest {
      * Asserts that one event is one JSON object, with its five envelope properties beside its
      * payload properties.
      *
-     * <p>The capability under test is net new; no COBOL ancestor defines it. Each document closes
-     * its property set and lists every name in one top-level {@code required} array, so a nested
-     * envelope fails twice over.
+     * <p>Each document closes its property set and lists every name in one top-level
+     * {@code required} array, so a nested envelope fails twice over.
      */
     @Nested
     @DisplayName("group A: the flat wire form")
     class FlatWireForm {
 
         @Test
-        @DisplayName("each document requires 19, 11, 11, 10 and 8 properties at the top level")
+        @DisplayName("each document requires 20, 11, 21, 10 and 8 properties at the top level")
         void eachDocumentRequiresItsCountOfProperties() {
             assertAll(EVERY_SCHEMA.stream().map(resource -> () -> assertEquals(
                     REQUIRED_COUNTS.get(resource).intValue(), requiredNames(resource).size(),
@@ -551,7 +562,7 @@ class FraudEventWireFormTest {
         }
 
         @Test
-        @DisplayName("a nineteen-property flat authorization binds every field")
+        @DisplayName("a twenty-property flat authorization binds every field")
         void aFlatAuthorizationBindsEveryField() {
             TransactionAuthorized arrived = readAuthorization(AUTHORIZED_DOCUMENT);
 
@@ -560,7 +571,8 @@ class FraudEventWireFormTest {
                             arrived.eventId().toString(), "eventId"),
                     () -> assertEquals(TransactionAuthorized.EVENT_TYPE, arrived.eventType(),
                             "eventType"),
-                    () -> assertEquals(EventEnvelope.SCHEMA_VERSION, arrived.schemaVersion(),
+                    () -> assertEquals(TransactionAuthorized.CARD_TOKEN_SCHEMA_VERSION,
+                            arrived.schemaVersion(),
                             "schemaVersion"),
                     () -> assertEquals(Instant.parse("2022-06-10T19:27:53.412Z"),
                             arrived.occurredAt(), "occurredAt"),
@@ -808,9 +820,8 @@ class FraudEventWireFormTest {
      * Asserts that {@code eventType} separates the two assessments sharing one topic, and that a
      * cleared assessment carries three payload properties.
      *
-     * <p>The capability under test is net new; no COBOL ancestor defines it. A cleared assessment
-     * is a strict subset of a flagged one, so a check for a score property would misread a
-     * malformed message and {@code eventType} settles every routing question.
+     * <p>A cleared assessment is a strict subset of a flagged one, so a check for a score property
+     * would misread a malformed message and {@code eventType} settles every routing question.
      */
     @Nested
     @DisplayName("group B: the discriminator and the small cleared payload")
@@ -1095,9 +1106,8 @@ class FraudEventWireFormTest {
      * Asserts the three kinds of timestamp this service handles, and asserts that a fourth kind is
      * absent.
      *
-     * <p>The capability under test is net new; no COBOL ancestor defines it. Two properties are ISO
-     * 8601 instants, one property is twenty-six characters of fixed-width text, and no property
-     * carries a posting time.
+     * <p>Two properties are ISO 8601 instants, one property is twenty-six characters of
+     * fixed-width text, and no property carries a posting time.
      */
     @Nested
     @DisplayName("group C: three kinds of timestamp")

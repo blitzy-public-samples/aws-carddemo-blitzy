@@ -1,6 +1,7 @@
 package com.carddemo.account.entity;
 
 import com.carddemo.cobol.PicClause;
+import com.carddemo.events.EventEnvelope;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -26,6 +27,8 @@ import java.math.BigDecimal;
  * and writes no schema of its own.</p>
  *
  * <p>No field here holds a monetary amount, so no field carries an implied decimal.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "customer")
@@ -149,8 +152,8 @@ public class CustomerEntity {
      *
      * <p>The field is a {@link String} and not a number, and here the difference changes the data
      * rather than only its formatting. Offset (280,9) of record one of
-     * {@code app/data/ASCII/custdata.txt} holds {@code 020973888}; a numeric column stores
-     * {@code 20973888} and returns eight digits, which is a different Social Security Number and
+     * {@code app/data/ASCII/custdata.txt} holds {@code 020973888}. A numeric column stores
+     * {@code 20973888} and returns eight digits. That is a different Social Security Number, and
      * one that no longer splits into the three, two and four digit parts the source edit reads.
      * The check constraint {@code ck_customer_ssn_digits} holds the width and the digit class.</p>
      */
@@ -391,20 +394,20 @@ public class CustomerEntity {
     }
 
     /**
-     * Returns the customer identifier and nothing else.
+     * Returns the class name and one withheld component.
      *
-     * <p>Every other column of this row is personal data: a name, a postal address, two telephone
+     * <p>Every column of this row is personal data: a name, a postal address, two telephone
      * numbers, a Social Security Number, a government-issued identifier, a date of birth, an
-     * electronic funds transfer account and a credit score. A rendering reaches a log line as soon
-     * as any code concatenates the entity into a message, so none of those values appears here.
-     * The identifier names the row a reader needs, and each value stays behind the accessor a
-     * caller has to name.</p>
+     * electronic funds transfer account and a credit score. The customer identifier is stable and
+     * names one cardholder across every table of this platform, so it stays behind
+     * {@link #getCustomerId()} with the rest. A rendering reaches a log line as soon as any code
+     * concatenates the entity into a message, and this one carries no value at all.</p>
      *
-     * @return a single-line rendering carrying the customer identifier only
+     * @return a single-line rendering naming the class and reporting the identifier as withheld
      */
     @Override
     public String toString() {
-        return "CustomerEntity[customerId=" + customerId + "]";
+        return "CustomerEntity[customerId=" + EventEnvelope.WITHHELD + "]";
     }
 
     /**
@@ -413,9 +416,9 @@ public class CustomerEntity {
      *
      * <p>A {@code PIC 9(n)} display field is exactly n characters wide and holds only digits, and
      * the column check constraint repeats both halves in the database. Neither message carries a
-     * character of the rejected value: the width message reports a length and the digit message
-     * reports a position, which keeps a Social Security Number out of any log line a caller writes
-     * from a failure.</p>
+     * character of the rejected value. The width message reports a length and the digit message
+     * reports a position, which keeps a Social Security Number out of any log line a caller
+     * writes from a failure.</p>
      *
      * @param field the field name the message reports
      * @param value the value under test

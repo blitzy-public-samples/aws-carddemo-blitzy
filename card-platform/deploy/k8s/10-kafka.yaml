@@ -8,22 +8,32 @@
 # default, so 30-configmap.yaml must set SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092 for every
 # Pod. That variable is the one every service application.yml already reads.
 #
-# What changed and why it matters. The broker used to accept any connection that could reach
-# the port, with no authentication, no authorization and no encryption, so reachability was
-# the only thing standing between a Pod and every card, balance and fraud event on the
-# platform: any Pod could consume the streams, forge events onto them or poison them.
-#
-# Three controls replace that. Every client authenticates as one of seven Simple
+# Three controls guard the broker. Every client authenticates as one of seven Simple
 # Authentication and Security Layer (SASL) identities. The authorizer refuses any operation
 # no access control entry allows, and the entries a service holds are exactly what its own
-# configuration needs, so a compromised service can neither read a stream it does not
-# consume nor join another service's consumer group and take its partitions. The client
-# listener is wrapped in Transport Layer Security, because a cluster pod network is a shared
-# path. card-platform/docker-compose.yml installs the same identities and the same entries
-# without the encryption, and its own comments say why: it publishes on the loopback address
-# of one machine.
+# configuration needs. The client listener is wrapped in Transport Layer Security.
+# card-platform/docker-compose.yml installs the same identities and the same entries without
+# the encryption, since it publishes on the loopback address of one machine.
 #
-# Rationale for every choice in this folder: card-platform/docs/decision-log.md (planned)
+# Rationale for every choice in this folder: card-platform/docs/decision-log.md
+---
+# The broker log, KRaft metadata, topic data and committed consumer offsets outlive a Pod
+# replacement. The claim names no storage class, so the cluster binds its default class.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kafka-data
+  namespace: carddemo
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/component: event-broker
+    app.kubernetes.io/part-of: card-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -92,18 +102,15 @@ spec:
               value: CONTROLLER
             - name: KAFKA_INTER_BROKER_LISTENER_NAME
               value: INTERNAL
-            # INTERNAL is encrypted and authenticated, because every application Pod
-            # reaches it across the pod network. CONTROLLER and LOCAL authenticate without
-            # encrypting: both bind the loopback address, so their traffic never leaves
-            # this Pod, and encrypting a loopback socket would mean the tooling below had
-            # to trust a certificate to talk to the process beside it.
+            # INTERNAL is encrypted and authenticated. Every application Pod reaches it
+            # across the pod network. CONTROLLER and LOCAL authenticate without
+            # encrypting. Both bind the loopback address, so their traffic never leaves
+            # this Pod.
             #
-            # The controller listener authenticates for a reason worth stating. Left as
-            # plain text it identifies its caller as User:ANONYMOUS, and once an authorizer
-            # is installed ANONYMOUS holds no CLUSTER_ACTION, so the broker cannot register
-            # itself with its own controller and the node never starts. The alternative was
-            # naming ANONYMOUS a super user, which would make every unauthenticated caller
-            # one.
+            # The controller listener authenticates. Left as plain text it identifies its
+            # caller as User:ANONYMOUS. Once an authorizer is installed ANONYMOUS holds no
+            # CLUSTER_ACTION, so the broker cannot register itself with its own controller
+            # and the node never starts.
             - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
               value: CONTROLLER:SASL_PLAINTEXT,INTERNAL:SASL_SSL,LOCAL:SASL_PLAINTEXT
             - name: KAFKA_LISTENERS
@@ -143,10 +150,9 @@ spec:
               value: org.apache.kafka.metadata.authorizer.StandardAuthorizer
             - name: KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND
               value: "false"
-            # The keystore the encrypted listener presents, and the two passwords that open
-            # it. No client certificate is asked for: a service proves who it is with its
-            # SASL identity, and asking for both would mean issuing and rotating six client
-            # certificates to repeat an answer the platform already has.
+            # The keystore the encrypted listener presents, and the two passwords that
+            # open it. No client certificate is asked for. A service proves who it is with
+            # its SASL identity.
             - name: KAFKA_SSL_KEYSTORE_LOCATION
               value: /etc/carddemo/tls/kafka.p12
             - name: KAFKA_SSL_KEYSTORE_TYPE
@@ -169,17 +175,15 @@ spec:
             # Apache Kafka validates every encrypted listener as it configures it: it
             # builds a server SSLEngine and a client SSLEngine from these same settings and
             # handshakes one against the other. The client half needs a trust anchor for
-            # the certificate the server half presents. With no truststore named, that half
-            # falls back to the Java runtime's own authority list, which cannot contain the
-            # demo authority 31-secret.example.yaml tells the operator to generate, so the
-            # handshake fails and the broker exits during start-up with
-            # "PKIX path building failed" before it opens a port. Naming the truststore is
-            # what turns an encrypted listener from a fatal configuration into a working
-            # one; it grants no client anything, because KAFKA_SSL_CLIENT_AUTH above is
-            # none.
+            # the certificate the server half presents. With no truststore named, that
+            # half falls back to the Java runtime's own authority list. That list cannot
+            # contain the demo authority 31-secret.example.yaml tells the operator to
+            # generate. The handshake then fails and the broker exits during start-up with
+            # "PKIX path building failed", before it opens a port. Naming the truststore
+            # grants no client anything, since KAFKA_SSL_CLIENT_AUTH above is none.
             #
             # The file is the same truststore.p12 every service reads, from
-            # carddemo-tls-secret, because one authority copied twice is one authority. It
+            # carddemo-trust-secret, because one authority copied twice is one authority. It
             # mounts at a second path rather than beside the keystore: two Secrets cannot
             # supply one directory, and the keystore is the broker's own material while
             # this is the platform's.
@@ -190,7 +194,7 @@ spec:
             - name: KAFKA_SSL_TRUSTSTORE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-tls-secret
+                  name: carddemo-trust-secret
                   key: KAFKA_SSL_TRUSTSTORE_PASSWORD
             # The seven identities. A username is not a credential and comes from the
             # ConfigMap; a password comes from the Secret. Both are declared before the
@@ -332,7 +336,7 @@ spec:
                   key: KAFKA_TOPIC_REPLICATION_FACTOR
             - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
               value: "0"
-            # The broker creates no topic on demand. The program below creates the nine
+            # The broker creates no topic on demand. The program below creates the eleven
             # topics this platform uses. A mistyped name then fails loudly instead of
             # quietly opening a stream nobody meant to open.
             - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
@@ -342,12 +346,37 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: KAFKA_TOPIC_PARTITIONS
+            - name: KAFKA_TOPIC_PARTITIONS
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: KAFKA_TOPIC_PARTITIONS
+            - name: KAFKA_TOPIC_REPLICATION_FACTOR
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: KAFKA_TOPIC_REPLICATION_FACTOR
+            - name: KAFKA_LOG_RETENTION_HOURS
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: KAFKA_LOG_RETENTION_HOURS
             - name: KAFKA_LOG_DIRS
               value: /var/lib/kafka/data
             - name: KAFKA_HEAP_OPTS
               value: -Xms256m -Xmx512m
             # Consumer groups the access control entries name, one per listener. A group is
             # not a credential.
+            - name: GROUP_AUTHORIZATION_ACCOUNT
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_AUTHORIZATION_ACCOUNT
+            - name: GROUP_AUTHORIZATION_CARD
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_AUTHORIZATION_CARD
             - name: GROUP_LEDGER_POSTING
               valueFrom:
                 configMapKeyRef:
@@ -368,26 +397,81 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: GROUP_NOTIFICATION_FRAUD
+            - name: GROUP_NOTIFICATION_CUSTOMER
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_NOTIFICATION_CUSTOMER
+            # Topic names and the dead-letter suffix come from the same ConfigMap the
+            # services read. Changing one value therefore changes broker provisioning,
+            # service routing and access control together.
+            - name: TOPIC_TRANSACTION_AUTHORIZED
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: TOPIC_TRANSACTION_AUTHORIZED
+            - name: TOPIC_TRANSACTION_DECLINED
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: TOPIC_TRANSACTION_DECLINED
+            - name: TOPIC_TRANSACTION_POSTED
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: TOPIC_TRANSACTION_POSTED
+            - name: TOPIC_FRAUD_ASSESSED
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: TOPIC_FRAUD_ASSESSED
+            - name: TOPIC_ACCOUNT_STATE_CHANGED
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: TOPIC_ACCOUNT_STATE_CHANGED
+            - name: TOPIC_CUSTOMER_CONTEXT_CHANGED
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: TOPIC_CUSTOMER_CONTEXT_CHANGED
+            - name: TOPIC_CARD_UPDATED
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: TOPIC_CARD_UPDATED
+            - name: TOPIC_DEAD_LETTER
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: TOPIC_DEAD_LETTER
+            - name: TOPIC_DEAD_LETTER_SUFFIX
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: TOPIC_DEAD_LETTER_SUFFIX
           # This container also provisions the broker. It writes a client properties file
-          # for the administrator, waits for the loopback listener, creates the six event
-          # topics and the one shared dead-letter topic, installs one access control
-          # entry set per service, records that it finished, and hands the process to the
-          # broker entry point.
+          # for the administrator, waits for the loopback listener, creates the seven event
+          # topics, the four source-specific dead-letter topics and the shared fallback,
+          # installs one access control entry set per service, records that it finished,
+          # and hands the process to the broker entry point.
           #
-          # The three consumed topics are transaction.authorized, transaction.posted and
-          # fraud.assessed. One dead-letter stream rather than one per consumed topic: a
-          # dead-lettered record carries the envelope eventType that identifies it, so one
-          # stream finds, diagnoses and replays any of them.
+          # The four source topics with dead-letter routes are transaction.authorized,
+          # transaction.posted, fraud.assessed and customer.context-changed. Each has its
+          # own dead-letter stream, so one stream carries one
+          # source wire shape. The shared topic is only the configured fallback for a
+          # recovery record whose source topic is unavailable.
           #
-          # These nine names are the platform's topic inventory. The same nine appear in
+          # These eleven names are the platform's topic inventory. The same eleven appear in
           # card-platform/docker-compose.yml, and card-platform/.env.example documents every
           # one. A name that exists in one path and not the other is a defect. This broker
           # admits no topic it was not told about, so a missing name reaches a service as
           # UNKNOWN_TOPIC_OR_PARTITION.
           #
           # The entry matrix is the shipped configuration of the six services, read topic by
-          # topic and group by group. No service holds an entry naming another service's
-          # topic or group.
+          # topic and group by group. A consumer necessarily holds READ on the topic its
+          # producer writes; no service holds an entry naming another service's consumer
+          # group, or naming a topic its own configuration does not.
           command:
             - /bin/bash
             - -c
@@ -401,11 +485,10 @@ spec:
                     return 1
                     ;;
                 esac
-                # A password carrying a quote or a backslash would end the login option
-                # early and one carrying whitespace would split into two, so the value is
-                # refused here rather than authenticating as something else. A value still
-                # carrying the placeholder 31-secret.example.yaml publishes is refused for
-                # the same reason it is refused everywhere else on this platform.
+                # A password carrying a quote or a backslash ends the login option early,
+                # and one carrying whitespace splits into two. Each is refused here. A
+                # value still carrying the placeholder 31-secret.example.yaml publishes is
+                # refused as well.
                 case "${KAFKA_ADMIN_PASSWORD}" in
                   ''|*[\"\\]*|*[[:space:]]*)
                     echo "KAFKA_ADMIN_PASSWORD is empty, or carries a quote, a backslash or whitespace." >&2
@@ -448,20 +531,35 @@ spec:
                 fi
               }
 
+              check_positive_integer() {
+                case "${2}" in
+                  ''|*[!0-9]*|0)
+                    echo "${1} '${2}' is not a positive integer." >&2
+                    return 1
+                    ;;
+                esac
+              }
+
               create_topics() {
                 local topic
-                for topic in transaction.authorized \
-                             transaction.declined \
-                             transaction.posted \
-                             fraud.assessed \
-                             account.state-changed \
-                             card.updated \
-                             carddemo.dead-letter; do
+                for topic in "${TOPIC_TRANSACTION_AUTHORIZED}" \
+                             "${TOPIC_TRANSACTION_DECLINED}" \
+                             "${TOPIC_TRANSACTION_POSTED}" \
+                             "${TOPIC_FRAUD_ASSESSED}" \
+                             "${TOPIC_ACCOUNT_STATE_CHANGED}" \
+                             "${TOPIC_CUSTOMER_CONTEXT_CHANGED}" \
+                             "${TOPIC_CARD_UPDATED}" \
+                             "${TOPIC_TRANSACTION_AUTHORIZED}${TOPIC_DEAD_LETTER_SUFFIX}" \
+                             "${TOPIC_TRANSACTION_POSTED}${TOPIC_DEAD_LETTER_SUFFIX}" \
+                             "${TOPIC_FRAUD_ASSESSED}${TOPIC_DEAD_LETTER_SUFFIX}" \
+                             "${TOPIC_CUSTOMER_CONTEXT_CHANGED}${TOPIC_DEAD_LETTER_SUFFIX}" \
+                             "${TOPIC_DEAD_LETTER}"; do
                   check_name "Topic name" "${topic}" || return 1
                   /opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9094 \
                     --command-config "${ADMIN_PROPERTIES}" \
                     --create --if-not-exists --topic "${topic}" \
-                    --partitions 3 --replication-factor 1 || return 1
+                    --partitions "${KAFKA_TOPIC_PARTITIONS}" \
+                    --replication-factor "${KAFKA_TOPIC_REPLICATION_FACTOR}" || return 1
                 done
               }
 
@@ -489,41 +587,70 @@ spec:
               }
 
               create_acls() {
-                # Authorization service: publishes both decision events, consumes nothing.
-                grant_producer "${AUTHORIZATION_KAFKA_USER}" transaction.authorized || return 1
-                grant_producer "${AUTHORIZATION_KAFKA_USER}" transaction.declined || return 1
+                # Authorization service: publishes both decision events, consumes the two
+                # state-change streams that keep its replicas current, and can route a record it
+                # cannot apply to the configured dead-letter topic.
+                grant_producer "${AUTHORIZATION_KAFKA_USER}" \
+                  "${TOPIC_TRANSACTION_AUTHORIZED}" || return 1
+                grant_producer "${AUTHORIZATION_KAFKA_USER}" \
+                  "${TOPIC_TRANSACTION_DECLINED}" || return 1
+                grant_consumer "${AUTHORIZATION_KAFKA_USER}" \
+                  "${TOPIC_ACCOUNT_STATE_CHANGED}" "${GROUP_AUTHORIZATION_ACCOUNT}" || return 1
+                grant_consumer "${AUTHORIZATION_KAFKA_USER}" \
+                  "${TOPIC_CARD_UPDATED}" "${GROUP_AUTHORIZATION_CARD}" || return 1
+                grant_producer "${AUTHORIZATION_KAFKA_USER}" \
+                  "${TOPIC_DEAD_LETTER}" || return 1
 
                 # Ledger posting: consumes the authorization event under its own group,
-                # publishes the posted event, routes what it cannot process to the
-                # dead-letter topic.
-                grant_consumer "${LEDGER_KAFKA_USER}" transaction.authorized \
+                # publishes the posted or rejected outcome, and routes what it cannot
+                # process to the source topic's dead-letter topic.
+                grant_consumer "${LEDGER_KAFKA_USER}" "${TOPIC_TRANSACTION_AUTHORIZED}" \
                   "${GROUP_LEDGER_POSTING}" || return 1
-                grant_producer "${LEDGER_KAFKA_USER}" transaction.posted || return 1
-                grant_producer "${LEDGER_KAFKA_USER}" carddemo.dead-letter || return 1
+                grant_producer "${LEDGER_KAFKA_USER}" \
+                  "${TOPIC_TRANSACTION_POSTED}" || return 1
+                grant_producer "${LEDGER_KAFKA_USER}" \
+                  "${TOPIC_TRANSACTION_DECLINED}" || return 1
+                grant_producer "${LEDGER_KAFKA_USER}" \
+                  "${TOPIC_TRANSACTION_AUTHORIZED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+                grant_producer "${LEDGER_KAFKA_USER}" "${TOPIC_DEAD_LETTER}" || return 1
 
                 # Fraud detection: consumes the same event under its own group, publishes
                 # its assessment. It holds no entry on the posted event, which is the
                 # ledger's.
-                grant_consumer "${FRAUD_KAFKA_USER}" transaction.authorized \
+                grant_consumer "${FRAUD_KAFKA_USER}" "${TOPIC_TRANSACTION_AUTHORIZED}" \
                   "${GROUP_FRAUD_DETECTION}" || return 1
-                grant_producer "${FRAUD_KAFKA_USER}" fraud.assessed || return 1
-                grant_producer "${FRAUD_KAFKA_USER}" carddemo.dead-letter || return 1
+                grant_producer "${FRAUD_KAFKA_USER}" \
+                  "${TOPIC_FRAUD_ASSESSED}" || return 1
+                grant_producer "${FRAUD_KAFKA_USER}" \
+                  "${TOPIC_TRANSACTION_AUTHORIZED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+                grant_producer "${FRAUD_KAFKA_USER}" "${TOPIC_DEAD_LETTER}" || return 1
 
-                # Notification: two listeners, two groups of its own, and the one shared
-                # dead-letter topic. It publishes no event of its own. Its shipped configuration
-                # names transaction.posted and fraud.assessed, so it holds no entry on
-                # transaction.authorized: an entry the configuration does not need is an entry a
-                # compromise can use.
-                grant_consumer "${NOTIFICATION_KAFKA_USER}" transaction.posted \
+                # Notification: three listeners, three groups of its own, and one dead-letter
+                # topic per source. It publishes no business event of its own. Its shipped
+                # configuration names transaction.posted, fraud.assessed and
+                # customer.context-changed, so it holds no entry on transaction.authorized:
+                # an entry the configuration does not need is an entry a compromise can use.
+                grant_consumer "${NOTIFICATION_KAFKA_USER}" "${TOPIC_TRANSACTION_POSTED}" \
                   "${GROUP_NOTIFICATION_POSTED}" || return 1
-                grant_consumer "${NOTIFICATION_KAFKA_USER}" fraud.assessed \
+                grant_consumer "${NOTIFICATION_KAFKA_USER}" "${TOPIC_FRAUD_ASSESSED}" \
                   "${GROUP_NOTIFICATION_FRAUD}" || return 1
-                grant_producer "${NOTIFICATION_KAFKA_USER}" carddemo.dead-letter || return 1
+                grant_consumer "${NOTIFICATION_KAFKA_USER}" "${TOPIC_CUSTOMER_CONTEXT_CHANGED}" \
+                  "${GROUP_NOTIFICATION_CUSTOMER}" || return 1
+                grant_producer "${NOTIFICATION_KAFKA_USER}" \
+                  "${TOPIC_TRANSACTION_POSTED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+                grant_producer "${NOTIFICATION_KAFKA_USER}" \
+                  "${TOPIC_FRAUD_ASSESSED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+                grant_producer "${NOTIFICATION_KAFKA_USER}" \
+                  "${TOPIC_CUSTOMER_CONTEXT_CHANGED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
+                grant_producer "${NOTIFICATION_KAFKA_USER}" "${TOPIC_DEAD_LETTER}" || return 1
 
                 # Account and card: each publishes its own state-change event when a state
                 # change occurs, and consumes nothing.
-                grant_producer "${ACCOUNT_KAFKA_USER}" account.state-changed || return 1
-                grant_producer "${CARD_KAFKA_USER}" card.updated || return 1
+                grant_producer "${ACCOUNT_KAFKA_USER}" \
+                  "${TOPIC_ACCOUNT_STATE_CHANGED}" || return 1
+                grant_producer "${ACCOUNT_KAFKA_USER}" \
+                  "${TOPIC_CUSTOMER_CONTEXT_CHANGED}" || return 1
+                grant_producer "${CARD_KAFKA_USER}" "${TOPIC_CARD_UPDATED}" || return 1
               }
 
               # The marker the readiness probe reads is written last, after every topic
@@ -591,10 +718,11 @@ spec:
               mountPath: /etc/carddemo/trust
               readOnly: true
       volumes:
-        # Storage is an emptyDir volume. It survives a container restart inside
-        # this Pod. Data is lost when the Pod is replaced or deleted.
+        # The claim above preserves the KRaft metadata log, topic records and committed
+        # consumer offsets across a broker Pod replacement.
         - name: kafka-data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: kafka-data
         - name: broker-tls
           secret:
             secretName: carddemo-kafka-secret
@@ -602,11 +730,10 @@ spec:
             items:
               - key: KAFKA_SSL_KEYSTORE_P12
                 path: kafka.p12
-        # One key of the platform Secret, and only that key: this volume carries the
-        # authority and never the service keystore that sits beside it there.
+        # One key of the shared trust Secret: this volume carries no service private key.
         - name: broker-trust
           secret:
-            secretName: carddemo-tls-secret
+            secretName: carddemo-trust-secret
             defaultMode: 0640
             items:
               - key: truststore.p12
@@ -617,9 +744,9 @@ spec:
 # broker certificate against, so the certificate has to carry it.
 # ClusterIP only. Nothing outside the cluster connects to the broker.
 #
-# The Service carries an endpoint only while the broker Pod is ready. A service
-# that starts first therefore waits for a provisioned broker rather than reading
-# a topic that does not exist yet or joining a group it is not yet authorized for.
+# The Service carries an endpoint only while the broker Pod is ready. A service that
+# starts first therefore waits for a provisioned broker. It reads no topic that does not
+# exist and joins no group it is not yet authorized for.
 #
 # Nothing inside the broker Pod resolves this name: its readiness probe and its
 # provisioning program use the loopback listener. Adding publishNotReadyAddresses here

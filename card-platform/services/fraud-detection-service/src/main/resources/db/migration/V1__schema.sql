@@ -17,9 +17,9 @@ CREATE TABLE fraud_assessment (
     account_id      CHAR(11)                    NOT NULL,
     -- Whole number from 0 to 100, no decimal place; net new; no COBOL ancestor.
     risk_score      INTEGER                     NOT NULL,
-    -- True when at least one rule triggered; net new; no COBOL ancestor.
+    -- True when the score reaches the configured threshold; net new; no COBOL ancestor.
     flagged         BOOLEAN                     NOT NULL,
-    -- Rule names in evaluation order as a JSON array, [] when none triggered;
+    -- Rule names in evaluation order as a JSON array, [] when none contributed;
     -- net new; no COBOL ancestor. A JSON array carries a comma inside a quoted
     -- string and never between two values, so an identifier holding one
     -- survives a round trip. All three names span 49 of the 64 characters.
@@ -36,15 +36,33 @@ CREATE TABLE fraud_assessment (
     CONSTRAINT ck_fraud_assessment_triggered_rules CHECK (
         triggered_rules ~ ('^\[("(VELOCITY|AMOUNT_ANOMALY|MERCHANT_CATEGORY)"'
                         || '(,"(VELOCITY|AMOUNT_ANOMALY|MERCHANT_CATEGORY)")*)?\]$')),
-    -- flagged summarises the rule list, so the two cannot disagree. A row
-    -- flagged with no rule names no reason for the flag.
+    -- A cleared row may retain rules whose combined score stayed below the configured threshold,
+    -- but a flagged row must name at least one rule that contributed to that score.
     CONSTRAINT ck_fraud_assessment_verdict CHECK (
-        (flagged = FALSE AND triggered_rules = '[]')
-        OR (flagged = TRUE AND triggered_rules <> '[]'))
+        flagged = FALSE OR triggered_rules <> '[]'),
+    -- The regular expression above constrains each value but cannot stop one known value from
+    -- appearing twice. Count the distinct known members and require that count to equal the array
+    -- length, preserving the one-rule-one-contribution contract.
+    CONSTRAINT ck_fraud_assessment_unique_rules CHECK (
+        jsonb_array_length(triggered_rules::jsonb) =
+            (CASE WHEN triggered_rules::jsonb @> '["VELOCITY"]'::jsonb THEN 1 ELSE 0 END)
+          + (CASE WHEN triggered_rules::jsonb @> '["AMOUNT_ANOMALY"]'::jsonb
+                  THEN 1 ELSE 0 END)
+          + (CASE WHEN triggered_rules::jsonb @> '["MERCHANT_CATEGORY"]'::jsonb
+                  THEN 1 ELSE 0 END))
 );
+-- The verdict is threshold-based. A rule may contribute points without the summed score reaching
+-- that threshold, so a cleared row may still name contributing rules.
 
 -- Non-unique index on the account identifier. One account holds many rows.
 CREATE INDEX ix_fraud_assessment_account ON fraud_assessment (account_id);
+
+-- The read of api/FraudAssessmentController: one account's assessments, newest first, at
+-- most one page of them. Leading column account_id selects the account and trailing column
+-- assessed_at DESC delivers the order, so the page is read from the index and no sort runs
+-- over the account's whole history.
+CREATE INDEX ix_fraud_assessment_account_assessed_at
+    ON fraud_assessment (account_id, assessed_at DESC);
 
 -- velocity_window: one row per account and window, holding the counters the
 -- velocity rule reads.
@@ -56,23 +74,23 @@ CREATE TABLE velocity_window (
     -- Authorizations counted in the window; net new; no COBOL ancestor.
     authorization_count INTEGER                     NOT NULL,
     -- TRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA05Y.cpy:L10, precision and scale
-    -- only. Signed: 50 of the 300 DALYTRAN-AMT values in
-    -- app/data/ASCII/dailytran.txt are negative.
+    -- only. The fraud window stores absolute magnitude, so a refund raises rather than lowers the
+    -- total. This is net-new fraud behaviour and does not change ledger arithmetic.
     total_amount        NUMERIC(11,2)               NOT NULL,
     -- Time of the last change to the row; net new; no COBOL ancestor.
     updated_at          TIMESTAMP(6) WITH TIME ZONE NOT NULL,
     -- The composite key is the only access path, by point lookup or by range
     -- scan on the leading column.
-    CONSTRAINT pk_velocity_window PRIMARY KEY (account_id, window_start)
+    CONSTRAINT pk_velocity_window PRIMARY KEY (account_id, window_start),
+    CONSTRAINT ck_velocity_window_total_nonnegative CHECK (total_amount >= 0)
 );
 
--- outbox_event: ADDITIVE. One row per event this service publishes.
+-- outbox_event: No COBOL ancestor. One row per event this service publishes.
 -- payload is bounded at 8192 octets, the ceiling
 -- libs/event-contracts/.../serde/EventWireBounds.java applies on the wire, so the stored
 -- bound and the published bound are one bound. The seven relay-state columns are ADDITIVE
--- with no COBOL ancestor: without a claim, two relay instances read the same unpublished
--- row and publish it twice, and without an attempt count and a next-attempt time one
--- undeliverable row is retried forever and blocks the rows behind it.
+-- with no COBOL ancestor. The active relay prevents duplicate concurrent publication with
+-- a skip-locked row lock; the state columns retain bounded retry and recovery metadata.
 CREATE TABLE outbox_event (
     -- Idempotency key. The same value travels in the EventEnvelope.eventId field of
     -- the payload, and every consumer records it in its own processed_event marker.
@@ -136,18 +154,16 @@ CREATE TABLE outbox_event (
 -- which row comes next.
 CREATE INDEX ix_outbox_event_pending
     ON outbox_event (created_at, event_id) WHERE published = FALSE;
--- The claim query filters on relay_state and orders by next_attempt_at, so both columns are
--- covered. This index is also the purge path for rows in a terminal state.
+-- Relay-state diagnostics and future retry recovery use this order. The active claim query uses
+-- the pending partial index above and a pessimistic write lock with skip-locked semantics.
 CREATE INDEX ix_outbox_event_claimable ON outbox_event (relay_state, next_attempt_at);
-
-
 
 -- Retention. A published row has done its work and stays only for diagnosis. This index
 -- serves the purge that deletes published rows past the retention horizon.
 CREATE INDEX ix_outbox_event_published_at
     ON outbox_event (published_at) WHERE published = TRUE;
--- processed_event: ADDITIVE. One row per event identifier a consumer has already
--- handled. The primary key is the only access path.
+-- processed_event: No COBOL ancestor. One row per event identifier a consumer has already
+-- handled. TransactionAuthorizedConsumer is the one writer.
 -- The primary key is the guard as well as the key: an insert that collides is how a consumer
 -- learns the event was already handled, so the guard cannot be checked and then raced past.
 -- The consumer inserts this row in the same local transaction as its side effects and
@@ -162,7 +178,6 @@ CREATE TABLE processed_event (
     CONSTRAINT pk_processed_event PRIMARY KEY (event_id)
 );
 
-
 -- ============================================================================
 -- Retention and erasure
 -- ============================================================================
@@ -176,20 +191,20 @@ CREATE TABLE processed_event (
 --
 -- Each COMMENT below reads as four fields followed by a sentence, so an operator can
 -- read the policy out of the catalogue rather than out of a document:
---   retention=<window>      how long a row may stay, or the word relationship for a business
---                           record whose life is the customer relationship
+--   retention=<window>      how long a row may stay, or the word relationship for a
+--                           business record whose life is the customer relationship
 --   purge_key=<column>      the column a purge job ranges over, or 'none'
---   personal_data=<yes|no>  whether the row describes an identifiable person
+--   personal_data=<pseudonymous|no> whether the row can be linked to a person
 -- Read them back with:
 --   SELECT relname, obj_description(oid, 'pg_class') FROM pg_class
 --    WHERE relkind = 'r' ORDER BY relname;
 --
 -- The windows below are the demo baseline this platform ships with. No requirement in
--- scope fixes a legal retention period, and card-platform/docs/suggested-next-tasks.md (planned)
--- carries the task of replacing them with the periods a deployment's jurisdiction
--- requires. The purge job itself is out of scope for the same reason: nothing in the
--- Agent Action Plan schedules one, and a job that deletes financial records is not
--- something to add without an owner. The columns and indexes it needs are here.
+-- scope fixes a legal retention period, so a deployment replaces them with the periods
+-- its own jurisdiction requires. The purge job itself is out of scope for the same
+-- reason: nothing in the Agent Action Plan schedules one, and a job that deletes
+-- financial records is not something to add without an owner. The columns and indexes
+-- it needs are here.
 
 -- The range a purge job scans.
 CREATE INDEX ix_fraud_assessment_assessed_at ON fraud_assessment (assessed_at);
@@ -201,21 +216,21 @@ CREATE INDEX ix_velocity_window_start ON velocity_window (window_start);
 CREATE INDEX ix_processed_event_processed_at ON processed_event (processed_at);
 
 COMMENT ON TABLE fraud_assessment IS
-    'retention=90 days; purge_key=assessed_at; personal_data=no. One risk verdict per
-     transaction. The service has no COBOL ancestor and no regulatory record to keep, so a
-     verdict expires once it can no longer explain a decision under review: purge rows whose
-     assessed_at is older than 90 days.';
+    'retention=90 days; purge_key=assessed_at; personal_data=pseudonymous. One risk verdict
+     per transaction. account_id and transaction_id can resolve to a named customer through
+     the owning services, so this row is not anonymous. Purge rows whose assessed_at is older
+     than 90 days.';
 
 COMMENT ON TABLE velocity_window IS
-    'retention=7 days; purge_key=window_start; personal_data=no. Rolling per-account counter.
-     A window older than the widest velocity rule can influence no verdict: purge rows whose
-     window_start is older than 7 days.';
+    'retention=7 days; purge_key=window_start; personal_data=pseudonymous. Rolling
+     per-account spending magnitude and authorization count. account_id can resolve to a named
+     customer, so purge rows whose window_start is older than 7 days.';
 
 COMMENT ON TABLE outbox_event IS
-    'retention=7 days after published; purge_key=created_at; personal_data=no. One assessment
-     event awaiting publication. Purge rows where published is true and created_at is older
-     than 7 days.';
+    'retention=7 days after published; purge_key=published_at; personal_data=pseudonymous. One
+     assessment event awaiting publication, keyed by account and carrying a risk payload.
+     Purge rows where published_at is older than 7 days.';
 
 COMMENT ON TABLE processed_event IS
-    'retention=30 days; purge_key=processed_at; personal_data=no. Duplicate-delivery marker,
-     kept longer than broker topic retention.';
+    'retention=carddemo.processed-event.marker-retention-hours; purge_key=processed_at;
+     personal_data=no. Duplicate-delivery marker.';

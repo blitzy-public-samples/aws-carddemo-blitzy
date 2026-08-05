@@ -21,9 +21,6 @@ import com.carddemo.cobol.reference.UsPhoneAreaCodes;
  * <p>{@code WS-RETURN-MSG} at app/cbl/COACTUPC.cbl:L479 holds one message per validation pass, so
  * this class returns the first message its checks produce. app/cbl/COACTUPC.cbl:L2233 records that
  * a phone number is optional.</p>
- *
- * <p>Every deviation this class carries from paragraph behaviour is labelled ADDITIVE below and
- * recorded in {@code card-platform/docs/decision-log.md} (planned).
  */
 public final class UsPhoneNumberValidator {
 
@@ -242,7 +239,7 @@ public final class UsPhoneNumberValidator {
      * app/cbl/COACTUPC.cbl:L87, L92 or L97 stores. A short value therefore fails the digit test,
      * since a trailing space is not a digit.</p>
      *
-     * <p>ADDITIVE. A value longer than the declared width keeps every character here, and
+     * <p>No COBOL ancestor. A value longer than the declared width keeps every character here, and
      * {@link #isNumericAtWidth(String, int)} refuses the result.</p>
      *
      * @param value the value as supplied, possibly null
@@ -261,10 +258,10 @@ public final class UsPhoneNumberValidator {
     /**
      * Reports whether the value carries a character other than a space past the declared width.
      *
-     * <p>ADDITIVE. The {@code MOVE} at app/cbl/COACTUPC.cbl:L87, L92 or L97 drops everything past
-     * the declared width. The value it moves comes from a screen field of that exact width, so it
-     * drops nothing but padding. For a wider argument, trailing spaces are that padding, and any
-     * other character is content the edit does not read.</p>
+     * <p>No COBOL ancestor. The {@code MOVE} at app/cbl/COACTUPC.cbl:L87, L92 or L97 drops
+     * everything past the declared width. The value it moves comes from a screen field of that
+     * exact width, so it drops nothing but padding. For a wider argument, trailing spaces are that
+     * padding, and any other character is content the edit does not read.</p>
      *
      * @param supplied the value as supplied, never null
      * @param width    the declared width of the field
@@ -323,10 +320,10 @@ public final class UsPhoneNumberValidator {
      * at the same time. Every character must be a digit and the field must hold exactly
      * {@code width} of them.
      *
-     * <p>The width clause is ADDITIVE and it is unreachable from the source, where the field
-     * cannot hold more than {@code width} characters. It makes a wider value fail. The message at
-     * app/cbl/COACTUPC.cbl:L2272, L2343 or L2396 already describes that failure: each one reads
-     * that the part must be a number of a stated digit count.</p>
+     * <p>The width clause has no COBOL ancestor and it is unreachable from the source, where the
+     * field cannot hold more than {@code width} characters. It makes a wider value fail. The
+     * message at app/cbl/COACTUPC.cbl:L2272, L2343 or L2396 already describes that failure: each
+     * one reads that the part must be a number of a stated digit count.</p>
      *
      * @param stored the field contents, at its declared width or wider
      * @param width  the declared width of the field

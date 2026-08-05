@@ -12,16 +12,20 @@ import java.util.UUID;
 /**
  * Records one event identifier the notification service has processed.
  *
- * <p>One instance maps to one row of the table {@code processed_event}, whose two columns this
- * module declares at {@code src/main/resources/db/migration/V1__schema.sql:L73-L77}. A second
- * insert of one identifier violates the primary key {@code pk_processed_event}. No listener is
- * authored yet, so nothing writes this table.</p>
+ * <p>One instance maps to one row of the table {@code processed_event}. Three columns come from
+ * {@code src/main/resources/db/migration/V1__schema.sql}, which is authoritative for them:
+ * {@code event_id} as the primary key {@code pk_processed_event}, {@code processed_at}, and
+ * {@code consumed_topic}. A retention index over {@code processed_at} accompanies them, and a
+ * second insert of one identifier violates that primary key.
+ * {@code messaging.TransactionPostedConsumer} is the one writer, and it commits this row in the
+ * same local transaction as the read-model row it guards.</p>
  *
- * <p>ADDITIVE: no Common Business Oriented Language (COBOL) copybook and no COBOL program declares
- * an equivalent record. CardDemo detects no duplicate delivery anywhere. The transaction write at
- * {@code app/cbl/CBTRN02C.cbl:L562-L579} reaches {@code PERFORM 9999-ABEND-PROGRAM} at L577 on a
- * duplicate key. Each of the eight Customer Information Control System (CICS) file definitions in
- * {@code app/csd/CARDDEMO.CSD} specifies {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.</p>
+ * <p>No COBOL ancestor: no Common Business Oriented Language (COBOL) copybook and no COBOL program
+ * declares an equivalent record. CardDemo detects no duplicate delivery anywhere. The transaction
+ * write at {@code app/cbl/CBTRN02C.cbl:L562-L579} reaches {@code PERFORM 9999-ABEND-PROGRAM} at
+ * L577 on a duplicate key. Each of the eight Customer Information Control System (CICS) file
+ * definitions in {@code app/csd/CARDDEMO.CSD} specifies {@code RECOVERY(NONE)} and {@code
+ * JOURNAL(NO)}.</p>
  */
 @Entity
 @Table(name = "processed_event",
@@ -57,10 +61,10 @@ public class ProcessedEventEntity {
      * Which topic the delivery that first handled this event arrived on, or null when the
      * marker was written without one.
      *
-     * <p>A marker on its own says an event was handled and nothing about where it came from, which
-     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
-     * came from or arrive on a dead-letter topic during a recovery, and those are different
-     * situations. Recording the topic separates them.
+     * <p>A marker on its own says an event was handled and nothing about where it came from,
+     * which is not enough to investigate a replay. The same identifier can be redelivered on the
+     * topic it came from, or arrive on a dead-letter topic during a recovery. Those are different
+     * situations, and recording the topic separates them.
      */
     @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
     private String consumedTopic;

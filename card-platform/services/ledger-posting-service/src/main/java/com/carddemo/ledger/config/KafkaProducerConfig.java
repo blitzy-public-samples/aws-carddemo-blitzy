@@ -19,7 +19,7 @@ import org.springframework.kafka.core.ProducerFactory;
  * Producer wiring for the ledger posting service: the producer factory and the {@link KafkaTemplate}
  * the outbox relay publishes every ledger event through.
  *
- * <p>ADDITIVE. No COBOL program here declares an event bus, and none detects a duplicate, so a
+ * <p>No COBOL program here declares an event bus, and none detects a duplicate, so a
  * replayed feed reaches the abend routine at {@code app/cbl/CBTRN02C.cbl:L562-L579}.
  *
  * <p>Every message is keyed on the eleven-digit account identifier of
@@ -29,7 +29,7 @@ import org.springframework.kafka.core.ProducerFactory;
  * updates of one account keep their written order.
  *
  * <p>{@code config/LedgerProperties} resolves every topic name, and no Kafka transaction is
- * configured here. Decisions: {@code card-platform/docs/decision-log.md} (planned).
+ * configured here.
  */
 @Configuration
 public class KafkaProducerConfig {

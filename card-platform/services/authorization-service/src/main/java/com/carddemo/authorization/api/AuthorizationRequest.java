@@ -5,8 +5,10 @@ import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.NumvalParser;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
+import com.carddemo.events.EventEnvelope;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Null;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
@@ -32,23 +34,22 @@ import java.math.BigDecimal;
  * blank field reports its own empty text, and only a filled field reports a shape failure. One
  * definition of "supplied" therefore governs the constraints and the derived accessors alike.
  *
- * <p>Eleven components are required, matching the eleven fields
- * {@code app/cbl/COTRN02C.cbl:L251-L320} rejects when empty: the transaction type code, the category
- * code, the source, the description, the amount, both timestamps, and the four merchant fields. Two
- * components are optional. {@code transactionId} is optional because
- * {@code app/cbl/COTRN02C.cbl:L444-L451} derives it rather than reading it from the screen, and the
- * identifier pair is optional per component because
- * {@code app/cbl/COTRN02C.cbl:L195-L230} accepts either one.
+ * <p>Twelve components are required, matching the eleven fields
+ * {@code app/cbl/COTRN02C.cbl:L251-L320} rejects when empty — the transaction type code, the category
+ * code, the source, the description, the amount, both timestamps, and the four merchant fields —
+ * plus the card number. {@code transactionId} may not be supplied at all: this service allocates
+ * every identifier, as {@link #TRANSACTION_ID_NOT_ACCEPTED_MESSAGE} explains, and
+ * {@code accountId} is optional.
  *
- * <p>A caller supplies an account identifier or a card number, and never both.
- * {@code app/cbl/COTRN02C.cbl:L195-L230} branches on the same two fields and reports
- * {@value #IDENTIFIER_REQUIRED_MESSAGE} when neither arrives. A component filled with spaces counts
- * as absent, matching the {@code NOT = SPACES AND LOW-VALUES} test at
- * {@code app/cbl/COTRN02C.cbl:L196}. Both together are refused with
- * {@value #IDENTIFIER_AMBIGUOUS_MESSAGE}, for the reason
- * {@link #isIdentifierUnambiguous()} sets out: the account identity that decides the
- * outcome is the one the cross-reference row holds, so a second identifier from the
- * caller could only be discarded or believed, and believing it is account confusion.
+ * <p>A caller names its subject by card number and by nothing else.
+ * {@code app/cbl/COTRN02C.cbl:L195-L230} also branches on an account identifier, and that branch is
+ * not reproduced: it resolves whichever card the alternate index returns first, so a caller naming
+ * an account authorizes a card the caller never held. A missing card number reports
+ * {@value #IDENTIFIER_REQUIRED_MESSAGE}, the {@code WHEN OTHER} text of that paragraph. A component
+ * filled with spaces counts as absent, matching the {@code NOT = SPACES AND LOW-VALUES} test at
+ * {@code app/cbl/COTRN02C.cbl:L196}. When {@code accountId} is supplied beside the required card,
+ * it is a cross-check only: the decision still resolves the card first, then refuses the request
+ * unless the resolved account agrees with the caller's value.
  *
  * <p>Every free-text component is bounded twice: by the width of its source field and by
  * {@value #PRINTABLE_TEXT_PATTERN}, which admits no control character. The description
@@ -62,8 +63,10 @@ import java.math.BigDecimal;
  *
  * @param transactionId           identifier of the transaction, from
  *                                {@code DALYTRAN-ID PIC X(16)} at
- *                                {@code app/cpy/CVTRA06Y.cpy:L5}. Optional, and at most sixteen
- *                                characters.
+ *                                {@code app/cpy/CVTRA06Y.cpy:L5}. Must be absent: this service
+ *                                allocates every identifier from a database sequence, and a
+ *                                supplied value is refused with
+ *                                {@value #TRANSACTION_ID_NOT_ACCEPTED_MESSAGE}.
  * @param transactionTypeCode     type code of the transaction, from
  *                                {@code DALYTRAN-TYPE-CD PIC X(02)} at
  *                                {@code app/cpy/CVTRA06Y.cpy:L6}. Required, and one or two digits
@@ -103,8 +106,8 @@ import java.math.BigDecimal;
  *                                {@code app/cpy/CVTRA06Y.cpy:L14}. Required, and at most ten
  *                                characters.
  * @param cardNumber              card number, from {@code DALYTRAN-CARD-NUM PIC X(16)} at
- *                                {@code app/cpy/CVTRA06Y.cpy:L15}. One to sixteen digits, supplied
- *                                when {@code accountId} is absent.
+ *                                {@code app/cpy/CVTRA06Y.cpy:L15}. Required, one to sixteen digits,
+ *                                and the only way a request names its subject.
  *                                {@link #canonicalCardNumber()} returns it at its stored width.
  * @param originTimestamp         moment the transaction was captured, from
  *                                {@code DALYTRAN-ORIG-TS PIC X(26)} at
@@ -115,12 +118,16 @@ import java.math.BigDecimal;
  *                                {@code app/cpy/CVTRA06Y.cpy:L17}. Required, and shaped by
  *                                {@value #PROCESSING_TIMESTAMP_PATTERN}.
  * @param accountId               account identifier, from {@code XREF-ACCT-ID PIC 9(11)} at
- *                                {@code app/cpy/CVACT03Y.cpy:L7}. One to eleven digits, supplied
- *                                when {@code cardNumber} is absent.
+ *                                {@code app/cpy/CVACT03Y.cpy:L7}. Optional, one to eleven digits,
+ *                                and never a substitute for {@code cardNumber}. When supplied, it
+ *                                must equal the account the card cross-reference resolves.
  *                                {@link #canonicalAccountId()} returns it at its stored width.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record AuthorizationRequest(
 
+        @Null(message = TRANSACTION_ID_NOT_ACCEPTED_MESSAGE)
         @Size(max = PicClause.DALYTRAN_ID_WIDTH)
         @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String transactionId,
@@ -165,6 +172,7 @@ public record AuthorizationRequest(
         @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String merchantZip,
 
+        @NotBlank(message = IDENTIFIER_REQUIRED_MESSAGE)
         @Pattern(regexp = CARD_NUMBER_PATTERN, message = CARD_NUMBER_NOT_NUMERIC_MESSAGE)
         String cardNumber,
 
@@ -242,6 +250,18 @@ public record AuthorizationRequest(
             "Category CD must be Numeric...";
 
     /**
+     * ADDITIVE rejection text for a supplied transaction identifier of another width.
+     *
+     * <p>No source message corresponds. {@code app/cbl/COTRN02C.cbl:L444-L451} derives the
+     * identifier and reads none from the screen, so the source has no field to reject. Every event
+     * contract of this platform keys its transaction identifier at
+     * {@code com.carddemo.events.TransactionAuthorized#TRANSACTION_ID_LENGTH} characters, and a
+     * narrower value reaches that check after the decision has already been taken.
+     */
+    public static final String TRANSACTION_ID_WIDTH_MESSAGE =
+            "Transaction ID must hold sixteen printable characters...";
+
+    /**
      * Rejection text for an account identifier that is not all digits, from
      * {@code app/cbl/COTRN02C.cbl:L199}.
      */
@@ -261,37 +281,33 @@ public record AuthorizationRequest(
             "Account or Card Number must be entered...";
 
     /**
-     * Rejection text for a request carrying both identifiers. ADDITIVE: no source paragraph writes
-     * it, because no source path can reach the condition.
+     * Rejection text for a request that carries a transaction identifier. ADDITIVE: no source
+     * paragraph writes it, because no screen field offers the value.
      *
-     * <p>{@code app/cbl/COTRN02C.cbl:L195-L230} is an {@code EVALUATE TRUE} that takes
-     * the account branch when the account field arrived and never reads the card field
-     * afterwards. Silently preferring one field is safe on a screen, where one operator
-     * fills both. It is not safe on an authorization endpoint: the decision keys on the
-     * full card number at {@code app/cbl/CBTRN02C.cbl:L382-L383}, so a caller who paired
-     * another cardholder's account identifier with their own card number would have the
-     * discarded field decide nothing and the kept field decide everything.
-     *
-     * <p>The batch record this service reproduces carries no account identifier at all
-     * ({@code app/cpy/CVTRA06Y.cpy:L4-L18}), so refusing the combination changes no
-     * outcome for any record of {@code app/data/ASCII/dailytran.txt}.
+     * <p>{@code app/cbl/COTRN02C.cbl:L444-L451} allocates the identifier by browsing the file
+     * backwards from high values and adding one, so the screen never supplies it. This service
+     * allocates it from a database sequence, and a caller-supplied value is refused rather than
+     * ignored: an identifier a caller chooses is an identifier a caller can repeat, and a repeated
+     * identifier merges one payment with another in the ledger, the alert history and the fraud
+     * assessment while every consumer sees a fresh event identifier and no duplicate to skip.
      */
-    public static final String IDENTIFIER_AMBIGUOUS_MESSAGE =
-            "Supply either Account ID or Card Number, not both...";
+    public static final String TRANSACTION_ID_NOT_ACCEPTED_MESSAGE =
+            "Transaction ID is allocated by this service and must not be supplied...";
 
     /**
      * Rejection text for a component carrying a character outside the printable range.
      *
-     * <p>ADDITIVE: the source reads its fields from fixed-width map areas, which no control
-     * character can reach.
+     * <p>No COBOL ancestor: the source reads its fields from fixed-width map areas, which no
+     * control character can reach.
      *
      * <p>Every character of all three hundred records of
      * {@code app/data/ASCII/dailytran.txt} falls inside the printable range this text
-     * guards, measured across the transaction identifier, the type code, the category
-     * code, the source, the description and all three merchant fields. A carriage return
-     * or a line feed in a description would let a caller add or forge a line of the
-     * fixed-width alert record the notification service renders, which is why the check
-     * sits here at ingress and not only where the text is rendered.
+     * guards. That was measured across the transaction identifier, the type code, the
+     * category code, the source, the description and all three merchant fields.
+     *
+     * <p>A carriage return or a line feed in a description would let a caller add or forge
+     * a line of the fixed-width alert record the notification service renders. The check
+     * therefore sits here at ingress, and not only where the text is rendered.
      */
     public static final String CONTROL_CHARACTER_MESSAGE =
             "Text fields must hold printable characters only...";
@@ -355,20 +371,49 @@ public record AuthorizationRequest(
     public static final String CATEGORY_CODE_PATTERN = "^[0-9]{1,4}$";
 
     /**
-     * Shape of {@link #accountId()}: one to eleven digits.
-     * {@code app/cbl/COTRN02C.cbl:L197} applies the COBOL numeric class test to the same field, and
-     * {@link #canonicalAccountId()} widens a shorter value to
-     * {@link PicClause#XREF_ACCT_ID_WIDTH} digits.
+     * Shape of {@link #transactionId()}: exactly {@link PicClause#DALYTRAN_ID_WIDTH} printable
+     * characters carrying no space, or absent.
+     *
+     * <p>{@code DALYTRAN-ID PIC X(16)} at {@code app/cpy/CVTRA06Y.cpy:L5} is alphanumeric, so the
+     * class is the printable range and not the digits. An absent component is accepted here and
+     * {@code domain/TransactionIdentifierSource} then allocates one, which reproduces
+     * {@code app/cbl/COTRN02C.cbl:L444-L451}.
+     *
+     * <p>The pattern is {@link EventEnvelope#UNRESOLVED_AGGREGATE_KEY_PATTERN} itself rather than a
+     * copy of it. A decline whose card resolved no account is keyed on this identifier, from reject
+     * code {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387}, and the envelope admits no space in
+     * a key. A value this boundary accepted and that envelope refused would fail after the decision
+     * had already been taken.
      */
-    public static final String ACCOUNT_ID_PATTERN = "^[0-9]{1,11}$";
+    public static final String TRANSACTION_ID_PATTERN =
+            EventEnvelope.UNRESOLVED_AGGREGATE_KEY_PATTERN;
 
     /**
-     * Shape of {@link #cardNumber()}: one to sixteen digits.
-     * {@code app/cbl/COTRN02C.cbl:L211} applies the COBOL numeric class test to the same field, and
-     * {@link #canonicalCardNumber()} widens a shorter value to
-     * {@link PicClause#DALYTRAN_CARD_NUM_WIDTH} digits.
+     * Shape of {@link #accountId()}: exactly {@link PicClause#XREF_ACCT_ID_WIDTH} digits.
+     *
+     * <p>{@code app/cbl/COTRN02C.cbl:L197} applies the COBOL numeric class test to
+     * {@code ACTIDINI}, which {@code app/bms/COTRN02.bms:L85-L90} declares {@code LENGTH=11} with no
+     * {@code JUSTIFY} and no {@code PICIN}. A shorter entry therefore arrives left-aligned with
+     * trailing spaces, fails that class test at {@code app/cbl/COTRN02C.cbl:L197} and reports
+     * {@value #ACCOUNT_ID_NOT_NUMERIC_MESSAGE}. Only two maps in {@code app/bms/} zero-fill a short
+     * entry, {@code app/bms/COMEN01.bms:L147} and {@code app/bms/COADM01.bms:L147}, and this is
+     * neither.
      */
-    public static final String CARD_NUMBER_PATTERN = "^[0-9]{1,16}$";
+    public static final String ACCOUNT_ID_PATTERN = "^[0-9]{11}$";
+
+    /**
+     * Shape of {@link #cardNumber()}: exactly {@link PicClause#DALYTRAN_CARD_NUM_WIDTH} digits.
+     *
+     * <p>{@code app/cbl/COTRN02C.cbl:L211} applies the COBOL numeric class test to
+     * {@code CARDNINI}, which {@code app/bms/COTRN02.bms:L104-L108} declares {@code LENGTH=16} with
+     * no {@code JUSTIFY} and no {@code PICIN}. A shorter entry fails that class test and reports
+     * {@value #CARD_NUMBER_NOT_NUMERIC_MESSAGE}.
+     *
+     * <p>Widening a shorter value here would change which card the cross-reference read finds: a
+     * fifteen-digit value widened by one zero names a different sixteen-character key, and the
+     * decision would then apply to another cardholder's account.
+     */
+    public static final String CARD_NUMBER_PATTERN = "^[0-9]{16}$";
 
     /**
      * Shape of {@link #merchantId()}: exactly nine digits, the width of
@@ -434,9 +479,6 @@ public record AuthorizationRequest(
      */
     public static final String PRINTABLE_TEXT_PATTERN = "^[ -~]*$";
 
-    /** The character {@link #canonicalAccountId()} and {@link #canonicalCardNumber()} pad with. */
-    private static final String PAD_DIGIT = "0";
-
     /** Stands in for a component that arrived, in the form {@link #toString()} returns. */
     public static final String WITHHELD = "<withheld>";
 
@@ -450,9 +492,10 @@ public record AuthorizationRequest(
      * Turns every blank component into {@code null}, and changes no component that holds content.
      *
      * <p>One definition of "supplied" then governs the whole record. A component of spaces reports
-     * the emptiness text its field carries at {@code app/cbl/COTRN02C.cbl:L251-L320}, and never the
-     * shape text of a class test that {@code app/cbl/COTRN02C.cbl:L322-L334} would only reach on a
-     * filled field. {@link #supplied(String)} and every constraint above therefore agree.
+     * the emptiness text its field carries at {@code app/cbl/COTRN02C.cbl:L251-L320}. It never
+     * reports the shape text of a class test, which {@code app/cbl/COTRN02C.cbl:L322-L334} reaches
+     * on a filled field alone. {@link #supplied(String)} and every constraint above therefore
+     * agree.
      *
      * <p>Content passes through unchanged, spaces included. The COBOL class test reads a field
      * position by position, so {@code "7 "} is not numeric there and is not numeric here.
@@ -507,44 +550,26 @@ public record AuthorizationRequest(
     }
 
     /**
-     * Reports whether the request carries an account identifier or a card number.
+     * Reports whether the request carries the card number the decision runs on.
      *
-     * <p>{@code app/cbl/COTRN02C.cbl:L195-L230} reads whichever field arrived, resolves the other
-     * from the cross-reference, and reaches its {@code WHEN OTHER} branch when neither did. A
-     * component that is {@code null}, empty or all whitespace counts as absent here, matching the
-     * {@code NOT = SPACES AND LOW-VALUES} test the two branches share.
+     * <p>A card number is required and an account identifier does not substitute for one. The
+     * record this service reproduces carries a card number and no account identifier at all
+     * ({@code app/cpy/CVTRA06Y.cpy:L4-L18}), and the decision reads the cross-reference by that
+     * card number at {@code app/cbl/CBTRN02C.cbl:L382-L383}.
      *
-     * @return {@code true} when at least one of the two identifiers arrived
+     * <p>{@code app/cbl/COTRN02C.cbl:L195-L230} also accepts an account identifier and resolves a
+     * card from the alternate index. That branch selects whichever card the index returns first,
+     * so a caller who names an account identifier authorizes a card the caller never held. The
+     * account branch is therefore not reproduced, and this check is what refuses it. A component
+     * that is {@code null}, empty or all whitespace counts as absent, matching the
+     * {@code NOT = SPACES AND LOW-VALUES} test at {@code app/cbl/COTRN02C.cbl:L196}, and the
+     * {@code WHEN OTHER} text at {@code app/cbl/COTRN02C.cbl:L226} reports the refusal.
+     *
+     * @return {@code true} when a card number arrived
      */
     @AssertTrue(message = IDENTIFIER_REQUIRED_MESSAGE)
-    public boolean isEitherIdentifierSupplied() {
-        return supplied(accountId) || supplied(cardNumber);
-    }
-
-    /**
-     * Reports whether the request names its subject once rather than twice.
-     *
-     * <p>Exactly one identifier may arrive. The account identity the decision runs on,
-     * and the identity every event carries, is always the one the card cross-reference row
-     * held: the authorization service resolves the row at
-     * {@code app/cbl/CBTRN02C.cbl:L382-L383} and reads {@code XREF-ACCT-ID} out of it. An
-     * identifier a caller supplied is a request for a lookup and never evidence of
-     * ownership.
-     *
-     * <p>Two identifiers therefore have no meaning here. One of them would be discarded,
-     * and which one survived would decide whose account the transaction touched. Refusing
-     * the pair is the whole of the fix: the request cannot express the ambiguity, so no
-     * later code has to resolve it.
-     *
-     * <p>{@code app/cbl/COTRN02C.cbl:L195-L230} keeps the account branch and discards the
-     * card field. That silent preference is the behaviour this check declines to
-     * reproduce, and {@code card-platform/docs/business-rule-flags.md} (planned) records it.
-     *
-     * @return {@code true} unless both identifiers arrived
-     */
-    @AssertTrue(message = IDENTIFIER_AMBIGUOUS_MESSAGE)
-    public boolean isIdentifierUnambiguous() {
-        return !(supplied(accountId) && supplied(cardNumber));
+    public boolean isCardNumberSupplied() {
+        return supplied(cardNumber);
     }
 
     /**
@@ -566,29 +591,34 @@ public record AuthorizationRequest(
     }
 
     /**
-     * Returns {@link #accountId()} widened to the eleven digits the cross-reference record holds.
+     * Returns {@link #accountId()} at the eleven digits the cross-reference record holds.
      *
      * <p>{@code app/cbl/COTRN02C.cbl:L204-L207} converts the field, then moves the value back into
-     * a {@code PIC 9(11)} field, which fills the leading positions with zeros. A caller sending
-     * {@code 7} therefore reaches the decision rules as {@code 00000000007}.
+     * a {@code PIC 9(11)} field. The field it converts is already eleven characters wide, so a value
+     * reaching that move holds eleven digits and the move changes nothing.
      *
-     * @return the widened identifier, or {@code null} when {@link #accountId()} is absent or holds
-     *         a value the plain numeric grammar rejects
+     * <p>A value of another width returns {@code null}, and {@link #ACCOUNT_ID_PATTERN} reports it
+     * as {@value #ACCOUNT_ID_NOT_NUMERIC_MESSAGE} before the decision rules run.
+     *
+     * @return the identifier at its stored width, or {@code null} when {@link #accountId()} is
+     *         absent, is another width, or holds a value the plain numeric grammar rejects
      */
     public String canonicalAccountId() {
         return canonical(accountId, PicClause.XREF_ACCT_ID_WIDTH);
     }
 
     /**
-     * Returns {@link #cardNumber()} widened to the sixteen digits the transaction record holds.
+     * Returns {@link #cardNumber()} at the sixteen digits the transaction record holds.
      *
      * <p>{@code app/cbl/COTRN02C.cbl:L218-L221} converts the field, then moves the value back into
-     * a {@code PIC 9(16)} field, which fills the leading positions with zeros.
-     * {@code app/cbl/COTRN02C.cbl:L459} stores that widened field into
-     * {@code TRAN-CARD-NUM PIC X(16)}.
+     * a {@code PIC 9(16)} field, and {@code :L459} stores that field into
+     * {@code TRAN-CARD-NUM PIC X(16)}. The field it converts is already sixteen characters wide.
      *
-     * @return the widened card number, or {@code null} when {@link #cardNumber()} is absent or
-     *         holds a value the plain numeric grammar rejects
+     * <p>A value of another width returns {@code null}, and {@link #CARD_NUMBER_PATTERN} reports it
+     * as {@value #CARD_NUMBER_NOT_NUMERIC_MESSAGE} before the cross-reference read runs.
+     *
+     * @return the card number at its stored width, or {@code null} when {@link #cardNumber()} is
+     *         absent, is another width, or holds a value the plain numeric grammar rejects
      */
     public String canonicalCardNumber() {
         return canonical(cardNumber, PicClause.DALYTRAN_CARD_NUM_WIDTH);
@@ -658,14 +688,10 @@ public record AuthorizationRequest(
             return null;
         }
         String text = value.strip();
-        if (!NumvalParser.isValidNumval(text)) {
+        if (text.length() != width || !NumvalParser.isValidNumval(text)) {
             return null;
         }
-        String digits = NumvalParser.numval(text).toBigInteger().abs().toString();
-        if (digits.length() >= width) {
-            return digits;
-        }
-        return PAD_DIGIT.repeat(width - digits.length()) + digits;
+        return text;
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.carddemo.account.repository;
 
 import com.carddemo.account.entity.AccountEntity;
+import com.carddemo.account.entity.CardCrossReferenceEntity;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.account.entity.DisclosureGroupEntity;
 import com.carddemo.account.entity.OutboxEventEntity;
@@ -72,7 +73,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * constructs its own inputs, and no validation test drives a validator from a seeded row.</p>
  *
  * <p><b>Absence four, a row version.</b> No migrated table carries a row-version or
- * optimistic-lock column, and none of the five Jakarta Persistence (JPA) entity classes declares a
+ * optimistic-lock column, and none of the six Jakarta Persistence (JPA) entity classes declares a
  * version attribute. Neither {@link AccountRepository} nor {@link CustomerRepository} requests an
  * optimistic lock mode. The source mechanism is {@code 9700-CHECK-CHANGE-IN-REC.} at
  * {@code app/cbl/COACTUPC.cbl:L4109}, whose account block opens at {@code L4114}. A search for
@@ -102,18 +103,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * declares 300. The customer record is 332 plus 168, and {@code RECORDSIZE(500 500)} at
  * {@code app/jcl/CUSTFILE.jcl:L51} declares 500. The disclosure-group record is 22 plus 28, and
  * {@code RECORDSIZE(50 50)} at {@code app/jcl/DISCGRP.jcl:L41} declares 50.</p>
- *
- * <p><b>Where the reasoning lives.</b> {@code card-platform/docs/business-rule-flags.md} carries
- * the source findings these six absences reproduce, each with its citation.
- * {@code card-platform/docs/traceability-matrix.md} carries the field-by-field mapping.
- * {@code card-platform/docs/data-model.md} draws the table shapes and the lookup path between
- * them.</p>
  */
 @DisplayName("Six constraints the migrated account schema does not declare")
 class SchemaConstraintAbsenceTest extends AbstractAccountPostgresTest {
 
     /**
-     * The eight tables the three migrations create. The Flyway history table is not one of them,
+     * The nine tables the four migrations create. The Flyway history table is not one of them,
      * and it carries a column named {@code version}. A scan for a row version therefore reads this
      * list and never the whole schema.
      */
@@ -125,7 +120,8 @@ class SchemaConstraintAbsenceTest extends AbstractAccountPostgresTest {
             "us_state_code",
             "us_state_zip_prefix",
             "outbox_event",
-            "processed_event");
+            "processed_event",
+            "card_xref");
 
     /** The three tables whose source record ends in a trailing filler field. */
     private static final List<String> RECORD_TABLES =
@@ -147,13 +143,15 @@ class SchemaConstraintAbsenceTest extends AbstractAccountPostgresTest {
     private static final Set<LockModeType> OPTIMISTIC_LOCK_MODES =
             EnumSet.of(LockModeType.OPTIMISTIC, LockModeType.OPTIMISTIC_FORCE_INCREMENT);
 
-    /** The five JPA entity classes of this module. */
+    /** The six JPA entity classes of this module. */
     private static final List<Class<?>> ENTITY_CLASSES = List.of(
             AccountEntity.class,
+            CardCrossReferenceEntity.class,
             CustomerEntity.class,
             DisclosureGroupEntity.class,
             OutboxEventEntity.class,
-            ProcessedEventEntity.class);
+            ProcessedEventEntity.class,
+            CardCrossReferenceEntity.class);
 
     /** The two repository interfaces the account update path reads and writes through. */
     private static final List<Class<?>> REPOSITORY_INTERFACES =
@@ -300,7 +298,7 @@ class SchemaConstraintAbsenceTest extends AbstractAccountPostgresTest {
             versionAttributes.addAll(versionAttributesOf(entityClass));
         }
         assertThat(versionAttributes)
-                .as("version attributes across the five entity classes")
+                .as("version attributes across the six entity classes")
                 .isEmpty();
 
         List<String> optimisticLockMethods = new ArrayList<>();

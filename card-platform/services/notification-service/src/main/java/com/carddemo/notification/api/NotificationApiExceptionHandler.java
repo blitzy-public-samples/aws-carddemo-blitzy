@@ -11,21 +11,20 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
  * Turns a failure of the notification endpoint into an {@link ApiErrorResponse}.
  *
  * <p>The framework's own problem detail carries the resolved request path in its {@code instance}
- * member. The path variable of this service's one route is a card number, so that member would
- * copy a card number into the response body and into any log line built from it. Every response
- * this class returns carries the route template instead, and no value read from the request.
+ * member. The path variable of this service's one route is an account identifier, so that member
+ * would copy an identifier into the response body and into any log line built from it. Every
+ * response this class returns carries the route template instead, and no value read from the
+ * request.
  *
  * <p>Two outcomes. A path variable that misses its pattern answers {@code 400}. Any other fault
  * answers {@code 500} with one fixed text.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @RestControllerAdvice
 public class NotificationApiExceptionHandler {
 
     /** Text a response carries when the path variable misses its pattern. */
-    static final String INVALID_CARD_NUMBER_MESSAGE =
-            "Card number must be the masked form: twelve asterisks then the last four digits.";
+    static final String INVALID_REQUEST_MESSAGE =
+            "Account identifier must be eleven digits, and limit must be at least one.";
 
     /** Text a response carries when the service faults. */
     static final String SERVICE_FAULT_MESSAGE = "The request could not be completed.";
@@ -79,7 +78,7 @@ public class NotificationApiExceptionHandler {
     private static ResponseEntity<ApiErrorResponse> badRequest() {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new ApiErrorResponse(HttpStatus.BAD_REQUEST.value(),
-                        INVALID_CARD_NUMBER_MESSAGE,
+                        INVALID_REQUEST_MESSAGE,
                         NotificationHistoryController.ROUTE_TEMPLATE));
     }
 }

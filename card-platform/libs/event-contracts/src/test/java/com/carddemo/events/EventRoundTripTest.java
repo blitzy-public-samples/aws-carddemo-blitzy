@@ -33,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -43,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Sends every event of this module through the publish-side serializer and the consume-side
  * deserializer, then compares what arrived with what was written.
  *
- * <p>ADDITIVE. No COBOL program and no copybook in this repository defines this class. The CardDemo
+ * <p>No COBOL program and no copybook in this repository defines this class. The CardDemo
  * source holds no Java and no test of any kind, so nothing here translates a source construct. The
  * COBOL files cited below are read-only context that fixed the widths and the text formats these
  * tests assert.
@@ -63,25 +64,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * which {@code app/cbl/CBTRN02C.cbl:L548-L551} maintains on the sign of the amount, appear in no
  * event.
  *
- * <p>A reader meets two pitfalls here first. Every module declares
- * {@code <java.version>25</java.version>}, and a module that omits it compiles silently at release
- * 17 with no warning and no failure. The posting timestamp carries hundredths and four literal
- * zeros. {@code DB2-MIL PIC 9(002)} at {@code app/cbl/CBTRN02C.cbl:L173} and
- * {@code MOVE '0000' TO DB2-REST} at {@code app/cbl/CBTRN02C.cbl:L701} spell it, and a test that
- * stamps a current instant into that property fails on every record.
- * {@code card-platform/docs/onboarding.md} carries both pitfalls in full.
+ * <p>A reader meets two pitfalls here first. Every module declares {@code
+ * <java.version>25</java.version>}, and a module that omits it compiles silently at release 17 with
+ * no warning and no failure. The posting timestamp carries hundredths and four literal zeros.
+ * {@code DB2-MIL PIC 9(002)} at {@code app/cbl/CBTRN02C.cbl:L173} and {@code MOVE '0000' TO
+ * DB2-REST} at {@code app/cbl/CBTRN02C.cbl:L701} spell it, and a test that stamps a current instant
+ * into that property fails on every record.
  *
  * <p>Adding a consumer needs no change to any producer: a new consumer group reads an event this
- * module already publishes. {@code card-platform/docs/event-flow.md} traces each event from its
- * publisher to the services that consume it.
+ * module already publishes.
  *
  * <p>Every test runs offline. No {@code $id} is dereferenced, no schema registry service is
  * contacted, no Kafka broker starts and no Spring context loads. Versions in use: Java 25, Apache
  * Maven 3.9.16, junit-jupiter 6.0.3, spring-boot-starter-test 4.1.0, json-schema-validator 3.0.6,
  * jackson-databind 3.1.5 and kafka-clients 4.2.1.
- *
- * <p>The reasoning behind the choices these tests pin sits in
- * {@code card-platform/docs/decision-log.md}.
  */
 class EventRoundTripTest {
 
@@ -101,10 +97,34 @@ class EventRoundTripTest {
     private static final String MASKED_CARD_NUMBER = "************7065";
 
     /**
+     * Card token every card-bearing fixture carries. Sixty-four lower-case hexadecimal characters,
+     * the shape {@code PanMasker.cardToken} produces.
+     */
+    private static final String CARD_TOKEN =
+            "5a1c93e07bd426f8a05c1f39d8b27e46c0195af3782de6b41c09d5837ae2f60b";
+
+    /**
      * A full Primary Account Number (PAN), at the width of {@code TRAN-CARD-NUM PIC X(16)} at
      * {@code app/cpy/CVTRA05Y.cpy:L15}. One test uses it to prove no failure message repeats it.
+     *
+     * <p>The value is derived without a committed literal, and its four leading digits are
+     * {@code 9999}, which none of the fifty records of
+     * {@code app/data/ASCII/carddata.txt} begins with. No card number this repository carries
+     * therefore reaches this source file.
      */
-    private static final String FULL_CARD_NUMBER = "4859452612877065";
+    private static final String FULL_CARD_NUMBER = syntheticCardNumber(452612877065L);
+
+
+    /**
+     * Builds a sixteen-digit card number this repository does not carry.
+     *
+     * @param serial the trailing serial, at most twelve digits
+     * @return sixteen digits, opening with {@code 9999}
+     */
+    private static String syntheticCardNumber(long serial) {
+        return "9999" + String.format("%012d", serial);
+    }
+
 
     /**
      * The authorization timestamp form of {@code TRAN-ORIG-TS PIC X(26)} at
@@ -182,7 +202,7 @@ class EventRoundTripTest {
             new JsonSchemaValidatingDeserializer<>();
 
     /**
-     * Asserts an authorized transaction arrives with every one of its nineteen properties
+     * Asserts an authorized transaction arrives with every one of its twenty properties
      * unchanged, and that the amount keeps its scale.
      */
     @Test
@@ -219,6 +239,14 @@ class EventRoundTripTest {
     @Test
     void aDeclinedTransactionRoundTripsForEveryRejectReasonWithItsVerbatimText() {
         for (DeclineReason reason : DeclineReason.values()) {
+            if (!reason.resolvesAccount()) {
+                assertThrows(IllegalArgumentException.class,
+                        () -> aDeclinedTransaction(reason),
+                        "reject reason " + sourceCodeOf(reason) + " became publishable, and "
+                                + "app/cbl/CBTRN02C.cbl:L383-L387 assigns it before any account "
+                                + "identifier is read");
+                continue;
+            }
             TransactionDeclined written = aDeclinedTransaction(reason);
 
             TransactionDeclined arrived = roundTrip(TransactionDeclined.class, written);
@@ -263,6 +291,108 @@ class EventRoundTripTest {
     }
 
     /**
+     * Asserts the ten components version 2 of the posted contract adds reach the wire and arrive
+     * unchanged, and that a version 1 event still carries none of them.
+     *
+     * <p>The ten values are what a card-keyed consumer stores.
+     * {@code app/jcl/CREASTMT.JCL} builds its card-keyed copy from the whole posted record, so a
+     * value that failed to travel would be stored blank and read back as a transaction fact.
+     */
+    @Test
+    void theEnrichedPostedContractCarriesEveryTransactionFactAndVersionOneCarriesNone() {
+        TransactionPosted enriched = aPostedTransaction();
+
+        JsonNode wire = wireFormOf(enriched);
+        TransactionPosted arrived = roundTrip(TransactionPosted.class, enriched);
+
+        TransactionPosted versionOne = TransactionPosted.forAccount(ACCOUNT_ID, TRANSACTION_ID,
+                new BigDecimal(TEN_INTEGER_DIGIT_BALANCE), POSTED_AT,
+                new BigDecimal(NEGATIVE_AMOUNT), MASKED_CARD_NUMBER);
+        JsonNode versionOneWire = wireFormOf(versionOne);
+
+        assertAll(
+                () -> assertEquals(TransactionPosted.TRANSACTION_DETAIL_SCHEMA_VERSION,
+                        arrived.schemaVersion(), "the enriched event arrived at another version"),
+                () -> assertEquals(CARD_TOKEN, arrived.cardToken(),
+                        "the card token did not survive both ends"),
+                () -> assertEquals("01", arrived.transactionTypeCode(),
+                        "the transaction type code did not survive both ends"),
+                () -> assertEquals("0001", arrived.merchantCategoryCode(),
+                        "the merchant category code did not survive both ends"),
+                () -> assertEquals(PADDED_SOURCE, arrived.source(),
+                        "the source lost its padding between the two ends"),
+                () -> assertEquals("Purchase at Abshire-Lowe", arrived.description(),
+                        "the description did not survive both ends"),
+                () -> assertEquals("800000000", arrived.merchantId(),
+                        "the merchant identifier did not survive both ends"),
+                () -> assertEquals("Abshire-Lowe", arrived.merchantName(),
+                        "the merchant name did not survive both ends"),
+                () -> assertEquals("North Enoshaven", arrived.merchantCity(),
+                        "the merchant city did not survive both ends"),
+                () -> assertEquals(PADDED_MERCHANT_ZIP, arrived.merchantZip(),
+                        "the merchant postal code lost its padding between the two ends"),
+                () -> assertEquals(AUTHORIZED_AT, arrived.originTimestamp(),
+                        "the origin timestamp did not survive both ends"),
+                () -> assertEquals(CARD_TOKEN, wire.get("cardToken").stringValue(),
+                        "the card token did not reach the wire"),
+                () -> assertEquals(EventEnvelope.SCHEMA_VERSION, versionOne.schemaVersion(),
+                        "the version 1 factory stopped producing a version 1 event"),
+                () -> assertNull(versionOne.cardToken(),
+                        "a version 1 event carried a card token"),
+                () -> assertFalse(versionOneWire.has("cardToken"),
+                        "a version 1 wire form declared a card token"),
+                () -> assertFalse(versionOneWire.has("originTimestamp"),
+                        "a version 1 wire form declared an origin timestamp"));
+    }
+
+    /**
+     * Asserts the posted event that follows one authorized event copies every value it shares with
+     * it, so the two describe one transaction.
+     */
+    @Test
+    void thePostedEventFollowingAnAuthorizedEventCopiesEverySharedValue() {
+        TransactionAuthorized authorized = anAuthorizedTransaction();
+        BigDecimal balance = new BigDecimal(TEN_INTEGER_DIGIT_BALANCE);
+
+        TransactionPosted posted = TransactionPosted.forAuthorized(authorized, balance, POSTED_AT);
+
+        assertAll(
+                () -> assertEquals(authorized.accountId(), posted.accountId(),
+                        "the two events named different accounts"),
+                () -> assertEquals(authorized.transactionId(), posted.transactionId(),
+                        "the two events named different transactions"),
+                () -> assertEquals(authorized.amount(), posted.amount(),
+                        "the two events carried different amounts"),
+                () -> assertEquals(authorized.maskedCardNumber(), posted.maskedCardNumber(),
+                        "the two events carried different masked card numbers"),
+                () -> assertEquals(authorized.cardToken(), posted.cardToken(),
+                        "the two events identified different cards"),
+                () -> assertEquals(authorized.transactionTypeCode(), posted.transactionTypeCode(),
+                        "the two events carried different transaction type codes"),
+                () -> assertEquals(authorized.merchantCategoryCode(),
+                        posted.merchantCategoryCode(),
+                        "the two events carried different merchant category codes"),
+                () -> assertEquals(authorized.source(), posted.source(),
+                        "the two events carried different capture channels"),
+                () -> assertEquals(authorized.description(), posted.description(),
+                        "the two events carried different descriptions"),
+                () -> assertEquals(authorized.merchantId(), posted.merchantId(),
+                        "the two events named different merchants"),
+                () -> assertEquals(authorized.merchantName(), posted.merchantName(),
+                        "the two events carried different merchant names"),
+                () -> assertEquals(authorized.merchantCity(), posted.merchantCity(),
+                        "the two events carried different merchant cities"),
+                () -> assertEquals(authorized.merchantZip(), posted.merchantZip(),
+                        "the two events carried different merchant postal codes"),
+                () -> assertEquals(authorized.authorizedAt(), posted.originTimestamp(),
+                        "the posting reported another origin time than the authorization"),
+                () -> assertEquals(balance, posted.newBalance(),
+                        "the posting reported another balance than the one supplied"),
+                () -> assertEquals(POSTED_AT, posted.postedAt(),
+                        "the posting timestamp was reformatted"));
+    }
+
+    /**
      * Asserts a negative balance keeps its sign and its scale through both ends.
      *
      * <p>{@code app/cbl/CBTRN02C.cbl:L548-L551} routes a negative amount to the cycle-debit
@@ -270,9 +400,9 @@ class EventRoundTripTest {
      */
     @Test
     void aNegativeBalanceKeepsItsSignAndItsScale() {
-        TransactionPosted written = TransactionPosted.forAccount(ACCOUNT_ID, TRANSACTION_ID,
-                new BigDecimal(NEGATIVE_BALANCE), POSTED_AT, new BigDecimal(NEGATIVE_AMOUNT),
-                MASKED_CARD_NUMBER);
+        TransactionPosted written = TransactionPosted.from(
+                anAuthorizedTransaction(new BigDecimal(NEGATIVE_AMOUNT)),
+                new BigDecimal(NEGATIVE_BALANCE), POSTED_AT);
 
         TransactionPosted arrived = roundTrip(TransactionPosted.class, written);
 
@@ -340,9 +470,9 @@ class EventRoundTripTest {
     @Test
     void theSerializedFormIsFlatAndCarriesTheTopLevelPropertyCountOfItsEventType() {
         assertAll(
-                () -> assertWireShape(anAuthorizedTransaction(), 19),
+                () -> assertWireShape(anAuthorizedTransaction(), 20),
                 () -> assertWireShape(aDeclinedTransaction(DeclineReason.OVER_CREDIT_LIMIT), 11),
-                () -> assertWireShape(aPostedTransaction(), 11),
+                () -> assertWireShape(aPostedTransaction(), 21),
                 () -> assertWireShape(aFlaggedAssessment(), 10),
                 () -> assertWireShape(aClearedAssessment(), 8));
     }
@@ -430,15 +560,15 @@ class EventRoundTripTest {
         JsonNode wire = wireFormOf(event);
 
         SerializationException failure = refusalOf(event, quoted -> quoted.put("schemaVersion",
-                String.valueOf(EventEnvelope.SCHEMA_VERSION)));
+                String.valueOf(TransactionAuthorized.CARD_TOKEN_SCHEMA_VERSION)));
 
         assertAll(
                 () -> assertTrue(wire.get("schemaVersion").isIntegralNumber(),
                         "the contract version of TransactionAuthorized stopped travelling as a "
                                 + "JSON integer"),
-                () -> assertEquals(EventEnvelope.SCHEMA_VERSION,
+                () -> assertEquals(TransactionAuthorized.CARD_TOKEN_SCHEMA_VERSION,
                         wire.get("schemaVersion").intValue(),
-                        "the contract version of TransactionAuthorized changed"),
+                        "the contract version an authorization publishes changed"),
                 () -> assertTrue(failure.getMessage().contains("/schemaVersion"),
                         "a quoted contract version stopped being refused, so a consumer reads a "
                                 + "version it cannot compare"));
@@ -562,8 +692,8 @@ class EventRoundTripTest {
     @Test
     void anAmountThatWouldPrintInScientificNotationTravelsInPlainNotation() {
         BigDecimal exponential = new BigDecimal("1.2E+3");
-        TransactionPosted written = TransactionPosted.forAccount(ACCOUNT_ID, TRANSACTION_ID,
-                exponential, POSTED_AT, new BigDecimal("5.0E+2"), MASKED_CARD_NUMBER);
+        TransactionPosted written = TransactionPosted.from(
+                anAuthorizedTransaction(new BigDecimal("5.0E+2")), exponential, POSTED_AT);
 
         JsonNode wire = wireFormOf(written);
         TransactionPosted arrived = roundTrip(TransactionPosted.class, written);
@@ -762,8 +892,9 @@ class EventRoundTripTest {
     /**
      * Asserts the two risk assessments that share one topic are told apart by their event type.
      *
-     * <p>A cleared assessment carries a subset of the properties a flagged one carries, so the
-     * topic name tells the two apart for no consumer.
+     * <p>Both assessments travel {@code fraud.assessed}, so the topic name distinguishes neither.
+     * A cleared assessment also carries a subset of the properties a flagged one carries, so
+     * {@code eventType} is what a reader routes on.
      */
     @Test
     void theTwoRiskAssessmentsSharingOneTopicAreToldApartByEventType() {
@@ -1032,24 +1163,32 @@ class EventRoundTripTest {
     private static TransactionAuthorized anAuthorizedTransaction() {
         return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", PADDED_SOURCE,
                 "Purchase at Abshire-Lowe", new BigDecimal(AMOUNT), "800000000", "Abshire-Lowe",
-                "North Enoshaven", PADDED_MERCHANT_ZIP, MASKED_CARD_NUMBER, AUTHORIZED_AT);
+                "North Enoshaven", PADDED_MERCHANT_ZIP, MASKED_CARD_NUMBER, CARD_TOKEN,
+                AUTHORIZED_AT);
     }
 
     /**
-     * A declined transaction for one reject reason.
+     * An authorized transaction carrying one caller-chosen amount.
      *
-     * <p>Reject reason {@code 0100} follows a cross-reference read that resolved no account, so it
-     * carries none and publishes under its own contract version.
+     * @param amount the amount the event carries
+     * @return an event every schema check accepts
+     */
+    private static TransactionAuthorized anAuthorizedTransaction(java.math.BigDecimal amount) {
+        return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", PADDED_SOURCE,
+                "Purchase at Abshire-Lowe", amount, "800000000", "Abshire-Lowe",
+                "North Enoshaven", PADDED_MERCHANT_ZIP, MASKED_CARD_NUMBER, CARD_TOKEN,
+                AUTHORIZED_AT);
+    }
+
+    /**
+     * A declined transaction for one reject reason that resolved an account identifier.
      *
-     * @param reason the reject reason the decline carries
+     * @param reason the reject reason the decline carries, which must answer {@code true} to
+     *               {@link DeclineReason#resolvesAccount()}
      * @return a declined transaction carrying {@code reason}
      */
     private static TransactionDeclined aDeclinedTransaction(DeclineReason reason) {
-        if (reason.resolvesAccount()) {
-            return TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID, reason,
-                    new BigDecimal(NEGATIVE_AMOUNT), MASKED_CARD_NUMBER);
-        }
-        return TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
+        return TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID, reason,
                 new BigDecimal(NEGATIVE_AMOUNT), MASKED_CARD_NUMBER);
     }
 
@@ -1059,9 +1198,13 @@ class EventRoundTripTest {
      * @return an event every schema check accepts
      */
     private static TransactionPosted aPostedTransaction() {
-        return TransactionPosted.forAccount(ACCOUNT_ID, TRANSACTION_ID,
-                new BigDecimal(TEN_INTEGER_DIGIT_BALANCE), POSTED_AT,
-                new BigDecimal(NEGATIVE_AMOUNT), MASKED_CARD_NUMBER);
+        return TransactionPosted.of(
+                EventEnvelope.of(TransactionPosted.EVENT_TYPE, ACCOUNT_ID,
+                        TransactionPosted.TRANSACTION_DETAIL_SCHEMA_VERSION),
+                TRANSACTION_ID, new BigDecimal(TEN_INTEGER_DIGIT_BALANCE), POSTED_AT,
+                new BigDecimal(NEGATIVE_AMOUNT), MASKED_CARD_NUMBER, CARD_TOKEN, "01", "0001",
+                PADDED_SOURCE, "Purchase at Abshire-Lowe", "800000000", "Abshire-Lowe",
+                "North Enoshaven", PADDED_MERCHANT_ZIP, AUTHORIZED_AT);
     }
 
     /**

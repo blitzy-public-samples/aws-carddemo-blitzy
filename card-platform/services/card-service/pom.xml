@@ -6,6 +6,8 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
+  <!-- Rationale for the choices in this file: card-platform/docs/decision-log.md -->
+
   <!-- The parent sits two levels up. The services directory holds no POM of its own. -->
   <parent>
     <groupId>com.carddemo</groupId>
@@ -23,9 +25,9 @@
     Card list, card detail and card update over Representational State Transfer
     (REST). Publishes one CardUpdated event on mutation, against the shared
     versioned contract card-updated-v1.json that com.carddemo:event-contracts
-    ships, and checks the event type against its topic, the account identity
-    against the message key, and the payload against that contract before the
-    event reaches the broker. Consumes no event.
+    ships. Three checks run before the event reaches the broker: the event type
+    against its topic, the account identity against the message key, and the
+    payload against that contract. Consumes no event.
   </description>
 
   <properties>
@@ -118,14 +120,14 @@
     </dependency>
 
     <!-- Request authentication and authorization. config/SecurityConfig declares two
-         filter chains: one over the actuator surface, leaving health open for a probe
-         and requiring ROLE_MONITORING for metrics and the Prometheus scrape, and one
-         over the API, denying by default and scoping each route to the identity that
-         owns the identifier it names. The starter also installs the response headers
-         that keep a financial or personal-data answer out of every cache, and the
-         delegating password encoder that reads the algorithm prefix of a configured
-         password, so no plaintext password is stored or compared. The version comes
-         from the Spring Boot bill of materials imported by the parent. -->
+         filter chains. Over the actuator surface, health stays open for a probe and
+         metrics and the Prometheus scrape require ROLE_MONITORING. Over the API, the
+         default is deny, and each route is scoped to the identity that owns the
+         identifier it names. The starter also installs the response headers that keep
+         a financial or personal-data answer out of every cache. It installs the
+         delegating password encoder too, which reads the algorithm prefix of a
+         configured password, so no plaintext password is stored or compared. The
+         version comes from the Spring Boot bill of materials imported by the parent. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-security</artifactId>

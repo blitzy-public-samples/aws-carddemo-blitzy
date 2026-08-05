@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -53,6 +54,10 @@ class EventSerdeSecurityTest {
     /** The masked card number every event in this suite carries. */
     private static final String MASKED_CARD_NUMBER = "************7065";
 
+    /** Card token every card-bearing sample carries. Sixty-four lower-case hexadecimal characters. */
+    private static final String CARD_TOKEN =
+            "c41b7e6039fa25d81c0b94e7635af8021d4e9c78b6035f1ae284d70b9c3f6512";
+
     /** A transaction identifier at the sixteen characters {@code TRAN-ID PIC X(16)} holds. */
     private static final String TRANSACTION_ID = "0000000000683580";
 
@@ -71,9 +76,9 @@ class EventSerdeSecurityTest {
     @DisplayName("the consume side exists and governs exactly the event types the publish side does")
     void bothEndsGovernTheSameEventTypes() {
         assertEquals(
-                List.of("AccountStateChanged", "CardUpdated", "DeadLetterEnvelope", "FraudCleared",
-                        "FraudFlagged", "TransactionAuthorized", "TransactionDeclined",
-                        "TransactionPosted"),
+                List.of("AccountStateChanged", "CardUpdated", "CustomerContextChanged",
+                        "DeadLetterEnvelope", "FraudCleared", "FraudFlagged",
+                        "TransactionAuthorized", "TransactionDeclined", "TransactionPosted"),
                 EventSchemas.governedEventTypes().stream().sorted().toList(),
                 "the governed event type set changed, so a producer and a consumer of this platform "
                         + "may no longer agree on what may travel");
@@ -136,7 +141,8 @@ class EventSerdeSecurityTest {
     @Test
     @DisplayName("an undeclared property is refused, so a hidden card number cannot ride along")
     void anUndeclaredPropertyIsRefusedOnConsume() {
-        String smuggled = withProperty(serialized(authorized()), "\"pan\":\"0500024453765740\"");
+        String smuggled = withProperty(serialized(authorized()),
+                "\"pan\":\"" + syntheticCardNumber(24453765740L) + "\"");
 
         SerializationException refused = assertThrows(SerializationException.class,
                 () -> deserializer.deserialize("topic",
@@ -144,7 +150,7 @@ class EventSerdeSecurityTest {
 
         assertTrue(refused.getMessage().contains("TransactionAuthorized"),
                 "the refusal does not name the event type: " + refused.getMessage());
-        assertFalse(refused.getMessage().contains("0500024453765740"),
+        assertFalse(refused.getMessage().contains(syntheticCardNumber(24453765740L)),
                 "the refusal echoed the smuggled card number: " + refused.getMessage());
     }
 
@@ -166,10 +172,10 @@ class EventSerdeSecurityTest {
     }
 
     @Test
-    @DisplayName("another schema version is refused before the document is validated")
+    @DisplayName("an ungoverned schema version is refused before the document is validated")
     void anotherSchemaVersionIsRefused() {
         String futureVersion = serialized(authorized())
-                .replace("\"schemaVersion\":1", "\"schemaVersion\":2");
+                .replace("\"schemaVersion\":2", "\"schemaVersion\":3");
 
         SerializationException refused = assertThrows(SerializationException.class,
                 () -> deserializer.deserialize("topic",
@@ -189,6 +195,65 @@ class EventSerdeSecurityTest {
                 () -> deserializer.deserialize("topic", enriched.getBytes(StandardCharsets.UTF_8)),
                 "a version-one consumer refused an event a later version enriched, which is the "
                         + "breakage the extensions object exists to prevent");
+    }
+
+    @Test
+    @DisplayName("a card number written into a free-text property is refused on publish")
+    void aCardNumberInsideFreeTextIsRefusedOnPublish() {
+        TransactionAuthorized smuggled = TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01",
+                "0001", "POS TERM", "Purchase for 4111111111111111", new BigDecimal("50.47"),
+                "800000000", "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER,
+                CARD_TOKEN, AUTHORIZED_AT);
+
+        SerializationException refused = assertThrows(SerializationException.class,
+                () -> serializer.serialize(topicFor(smuggled), smuggled),
+                "a sixteen-digit run inside the description reached a topic");
+
+        assertTrue(refused.getMessage().contains("description"),
+                "the refusal does not name the property that carried it: " + refused.getMessage());
+    }
+
+    @Test
+    @DisplayName("a grouped card number inside the extensions object is refused on consume")
+    void aGroupedCardNumberInsideExtensionsIsRefusedOnConsume() {
+        String smuggled = withProperty(serialized(authorized()),
+                "\"extensions\":{\"note\":\"4111 1111 1111 1111\"}");
+
+        SerializationException refused = assertThrows(SerializationException.class,
+                () -> deserializer.deserialize("topic",
+                        smuggled.getBytes(StandardCharsets.UTF_8)),
+                "a card number grouped for a human reader passed the consume-side screen");
+
+        assertTrue(refused.getMessage().contains("note"),
+                "the refusal does not name the property inside the open subtree that carried it: "
+                        + refused.getMessage());
+    }
+
+    @Test
+    @DisplayName("a separated government identifier inside a free-text property is refused")
+    void aSeparatedGovernmentIdentifierIsRefused() {
+        String smuggled = withProperty(serialized(authorized()),
+                "\"extensions\":{\"note\":\"holder 020-97-3888\"}");
+
+        assertThrows(SerializationException.class,
+                () -> deserializer.deserialize("topic",
+                        smuggled.getBytes(StandardCharsets.UTF_8)),
+                "a three-two-four government identifier passed the consume-side screen");
+    }
+
+    @Test
+    @DisplayName("the value screen is field-specific, so a sixteen-digit transaction identifier passes")
+    void aSixteenDigitTransactionIdentifierStillPasses() {
+        assertEquals(16, TRANSACTION_ID.length(),
+                "TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5 holds sixteen characters");
+        assertTrue(TRANSACTION_ID.chars().allMatch(Character::isDigit),
+                "this test only means something while the identifier is all digits, which is what "
+                        + "makes it indistinguishable from a card number by shape");
+
+        assertDoesNotThrow(() -> deserializer.deserialize("topic",
+                        serialized(authorized()).getBytes(StandardCharsets.UTF_8)),
+                "the value screen refused a legitimate all-digit transaction identifier, which "
+                        + "would refuse every event the fixtures produce");
     }
 
     @Test
@@ -271,8 +336,9 @@ class EventSerdeSecurityTest {
     @Test
     @DisplayName("the dead-letter envelope travels through the same gate as the events")
     void theDeadLetterEnvelopeRoundTripsThroughBothEnds() {
+        String cardNumber = syntheticCardNumber(24453765740L);
         DeadLetterEnvelope envelope = DeadLetterEnvelope.fromFailure(ACCOUNT_ID, "0999",
-                new IllegalStateException("card 0500024453765740 balance 1234.56"), "SCHEMA",
+                new IllegalStateException("card " + cardNumber + " balance 1234.56"), "SCHEMA",
                 "schema validation refused the record", "transaction.authorized", 2, 4711L,
                 "9c1b7d54-2a3e-4f18-8b0d-6e7a4c93d215", "TransactionAuthorized", 3);
 
@@ -301,7 +367,7 @@ class EventSerdeSecurityTest {
                         + "long culprit is cut rather than published whole");
 
         String wire = new String(bytes, StandardCharsets.UTF_8);
-        assertFalse(wire.contains("0500024453765740"),
+        assertFalse(wire.contains(cardNumber),
                 "the dead-letter envelope carried a card number from the failure message: " + wire);
         assertFalse(wire.contains("1234.56"),
                 "the dead-letter envelope carried a monetary value from the failure message: "
@@ -313,12 +379,11 @@ class EventSerdeSecurityTest {
     /**
      * Builds one declined event through the canonical constructor, bypassing the factories.
      *
-     * <p>The record is flat, so the five envelope components are passed one by one. Passing them
-     * from an envelope keeps each call site reading like the contract it exercises.
+     * <p>The record is flat, so the five envelope components are passed one by one.
      *
      * @param envelope      the envelope whose components the record carries
      * @param transactionId the transaction identifier
-     * @param accountId     the account identifier, or {@code null} under the unresolved contract
+     * @param accountId     the account identifier the cross-reference resolved
      * @param reason        the decline reason, whose text the record derives
      * @param amount        the attempted amount
      * @return the declined event
@@ -334,117 +399,107 @@ class EventSerdeSecurityTest {
     /** The five core events, each built through its own factory. */
 
     @Test
-    @DisplayName("an unresolved decline publishes under version two and carries no account identifier")
-    void anUnresolvedDeclinePublishesWithNoAccountIdentifier() {
-        TransactionDeclined unresolved = TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
-                new BigDecimal("50.47"), MASKED_CARD_NUMBER);
+    @DisplayName("no decline can be published without the account identifier its reason resolved")
+    void noDeclineIsPublishedWithoutItsAccountIdentifier() {
+        IllegalArgumentException absent = assertThrows(IllegalArgumentException.class,
+                () -> declined(EventEnvelope.of("TransactionDeclined", ACCOUNT_ID), TRANSACTION_ID,
+                        null, DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("50.47")),
+                "a decline with no account identifier was built and leaves its account unknown");
 
-        assertNull(unresolved.accountId(),
-                "reject reason 0100 at app/cbl/CBTRN02C.cbl:L385-L387 fires when the keyed read of "
-                        + "the cross-reference file misses, so there is no account identifier the "
-                        + "platform established and none may be carried");
-        assertEquals(TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION,
-                unresolved.envelope().schemaVersion(),
-                "the unresolved decline travels under its own contract version");
-        assertEquals(TRANSACTION_ID, unresolved.envelope().aggregateId(),
-                "the message key is the transaction identifier, which is deterministic and names no "
-                        + "cardholder, account or card");
-        assertFalse(unresolved.envelope().carriesAccountKey(),
-                "a sixteen-character key must not be mistaken for an eleven-digit account key");
-
-        String json = serialized(unresolved);
-        assertFalse(json.contains("accountId"),
-                "the serialized event must carry no accountId property at all: " + json);
-        assertTrue(json.contains("\"schemaVersion\":2"),
-                "the serialized event must name the contract it was published under: " + json);
-
-        Object read = deserializer.deserialize("transaction.declined",
-                json.getBytes(StandardCharsets.UTF_8));
-        assertEquals(unresolved, read,
-                "the unresolved decline did not survive a round trip, so a consumer reads something "
-                        + "the producer did not write");
+        assertTrue(absent.getMessage().contains("accountId"),
+                "the refusal does not name the missing component: " + absent.getMessage());
+        assertFalse(absent.getMessage().contains(ACCOUNT_ID),
+                "the refusal echoed an account identifier: " + absent.getMessage());
     }
 
     @Test
-    @DisplayName("a resolved decline still publishes under version one, so no consumer breaks")
-    void aResolvedDeclineStillPublishesUnderVersionOne() {
+    @DisplayName("reject reason 0100 uses the unresolved-account contract rather than an account")
+    void rejectReasonOneHundredUsesTheUnresolvedAccountContract() {
+        assertFalse(DeclineReason.INVALID_CARD_NUMBER.resolvesAccount(),
+                "app/cbl/CBTRN02C.cbl:L383-L387 assigns reason 0100 inside the INVALID KEY limb of "
+                        + "the cross-reference read, so no account identifier has been read");
+
+        IllegalArgumentException refusedByFactory = assertThrows(IllegalArgumentException.class,
+                () -> TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
+                        DeclineReason.INVALID_CARD_NUMBER, new BigDecimal("50.47"),
+                        MASKED_CARD_NUMBER),
+                "reason 0100 was published carrying an account identifier the platform never "
+                        + "resolved");
+
+        assertTrue(refusedByFactory.getMessage().contains("ofUnresolvedAccount"),
+                "the refusal does not name the factory for the account-free contract: "
+                        + refusedByFactory.getMessage());
+        assertFalse(refusedByFactory.getMessage().contains(ACCOUNT_ID),
+                "the refusal echoed the rejected account identifier: "
+                        + refusedByFactory.getMessage());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> declined(EventEnvelope.of("TransactionDeclined", ACCOUNT_ID), TRANSACTION_ID,
+                        ACCOUNT_ID, DeclineReason.INVALID_CARD_NUMBER, new BigDecimal("50.47")),
+                "the canonical constructor accepted reason 0100, so the factory guard is the only "
+                        + "one and a caller can bypass it");
+
+        TransactionDeclined unresolved = TransactionDeclined.ofUnresolvedAccount(
+                TRANSACTION_ID, new BigDecimal("50.47"), MASKED_CARD_NUMBER);
+        assertEquals(TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION,
+                unresolved.schemaVersion(), "reason 0100 must publish under version two");
+        assertEquals(TRANSACTION_ID, unresolved.aggregateId(),
+                "the transaction identifier is the message key when no account exists");
+        assertNull(unresolved.accountId(),
+                "the unresolved-account contract must carry no account identifier");
+    }
+
+    @Test
+    @DisplayName("every decline publishes under version one and names its account identifier")
+    void everyDeclinePublishesUnderVersionOne() {
         TransactionDeclined resolved = TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
                 DeclineReason.ACCOUNT_NOT_FOUND, new BigDecimal("50.47"), MASKED_CARD_NUMBER);
 
         assertEquals(EventEnvelope.SCHEMA_VERSION, resolved.envelope().schemaVersion(),
                 "reasons 0101, 0102 and 0103 have already resolved an account identifier at "
-                        + "app/cbl/CBTRN02C.cbl:L383, so their contract is unchanged");
+                        + "app/cbl/CBTRN02C.cbl:L383, and one contract governs all three");
         assertEquals(ACCOUNT_ID, resolved.accountId(),
-                "a resolved decline carries the identifier the cross-reference row held");
+                "a decline carries the identifier the cross-reference row held");
+        assertEquals(ACCOUNT_ID, resolved.envelope().aggregateId(),
+                "the Kafka message key is the account identifier, so every event of one account "
+                        + "stays on one partition");
 
         String json = serialized(resolved);
         assertTrue(json.contains("\"accountId\":\"" + ACCOUNT_ID + "\""),
-                "a resolved decline must still carry its account identifier: " + json);
+                "a decline must carry its account identifier: " + json);
         assertTrue(json.contains("\"schemaVersion\":1"),
-                "a resolved decline must still name version one: " + json);
+                "a decline must name version one: " + json);
     }
 
     @Test
-    @DisplayName("no mixture of the two declined contracts can be built")
-    void neitherDeclinedContractAcceptsTheOthersShape() {
-        // An account identifier under the unresolved contract: the misattribution SEC-09 names.
-        EventEnvelope unresolvedEnvelope = EventEnvelope.of("TransactionDeclined", TRANSACTION_ID,
-                TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION);
-        IllegalArgumentException claimed = assertThrows(IllegalArgumentException.class,
-                () -> declined(unresolvedEnvelope, TRANSACTION_ID, ACCOUNT_ID,
-                        DeclineReason.INVALID_CARD_NUMBER, new BigDecimal("50.47")));
-        assertTrue(claimed.getMessage().contains("must be absent"),
-                "the refusal does not explain itself: " + claimed.getMessage());
-        assertFalse(claimed.getMessage().contains(ACCOUNT_ID),
-                "the refusal echoed the rejected account identifier: " + claimed.getMessage());
+    @DisplayName("a decline arriving without an account identifier is refused on the consume side")
+    void aDeclineArrivingWithoutAnAccountIdentifierIsRefused() {
+        String resolved = serialized(TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
+                DeclineReason.ACCOUNT_NOT_FOUND, new BigDecimal("50.47"), MASKED_CARD_NUMBER));
+        String stripped = resolved.replace("\"accountId\":\"" + ACCOUNT_ID + "\",", "");
 
-        // A reason other than 0100 under the unresolved contract.
-        assertThrows(IllegalArgumentException.class,
-                () -> declined(unresolvedEnvelope, TRANSACTION_ID, null,
-                        DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("50.47")),
-                "every reason but 0100 has already resolved an account identifier");
-
-        // A missing account identifier under the resolved contract.
-        EventEnvelope resolvedEnvelope = EventEnvelope.of("TransactionDeclined", ACCOUNT_ID);
-        assertThrows(IllegalArgumentException.class,
-                () -> declined(resolvedEnvelope, TRANSACTION_ID, null,
-                        DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("50.47")),
-                "version one requires the account identifier a consumer relies on");
-
-        // The convenience factory refuses an unresolved envelope rather than copying the key.
-        IllegalArgumentException misused = assertThrows(IllegalArgumentException.class,
-                () -> TransactionDeclined.of(unresolvedEnvelope, TRANSACTION_ID,
-                        DeclineReason.INVALID_CARD_NUMBER, new BigDecimal("50.47"),
-                        MASKED_CARD_NUMBER));
-        assertTrue(misused.getMessage().contains("ofUnresolvedAccount"),
-                "the refusal does not name the factory to use instead: " + misused.getMessage());
-    }
-
-    @Test
-    @DisplayName("a version-one consumer refuses the unresolved decline rather than misreading it")
-    void aVersionOneConsumerRefusesTheUnresolvedDecline() {
-        String unresolved = serialized(TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
-                new BigDecimal("50.47"), MASKED_CARD_NUMBER));
-        String mislabelled = unresolved.replace("\"schemaVersion\":2", "\"schemaVersion\":1");
+        assertNotEquals(resolved, stripped,
+                "the property this test removes was not present, so the test measures nothing");
 
         SerializationException refused = assertThrows(SerializationException.class,
                 () -> deserializer.deserialize("transaction.declined",
-                        mislabelled.getBytes(StandardCharsets.UTF_8)));
+                        stripped.getBytes(StandardCharsets.UTF_8)));
 
         assertTrue(refused.getMessage().contains("transaction-declined-v1.json"),
                 "the refusal must name the contract the event claimed to satisfy: "
                         + refused.getMessage());
         assertTrue(refused.getMessage().contains("accountId"),
-                "version one requires accountId, and the refusal must say which property is "
+                "the contract requires accountId, and the refusal must say which property is "
                         + "missing: " + refused.getMessage());
     }
 
     @Test
     @DisplayName("a declined event naming a version no document describes is refused")
     void aDeclinedEventAtAnUngovernedVersionIsRefused() {
-        String future = serialized(TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
-                        new BigDecimal("50.47"), MASKED_CARD_NUMBER))
-                .replace("\"schemaVersion\":2", "\"schemaVersion\":3");
+        String future = serialized(TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
+                        DeclineReason.ACCOUNT_NOT_FOUND, new BigDecimal("50.47"),
+                        MASKED_CARD_NUMBER))
+                .replace("\"schemaVersion\":1", "\"schemaVersion\":3");
 
         SerializationException refused = assertThrows(SerializationException.class,
                 () -> deserializer.deserialize("transaction.declined",
@@ -463,9 +518,11 @@ class EventSerdeSecurityTest {
                         MASKED_CARD_NUMBER),
                 TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID, new BigDecimal("50.47"),
                         MASKED_CARD_NUMBER),
-                TransactionPosted.of(EventEnvelope.of("TransactionPosted", ACCOUNT_ID),
-                        TRANSACTION_ID, new BigDecimal("1234.56"),
-                        "2022-06-10-19.27.53.410000", new BigDecimal("50.47"), MASKED_CARD_NUMBER),
+                TransactionPosted.forAccount(ACCOUNT_ID, TRANSACTION_ID,
+                        new BigDecimal("1234.56"), "2022-06-10-19.27.53.410000",
+                        new BigDecimal("50.47"), MASKED_CARD_NUMBER),
+                TransactionPosted.forAuthorized(authorized(), new BigDecimal("1234.56"),
+                        "2022-06-10-19.27.53.410000"),
                 FraudFlagged.of(ACCOUNT_ID, TRANSACTION_ID, 82, List.of("VELOCITY"),
                         Instant.parse("2022-06-10T19:27:53.412Z")),
                 FraudCleared.of(TRANSACTION_ID, ACCOUNT_ID,
@@ -476,7 +533,7 @@ class EventSerdeSecurityTest {
     private TransactionAuthorized authorized() {
         return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS TERM",
                 "Purchase at Abshire-Lowe", new BigDecimal("50.47"), "800000000", "Abshire-Lowe",
-                "North Enoshaven", "72112", MASKED_CARD_NUMBER, AUTHORIZED_AT);
+                "North Enoshaven", "72112", MASKED_CARD_NUMBER, CARD_TOKEN, AUTHORIZED_AT);
     }
 
     /**
@@ -518,9 +575,24 @@ class EventSerdeSecurityTest {
                  "aggregateId":"00000000007",
                  "accountId":"00000000007",
                  "changeKind":"ACCOUNT_UPDATED",
+                 "currentBalance":"1250.75",
                  "creditLimit":"5000.00",
                  "currentCycleCredit":"0.00",
                  "currentCycleDebit":"0.00",
                  "expirationDate":"2024-12-31"}""".replace("\n", "");
+    }
+
+    /**
+     * Builds a sixteen-digit card number this repository does not carry.
+     *
+     * <p>The four leading digits are {@code 9999}, which none of the fifty records of
+     * {@code app/data/ASCII/carddata.txt} begins with, so no card number of the repository reaches
+     * this source file as a literal.
+     *
+     * @param serial the trailing serial, at most twelve digits
+     * @return sixteen digits, opening with {@code 9999}
+     */
+    private static String syntheticCardNumber(long serial) {
+        return "9999" + String.format("%012d", serial);
     }
 }

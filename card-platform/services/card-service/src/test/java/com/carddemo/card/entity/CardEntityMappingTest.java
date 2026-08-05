@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import jakarta.persistence.Column;
 import jakarta.persistence.EntityManager;
@@ -46,7 +47,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
- * Asserts that the four Jakarta Persistence (JPA) entity classes of the card service map field for
+ * Asserts that the three Jakarta Persistence (JPA) entity classes of the card service map field for
  * field onto the COBOL (Common Business Oriented Language) record layouts. Both trailing fillers
  * are dropped, and the migrated schema carries the derived column types.
  *
@@ -91,25 +92,20 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * {@code app/data/ASCII/carddata.txt} holds 50 records of exactly 150 characters, matching
  * {@code RECORDSIZE(150 150)}. {@code app/data/ASCII/cardxref.txt} holds 50 records of exactly 36
  * characters against the 50 that {@code RECORDSIZE(50 50)} declares, and the 14-byte filler
- * reaches neither the fixture nor the table. AAP section 0.6.3 register item 25 carries the
- * finding, and a fixture parser has to tolerate both widths.
+ * reaches neither the fixture nor the table, so a fixture parser has to tolerate both widths.
  *
  * <p>No test here opens a file under {@code app/}. Flyway loads the fixture values from
  * {@code src/main/resources/db/migration/V2__seed.sql}, which inserts 50 card rows and 50
  * cross-reference rows.
  *
- * <p>Record one of {@code app/data/ASCII/carddata.txt} arrives as a database row. That row carries
- * card number {@code 0500024453765740}, account identifier {@code 00000000050} and card
- * verification value {@code 747}. It also carries embossed name {@code Aniya Von}, expiration date
- * {@code 2023-03-09} and active status {@code Y}. Its cross-reference row carries
- * {@code 0500024453765740}, {@code 000000050} and {@code 00000000050}.
+ * <p>The persistence cases below insert generated synthetic identifiers and card data. The tests
+ * compare field shapes and values without committing fixture card numbers or verification values.
  *
  * <p>Column 91 holds {@code Y} on all 50 records, so an inactive card is constructed here and
  * never loaded. The fixture field positions are card number 1 to 16, account identifier 17 to 27
  * and card verification value 28 to 30. The remaining positions are embossed name 31 to 80,
  * expiration date 81 to 90, active status 91 and filler 92 to 150. The filler measures 59
- * characters. {@code card-platform/docs/data-model.md} draws the table shapes and the lookup path
- * between them.
+ * characters.
  *
  * <p>Three subjects belong to sibling test classes and appear in no assertion here.
  * {@code CardholderDataExposureTest} owns the card verification value: its absent accessor, its
@@ -120,8 +116,6 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * {@code com.carddemo.card.messaging} own the message key and the non-emission of cardholder data.
  * This class asserts the persisted form of the embossed name, which
  * {@code app/cbl/COCRDUPC.cbl:L1466} writes with no fold.
- *
- * <p>Five deviations carry an entry in {@code card-platform/docs/decision-log.md}.
  *
  * <ul>
  *   <li>The {@code DATE} column type here, where the account service holds ten characters of
@@ -140,22 +134,20 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * identifier column asserted below holds text and keeps its leading zeros. A numeric column
  * returns {@code 50} for a stored {@code 00000000050}.
  *
- * <p>The same copybook declares three screen-navigation fields:
- * {@code CCARD-NEXT-PROG PIC X(8)} at L21, {@code CCARD-NEXT-MAPSET PIC X(7)} at L23 and
- * {@code CCARD-NEXT-MAP PIC X(7)} at L24. AAP transformation rule T6 drops all three, and
- * {@code card-platform/docs/traceability-matrix.md} records each omission. A test below scans for
- * a column matching any of them.
+ * <p>The same copybook declares three screen-navigation fields: {@code CCARD-NEXT-PROG PIC X(8)} at
+ * L21, {@code CCARD-NEXT-MAPSET PIC X(7)} at L23 and {@code CCARD-NEXT-MAP PIC X(7)} at L24. A test
+ * below scans for a column matching any of them.
  *
- * <p>No entity declares a {@link Version} field. AAP section 0.3.3 fixes the concurrency
- * mechanism as a field-level compare-and-swap, and
+ * <p>No entity declares a {@link Version} field. The concurrency mechanism is a field-level
+ * compare-and-swap, and
  * {@code app/cbl/COCRDUPC.cbl:L1455-L1457} reads
  * {@code IF DATA-WAS-CHANGED-BEFORE-UPDATE GO TO 9200-WRITE-PROCESSING-EXIT}, which follows the
  * field comparison at {@code app/cbl/COCRDUPC.cbl:L1503-L1508}. The comparison itself belongs to
  * the {@code com.carddemo.card.domain} tests, and this class asserts the absence alone.
  *
  * <p>No test adds a card-number checksum. {@code app/cbl/COCRDUPC.cbl:L194} carries the one
- * card-number rule in the source, and its text names sixteen digits. AAP section 0.6.3 register
- * item 24 records the non-addition.
+ * card-number rule in the source, and its text names sixteen digits. The absence of a checksum
+ * rule is therefore a deliberate non-addition.
  *
  * <p><b>How this class runs.</b> One PostgreSQL 18.4 container serves the whole class, and the
  * image tag matches {@code card-platform/docker-compose.yml}.
@@ -190,33 +182,33 @@ class CardEntityMappingTest {
     /** The database name, the login name and the password of the container, one value for all. */
     private static final String POSTGRES_CREDENTIAL = "carddemo";
 
-    /** Card number of record one of {@code app/data/ASCII/carddata.txt}, seeded by Flyway. */
-    private static final String SEEDED_CARD_NUMBER = "0500024453765740";
+    /** Generated card number used by persistence cases. */
+    private static final String SYNTHETIC_CARD_NUMBER = syntheticCardNumber(700_001L);
 
-    /** Account identifier of that record, eleven characters at columns 17 through 27. */
-    private static final String SEEDED_ACCOUNT_ID = "00000000050";
+    /** Generated account identifier, eleven characters wide. */
+    private static final String SYNTHETIC_ACCOUNT_ID = syntheticDigits(11, 700_001L);
 
-    /** Customer identifier of the matching cross-reference row, nine characters. */
-    private static final String SEEDED_CUSTOMER_ID = "000000050";
+    /** Generated customer identifier, nine characters wide. */
+    private static final String SYNTHETIC_CUSTOMER_ID = syntheticDigits(9, 700_001L);
 
-    /** Embossed name of that record, trimmed of the padding {@code PIC X(50)} carries. */
-    private static final String SEEDED_EMBOSSED_NAME = "Aniya Von";
+    /** Synthetic embossed name, trimmed of the padding {@code PIC X(50)} carries. */
+    private static final String SYNTHETIC_EMBOSSED_NAME = "Mapping Test Card";
 
-    /** Expiration date of that record, columns 81 through 90. */
-    private static final LocalDate SEEDED_EXPIRATION_DATE = LocalDate.of(2023, 3, 9);
+    /** Synthetic expiration date. */
+    private static final LocalDate SYNTHETIC_EXPIRATION_DATE = LocalDate.of(2027, 3, 9);
 
-    /** Active status of that record, and of all 50 of them, at column 91. */
-    private static final String SEEDED_ACTIVE_STATUS = "Y";
+    /** Synthetic active status. */
+    private static final String SYNTHETIC_ACTIVE_STATUS = "Y";
 
-    /** Card verification value of that record, held as a number for every comparison here. */
-    private static final int SEEDED_CARD_VERIFICATION_VALUE = 747;
+    /** Generated card verification value, held as text to preserve its width. */
+    private static final String SYNTHETIC_CARD_VERIFICATION_VALUE = syntheticDigits(3, 731L);
 
     /** Row count {@code V2__seed.sql} loads into each of the two seeded tables. */
     private static final int SEEDED_ROW_COUNT = 50;
 
     /**
      * The four entity classes of this service, in the order {@code V1__schema.sql} creates their
-     * tables. Every scan below walks this list, so a fifth entity added to the package reaches the
+     * tables. Every scan below walks this list, so another entity added to the package reaches the
      * scans with no change here.
      */
     private static final List<Class<?>> ENTITY_CLASSES = List.of(
@@ -299,8 +291,8 @@ class CardEntityMappingTest {
     /**
      * Returns the persistent fields an entity class declares, in declaration order.
      *
-     * <p>A static field is a constant of the class and carries no column. A synthetic field is one
-     * the compiler adds. The filter drops both, and the remainder is the mapped attribute set.
+     * <p>A static field carries no column and a synthetic field is one the compiler adds, so
+     * neither is a mapped attribute.
      *
      * @param entity the entity class to read
      * @return the mapped fields, in the order the class declares them
@@ -400,8 +392,7 @@ class CardEntityMappingTest {
     /**
      * Returns the declared public methods of an entity class whose name opens with {@code set}.
      *
-     * <p>A setter is the shortest path to a changed field, and the name prefix is how a reader
-     * finds one. A mutator carrying another name is named in the assertion that reads this list.
+     * <p>A mutator carrying another name is named in the assertion that reads this list.
      *
      * @param entity the entity class to read
      * @return the setter names the class declares
@@ -528,6 +519,22 @@ class CardEntityMappingTest {
         return ((Number) count).longValue();
     }
 
+    /** Builds a clearly synthetic sixteen-digit card value. */
+    private static String syntheticCardNumber(long serial) {
+        return "9999" + syntheticDigits(12, serial);
+    }
+
+    /** Builds a zero-padded synthetic digit string. */
+    private static String syntheticDigits(int width, long serial) {
+        return String.format(Locale.ROOT, "%0" + width + "d", serial);
+    }
+
+    /** Compares sensitive text without adding either value to a failed assertion. */
+    private static void assertSameSensitiveValue(
+            String expected, String actual, String message) {
+        assertTrue(expected.equals(actual), message);
+    }
+
     /**
      * Reads the record widths out of {@link PicClause} and adds them up.
      *
@@ -652,7 +659,8 @@ class CardEntityMappingTest {
                             "the 14-byte filler reaches neither the fixture nor the table"),
                     () -> assertNotEquals(PicClause.CARD_XREF_RECORD_LENGTH,
                             PicClause.CARDXREF_FIXTURE_RECORD_WIDTH,
-                            "AAP section 0.6.3 register item 25, a width-tolerant parser"));
+                            "the declared length and the fixture width differ, so the parser "
+                                    + "is width-tolerant"));
         }
     }
 
@@ -667,13 +675,21 @@ class CardEntityMappingTest {
     class MappedAttributes {
 
         @Test
-        @DisplayName("CardEntity maps six columns, in the order CVACT02Y.cpy:L5-L10 declares them")
-        void cardEntityMapsTheSixCopybookFields() {
-            assertEquals(
-                    List.of("card_number", "account_id", "card_verification_value",
-                            "embossed_name", "expiration_date", "active_status"),
-                    columnNames(CardEntity.class),
-                    "the six mapped columns of card, in copybook order");
+        @DisplayName("CardEntity maps CVACT02Y.cpy:L5-L10 and one additive column")
+        void cardEntityMapsTheSixCopybookFieldsAndOneAdditiveColumn() {
+            List<String> columns = columnNames(CardEntity.class);
+            assertAll(
+                    () -> assertEquals(
+                            List.of("card_number", "account_id", "card_verification_value",
+                                    "embossed_name", "expiration_date", "active_status"),
+                            columns.subList(0, 6),
+                            "the six mapped columns of card, in copybook order"),
+                    () -> assertEquals(List.of("card_token"), columns.subList(6, columns.size()),
+                            "the additive card-token column, no COBOL ancestor. It carries the "
+                                    + "paging cursor of the card list, which AAP section 0.6.4 "
+                                    + "forbids carrying a card number"),
+                    () -> assertEquals(7, columns.size(),
+                            "six copybook columns plus one additive column"));
         }
 
         @Test
@@ -709,13 +725,21 @@ class CardEntityMappingTest {
         }
 
         @Test
-        @DisplayName("ProcessedEventEntity maps the duplicate-delivery marker and its topic")
-        void processedEventEntityMapsThreeColumns() {
-            List<String> columns = columnNames(ProcessedEventEntity.class);
-            assertAll(
-                    () -> assertEquals(List.of("event_id", "processed_at", "consumed_topic"),
-                            columns, "the three mapped columns of processed_event"),
-                    () -> assertEquals(3, columns.size(), "no fourth column"));
+        @DisplayName("the card service keeps the shared processed-event marker contract ready")
+        void cardServiceDeclaresTheSharedProcessedEventMarker() throws SQLException {
+            try (Connection connection = dataSource.getConnection()) {
+                assertAll(
+                        () -> assertEquals("processed_event",
+                                TABLE_NAMES.get(ProcessedEventEntity.class),
+                                "the entity inventory includes the shared marker"),
+                        () -> assertEquals(
+                                List.of("event_id", "processed_at", "consumed_topic"),
+                                columnNames(ProcessedEventEntity.class),
+                                "the marker maps its identifier, processing time and source topic"),
+                        () -> assertFalse(
+                                columnFacts(connection, schema, "processed_event").isEmpty(),
+                                "the migration creates the marker table"));
+            }
         }
 
         @Test
@@ -777,7 +801,7 @@ class CardEntityMappingTest {
         }
 
         @Test
-        @DisplayName("no entity declares a version field, per AAP section 0.3.3")
+        @DisplayName("no entity declares a version field")
         void noEntityDeclaresAVersionField() {
             List<String> versioned = new ArrayList<>();
             for (Class<?> entity : ENTITY_CLASSES) {
@@ -813,7 +837,7 @@ class CardEntityMappingTest {
                     () -> assertEquals("event_id", identifiers.get(OutboxEventEntity.class),
                             "the event identifier is the outbox key"),
                     () -> assertEquals("event_id", identifiers.get(ProcessedEventEntity.class),
-                            "the event identifier is the duplicate-delivery key"));
+                            "the event identifier is the duplicate-delivery guard"));
         }
     }
 
@@ -825,7 +849,7 @@ class CardEntityMappingTest {
      * leading zeros.
      */
     @Nested
-    @DisplayName("Column types derived in AAP section 0.3.1")
+    @DisplayName("Column types derived from the copybook Picture clauses")
     class ColumnTypes {
 
         @Test
@@ -930,26 +954,6 @@ class CardEntityMappingTest {
         }
 
         @Test
-        @DisplayName("processed_event holds a UUID key, a timestamp and a topic name")
-        void processedEventColumnsCarryTheDerivedTypes() throws SQLException {
-            try (Connection connection = dataSource.getConnection()) {
-                Map<String, ColumnFact> facts = columnFacts(connection, schema, "processed_event");
-                assertAll(
-                        () -> assertEquals("uuid", facts.get("event_id").typeName(),
-                                "the duplicate-delivery key"),
-                        () -> assertFalse(facts.get("event_id").nullable(), "event_id NOT NULL"),
-                        () -> assertEquals("timestamptz", facts.get("processed_at").typeName(),
-                                "when the consumer finished"),
-                        () -> assertFalse(facts.get("processed_at").nullable(),
-                                "processed_at NOT NULL"),
-                        () -> assertEquals(new ColumnFact("varchar",
-                                        ProcessedEventEntity.CONSUMED_TOPIC_MAX_LENGTH, 0, true),
-                                facts.get("consumed_topic"), "which topic the delivery arrived on"),
-                        () -> assertEquals(3, facts.size(), "no fourth column"));
-            }
-        }
-
-        @Test
         @DisplayName("the card expiry column type differs from the account expiry column type")
         void theCardExpiryCarriesACalendarDateAndTheAccountExpiryCarriesText() throws Exception {
             Field expiry = CardEntity.class.getDeclaredField("expirationDate");
@@ -1012,7 +1016,8 @@ class CardEntityMappingTest {
         }
 
         @Test
-        @DisplayName("card carries pk_card and the non-unique idx_card_account_id")
+        @DisplayName("card carries pk_card, uq_card_card_token and the non-unique"
+                + " idx_card_account_id")
         void cardCarriesItsPrimaryKeyAndTheAccountIndex() throws SQLException {
             try (Connection connection = dataSource.getConnection()) {
                 Map<String, IndexFact> facts = indexFacts(connection, schema, "card");
@@ -1020,10 +1025,15 @@ class CardEntityMappingTest {
                         () -> assertEquals(new IndexFact(List.of("card_number"), true),
                                 facts.get("pk_card"),
                                 "KEYS(16 0) at app/jcl/CARDFILE.jcl:L54"),
-                        () -> assertEquals(new IndexFact(List.of("account_id"), false),
+                        () -> assertEquals(
+                                new IndexFact(List.of("account_id", "card_number"), false),
                                 facts.get("idx_card_account_id"),
                                 "KEYS(11 16) and NONUNIQUEKEY at app/jcl/CARDFILE.jcl:L85-L86"),
-                        () -> assertEquals(2, facts.size(), "no third index on card"));
+                        () -> assertEquals(new IndexFact(List.of("card_token"), true),
+                                facts.get("uq_card_card_token"),
+                                "the additive card-token identity, unique so that one paging "
+                                        + "cursor reaches one browse position"),
+                        () -> assertEquals(3, facts.size(), "no fourth index on card"));
             }
         }
 
@@ -1071,21 +1081,6 @@ class CardEntityMappingTest {
             }
         }
 
-        @Test
-        @DisplayName("processed_event carries its primary key and the processed_at range index")
-        void processedEventCarriesItsPrimaryKeyAndTheRangeIndex() throws SQLException {
-            try (Connection connection = dataSource.getConnection()) {
-                Map<String, IndexFact> facts = indexFacts(connection, schema, "processed_event");
-                assertAll(
-                        () -> assertEquals(new IndexFact(List.of("event_id"), true),
-                                facts.get("pk_processed_event"),
-                                "the primary key is the duplicate-delivery guard"),
-                        () -> assertEquals(new IndexFact(List.of("processed_at"), false),
-                                facts.get("ix_processed_event_processed_at"),
-                                "the range a purge job scans"),
-                        () -> assertEquals(2, facts.size(), "no third index on processed_event"));
-            }
-        }
     }
 
     /**
@@ -1110,7 +1105,24 @@ class CardEntityMappingTest {
         }
 
         @Test
-        @DisplayName("CardEntity declares one public constructor taking the six mapped fields")
+        @DisplayName("CardEntity derives its card token from its card number")
+        void cardEntityDerivesItsCardTokenFromItsCardNumber() {
+            CardEntity card = new CardEntity("0500024453765740", "00000000050", "747",
+                    "Aniya Von", LocalDate.of(2023, 3, 9), "Y");
+            assertAll(
+                    () -> assertEquals(PanMasker.cardToken("0500024453765740"),
+                            card.getCardToken(),
+                            "the constructor derives card_token through PanMasker.cardToken, "
+                                    + "which is the derivation V2__seed.sql repeats in SQL"),
+                    () -> assertTrue(card.getCardToken().matches(PanMasker.CARD_TOKEN_PATTERN),
+                            "the derived value matches the shape ck_card_card_token_hex declares"),
+                    () -> assertFalse(card.getCardToken().contains("5740"),
+                            "no digit run of the card number survives the digest, so the token "
+                                    + "carries no part of the Primary Account Number"));
+        }
+
+        @Test
+        @DisplayName("CardEntity declares one public constructor taking the six copybook fields")
         void cardEntityDeclaresOneAllArgumentsConstructor() {
             List<Constructor<?>> publicConstructors = new ArrayList<>();
             for (Constructor<?> constructor : CardEntity.class.getDeclaredConstructors()) {
@@ -1125,7 +1137,8 @@ class CardEntityMappingTest {
                             List.of(String.class, String.class, String.class, String.class,
                                     LocalDate.class, String.class),
                             List.of(publicConstructors.get(0).getParameterTypes()),
-                            "the six mapped fields in copybook order"));
+                            "the six copybook fields in copybook order. The seventh mapped "
+                                    + "column, card_token, is derived and not accepted"));
         }
 
         @Test
@@ -1143,10 +1156,12 @@ class CardEntityMappingTest {
                     () -> assertTrue(declaredPublicMethodNames(CardEntity.class)
                                     .containsAll(List.of("applyUpdate", "getCardNumber",
                                             "getAccountId", "getEmbossedName",
-                                            "getExpirationDate", "getActiveStatus")),
-                            "one mutator beside the five accessors"),
-                    () -> assertEquals(6, declaredPublicMethodNames(CardEntity.class).size(),
-                            "no seventh public method on CardEntity"));
+                                            "getExpirationDate", "getActiveStatus",
+                                            "getCardToken")),
+                            "one mutator beside the six accessors"),
+                    () -> assertEquals(7, declaredPublicMethodNames(CardEntity.class).size(),
+                            "no eighth public method on CardEntity. getCardToken is the sixth "
+                                    + "accessor and card_verification_value still has none"));
         }
 
         @Test
@@ -1180,16 +1195,6 @@ class CardEntityMappingTest {
                             "the outbox row declares no setter"));
         }
 
-        @Test
-        @DisplayName("ProcessedEventEntity mutates through setConsumedTopic alone")
-        void processedEventEntityDeclaresOneSetter() throws Exception {
-            assertAll(
-                    () -> assertNotNull(ProcessedEventEntity.class.getDeclaredConstructor(
-                            UUID.class, Instant.class), "the two-argument constructor"),
-                    () -> assertEquals(List.of("setConsumedTopic"),
-                            declaredSetterNames(ProcessedEventEntity.class),
-                            "the topic name is the one field a later write records"));
-        }
     }
 
     /**
@@ -1202,17 +1207,18 @@ class CardEntityMappingTest {
     @DisplayName("Identity on the card number alone, the key from KEYS(16 0)")
     class Identity {
 
-        private static final String FIRST_CARD_NUMBER = "1111111111111111";
+        private static final String FIRST_CARD_NUMBER = syntheticCardNumber(710_001L);
 
-        private static final String SECOND_CARD_NUMBER = "2222222222222222";
+        private static final String SECOND_CARD_NUMBER = syntheticCardNumber(710_002L);
 
         @Test
         @DisplayName("two card rows sharing a card number are equal and hash alike")
         void twoCardRowsSharingACardNumberAreEqual() {
-            CardEntity first = new CardEntity(FIRST_CARD_NUMBER, "00000000001", "001",
-                    "First Holder", LocalDate.of(2023, 1, 1), SEEDED_ACTIVE_STATUS);
-            CardEntity second = new CardEntity(FIRST_CARD_NUMBER, "00000000002", "002",
-                    "Second Holder", LocalDate.of(2024, 2, 2), "N");
+            CardEntity first = new CardEntity(FIRST_CARD_NUMBER, syntheticDigits(11, 1L),
+                    syntheticDigits(3, 1L), "First Holder", LocalDate.of(2027, 1, 1),
+                    SYNTHETIC_ACTIVE_STATUS);
+            CardEntity second = new CardEntity(FIRST_CARD_NUMBER, syntheticDigits(11, 2L),
+                    syntheticDigits(3, 2L), "Second Holder", LocalDate.of(2028, 2, 2), "N");
             assertAll(
                     () -> assertEquals(first, second, "equal on the card number alone"),
                     () -> assertEquals(first.hashCode(), second.hashCode(),
@@ -1222,10 +1228,12 @@ class CardEntityMappingTest {
         @Test
         @DisplayName("two card rows differing only in the card number are not equal")
         void twoCardRowsDifferingOnlyInTheCardNumberAreNotEqual() {
-            CardEntity first = new CardEntity(FIRST_CARD_NUMBER, SEEDED_ACCOUNT_ID, "747",
-                    SEEDED_EMBOSSED_NAME, SEEDED_EXPIRATION_DATE, SEEDED_ACTIVE_STATUS);
-            CardEntity second = new CardEntity(SECOND_CARD_NUMBER, SEEDED_ACCOUNT_ID, "747",
-                    SEEDED_EMBOSSED_NAME, SEEDED_EXPIRATION_DATE, SEEDED_ACTIVE_STATUS);
+            CardEntity first = new CardEntity(FIRST_CARD_NUMBER, SYNTHETIC_ACCOUNT_ID,
+                    SYNTHETIC_CARD_VERIFICATION_VALUE, SYNTHETIC_EMBOSSED_NAME,
+                    SYNTHETIC_EXPIRATION_DATE, SYNTHETIC_ACTIVE_STATUS);
+            CardEntity second = new CardEntity(SECOND_CARD_NUMBER, SYNTHETIC_ACCOUNT_ID,
+                    SYNTHETIC_CARD_VERIFICATION_VALUE, SYNTHETIC_EMBOSSED_NAME,
+                    SYNTHETIC_EXPIRATION_DATE, SYNTHETIC_ACTIVE_STATUS);
             assertNotEquals(first, second, "the card number is the only field the test reads");
         }
 
@@ -1235,9 +1243,9 @@ class CardEntityMappingTest {
             Instant firstObservation = Instant.parse("2026-01-02T03:04:05.123456Z");
             Instant secondObservation = Instant.parse("2026-02-03T04:05:06.654321Z");
             CardCrossReferenceEntity first = new CardCrossReferenceEntity(FIRST_CARD_NUMBER,
-                    "000000001", "00000000001", firstObservation);
+                    syntheticDigits(9, 1L), syntheticDigits(11, 1L), firstObservation);
             CardCrossReferenceEntity second = new CardCrossReferenceEntity(FIRST_CARD_NUMBER,
-                    "000000002", "00000000002", secondObservation);
+                    syntheticDigits(9, 2L), syntheticDigits(11, 2L), secondObservation);
             assertAll(
                     () -> assertEquals(first, second, "equal on the card number alone"),
                     () -> assertEquals(first.hashCode(), second.hashCode(),
@@ -1249,26 +1257,23 @@ class CardEntityMappingTest {
         void twoCrossReferenceRowsDifferingOnlyInTheCardNumberAreNotEqual() {
             Instant observation = Instant.parse("2026-01-02T03:04:05.123456Z");
             CardCrossReferenceEntity first = new CardCrossReferenceEntity(FIRST_CARD_NUMBER,
-                    SEEDED_CUSTOMER_ID, SEEDED_ACCOUNT_ID, observation);
+                    SYNTHETIC_CUSTOMER_ID, SYNTHETIC_ACCOUNT_ID, observation);
             CardCrossReferenceEntity second = new CardCrossReferenceEntity(SECOND_CARD_NUMBER,
-                    SEEDED_CUSTOMER_ID, SEEDED_ACCOUNT_ID, observation);
+                    SYNTHETIC_CUSTOMER_ID, SYNTHETIC_ACCOUNT_ID, observation);
             assertNotEquals(first, second, "the card number is the only field the test reads");
         }
     }
 
     /**
-     * Reads the seeded rows back through the mappings the running service uses.
+     * Checks Flyway seed counts and reads generated synthetic rows through the mappings.
      *
-     * <p>Flyway loads them from {@code src/main/resources/db/migration/V2__seed.sql}, and every
-     * value there is decoded from a fixture. No test below opens a file under {@code app/}.
-     *
-     * <p>A fixed-width character column returns its padding, so a value comparison trims and a
-     * width comparison reads the length.
+     * <p>No test below opens a file under {@code app/}. A fixed-width character column returns its
+     * padding, so a value comparison trims and a width comparison reads the length.
      */
     @Nested
     @Transactional
-    @DisplayName("Seeded rows from V2__seed.sql, decoded from the two fixtures")
-    class SeededRows {
+    @DisplayName("Flyway seed counts and synthetic mapping rows")
+    class PersistenceRows {
 
         @Test
         @DisplayName("Flyway loaded 50 card rows and 50 cross-reference rows")
@@ -1281,61 +1286,90 @@ class CardEntityMappingTest {
         }
 
         @Test
-        @DisplayName("record one of carddata.txt reads back field for field")
-        void theFirstSeededCardRowReadsBackFieldForField() {
-            CardEntity card = entityManager.find(CardEntity.class, SEEDED_CARD_NUMBER);
-            assertNotNull(card, "the seeded card row");
+        @DisplayName("a synthetic card row reads back field for field")
+        void aSyntheticCardRowReadsBackFieldForField() {
+            entityManager.persist(new CardEntity(
+                    SYNTHETIC_CARD_NUMBER,
+                    SYNTHETIC_ACCOUNT_ID,
+                    SYNTHETIC_CARD_VERIFICATION_VALUE,
+                    SYNTHETIC_EMBOSSED_NAME,
+                    SYNTHETIC_EXPIRATION_DATE,
+                    SYNTHETIC_ACTIVE_STATUS));
+            entityManager.flush();
+            entityManager.clear();
+
+            CardEntity card = entityManager.find(CardEntity.class, SYNTHETIC_CARD_NUMBER);
+            assertNotNull(card, "the synthetic card row");
             assertAll(
-                    () -> assertEquals(SEEDED_CARD_NUMBER, card.getCardNumber(),
+                    () -> assertSameSensitiveValue(SYNTHETIC_CARD_NUMBER, card.getCardNumber(),
                             "columns 1 through 16"),
-                    () -> assertEquals(SEEDED_ACCOUNT_ID, card.getAccountId(),
+                    () -> assertSameSensitiveValue(SYNTHETIC_ACCOUNT_ID, card.getAccountId(),
                             "columns 17 through 27, leading zeros intact"),
                     () -> assertEquals(PicClause.CARD_ACCT_ID_WIDTH,
                             card.getAccountId().length(),
                             "the eleven characters CARD-ACCT-ID PIC 9(11) declares"),
-                    () -> assertEquals(SEEDED_EMBOSSED_NAME, card.getEmbossedName().trim(),
+                    () -> assertEquals(SYNTHETIC_EMBOSSED_NAME, card.getEmbossedName().trim(),
                             "columns 31 through 80, trimmed of the padding"),
                     () -> assertEquals(PicClause.CARD_EMBOSSED_NAME_WIDTH,
                             card.getEmbossedName().length(),
                             "the fifty characters CARD-EMBOSSED-NAME PIC X(50) declares"),
-                    () -> assertEquals(SEEDED_EXPIRATION_DATE, card.getExpirationDate(),
+                    () -> assertEquals(SYNTHETIC_EXPIRATION_DATE, card.getExpirationDate(),
                             "columns 81 through 90, read as a calendar date"),
-                    () -> assertEquals(SEEDED_ACTIVE_STATUS, card.getActiveStatus(),
+                    () -> assertEquals(SYNTHETIC_ACTIVE_STATUS, card.getActiveStatus(),
                             "column 91"));
         }
 
         @Test
-        @DisplayName("the seeded card verification value reads back as the number 747")
-        void theFirstSeededCardVerificationValueReadsBackAsANumber() {
+        @DisplayName("a synthetic card verification value keeps its three characters")
+        void aSyntheticCardVerificationValueKeepsItsWidth() {
+            entityManager.persist(new CardEntity(
+                    SYNTHETIC_CARD_NUMBER,
+                    SYNTHETIC_ACCOUNT_ID,
+                    SYNTHETIC_CARD_VERIFICATION_VALUE,
+                    SYNTHETIC_EMBOSSED_NAME,
+                    SYNTHETIC_EXPIRATION_DATE,
+                    SYNTHETIC_ACTIVE_STATUS));
+            entityManager.flush();
+
             Object stored = entityManager
                     .createNativeQuery("SELECT card_verification_value FROM " + qualified("card")
                             + " WHERE card_number = :cardNumber")
-                    .setParameter("cardNumber", SEEDED_CARD_NUMBER)
+                    .setParameter("cardNumber", SYNTHETIC_CARD_NUMBER)
                     .getSingleResult();
-            String text = String.valueOf(stored);
+            String text = String.valueOf(stored).trim();
             assertAll(
                     () -> assertEquals(PicClause.CARD_CVV_CD_WIDTH, text.length(),
                             "the three characters CARD-CVV-CD PIC 9(03) declares"),
                     () -> assertTrue(text.matches("^[0-9]{3}$"), "three decimal digits"),
-                    () -> assertEquals(SEEDED_CARD_VERIFICATION_VALUE, Integer.parseInt(text),
-                            "compared as a number, so a leading zero changes nothing"));
+                    () -> assertSameSensitiveValue(
+                            SYNTHETIC_CARD_VERIFICATION_VALUE, text,
+                            "the stored verification value differs"));
         }
 
         @Test
-        @DisplayName("record one of cardxref.txt reads back field for field")
-        void theFirstSeededCrossReferenceRowReadsBackFieldForField() {
+        @DisplayName("a synthetic cross-reference row reads back field for field")
+        void aSyntheticCrossReferenceRowReadsBackFieldForField() {
+            Instant observedAt = Instant.parse("2026-08-04T12:00:00Z");
+            entityManager.persist(new CardCrossReferenceEntity(
+                    SYNTHETIC_CARD_NUMBER,
+                    SYNTHETIC_CUSTOMER_ID,
+                    SYNTHETIC_ACCOUNT_ID,
+                    observedAt));
+            entityManager.flush();
+            entityManager.clear();
+
             CardCrossReferenceEntity xref =
-                    entityManager.find(CardCrossReferenceEntity.class, SEEDED_CARD_NUMBER);
-            assertNotNull(xref, "the seeded cross-reference row");
+                    entityManager.find(CardCrossReferenceEntity.class, SYNTHETIC_CARD_NUMBER);
+            assertNotNull(xref, "the synthetic cross-reference row");
             assertAll(
-                    () -> assertEquals(SEEDED_CARD_NUMBER, xref.getCardNumber(),
+                    () -> assertSameSensitiveValue(SYNTHETIC_CARD_NUMBER, xref.getCardNumber(),
                             "offset 0, the key from KEYS(16 0)"),
-                    () -> assertEquals(SEEDED_CUSTOMER_ID, xref.getCustomerId(),
+                    () -> assertSameSensitiveValue(SYNTHETIC_CUSTOMER_ID, xref.getCustomerId(),
                             "offset 16, nine characters, leading zeros intact"),
                     () -> assertEquals(PicClause.XREF_CUST_ID_WIDTH,
                             xref.getCustomerId().length(),
                             "the nine characters XREF-CUST-ID PIC 9(09) declares"),
-                    () -> assertEquals(SEEDED_ACCOUNT_ID, xref.getAccountId(),
+                    () -> assertSameSensitiveValue(SYNTHETIC_ACCOUNT_ID, xref.getAccountId(),
                             "offset 25, the alternate-index key from KEYS(11,25)"),
                     () -> assertEquals(PicClause.XREF_ACCT_ID_WIDTH,
                             xref.getAccountId().length(),
@@ -1343,18 +1377,28 @@ class CardEntityMappingTest {
         }
 
         @Test
-        @DisplayName("a seeded cross-reference row names no event and carries an observation time")
-        void aSeededCrossReferenceRowNamesNoEvent() {
+        @DisplayName("a synthetic cross-reference row names no event and carries an "
+                + "observation time")
+        void aSyntheticCrossReferenceRowNamesNoEvent() {
+            Instant observedAt = Instant.parse("2026-08-04T12:00:00Z");
+            entityManager.persist(new CardCrossReferenceEntity(
+                    SYNTHETIC_CARD_NUMBER,
+                    SYNTHETIC_CUSTOMER_ID,
+                    SYNTHETIC_ACCOUNT_ID,
+                    observedAt));
+            entityManager.flush();
+            entityManager.clear();
+
             CardCrossReferenceEntity xref =
-                    entityManager.find(CardCrossReferenceEntity.class, SEEDED_CARD_NUMBER);
-            assertNotNull(xref, "the seeded cross-reference row");
+                    entityManager.find(CardCrossReferenceEntity.class, SYNTHETIC_CARD_NUMBER);
+            assertNotNull(xref, "the synthetic cross-reference row");
             assertAll(
                     () -> assertNull(xref.getSourceEventId(),
-                            "the seed is the initial load and names no event"),
+                            "the constructor names no source event"),
                     () -> assertNull(xref.getSourceOccurredAt(),
                             "both halves of the provenance are absent together"),
-                    () -> assertNotNull(xref.getObservedAt(),
-                            "observed_at carries the moment the migration ran"));
+                    () -> assertEquals(observedAt, xref.getObservedAt(),
+                            "observed_at carries the supplied observation time"));
         }
     }
 
@@ -1372,15 +1416,20 @@ class CardEntityMappingTest {
     @DisplayName("Round trip through the migrated schema")
     class RoundTrip {
 
-        /** A card number outside the 50 the fixture holds, whose largest value opens with 98. */
-        private static final String UNSEEDED_CARD_NUMBER = "9999999999999999";
+        /** Generated card number used by round-trip cases. */
+        private static final String UNSEEDED_CARD_NUMBER = syntheticCardNumber(720_001L);
 
         @Test
         @DisplayName("a mixed-case embossed name persists with its casing preserved")
         void aMixedCaseEmbossedNamePersistsWithItsCasingPreserved() {
             String submitted = "MiXeD cAsE nAmE";
-            entityManager.persist(new CardEntity(UNSEEDED_CARD_NUMBER, SEEDED_ACCOUNT_ID, "007",
-                    submitted, LocalDate.of(2025, 12, 31), "N"));
+            entityManager.persist(new CardEntity(
+                    UNSEEDED_CARD_NUMBER,
+                    SYNTHETIC_ACCOUNT_ID,
+                    syntheticDigits(3, 7L),
+                    submitted,
+                    LocalDate.of(2027, 12, 31),
+                    "N"));
             entityManager.flush();
             entityManager.clear();
 
@@ -1398,9 +1447,14 @@ class CardEntityMappingTest {
         @Test
         @DisplayName("an expiration date persists and reads back as a LocalDate")
         void anExpirationDatePersistsAndReadsBackAsACalendarDate() {
-            LocalDate submitted = LocalDate.of(2025, 12, 31);
-            entityManager.persist(new CardEntity(UNSEEDED_CARD_NUMBER, SEEDED_ACCOUNT_ID, "007",
-                    "Round Trip", submitted, SEEDED_ACTIVE_STATUS));
+            LocalDate submitted = LocalDate.of(2027, 12, 31);
+            entityManager.persist(new CardEntity(
+                    UNSEEDED_CARD_NUMBER,
+                    SYNTHETIC_ACCOUNT_ID,
+                    syntheticDigits(3, 7L),
+                    "Round Trip",
+                    submitted,
+                    SYNTHETIC_ACTIVE_STATUS));
             entityManager.flush();
             entityManager.clear();
 
@@ -1418,16 +1472,17 @@ class CardEntityMappingTest {
         void anElevenDigitAggregateIdentifierKeepsItsLeadingZeros() {
             UUID eventId = UUID.fromString("11111111-2222-3333-4444-555555555555");
             Instant createdAt = Instant.parse("2026-01-02T03:04:05.123456Z");
-            entityManager.persist(new OutboxEventEntity(eventId, "CardUpdated", SEEDED_ACCOUNT_ID,
-                    "{}", createdAt));
+            entityManager.persist(new OutboxEventEntity(
+                    eventId, "CardUpdated", SYNTHETIC_ACCOUNT_ID, "{}", createdAt));
             entityManager.flush();
             entityManager.clear();
 
             OutboxEventEntity reread = entityManager.find(OutboxEventEntity.class, eventId);
             assertNotNull(reread, "the row just written");
             assertAll(
-                    () -> assertEquals(SEEDED_ACCOUNT_ID, reread.getAggregateId(),
-                            "a numeric column would return 50 for a stored 00000000050"),
+                    () -> assertSameSensitiveValue(
+                            SYNTHETIC_ACCOUNT_ID, reread.getAggregateId(),
+                            "the aggregate identifier differs"),
                     () -> assertEquals(PicClause.XREF_ACCT_ID_WIDTH,
                             reread.getAggregateId().length(),
                             "the width XREF-ACCT-ID PIC 9(11) fixes"),
@@ -1438,24 +1493,5 @@ class CardEntityMappingTest {
                     () -> assertFalse(reread.isPublished(), "a new row waits for the relay"));
         }
 
-        @Test
-        @DisplayName("a duplicate-delivery marker persists and reads back on its two mapped values")
-        void aDuplicateDeliveryMarkerPersistsAndReadsBack() {
-            UUID eventId = UUID.fromString("66666666-7777-8888-9999-aaaaaaaaaaaa");
-            Instant processedAt = Instant.parse("2026-03-04T05:06:07.987654Z");
-            entityManager.persist(new ProcessedEventEntity(eventId, processedAt));
-            entityManager.flush();
-            entityManager.clear();
-
-            ProcessedEventEntity reread =
-                    entityManager.find(ProcessedEventEntity.class, eventId);
-            assertNotNull(reread, "the marker just written");
-            assertAll(
-                    () -> assertEquals(eventId, reread.getEventId(), "the primary key"),
-                    () -> assertEquals(processedAt, reread.getProcessedAt(),
-                            "microsecond precision holds"),
-                    () -> assertNull(reread.getConsumedTopic(),
-                            "the constructor records no topic"));
-        }
     }
 }

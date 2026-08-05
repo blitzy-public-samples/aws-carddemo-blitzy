@@ -30,15 +30,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Shape and constraint tests for {@link CardUpdateRequest}, the card update payload.
  *
  * <p>The payload mirrors one source group. {@code CCUP-NEW-CARDDATA} opens at
- * {@code app/cbl/COCRDUPC.cbl:L307} and holds the embossed name at L308, the
- * {@code CCUP-NEW-EXPIRAION-DATE} subgroup at L309 with its year, month and day parts at L310
- * through L312, and the active status at L313. Five components follow from those five fields.
+ * {@code app/cbl/COCRDUPC.cbl:L307}. It holds the embossed name at L308 and the active status at
+ * L313. Between them the {@code CCUP-NEW-EXPIRAION-DATE} subgroup at L309 holds its year, month
+ * and day parts at L310 through L312. Five components follow from those five fields.
  *
  * <p>Three fields of the enclosing group stay out of the payload.
  * {@code CCUP-NEW-ACCTID PIC X(11)} sits at L304, {@code CCUP-NEW-CARDID PIC X(16)} at L305 and
  * {@code CCUP-NEW-CVV-CD PIC X(3)} at L306, all three outside the group opened at L307. The card
- * number arrives as a component of the body rather than as a path variable, because a path reaches
- * an access log and a card number does not belong in one. The card detail screen renders all
+ * number arrives as a component of the body rather than as a path variable. A path reaches an
+ * access log, and a card number does not belong in one. The card detail screen renders all
  * sixteen of its characters: {@code CARDSID DFHMDF ATTRB=(FSET,NORM,UNPROT)} carries
  * {@code LENGTH=16} at {@code app/bms/COCRDSL.bms:L96-L100}.
  *
@@ -66,25 +66,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>These tests build one {@link Validator} and reflect over the record. The constraint
  * annotations of {@code jakarta.validation.constraints} name no record component in their target
- * list, so the compiler propagates each one to the field and to the accessor, and the helpers below
- * read the field. The tests read no file, start no application context and issue no
+ * list. The compiler therefore propagates each one to the field and to the accessor, and the
+ * helpers below read the field. The tests read no file, start no application context and issue no
  * Representational State Transfer request.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 final class CardUpdateRequestTest {
 
     /**
-     * Count of components the payload holds: the card number the source declares at
-     * {@code app/cbl/COCRDUPC.cbl:L305}, plus the five fields the {@code CCUP-NEW-CARDDATA} group
-     * holds at L307 through L313 once the expiry subgroup at L309 is flattened into its year,
-     * month and day slices.
+     * Count of components the payload holds. The source declares the card number at
+     * {@code app/cbl/COCRDUPC.cbl:L305}. The {@code CCUP-NEW-CARDDATA} group holds five more at
+     * L307 through L313, once the expiry subgroup at L309 is flattened into its year, month and
+     * day slices.
      */
     private static final int EXPECTED_COMPONENT_COUNT = 6;
 
-    /**
-     * A sixteen-digit card number every construction below supplies. Record 1 of
-     * {@code app/data/ASCII/carddata.txt} carries it at columns 1 through 16.
-     */
-    private static final String SUPPLIED_CARD_NUMBER = "0500024453765740";
+    /** Generated sixteen-digit card number every ordinary construction below supplies. */
+    private static final String SUPPLIED_CARD_NUMBER = syntheticCardNumber(1L);
 
     /** Name of the component that carries the card number. */
     private static final String COMPONENT_CARD_NUMBER = "cardNumber";
@@ -245,11 +244,12 @@ final class CardUpdateRequestTest {
             "expiry", "expirydate", "expiration", "expirationdate", "expiraiondate",
             "expiraiondatex", "cardexpirydate", "cardexpirationdate");
 
-    /** A sixteen-digit card number that fails a Luhn check. */
-    private static final String LUHN_FAILING_CARD_NUMBER = "4111111111111112";
+    /** A generated sixteen-digit card number that passes a Luhn check. */
+    private static final String LUHN_PASSING_CARD_NUMBER = luhnPassingCardNumber(2L);
 
-    /** A sixteen-digit card number that passes a Luhn check. */
-    private static final String LUHN_PASSING_CARD_NUMBER = "4111111111111111";
+    /** A generated sixteen-digit card number that fails a Luhn check. */
+    private static final String LUHN_FAILING_CARD_NUMBER =
+            luhnFailingCardNumber(LUHN_PASSING_CARD_NUMBER);
 
     /** Built once for the whole class and closed after the last test. */
     private static ValidatorFactory validatorFactory;
@@ -299,7 +299,7 @@ final class CardUpdateRequestTest {
 
     /**
      * Asserts the six component names, in declaration order. The source declares the card number
-     * at L305, then the group declares the name at L308, the year at L310, the month at L311, the
+     * at L305. The group then declares the name at L308, the year at L310, the month at L311, the
      * day at L312 and the status at L313.
      */
     @Test
@@ -348,7 +348,7 @@ final class CardUpdateRequestTest {
     /**
      * Asserts no component name mentions a card number. {@code CCUP-NEW-CARDID PIC X(16)} sits at
      * {@code app/cbl/COCRDUPC.cbl:L305}, and the card number arrives in the request body rather
-     * than in a path, so the record declares a component for it and constrains it to the sixteen
+     * than in a path. The record therefore declares a component for it, constrained to the sixteen
      * digits the source tests at L784.
      */
     @Test
@@ -695,9 +695,9 @@ final class CardUpdateRequestTest {
 
     /**
      * Asserts each expected text above equals the production constant it stands for. The set
-     * comparison in the test above proves the record binds these eight texts; this test proves the
-     * eight literals typed into this class are the eight the production class declares, so a
-     * silent edit to either side fails here rather than passing both.
+     * comparison in the test above proves the record binds these eight texts. This test proves the
+     * eight literals typed into this class are the eight the production class declares. A silent
+     * edit to either side therefore fails here.
      */
     @Test
     void everyExpectedTextEqualsTheProductionConstant() {
@@ -752,8 +752,8 @@ final class CardUpdateRequestTest {
 
     /**
      * Asserts an out-of-range expiry day passes. Day 99 falls outside any calendar month, and the
-     * source performs no day edit, so the payload reports nothing on the day component: the bound is
-     * the transport width alone and admits any two digits.
+     * source performs no day edit. The payload therefore reports nothing on the day component. The
+     * bound is the transport width alone, and it admits any two digits.
      */
     @Test
     void outOfRangeExpiryDayProducesNoViolation() {
@@ -777,7 +777,7 @@ final class CardUpdateRequestTest {
      * transport-width bound, and that every such failure names the expiry day alone.
      *
      * <p>The bound is additive. The source edits the name, the status, the month and the year at
-     * {@code app/cbl/COCRDUPC.cbl:L806-L945} and edits no day, and it reads the day from a
+     * {@code app/cbl/COCRDUPC.cbl:L806-L945} and edits no day. It reads the day from a
      * two-character map field, so no value of another width or another character class could reach
      * it. A Representational State Transfer payload carries no width, and an unbounded component
      * accepts control characters, markup and arbitrarily long text. Each case below reports
@@ -866,8 +866,7 @@ final class CardUpdateRequestTest {
 
     /**
      * Asserts a sixteen-digit card number that fails a Luhn check passes every constraint on this
-     * payload. The first three assertions establish the width and the Luhn outcome of both
-     * literals, and the record then admits both.
+     * payload.
      *
      * <p>{@code app/cbl/COCRDUPC.cbl:L784} reads {@code IF CC-CARD-NUM IS NOT NUMERIC} and nothing
      * more. The source therefore posts a Luhn-failing card, and this record must too. A constraint
@@ -1248,6 +1247,36 @@ final class CardUpdateRequestTest {
      */
     private static String normalize(String text) {
         return text.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
+    }
+
+    /** Builds a clearly synthetic sixteen-digit card value. */
+    private static String syntheticCardNumber(long serial) {
+        return "9999" + String.format(Locale.ROOT, "%012d", serial);
+    }
+
+    /** Builds a synthetic sixteen-digit value that passes a Luhn check. */
+    private static String luhnPassingCardNumber(long serial) {
+        String prefix = "9999" + String.format(Locale.ROOT, "%011d", serial);
+        for (int digit = 0; digit <= 9; digit++) {
+            String candidate = prefix + digit;
+            if (passesLuhnCheck(candidate)) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException("no Luhn check digit was found");
+    }
+
+    /** Changes the last digit to produce a synthetic value that fails a Luhn check. */
+    private static String luhnFailingCardNumber(String passing) {
+        String prefix = passing.substring(0, passing.length() - 1);
+        int lastDigit = Character.digit(passing.charAt(passing.length() - 1), 10);
+        for (int offset = 1; offset <= 9; offset++) {
+            String candidate = prefix + ((lastDigit + offset) % 10);
+            if (!passesLuhnCheck(candidate)) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException("no failing Luhn digit was found");
     }
 
     /**

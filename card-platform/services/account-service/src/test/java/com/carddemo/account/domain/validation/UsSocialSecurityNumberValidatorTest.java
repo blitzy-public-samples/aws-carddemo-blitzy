@@ -59,6 +59,8 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  *
  * <p>Every input is a literal written in this class. No test opens a Spring context, starts a
  * container or reads a fixture file. No test substitutes a stand-in for the delegate.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("UsSocialSecurityNumberValidator, the three part Social Security Number edit")
 class UsSocialSecurityNumberValidatorTest {
@@ -91,14 +93,15 @@ class UsSocialSecurityNumberValidatorTest {
     private static final String IS_ZERO = " must not be zero.";
 
     /**
-     * ADDITIVE. Opens the message the delegate produces for a part wider than its stored width. No
-     * source literal carries the text. app/cbl/COACTUPC.cbl:L2440, app/cbl/COACTUPC.cbl:L2470 and
-     * app/cbl/COACTUPC.cbl:L2482 move fixed-width screen fields, so a wider part cannot reach
-     * paragraph 1265 through the one call site at app/cbl/COACTUPC.cbl:L1530.
+     * No COBOL ancestor. Opens the message the delegate produces for a part wider than its stored
+     * width. No source literal carries the text. app/cbl/COACTUPC.cbl:L2440,
+     * app/cbl/COACTUPC.cbl:L2470 and app/cbl/COACTUPC.cbl:L2482 move fixed-width screen fields, so
+     * a wider part cannot reach paragraph 1265 through the one call site at
+     * app/cbl/COACTUPC.cbl:L1530.
      */
     private static final String NO_LONGER_THAN = " must be no longer than ";
 
-    /** ADDITIVE. Closes the text {@link #NO_LONGER_THAN} opens. */
+    /** No COBOL ancestor. Closes the text {@link #NO_LONGER_THAN} opens. */
     private static final String CHARACTERS = " characters.";
 
     /** Width the move at app/cbl/COACTUPC.cbl:L2441 supplies for part one. */
@@ -150,8 +153,8 @@ class UsSocialSecurityNumberValidatorTest {
      * Part one of a synthetic three-part input, built only from the digits 7, 8 and 1. The value is
      * assembled for this test and matches no row of {@code app/data/ASCII/custdata.txt}. No message
      * the edit can produce carries any of those three characters, so a per-character assertion holds
-     * across every failure path the three parts reach. The assembled nine-digit form is deliberately
-     * written nowhere in this file.
+     * across every failure path the three parts reach. The assembled nine-digit form appears
+     * nowhere in this file.
      */
     private static final String DISTINCTIVE_PART1 = "781";
 
@@ -715,8 +718,8 @@ class UsSocialSecurityNumberValidatorTest {
 
     /**
      * Identifies one part without disclosing it. The reference carries the character count and
-     * eight hexadecimal characters of a salted digest, which is enough to tell two failing cases
-     * apart and to recognise the same case in a second assertion.
+     * eight hexadecimal characters of a salted digest. That is enough to tell two failing cases
+     * apart, and to recognise the same case in a second assertion.
      *
      * @param part the part a failing assertion examined, which may be absent
      * @return a reference carrying no character the part supplied

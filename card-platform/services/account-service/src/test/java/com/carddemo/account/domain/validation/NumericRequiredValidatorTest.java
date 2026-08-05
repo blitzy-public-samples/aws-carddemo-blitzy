@@ -55,8 +55,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * at app/cbl/COACTUPC.cbl:L2442, app/cbl/COACTUPC.cbl:L2472 and app/cbl/COACTUPC.cbl:L2484.</p>
  *
  * <p>The gate at app/cbl/COACTUPC.cbl:L1553 reaches the credit score range check at
- * app/cbl/COACTUPC.cbl:L1554 only after the edit passes. That sequencing is orchestration, and
- * belongs to the planned account update service, which is not authored yet.</p>
+ * app/cbl/COACTUPC.cbl:L1554 only after the edit passes. That sequencing is orchestration, and its
+ * tests belong beside the service that performs it.</p>
  *
  * <p>Three host widths back the constants of this class. They are
  * {@code WS-EDIT-VARIABLE-NAME PIC X(25)} at app/cbl/COACTUPC.cbl:L53,
@@ -73,6 +73,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * <p>No Spring context, container or database takes part, and every input is built in this
  * file.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("NumericRequiredValidator, the required numeric edit of paragraph 1245-EDIT-NUM-REQD")
 class NumericRequiredValidatorTest {
@@ -105,13 +107,13 @@ class NumericRequiredValidatorTest {
     private static final int IS_ZERO_LITERAL_WIDTH = 18;
 
     /**
-     * ADDITIVE. Opens the message for a value carrying content past its declared width. No source
-     * literal carries the text. app/cbl/COACTUPC.cbl:L1546-L1547 moves a fixed-width screen field
-     * into the edit field, so a wider value never reaches paragraph 1245.
+     * No COBOL ancestor. Opens the message for a value carrying content past its declared width. No
+     * source literal carries the text. app/cbl/COACTUPC.cbl:L1546-L1547 moves a fixed-width screen
+     * field into the edit field, so a wider value never reaches paragraph 1245.
      */
     private static final String NO_LONGER_THAN_LITERAL = " must be no longer than ";
 
-    /** ADDITIVE. Closes the text {@link #NO_LONGER_THAN_LITERAL} opens. */
+    /** No COBOL ancestor. Closes the text {@link #NO_LONGER_THAN_LITERAL} opens. */
     private static final String CHARACTERS_LITERAL = " characters.";
 
     /** Label app/cbl/COACTUPC.cbl:L1545 moves for the credit score field. */
@@ -494,9 +496,10 @@ class NumericRequiredValidatorTest {
     @Test
     @DisplayName("A value carrying content past its declared width reports the added width message")
     void aValueCarryingContentPastItsDeclaredWidthReportsTheAddedWidthMessage() {
-        // ADDITIVE. app/cbl/COACTUPC.cbl:L1546-L1547 moves a fixed-width screen field into the
-        // edit field, so the source never receives a wider value and carries no literal for one.
-        // Trailing spaces past the width are the padding the MOVE itself supplies, and they leave
+        // No COBOL ancestor. app/cbl/COACTUPC.cbl:L1546-L1547 moves a fixed-width screen field into
+        // the edit field, so the source never receives a wider value and carries no literal for
+        // one. Trailing spaces past the width are the padding the MOVE itself supplies, and they
+        // leave
         String wider = "750ABC";
 
         assertThat(NumericRequiredValidator

@@ -2,6 +2,7 @@ package com.carddemo.account.outbox;
 
 import com.carddemo.account.entity.OutboxEventEntity;
 import com.carddemo.account.messaging.AccountStateChanged;
+import com.carddemo.account.messaging.CustomerContextChanged;
 import com.carddemo.account.repository.OutboxEventRepository;
 import java.nio.charset.StandardCharsets;
 import java.util.Objects;
@@ -16,24 +17,19 @@ import tools.jackson.databind.ObjectMapper;
  * Persists one {@code outbox_event} row inside the transaction its caller opened, and publishes
  * nothing.
  *
- * <p>ADDITIVE. The one ancestor construct is the Transient Data Queue write of the Customer
- * Information Control System (CICS) at {@code app/cbl/CORPT00C.cbl:L515-L523}. One program writes
- * the record there, and a separate job collects it later.
+ * <p>No COBOL ancestor. The one ancestor construct is the Transient Data Queue write of the
+ * Customer Information Control System (CICS) at {@code app/cbl/CORPT00C.cbl:L515-L523}. One program
+ * writes the record there, and a separate job collects it later.
  *
  * <p>{@code app/cbl/COACTUPC.cbl} rewrites two files in one unit of work. The account rewrite at
- * {@code app/cbl/COACTUPC.cbl:L4066} fails with no rollback at
- * {@code app/cbl/COACTUPC.cbl:L4076-L4081}. The customer rewrite at
- * {@code app/cbl/COACTUPC.cbl:L4086} reaches {@code SYNCPOINT ROLLBACK} at
- * {@code app/cbl/COACTUPC.cbl:L4099-L4101}. All eight file definitions in
- * {@code app/csd/CARDDEMO.CSD} carry {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
- * {@code card-platform/docs/business-rule-flags.md} records that asymmetry.
+ * {@code app/cbl/COACTUPC.cbl:L4066} fails with no rollback at {@code
+ * app/cbl/COACTUPC.cbl:L4076-L4081}. The customer rewrite at {@code app/cbl/COACTUPC.cbl:L4086}
+ * reaches {@code SYNCPOINT ROLLBACK} at {@code app/cbl/COACTUPC.cbl:L4099-L4101}. All eight file
+ * definitions in {@code app/csd/CARDDEMO.CSD} carry {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
  *
  * <p>The account row, the customer row and this row commit together.
  * {@link #write(AccountStateChanged)} joins the transaction its caller opened, with
  * {@link Propagation#MANDATORY}, and opens none of its own.
- *
- * <p>{@code card-platform/docs/event-flow.md} draws the message path, and
- * {@code card-platform/docs/decision-log.md} carries the rationale.
  */
 @Component
 public class OutboxWriter {
@@ -125,6 +121,32 @@ public class OutboxWriter {
      * @param eventId the identifier of the event the payload holds
      * @throws IllegalArgumentException when the payload exceeds {@value #PAYLOAD_MAX_BYTES} octets
      */
+    /**
+     * Writes one {@code customer.context-changed} event into the outbox, in the caller's
+     * transaction.
+     *
+     * <p>The name differs from {@link #write(AccountStateChanged)} on purpose: two overloads named
+     * {@code write} would make a mock verification on a null argument ambiguous.
+     *
+     * <p>The customer detail travels on its own contract rather than on the account event, so a
+     * consumer that only maintains balances never reads a cardholder name. The row joins the same
+     * transaction as the two record rewrites, so the event and the state commit together.
+     *
+     * @param event the event to store
+     * @throws NullPointerException     when {@code event} is absent
+     * @throws IllegalArgumentException when the serialized payload exceeds the column width
+     */
+    @Transactional(propagation = Propagation.MANDATORY)
+    public void writeCustomerContext(CustomerContextChanged event) {
+        Objects.requireNonNull(event, "event must be present");
+
+        String payload = objectMapper.writeValueAsString(event);
+        requirePayloadWithinCeiling(payload, event.eventId());
+
+        outboxEventRepository.save(new OutboxEventEntity(event.eventId(), event.eventType(),
+                payload, event.aggregateId(), event.occurredAt()));
+    }
+
     private static void requirePayloadWithinCeiling(String payload, UUID eventId) {
         int octets = payload.getBytes(StandardCharsets.UTF_8).length;
         if (octets > PAYLOAD_MAX_BYTES) {

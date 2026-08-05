@@ -28,10 +28,9 @@ import java.util.Objects;
  * overpunched positions, and all twenty overpunch characters appear in the amount column of
  * {@code app/data/ASCII/dailytran.txt}.</p>
  *
- * <p>Three readings here are ADDITIVE, with no ancestor in the COBOL source: the overpunch decode
- * at {@link #signedDecimal}, tolerance of a short record, and the hundredths truncation at
- * {@link #truncateProcessingTimestampToHundredths}. All three are recorded in
- * {@code card-platform/docs/decision-log.md} (planned).</p>
+ * <p>Three readings here have no ancestor in the COBOL source: the overpunch
+ * decode at {@link #signedDecimal}, tolerance of a short record, and the hundredths truncation at
+ * {@link #truncateProcessingTimestampToHundredths}.
  *
  * <p>Six nested types override {@link Object#toString()}. No rendered record carries a full
  * Primary Account Number (PAN), a card verification value, a social security number, a
@@ -64,10 +63,9 @@ public final class CopybookRecordParser {
     private static final char COBOL_TEXT_PAD = ' ';
 
     /**
-     * Text a diagnostic rendering carries in place of a component value. ADDITIVE, with no COBOL
-     * ancestor, and recorded in {@code card-platform/docs/decision-log.md} (planned). Every record
-     * below whose components identify a card, an account, a customer, or a money amount renders
-     * that component as this text.
+     * Text a diagnostic rendering carries in place of a component value. Every record below whose
+     * components identify a card, an account, a customer, or a money amount renders that component
+     * as this text.
      */
     public static final String REDACTED = "<redacted>";
 
@@ -117,11 +115,9 @@ public final class CopybookRecordParser {
         /**
          * Renders the type alone, and no field value.
          *
-         * <p>Every field of an account record is protected: the account identifier, five money fields,
-         * three dates, the address zip and the group identifier. A generated record rendering carries
-         * every field, and a rendering reaches an
-         * assertion message, a log line or a debugger view without a caller intending it. A test
-         * that needs a field reads it through its accessor.</p>
+         * <p>Every field of an account record is protected: the account identifier, five money
+         * fields, three dates, the address zip and the group identifier. A test that needs a field
+         * reads it through its accessor.</p>
          *
          * @return a fixed description carrying no field value
          */
@@ -156,13 +152,13 @@ public final class CopybookRecordParser {
         /**
          * Renders this record with its card number masked and its cardholder values redacted.
          *
-         * <p>The embossed name is the cardholder's own name and the expiry date is one of the two
-         * values a card-not-present authorization asks for alongside the number, so neither
-         * belongs in a log line beside a masked number that already carries four real digits.
+         * <p>The embossed name is the cardholder's own name. The expiry date is one of the two
+         * values a card-not-present authorization asks for alongside the number. Neither reaches a
+         * log line, which already carries the last four digits of the number.
          *
-         * @return the six components, the card number as twelve mask characters and its last four
-         *         digits, and the verification value, embossed name and expiry date each as mask
-         *         characters at their own width
+         * @return the six components. The card number appears as twelve mask characters plus its
+         *         last four digits. The verification value, embossed name and expiry date each
+         *         appear as mask characters at their own width
          */
         @Override
         public String toString() {
@@ -250,15 +246,14 @@ public final class CopybookRecordParser {
         /**
          * Renders this record with every identifying component redacted.
          *
-         * <p>Masking only the three obvious identifiers left a name, a home address, a postal
-         * code, two telephone numbers, a date of birth and a credit score in plain view, and
-         * those together identify a person as surely as a Social Security Number does. Each is
-         * replaced by mask characters at its own width, which for a fixed width copybook field is
-         * a constant the layout already declares and therefore discloses nothing.
+         * <p>The name, home address, postal code, two telephone numbers, date of birth and
+         * credit score together identify a person, so each is replaced by mask characters at its
+         * own width. For a fixed width copybook field that width is a constant the layout already
+         * declares, and so discloses nothing.
          *
-         * <p>{@code CUST-ID}, the state and country codes and the cardholder indicator are kept,
-         * because a failing equivalence assertion has to name which record diverged and none of
-         * the four narrows a record to a person.
+         * <p>{@code CUST-ID}, the state and country codes and the cardholder indicator are kept. A
+         * failing equivalence assertion names which record diverged, and none of the four narrows
+         * a record to a person.
          *
          * @return the eighteen components, with every identifying value replaced by mask
          *         characters at its own width
@@ -416,15 +411,14 @@ public final class CopybookRecordParser {
         /**
          * Renders this record with its card number masked and its spending detail redacted.
          *
-         * <p>A masked number plus an amount, a description and a merchant name and city is a
-         * statement line, and a statement line placed beside the same cardholder's other lines
-         * reconstructs where a person was and what they bought. The merchant identifier is kept
-         * because it is a number the merchant table resolves and a diverging record has to be
-         * identifiable; the merchant name, city and postal code are not.
+         * <p>The amount, description, merchant name, city and postal code are the spending
+         * detail of one statement line, so each is replaced by mask characters at its own width.
+         * The merchant identifier is kept, because the merchant table resolves it and a diverging
+         * record has to be identifiable.
          *
-         * @return the thirteen components, the card number as twelve mask characters and its last
-         *         four digits, and the amount, description and merchant name, city and postal code
-         *         each as mask characters at their own width
+         * @return the thirteen components. The card number appears as twelve mask characters plus
+         *         its last four digits. The amount, description and merchant name, city and postal
+         *         code each appear as mask characters at their own width
          */
         @Override
         public String toString() {
@@ -487,12 +481,12 @@ public final class CopybookRecordParser {
         /**
          * Renders this record with its card number masked and its spending detail redacted.
          *
-         * <p>The layout is the posted layout byte for byte, so the reasoning at
+         * <p>The layout is the posted layout byte for byte, so
          * {@link PostedTransactionRecord#toString()} applies here without change.
          *
-         * @return the thirteen components, the card number as twelve mask characters and its last
-         *         four digits, and the amount, description and merchant name, city and postal code
-         *         each as mask characters at their own width
+         * @return the thirteen components. The card number appears as twelve mask characters plus
+         *         its last four digits. The amount, description and merchant name, city and postal
+         *         code each appear as mask characters at their own width
          */
         @Override
         public String toString() {
@@ -840,7 +834,7 @@ public final class CopybookRecordParser {
     /**
      * Sets the trailing fractional digits of a processing timestamp to zero.
      *
-     * <p>ADDITIVE. {@code app/cbl/CBTRN02C.cbl:L700} carries
+     * <p>No COBOL ancestor. {@code app/cbl/CBTRN02C.cbl:L700} carries
      * {@link PicClause#PROCESSING_TIMESTAMP_SIGNIFICANT_FRACTION_DIGITS} digits into
      * {@code DB2-MIL}, and {@code app/cbl/CBTRN02C.cbl:L701} zeroes {@code DB2-REST}. A field
      * holding only padding returns unchanged.</p>
@@ -901,9 +895,10 @@ public final class CopybookRecordParser {
     /**
      * Decodes a {@code PIC S9(n)V99} field into a {@link BigDecimal} at {@code scale}.
      *
-     * <p>ADDITIVE. The trailing character carries the sign: {@link #POSITIVE_SIGN_OVERPUNCH_DIGITS}
-     * and {@link #NEGATIVE_SIGN_OVERPUNCH_DIGITS} map it to a digit, and a plain digit there reads
-     * as positive. The result carries exactly {@code scale} decimal places and drops no digit.</p>
+     * <p>No COBOL ancestor. The trailing character carries the sign: {@link
+     * #POSITIVE_SIGN_OVERPUNCH_DIGITS} and {@link #NEGATIVE_SIGN_OVERPUNCH_DIGITS} map it to a
+     * digit, and a plain digit there reads as positive. The result carries exactly {@code scale}
+     * decimal places and drops no digit.</p>
      *
      * @param record the whole fixture record
      * @param offset zero-based byte offset of the field
@@ -1076,11 +1071,11 @@ public final class CopybookRecordParser {
     /**
      * Replaces every character of a value with {@link PanMasker#MASK_CHARACTER}, keeping the width.
      *
-     * <p>The width survives, and carries no character of the value. A null value renders as the
-     * four characters {@code null}.</p>
+     * <p>The width survives, and carries no character of the value.</p>
      *
      * @param value the value to redact; may be null
-     * @return mask characters at the width of {@code value}
+     * @return mask characters at the width of {@code value}, or the literal {@code null} when
+     *         {@code value} is null
      */
     private static String redacted(String value) {
         if (value == null) {

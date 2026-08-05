@@ -1,18 +1,16 @@
-# Deployment, Service and NetworkPolicy for the notification service, the one
-# service on this platform that reads two topics.
+# Deployment, Service and NetworkPolicy for the notification service.
 #
-# Consumes transaction.posted in consumer group notification-posted.
-# Consumes fraud.assessed in consumer group notification-fraud.
-# Two topics, two groups. The service publishes no event.
+# Consumes transaction.posted, fraud.assessed and customer.context-changed under
+# three independent consumer groups. The service publishes no business event.
 #
 # Rendering and totalling come from app/cbl/CBSTM03A.CBL:L86-L159. The
 # card-keyed read model comes from app/cpy/COSTM01.CPY:L20-L36, and its key
 # comes from the sort step of app/jcl/CREASTMT.JCL.
 #
-# No listener is authored in the module yet, so the container starts, serves
-# GET /notifications/{maskedCardNumber} and answers /actuator.
+# The container starts all three consumers, serves GET /notifications/{cardToken}
+# and answers /actuator.
 #
-# Rationale for every choice in this folder: card-platform/docs/decision-log.md (planned)
+# Rationale for every choice in this folder: card-platform/docs/decision-log.md
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -59,19 +57,17 @@ spec:
           # 40-authorization-service.yaml states the whole policy once, including why the
           # two upstream images are digest-pinned and these six are not.
           #
-          # Build and load the image before applying this file. The context is the module
-          # directory, the one the Dockerfile header names:
+          # Build and load the image before applying this file. The build context is the
+          # module directory, the one the Dockerfile header names:
           #
+          #   version=$(mvn -f card-platform/pom.xml help:evaluate \
+          #     -Dexpression=project.version -q -DforceStdout)
           #   mvn -f card-platform/pom.xml -pl services/notification-service -am package
           #   docker build -f card-platform/services/notification-service/Dockerfile \
-          #     -t carddemo/notification-service:1.0.0 \
+          #     -t "carddemo/notification-service:${version}" \
           #     card-platform/services/notification-service
-          #
-          # A cluster that pulls from a registry needs the image pushed there first, and
-          # the reference below prefixed with that registry host.
-          image: carddemo/notification-service:1.0.0
-          # A node that already holds the tag above runs it without contacting a registry.
-          imagePullPolicy: IfNotPresent
+          image: carddemo/notification-service:1.0.0-SNAPSHOT
+          imagePullPolicy: Never
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -83,7 +79,7 @@ spec:
             # their work directories there. The one writable path is the volume below.
             readOnlyRootFilesystem: true
           ports:
-            # 8080 carries GET /notifications/{maskedCardNumber}, and the Service below
+            # 8080 carries GET /notifications/{cardToken}, and the Service below
             # targets it. 9080 carries /actuator and matches MANAGEMENT_PORT in
             # 30-configmap.yaml. No Service exposes 9080, and the NetworkPolicy below
             # admits it from monitoring pods alone. Both ports are encrypted, because
@@ -172,14 +168,14 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: NOTIFICATION_KAFKA_USER
-            # Two listeners, two consumer groups, one Deployment. Each group name below is
-            # bound from its own ConfigMap key, and the two resolved values differ.
-            # Group notification-posted reads transaction.posted, and group
-            # notification-fraud reads fraud.assessed.
+            # Three consumer groups, one Deployment. Each group name below is bound from
+            # its own ConfigMap key, and the three resolved values differ.
             #
             # 10-kafka.yaml grants this service's broker identity one consumer entry for
-            # each of those two pairs and no other. It grants one producer entry, on the
-            # dead-letter topic carddemo.dead-letter.
+            # each of those three pairs and no other. It grants producer entries on
+            # transaction.posted.DLT, fraud.assessed.DLT and customer.context-changed.DLT,
+            # plus the configured fallback used only when a recovery record has no source
+            # topic.
             #
             # The group below is the one a listener joins when it names none. The listener
             # container factory reads it, and the module application.yml falls back to the
@@ -195,26 +191,28 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: GROUP_NOTIFICATION_POSTED
-            # The fraud.assessed listener joins this group. The key differs from the one
-            # above, and so does the value it holds.
+            # The fraud.assessed listener joins this group.
             - name: GROUP_NOTIFICATION_FRAUD
               valueFrom:
                 configMapKeyRef:
                   name: carddemo-config
                   key: GROUP_NOTIFICATION_FRAUD
-            # The two passwords that open the mounted transport material. Both live in
-            # carddemo-tls-secret beside the files themselves, and both are named here
-            # instead of pulled with envFrom. That Secret also carries keys whose names
-            # are file names, and a file name is not a valid environment variable name.
+            # The customer.context-changed listener joins this group.
+            - name: GROUP_NOTIFICATION_CUSTOMER
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_NOTIFICATION_CUSTOMER
+            # The server keystore is private to this service; trust material is shared.
             - name: SERVER_SSL_KEYSTORE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-tls-secret
+                  name: carddemo-notification-tls-secret
                   key: SERVER_SSL_KEYSTORE_PASSWORD
             - name: SPRING_KAFKA_PROPERTIES_SSL_TRUSTSTORE_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: carddemo-tls-secret
+                  name: carddemo-trust-secret
                   key: KAFKA_SSL_TRUSTSTORE_PASSWORD
           # Both probes read /actuator/health on the management port over HTTPS, because
           # 30-configmap.yaml encrypts that port too. Port 8080 answers no management
@@ -273,16 +271,21 @@ spec:
             medium: Memory
             sizeLimit: 64Mi
         - name: transport-security
-          secret:
-            secretName: carddemo-tls-secret
+          projected:
             defaultMode: 0640
-            items:
-              - key: keystore.p12
-                path: keystore.p12
-              - key: truststore.p12
-                path: truststore.p12
-              - key: ca.crt
-                path: ca.crt
+            sources:
+              - secret:
+                  name: carddemo-notification-tls-secret
+                  items:
+                    - key: keystore.p12
+                      path: keystore.p12
+              - secret:
+                  name: carddemo-trust-secret
+                  items:
+                    - key: truststore.p12
+                      path: truststore.p12
+                    - key: ca.crt
+                      path: ca.crt
 ---
 # Pods reach the service at notification-service:8080, a short name the Domain
 # Name System (DNS) resolves. /actuator answers on the management port alone, so
@@ -314,9 +317,11 @@ spec:
       targetPort: 8080
       protocol: TCP
 ---
-# Network policy for the notification pod. Two ports, two different callers.
+# Network policy for the notification pod. Ingress admits its history and
+# management surfaces. Egress admits only Domain Name System (DNS), PostgreSQL
+# and Kafka.
 #
-# 8080 carries GET /notifications/{maskedCardNumber}, and the module
+# 8080 carries GET /notifications/{cardToken}, and the module
 # config/SecurityConfig authenticates every request that arrives. 9080 carries
 # /actuator, where health answers with no credential so a probe can read it, and
 # every other endpoint requires ROLE_MONITORING. This policy closes the same gap
@@ -346,6 +351,7 @@ spec:
       app.kubernetes.io/part-of: card-platform
   policyTypes:
     - Ingress
+    - Egress
   ingress:
     # The history surface. Any pod of this platform may call it, and Spring
     # Security authenticates every request that arrives.
@@ -364,4 +370,33 @@ spec:
               app.kubernetes.io/component: monitoring
       ports:
         - port: 9080
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kafka
+              app.kubernetes.io/part-of: card-platform
+      ports:
+        - port: 9092
           protocol: TCP

@@ -58,6 +58,8 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * balance, the current cycle credit and the current cycle debit.
  * {@link #fiveSourceCallSitesPerformParagraph1250()} counts them in the source, so the count is an
  * asserted fact.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 class SignedDecimalValidatorTest {
 

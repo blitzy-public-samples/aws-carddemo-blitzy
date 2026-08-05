@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
  * program {@code app/cbl/COCRDUPC.cbl} writes them.
  *
  * <p>The card service reads a card by its full sixteen-character Primary Account Number (PAN),
- * which arrives as the path variable, and masks with
+ * which arrives in the request body, and masks with
  * {@code com.carddemo.cobol.PanMasker.maskCardNumber} when it builds this response.
  *
  * @param maskedCardNumber the card number in its masked form, sixteen characters holding twelve
@@ -86,7 +86,7 @@ public record CardDetailResponse(
     @Override
     public String toString() {
         return "CardDetailResponse[maskedCardNumber=" + maskedCardNumber
-                + ", accountId=" + accountId
+                + ", accountId=" + EventEnvelope.WITHHELD
                 + ", embossedName=" + EventEnvelope.WITHHELD
                 + ", expirationDate=" + EventEnvelope.WITHHELD
                 + ", activeStatus=" + activeStatus + "]";

@@ -7,6 +7,8 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import tools.jackson.databind.annotation.JsonSerialize;
 import tools.jackson.databind.ser.std.ToStringSerializer;
 
@@ -14,9 +16,19 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * The event the ledger-posting service publishes after it applies one posting to an account
  * balance.
  *
- * <p>The notification service is to read it from the {@code transaction.posted} topic and render a
- * cardholder alert. {@code schemas/transaction-posted-v1.json} is the contract every instance
- * satisfies.
+ * <p>The notification service reads it from the {@code transaction.posted} topic, builds its
+ * card-keyed read model from it and renders a cardholder alert. Two contracts govern the event, one
+ * per version. {@code schemas/transaction-posted-v1.json} declares the balance and the four fields
+ * that identify the posting. {@code schemas/transaction-posted-v2.json} adds the card token and the
+ * nine remaining fields of the posted transaction record, so one event carries the whole record a
+ * card-keyed consumer stores. Version 2 is the version a producer stamps, and version 1 stays
+ * governed and readable, so a consumer written against it is not broken by the addition.
+ *
+ * <p>The ten components version 2 adds answer a plain question: what does a consumer keyed on a
+ * card store, and where does it come from? {@code app/jcl/CREASTMT.JCL} answers it in the source by
+ * sorting and copying the whole posted transaction record into a card-keyed copy, so the consumer
+ * that replaces that job needs the whole record. A field the event does not carry would be stored
+ * blank, and a blank field read back as a transaction fact is a false one.
  *
  * <p>Provenance is one paragraph of one program. {@code 2800-UPDATE-ACCOUNT-REC} opens at
  * {@code app/cbl/CBTRN02C.cbl:L545} and adds the transaction amount to {@code ACCT-CURR-BAL} at
@@ -39,11 +51,22 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * {@code FILLER PIC X(178)} at {@code app/cpy/CVACT01Y.cpy:L17} and {@code FILLER PIC X(20)} at
  * {@code app/cpy/CVTRA05Y.cpy:L18}, is a deliberate omission.
  *
- * <p>{@link #maskedCardNumber()} is ADDITIVE. No CardDemo program masks a Primary Account Number
- * (PAN): {@code app/bms/COCRDSL.bms:L96-L99} defines the card detail field at the full sixteen
- * characters. Masking happens where the event is serialized, so the field reaches this record
- * already masked. The five envelope fields are ADDITIVE in full and {@link EventEnvelope} defines
- * them.
+ * <p>Nine further payload fields of version 2 come from the same posted transaction record:
+ * {@code TRAN-TYPE-CD PIC X(02)} at {@code app/cpy/CVTRA05Y.cpy:L6},
+ * {@code TRAN-CAT-CD PIC 9(04)} at L7, {@code TRAN-SOURCE PIC X(10)} at L8,
+ * {@code TRAN-DESC PIC X(100)} at L9, {@code TRAN-MERCHANT-ID PIC 9(09)} at L11,
+ * {@code TRAN-MERCHANT-NAME PIC X(50)} at L12, {@code TRAN-MERCHANT-CITY PIC X(50)} at L13,
+ * {@code TRAN-MERCHANT-ZIP PIC X(10)} at L14 and {@code TRAN-ORIG-TS PIC X(26)} at L16. Together
+ * with the four fields above they are the twelve values
+ * {@code app/cbl/CBTRN02C.cbl:L425-L436} moves onto the posted record.
+ *
+ * <p>{@link #maskedCardNumber()} and {@link #cardToken()} are ADDITIVE. No CardDemo program masks a
+ * Primary Account Number (PAN): {@code app/bms/COCRDSL.bms:L96-L99} defines the card detail field at
+ * the full sixteen characters. Masking happens where the event is serialized, so the field reaches
+ * this record already masked. A masked card number is display data and identifies nothing, because
+ * twelve of its sixteen characters are the mask; {@link #cardToken()} is the identity a card-keyed
+ * consumer stores, routes on and authorizes against. The five envelope fields are ADDITIVE in full
+ * and {@link EventEnvelope} defines them.
  *
  * <p>{@link #postedAt()} is text, not a temporal type, and its layout is not ISO-8601. Twenty-six
  * characters run {@code YYYY-MM-DD-HH.MM.SS.NN0000}, with the three dashes moved at
@@ -59,15 +82,15 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * {@link #NINE_INTEGER_DIGIT_AMOUNT_PATTERN} keep them apart. Negative values are ordinary traffic
  * on both fields.
  *
- * <p>The wire form is flat. A serialized event holds the five envelope fields and the six payload
- * fields in one JavaScript Object Notation (JSON) object, so no {@code envelope} key reaches a
- * topic. {@link #envelope()} returns the carrier a producer builds and passes, and
- * {@link #of(EventEnvelope, String, BigDecimal, String, BigDecimal, String)} takes it back.
+ * <p>The wire form is flat. A serialized event holds the five envelope fields and the payload fields
+ * of its version in one JavaScript Object Notation (JSON) object, so no {@code envelope} key reaches
+ * a topic. {@link #envelope()} returns the carrier a producer builds and passes.
  *
  * @param eventId          the idempotency key, a Universally Unique Identifier (UUID) that
  *                         serializes as thirty-six lower-case characters. ADDITIVE
  * @param eventType        the routing discriminator, always {@link #EVENT_TYPE}. ADDITIVE
- * @param schemaVersion    the contract version, always {@link EventEnvelope#SCHEMA_VERSION}.
+ * @param schemaVersion    the contract version, either {@link EventEnvelope#SCHEMA_VERSION} or
+ *                         {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}. A producer stamps the second.
  *                         ADDITIVE
  * @param occurredAt       the moment the ledger wrote the event, serialized in Coordinated
  *                         Universal Time. ADDITIVE
@@ -91,7 +114,44 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  *                         from {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L10}
  * @param maskedCardNumber the card number with twelve mask characters ahead of its last four
  *                         digits, at the width of {@code TRAN-CARD-NUM PIC X(16)} at
- *                         {@code app/cpy/CVTRA05Y.cpy:L15}. ADDITIVE
+ *                         {@code app/cpy/CVTRA05Y.cpy:L15}. Display data, never an identity.
+ *                         ADDITIVE
+ * @param cardToken        the card identity, {@value #CARD_TOKEN_LENGTH} lower-case hexadecimal
+ *                         characters derived from the full card number. ADDITIVE. Required under
+ *                         {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} and absent under
+ *                         {@link EventEnvelope#SCHEMA_VERSION}
+ * @param transactionTypeCode  the transaction type code, at most
+ *                         {@value #TRANSACTION_TYPE_CODE_MAX_LENGTH} characters, from
+ *                         {@code TRAN-TYPE-CD PIC X(02)} at {@code app/cpy/CVTRA05Y.cpy:L6}.
+ *                         Required under {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} and absent
+ *                         under {@link EventEnvelope#SCHEMA_VERSION}
+ * @param merchantCategoryCode the merchant category code, four digits, from
+ *                         {@code TRAN-CAT-CD PIC 9(04)} at {@code app/cpy/CVTRA05Y.cpy:L7}. Leading
+ *                         zeros belong to the value. Version-conditional as above
+ * @param source           the channel that captured the transaction, at most
+ *                         {@value #SOURCE_MAX_LENGTH} characters, from
+ *                         {@code TRAN-SOURCE PIC X(10)} at {@code app/cpy/CVTRA05Y.cpy:L8}.
+ *                         Version-conditional as above
+ * @param description      the transaction description, at most {@value #DESCRIPTION_MAX_LENGTH}
+ *                         characters, from {@code TRAN-DESC PIC X(100)} at
+ *                         {@code app/cpy/CVTRA05Y.cpy:L9}. Version-conditional as above
+ * @param merchantId       the merchant identifier, nine digits, from
+ *                         {@code TRAN-MERCHANT-ID PIC 9(09)} at {@code app/cpy/CVTRA05Y.cpy:L11}.
+ *                         Version-conditional as above
+ * @param merchantName     the merchant name, at most {@value #MERCHANT_NAME_MAX_LENGTH}
+ *                         characters, from {@code TRAN-MERCHANT-NAME PIC X(50)} at
+ *                         {@code app/cpy/CVTRA05Y.cpy:L12}. Version-conditional as above
+ * @param merchantCity     the merchant city, at most {@value #MERCHANT_CITY_MAX_LENGTH}
+ *                         characters, from {@code TRAN-MERCHANT-CITY PIC X(50)} at
+ *                         {@code app/cpy/CVTRA05Y.cpy:L13}. Version-conditional as above
+ * @param merchantZip      the merchant postal code, at most {@value #MERCHANT_ZIP_MAX_LENGTH}
+ *                         characters, from {@code TRAN-MERCHANT-ZIP PIC X(10)} at
+ *                         {@code app/cpy/CVTRA05Y.cpy:L14}. Version-conditional as above
+ * @param originTimestamp  the moment the transaction originated, twenty-six characters shaped
+ *                         {@code YYYY-MM-DD HH:MM:SS.ffffff}, from
+ *                         {@code TRAN-ORIG-TS PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L16}. A
+ *                         space separates the date from the time, which is a different layout from
+ *                         {@link #postedAt()}. Version-conditional as above
  */
 public record TransactionPosted(
         UUID eventId,
@@ -104,7 +164,17 @@ public record TransactionPosted(
         @JsonSerialize(using = ToStringSerializer.class) BigDecimal newBalance,
         String postedAt,
         @JsonSerialize(using = ToStringSerializer.class) BigDecimal amount,
-        String maskedCardNumber) {
+        String maskedCardNumber,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String cardToken,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String transactionTypeCode,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String merchantCategoryCode,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String source,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String description,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String merchantId,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String merchantName,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String merchantCity,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String merchantZip,
+        @JsonInclude(JsonInclude.Include.NON_NULL) String originTimestamp) {
 
     /**
      * The one value {@link #eventType()} accepts.
@@ -140,6 +210,100 @@ public record TransactionPosted(
 
     /** The width of {@link #maskedCardNumber()}, from {@code TRAN-CARD-NUM PIC X(16)}. */
     public static final int MASKED_CARD_NUMBER_LENGTH = 16;
+
+    /**
+     * The contract version that carries the card token and the nine remaining transaction fields,
+     * and the version a producer stamps.
+     *
+     * <p>{@code schemas/transaction-posted-v2.json} pins {@code schemaVersion} to this number.
+     * Version {@link EventEnvelope#SCHEMA_VERSION} stays governed by
+     * {@code schemas/transaction-posted-v1.json} and carries none of the ten, so a consumer written
+     * against version 1 keeps reading version 1 events unchanged.
+     */
+    public static final int TRANSACTION_DETAIL_SCHEMA_VERSION = 2;
+
+    /**
+     * The same contract version as {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}, under its shorter
+     * name.
+     *
+     * <p>Both names are read across the platform, so both resolve to the one value the file name
+     * suffix of {@code schemas/transaction-posted-v2.json} declares.</p>
+     */
+    public static final int DETAIL_SCHEMA_VERSION = TRANSACTION_DETAIL_SCHEMA_VERSION;
+
+    /**
+     * The characters {@link #cardToken()} holds: the hexadecimal rendering of a SHA-256 digest.
+     *
+     * <p>{@code PanMasker.cardToken} in {@code card-platform/libs/cobol-compat} derives the value,
+     * and this module declares the width rather than depending on that module.
+     */
+    public static final int CARD_TOKEN_LENGTH = 64;
+
+    /** The width of {@link #originTimestamp()}, from {@code TRAN-ORIG-TS PIC X(26)}. */
+    public static final int ORIGIN_TIMESTAMP_LENGTH = 26;
+
+    /** The width of {@link #transactionTypeCode()}, from {@code TRAN-TYPE-CD PIC X(02)}. */
+    public static final int TRANSACTION_TYPE_CODE_MAX_LENGTH = 2;
+
+    /** The width of {@link #source()}, from {@code TRAN-SOURCE PIC X(10)}. */
+    public static final int SOURCE_MAX_LENGTH = 10;
+
+    /** The width of {@link #description()}, from {@code TRAN-DESC PIC X(100)}. */
+    public static final int DESCRIPTION_MAX_LENGTH = 100;
+
+    /** The width of {@link #merchantName()}, from {@code TRAN-MERCHANT-NAME PIC X(50)}. */
+    public static final int MERCHANT_NAME_MAX_LENGTH = 50;
+
+    /** The width of {@link #merchantCity()}, from {@code TRAN-MERCHANT-CITY PIC X(50)}. */
+    public static final int MERCHANT_CITY_MAX_LENGTH = 50;
+
+    /** The width of {@link #merchantZip()}, from {@code TRAN-MERCHANT-ZIP PIC X(10)}. */
+    public static final int MERCHANT_ZIP_MAX_LENGTH = 10;
+
+    /**
+     * The form {@link #cardToken()} takes: exactly {@value #CARD_TOKEN_LENGTH} lower-case
+     * hexadecimal characters.
+     *
+     * <p>The same pattern constrains {@code cardToken} in
+     * {@code schemas/transaction-posted-v2.json}.
+     */
+    public static final String CARD_TOKEN_PATTERN = "^[0-9a-f]{64}$";
+
+    /**
+     * The form {@link #merchantCategoryCode()} takes: exactly four digits.
+     *
+     * <p>From {@code TRAN-CAT-CD PIC 9(04)} at {@code app/cpy/CVTRA05Y.cpy:L7}. The eighteen codes
+     * of {@code app/data/ASCII/trancatg.txt} each hold four digits, so a leading zero belongs to
+     * the value.
+     */
+    public static final String MERCHANT_CATEGORY_CODE_PATTERN = "^[0-9]{4}$";
+
+    /**
+     * The form {@link #merchantId()} takes: exactly nine digits.
+     *
+     * <p>From {@code TRAN-MERCHANT-ID PIC 9(09)} at {@code app/cpy/CVTRA05Y.cpy:L11}.
+     */
+    public static final String MERCHANT_ID_PATTERN = "^[0-9]{9}$";
+
+    /**
+     * The form {@link #originTimestamp()} takes: {@code YYYY-MM-DD HH:MM:SS.ffffff}.
+     *
+     * <p>A space separates the date from the time, colons separate the time parts, and a point
+     * precedes six fractional digits. From {@code TRAN-ORIG-TS PIC X(26)} at
+     * {@code app/cpy/CVTRA05Y.cpy:L16}. All 300 records of {@code app/data/ASCII/dailytran.txt}
+     * carry that one layout, and it is not the layout {@link #POSTED_AT_PATTERN} describes.
+     */
+    public static final String ORIGIN_TIMESTAMP_PATTERN =
+            "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{6}$";
+
+    /**
+     * The characters a text component of this record may hold: printable United States American
+     * Standard Code for Information Interchange characters and the space.
+     *
+     * <p>A consumer lays this text out by column, so a control character would break a rendered
+     * line rather than appear in it.
+     */
+    public static final String PRINTABLE_TEXT_PATTERN = "^[ -~]*$";
 
     /**
      * The form {@link #newBalance()} takes: up to <strong>ten</strong> integer digits, then two
@@ -210,15 +374,41 @@ public record TransactionPosted(
     private static final Pattern ACCOUNT_IDENTIFIER_MATCHER =
             Pattern.compile(EventEnvelope.AGGREGATE_ID_PATTERN);
 
+    /** {@link #CARD_TOKEN_PATTERN} compiled, and the check {@code cardToken} runs. */
+    private static final Pattern CARD_TOKEN_MATCHER = Pattern.compile(CARD_TOKEN_PATTERN);
+
     /**
-     * Checks all eleven components and normalises the two money components to scale
+     * {@link #MERCHANT_CATEGORY_CODE_PATTERN} compiled, and the check
+     * {@code merchantCategoryCode} runs.
+     */
+    private static final Pattern MERCHANT_CATEGORY_CODE_MATCHER =
+            Pattern.compile(MERCHANT_CATEGORY_CODE_PATTERN);
+
+    /** {@link #MERCHANT_ID_PATTERN} compiled, and the check {@code merchantId} runs. */
+    private static final Pattern MERCHANT_ID_MATCHER = Pattern.compile(MERCHANT_ID_PATTERN);
+
+    /** {@link #ORIGIN_TIMESTAMP_PATTERN} compiled, and the check {@code originTimestamp} runs. */
+    private static final Pattern ORIGIN_TIMESTAMP_MATCHER =
+            Pattern.compile(ORIGIN_TIMESTAMP_PATTERN);
+
+    /** {@link #PRINTABLE_TEXT_PATTERN} compiled, and the check each text component runs. */
+    private static final Pattern PRINTABLE_TEXT_MATCHER = Pattern.compile(PRINTABLE_TEXT_PATTERN);
+
+    /**
+     * Checks every component and normalises the two money components to scale
      * {@link #MONEY_SCALE}.
      *
-     * <p>Every failure message names the component that failed. The check rejects any value
-     * {@code schemas/transaction-posted-v1.json} rejects, so a record that exists validates against
-     * the contract. The two account identifiers must hold one value, which is the rule the schema
+     * <p>Every failure message names the component that failed. The check rejects any value the
+     * schema document of the event's version rejects, so a record that exists validates against its
+     * contract. The two account identifiers must hold one value, which is the rule the schema
      * dialect cannot state. An absent {@code accountId} takes the value of {@code aggregateId},
      * which the contract document names as the one account identifier it declares.
+     *
+     * <p>Ten components depend on the version. Under
+     * {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} each is required and each meets the width or the
+     * pattern its source field declares. Under {@link EventEnvelope#SCHEMA_VERSION} each must be
+     * absent, because {@code schemas/transaction-posted-v1.json} declares none of them and closes
+     * its property set.
      *
      * <p>A message reports the length of a rejected identifier or masked card number, never the
      * value. A failure therefore leaks no account identifier and no Primary Account Number into a
@@ -252,9 +442,11 @@ public record TransactionPosted(
             throw new IllegalArgumentException("eventType must be \"" + EVENT_TYPE
                     + "\" and the supplied value is \"" + eventType + "\"");
         }
-        if (schemaVersion != EventEnvelope.SCHEMA_VERSION) {
+        if (schemaVersion != EventEnvelope.SCHEMA_VERSION
+                && schemaVersion != TRANSACTION_DETAIL_SCHEMA_VERSION) {
             throw new IllegalArgumentException("schemaVersion must be "
-                    + EventEnvelope.SCHEMA_VERSION + " and the supplied value is " + schemaVersion);
+                    + EventEnvelope.SCHEMA_VERSION + " or " + TRANSACTION_DETAIL_SCHEMA_VERSION
+                    + " and the supplied value is " + schemaVersion);
         }
 
         requireAccountIdentifier(aggregateId, "aggregateId");
@@ -291,6 +483,96 @@ public record TransactionPosted(
                     + MASKED_CARD_NUMBER_PATTERN + " and the supplied value "
                     + describeLength(maskedCardNumber));
         }
+
+        if (schemaVersion == TRANSACTION_DETAIL_SCHEMA_VERSION) {
+            requirePattern(cardToken, CARD_TOKEN_MATCHER, CARD_TOKEN_PATTERN, "cardToken");
+            requirePattern(merchantCategoryCode, MERCHANT_CATEGORY_CODE_MATCHER,
+                    MERCHANT_CATEGORY_CODE_PATTERN, "merchantCategoryCode");
+            requirePattern(merchantId, MERCHANT_ID_MATCHER, MERCHANT_ID_PATTERN, "merchantId");
+            requirePattern(originTimestamp, ORIGIN_TIMESTAMP_MATCHER, ORIGIN_TIMESTAMP_PATTERN,
+                    "originTimestamp");
+
+            requireText(transactionTypeCode, TRANSACTION_TYPE_CODE_MAX_LENGTH,
+                    "transactionTypeCode");
+            requireText(source, SOURCE_MAX_LENGTH, "source");
+            requireText(description, DESCRIPTION_MAX_LENGTH, "description");
+            requireText(merchantName, MERCHANT_NAME_MAX_LENGTH, "merchantName");
+            requireText(merchantCity, MERCHANT_CITY_MAX_LENGTH, "merchantCity");
+            requireText(merchantZip, MERCHANT_ZIP_MAX_LENGTH, "merchantZip");
+        } else {
+            requireAbsentAtVersionOne(cardToken, "cardToken");
+            requireAbsentAtVersionOne(transactionTypeCode, "transactionTypeCode");
+            requireAbsentAtVersionOne(merchantCategoryCode, "merchantCategoryCode");
+            requireAbsentAtVersionOne(source, "source");
+            requireAbsentAtVersionOne(description, "description");
+            requireAbsentAtVersionOne(merchantId, "merchantId");
+            requireAbsentAtVersionOne(merchantName, "merchantName");
+            requireAbsentAtVersionOne(merchantCity, "merchantCity");
+            requireAbsentAtVersionOne(merchantZip, "merchantZip");
+            requireAbsentAtVersionOne(originTimestamp, "originTimestamp");
+        }
+    }
+
+    /**
+     * Checks one component against a compiled pattern.
+     *
+     * <p>The message reports the length of a rejected value and never the value, because
+     * {@code cardToken} passes through here.
+     *
+     * @param value     the component value
+     * @param matcher   the compiled pattern
+     * @param pattern   the pattern text the failure message reports
+     * @param component the component name the failure message reports
+     * @throws IllegalArgumentException when {@code value} is {@code null} or does not match
+     */
+    private static void requirePattern(String value, Pattern matcher, String pattern,
+            String component) {
+        if (value == null || !matcher.matcher(value).matches()) {
+            throw new IllegalArgumentException(component + " must match " + pattern
+                    + " under schemaVersion " + TRANSACTION_DETAIL_SCHEMA_VERSION
+                    + " and the supplied value " + describeLength(value));
+        }
+    }
+
+    /**
+     * Checks one text component against its declared width and the printable character set.
+     *
+     * <p>A shorter value passes, including an empty one, which is what a fixed-width source field
+     * holding spaces becomes once trimmed.
+     *
+     * @param value     the component value
+     * @param maximum   the width the source field declares
+     * @param component the component name the failure message reports
+     * @throws IllegalArgumentException when {@code value} is {@code null}, is wider than
+     *                                  {@code maximum}, or holds a character outside
+     *                                  {@link #PRINTABLE_TEXT_PATTERN}
+     */
+    private static void requireText(String value, int maximum, String component) {
+        if (value == null || value.length() > maximum) {
+            throw new IllegalArgumentException(component + " must hold at most " + maximum
+                    + " characters under schemaVersion " + TRANSACTION_DETAIL_SCHEMA_VERSION
+                    + " and the supplied value " + describeLength(value));
+        }
+        if (!PRINTABLE_TEXT_MATCHER.matcher(value).matches()) {
+            throw new IllegalArgumentException(component + " must match " + PRINTABLE_TEXT_PATTERN
+                    + " and the supplied value holds " + value.length()
+                    + " characters, one of them outside that set");
+        }
+    }
+
+    /**
+     * Requires a component version 1 does not declare to be absent.
+     *
+     * @param value     the component value
+     * @param component the component name the failure message reports
+     * @throws IllegalArgumentException when {@code value} is present
+     */
+    private static void requireAbsentAtVersionOne(String value, String component) {
+        if (value != null) {
+            throw new IllegalArgumentException(component + " must be absent under schemaVersion "
+                    + EventEnvelope.SCHEMA_VERSION + ", which declares no such property, and a"
+                    + " value of " + value.length() + " characters was supplied");
+        }
     }
 
     /**
@@ -300,34 +582,54 @@ public record TransactionPosted(
      * identifiers hold one value by construction. The envelope must carry {@link #EVENT_TYPE};
      * {@link EventEnvelope#of(String, String)} stamps it when the caller passes that constant.
      *
-     * @param envelope         the envelope carrying the event identifier, the event type, the
-     *                         contract version, the publish moment and the account identifier
-     * @param transactionId    the sixteen-character transaction identifier
-     * @param newBalance       the account balance after the posting, at up to ten integer digits
-     * @param postedAt         the twenty-six-character posting timestamp
-     * @param amount           the amount that moved the balance, at up to nine integer digits
-     * @param maskedCardNumber the card number with twelve mask characters ahead of its last four
-     *                         digits
+     * <p>The ten version-2 components must agree with the version the envelope carries: all present
+     * at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}, all absent at
+     * {@link EventEnvelope#SCHEMA_VERSION}.
+     *
+     * @param envelope             the envelope carrying the event identifier, the event type, the
+     *                             contract version, the publish moment and the account identifier
+     * @param transactionId        the sixteen-character transaction identifier
+     * @param newBalance           the account balance after the posting, at up to ten integer
+     *                             digits
+     * @param postedAt             the twenty-six-character posting timestamp
+     * @param amount               the amount that moved the balance, at up to nine integer digits
+     * @param maskedCardNumber     the card number with twelve mask characters ahead of its last
+     *                             four digits
+     * @param cardToken            the card identity, or {@code null} at version 1
+     * @param transactionTypeCode  the transaction type code, or {@code null} at version 1
+     * @param merchantCategoryCode the merchant category code, or {@code null} at version 1
+     * @param source               the capture channel, or {@code null} at version 1
+     * @param description          the transaction description, or {@code null} at version 1
+     * @param merchantId           the merchant identifier, or {@code null} at version 1
+     * @param merchantName         the merchant name, or {@code null} at version 1
+     * @param merchantCity         the merchant city, or {@code null} at version 1
+     * @param merchantZip          the merchant postal code, or {@code null} at version 1
+     * @param originTimestamp      the origin timestamp, or {@code null} at version 1
      * @return the event, with both money components at scale {@link #MONEY_SCALE}
      * @throws NullPointerException     when {@code envelope} is {@code null}
      * @throws IllegalArgumentException when any component fails the canonical constructor
      */
     public static TransactionPosted of(EventEnvelope envelope, String transactionId,
-            BigDecimal newBalance, String postedAt, BigDecimal amount, String maskedCardNumber) {
+            BigDecimal newBalance, String postedAt, BigDecimal amount, String maskedCardNumber,
+            String cardToken, String transactionTypeCode, String merchantCategoryCode,
+            String source, String description, String merchantId, String merchantName,
+            String merchantCity, String merchantZip, String originTimestamp) {
         Objects.requireNonNull(envelope, "envelope must be present");
 
         return new TransactionPosted(envelope.eventId(), envelope.eventType(),
                 envelope.schemaVersion(), envelope.occurredAt(), envelope.aggregateId(),
                 transactionId, envelope.aggregateId(), newBalance, postedAt, amount,
-                maskedCardNumber);
+                maskedCardNumber, cardToken, transactionTypeCode, merchantCategoryCode, source,
+                description, merchantId, merchantName, merchantCity, merchantZip, originTimestamp);
     }
 
     /**
-     * Builds an event for one account, stamping the envelope the ledger would otherwise assemble.
+     * Builds a version-1 event for one account, carrying none of the ten components version 2 adds.
      *
      * <p>{@link EventEnvelope#of(String, String)} supplies a fresh event identifier,
      * {@link #EVENT_TYPE}, {@link EventEnvelope#SCHEMA_VERSION} and the current moment truncated to
-     * milliseconds.
+     * milliseconds. Version 1 stays governed by {@code schemas/transaction-posted-v1.json}, so this
+     * factory is what builds an event a consumer written against that document reads.
      *
      * @param accountId        the eleven-digit account identifier, which becomes both
      *                         {@link #aggregateId()} and {@link #accountId()}
@@ -337,13 +639,61 @@ public record TransactionPosted(
      * @param amount           the amount that moved the balance, at up to nine integer digits
      * @param maskedCardNumber the card number with twelve mask characters ahead of its last four
      *                         digits
-     * @return the event, with both money components at scale {@link #MONEY_SCALE}
+     * @return the event at {@link EventEnvelope#SCHEMA_VERSION}, with both money components at
+     *         scale {@link #MONEY_SCALE}
      * @throws IllegalArgumentException when any component fails the canonical constructor
      */
     public static TransactionPosted forAccount(String accountId, String transactionId,
             BigDecimal newBalance, String postedAt, BigDecimal amount, String maskedCardNumber) {
         return of(EventEnvelope.of(EVENT_TYPE, accountId), transactionId, newBalance, postedAt,
-                amount, maskedCardNumber);
+                amount, maskedCardNumber, null, null, null, null, null, null, null, null, null,
+                null);
+    }
+
+    /**
+     * Builds the version-2 event that follows one authorized transaction.
+     *
+     * <p>Ten of the fifteen payload values are copied from the authorized event, so a producer
+     * cannot transpose two of them or leave one blank. The account identifier, the transaction
+     * identifier, the amount, the masked card number and the card token all come from the same
+     * source, which is why the two events describe one transaction and not two.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L425-L436} moves the same twelve values from the feed record
+     * onto the posted record, and {@code app/cbl/CBTRN02C.cbl:L438} stamps the posting timestamp,
+     * which is the argument below.
+     *
+     * @param authorized the authorized transaction this posting applied, at
+     *                   {@link TransactionAuthorized#CARD_TOKEN_SCHEMA_VERSION}
+     * @param newBalance the account balance after the posting, at up to ten integer digits
+     * @param postedAt   the twenty-six-character posting timestamp, shaped
+     *                   {@code YYYY-MM-DD-HH.MM.SS.NN0000}
+     * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}, with both money components
+     *         at scale {@link #MONEY_SCALE}
+     * @throws NullPointerException     when {@code authorized} is {@code null}
+     * @throws IllegalArgumentException when the authorized event carries no card token, or when any
+     *                                 component fails the canonical constructor
+     */
+    public static TransactionPosted forAuthorized(TransactionAuthorized authorized,
+            BigDecimal newBalance, String postedAt) {
+        Objects.requireNonNull(authorized, "authorized must be present");
+
+        if (authorized.cardToken() == null) {
+            throw new IllegalArgumentException("the authorized event must carry a card token, so it"
+                    + " must be at schemaVersion "
+                    + TransactionAuthorized.CARD_TOKEN_SCHEMA_VERSION
+                    + ", and the supplied event is at schemaVersion "
+                    + authorized.schemaVersion());
+        }
+
+        EventEnvelope envelope = EventEnvelope.of(EVENT_TYPE, authorized.accountId(),
+                TRANSACTION_DETAIL_SCHEMA_VERSION);
+
+        return of(envelope, authorized.transactionId(), newBalance, postedAt, authorized.amount(),
+                authorized.maskedCardNumber(), authorized.cardToken(),
+                authorized.transactionTypeCode(), authorized.merchantCategoryCode(),
+                authorized.source(), authorized.description(), authorized.merchantId(),
+                authorized.merchantName(), authorized.merchantCity(), authorized.merchantZip(),
+                authorized.authorizedAt());
     }
 
     /**
@@ -435,6 +785,96 @@ public record TransactionPosted(
                 + ", aggregateId=" + EventEnvelope.WITHHELD + ", transactionId=" + transactionId
                 + ", accountId=" + EventEnvelope.WITHHELD + ", newBalance="
                 + EventEnvelope.WITHHELD + ", postedAt=" + EventEnvelope.WITHHELD + ", amount="
-                + EventEnvelope.WITHHELD + ", maskedCardNumber=" + EventEnvelope.WITHHELD + "]";
+                + EventEnvelope.WITHHELD + ", maskedCardNumber=" + EventEnvelope.WITHHELD
+                + ", cardToken=" + EventEnvelope.WITHHELD + ", transactionTypeCode="
+                + EventEnvelope.WITHHELD + ", merchantCategoryCode=" + EventEnvelope.WITHHELD
+                + ", source=" + EventEnvelope.WITHHELD + ", description=" + EventEnvelope.WITHHELD
+                + ", merchantId=" + EventEnvelope.WITHHELD + ", merchantName="
+                + EventEnvelope.WITHHELD + ", merchantCity=" + EventEnvelope.WITHHELD
+                + ", merchantZip=" + EventEnvelope.WITHHELD + ", originTimestamp="
+                + EventEnvelope.WITHHELD + "]";
+    }
+
+    /**
+     * Answers whether this event carries the transaction detail components.
+     *
+     * @return {@code true} when {@link #schemaVersion()} is
+     *         {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}, and {@code false} at
+     *         {@link EventEnvelope#SCHEMA_VERSION}
+     */
+    public boolean carriesTransactionDetail() {
+        return schemaVersion == TRANSACTION_DETAIL_SCHEMA_VERSION;
+    }
+
+    /**
+     * Builds the posted event from the authorization it posts.
+     *
+     * <p>The same construction as
+     * {@link #forAuthorized(TransactionAuthorized, BigDecimal, String)}, under a second name the
+     * platform reads. Both names resolve to one construction, so a component built through either
+     * carries the same values.</p>
+     *
+     * @param authorized the authorization this posting settles
+     * @param newBalance the account balance after the posting arithmetic
+     * @param postedAt   the processing timestamp, twenty-six characters
+     * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}
+     */
+    public static TransactionPosted from(TransactionAuthorized authorized, BigDecimal newBalance,
+            String postedAt) {
+        return forAuthorized(authorized, newBalance, postedAt);
+    }
+
+    /**
+     * Builds the posted event from the authorization it posts.
+     *
+     * <p>The same construction as
+     * {@link #forAuthorized(TransactionAuthorized, BigDecimal, String)}, under a third name the
+     * platform reads.</p>
+     *
+     * @param authorized the authorization this posting settles
+     * @param newBalance the account balance after the posting arithmetic
+     * @param postedAt   the processing timestamp, twenty-six characters
+     * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}
+     */
+    public static TransactionPosted forPostedAuthorization(TransactionAuthorized authorized,
+            BigDecimal newBalance, String postedAt) {
+        return forAuthorized(authorized, newBalance, postedAt);
+    }
+
+    /**
+     * Builds the posted event from a caller-supplied envelope and the authorization it posts.
+     *
+     * <p>{@link #forAuthorized(TransactionAuthorized, BigDecimal, String)} builds its own envelope,
+     * which is what a producer wants. A test that pins an event identifier or an occurrence moment
+     * supplies the envelope instead, and this overload is the one it calls.</p>
+     *
+     * @param envelope   the five envelope components, whose aggregate identifier is the account
+     * @param authorized the authorization this posting settles
+     * @param newBalance the account balance after the posting arithmetic
+     * @param postedAt   the processing timestamp, twenty-six characters
+     * @return the event carrying {@code envelope} and the detail of {@code authorized}
+     * @throws NullPointerException     when {@code envelope} or {@code authorized} is {@code null}
+     * @throws IllegalArgumentException when the authorized event carries no card token, or when any
+     *                                  component fails the canonical constructor
+     */
+    public static TransactionPosted of(EventEnvelope envelope, TransactionAuthorized authorized,
+            BigDecimal newBalance, String postedAt) {
+        Objects.requireNonNull(envelope, "envelope must be present");
+        Objects.requireNonNull(authorized, "authorized must be present");
+
+        if (authorized.cardToken() == null) {
+            throw new IllegalArgumentException("the authorized event must carry a card token, so it"
+                    + " must be at schemaVersion "
+                    + TransactionAuthorized.CARD_TOKEN_SCHEMA_VERSION
+                    + ", and the supplied event is at schemaVersion "
+                    + authorized.schemaVersion());
+        }
+
+        return of(envelope, authorized.transactionId(), newBalance, postedAt, authorized.amount(),
+                authorized.maskedCardNumber(), authorized.cardToken(),
+                authorized.transactionTypeCode(), authorized.merchantCategoryCode(),
+                authorized.source(), authorized.description(), authorized.merchantId(),
+                authorized.merchantName(), authorized.merchantCity(), authorized.merchantZip(),
+                authorized.authorizedAt());
     }
 }

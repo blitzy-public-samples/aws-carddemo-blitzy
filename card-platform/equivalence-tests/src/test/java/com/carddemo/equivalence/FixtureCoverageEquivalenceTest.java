@@ -36,9 +36,9 @@ import org.junit.jupiter.api.Test;
  *
  * <p>The census file is the equivalence evidence for fixture shape. It holds
  * {@link #CENSUS_DATA_ROW_COUNT} data rows over the nine text fixtures in {@code app/data/ASCII}
- * and the ten binary twins in {@code app/data/EBCDIC}. Every row states one measurement: a record
- * count, a byte width, a line ending, a filler character, a sign overpunch position count, a
- * distinct value count, a bound, or a decline reason occurrence count.</p>
+ * and the twelve binary fixtures in {@code app/data/EBCDIC}. Every row states one measurement:
+ * a record count, a byte width, a line ending, a filler character, a sign overpunch position
+ * count, a distinct value count, a bound, or a decline reason occurrence count.</p>
  *
  * <p>A checked-in table of expected values proves nothing on its own. This class therefore derives
  * each row again from the files the row names, and one collected assertion reports every row whose
@@ -95,7 +95,7 @@ class FixtureCoverageEquivalenceTest {
             "source_locator");
 
     /** Data rows the census holds, comment and header excluded. */
-    private static final int CENSUS_DATA_ROW_COUNT = 188;
+    private static final int CENSUS_DATA_ROW_COUNT = 190;
 
     /**
      * The one evaluation model every row carries. Fixture shape does not depend on the accumulator
@@ -168,6 +168,9 @@ class FixtureCoverageEquivalenceTest {
 
     /** Directory below the repository root holding the binary twins. */
     private static final String EBCDIC_DIRECTORY = "app/data/EBCDIC";
+
+    /** Prefix of repository metadata files that are not fixtures. */
+    private static final String HIDDEN_FILE_PREFIX = ".";
 
     /** Copybook that declares the security record, which has no text fixture. */
     private static final String SECURITY_COPYBOOK = "app/cpy/CSUSR01Y.cpy";
@@ -579,6 +582,21 @@ class FixtureCoverageEquivalenceTest {
         return EBCDIC_DIRECTORY + "/" + twinFileName;
     }
 
+    /** Returns every authoritative binary fixture path from the repository directory. */
+    private static Set<String> authoritativeEBCDICFiles() {
+        Path directory = REPOSITORY_ROOT.get().resolve(EBCDIC_DIRECTORY);
+        try (var files = Files.list(directory)) {
+            return files.filter(Files::isRegularFile)
+                    .filter(path -> !path.getFileName().toString()
+                            .startsWith(HIDDEN_FILE_PREFIX))
+                    .map(path -> EBCDIC_DIRECTORY + "/" + path.getFileName())
+                    .sorted()
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + directory, unreadable);
+        }
+    }
+
     /** Bytes of a text fixture, the record separators included. */
     private static byte[] fixtureBytes(String entityKey) {
         return bytesOf(asciiPath(entityKey));
@@ -940,6 +958,8 @@ class FixtureCoverageEquivalenceTest {
                     * widths.iterator().next();
             return yesNo(bytesOf(ebcdicPath(layout.ebcdicTwinFileName())).length == delivered);
         });
+        derivations.put("inventory_member",
+                row -> yesNo(authoritativeEBCDICFiles().contains(row.derivedFrom())));
         return Map.copyOf(derivations);
     }
 
@@ -1789,9 +1809,6 @@ class FixtureCoverageEquivalenceTest {
     /** Text fixtures the census measures, being every layout this class models. */
     private static final int ASCII_FIXTURE_COUNT = 9;
 
-    /** Binary twins the census reads, being one per text fixture plus the security dataset. */
-    private static final int EBCDIC_TWIN_COUNT = 10;
-
     /** Entities the census records, being the text fixtures plus the security dataset. */
     private static final int CENSUS_ENTITY_COUNT = ASCII_FIXTURE_COUNT + 1;
 
@@ -1870,11 +1887,11 @@ class FixtureCoverageEquivalenceTest {
         }
 
         /**
-         * The census measures the nine text fixtures, the ten binary twins and the ten entities the
+         * The census measures the nine text fixtures, every binary fixture and the ten entities the
          * comment line claims, and no others.
          */
         @Test
-        @DisplayName("the census measures nine text fixtures, ten binary twins and ten entities")
+        @DisplayName("the census measures nine text fixtures, all binary fixtures and ten entities")
         void theCensusMeasuresTheFilesItClaims() {
             Set<String> ascii = new LinkedHashSet<>();
             Set<String> ebcdic = new LinkedHashSet<>();
@@ -1893,8 +1910,8 @@ class FixtureCoverageEquivalenceTest {
 
             assertEquals(ASCII_FIXTURE_COUNT, ascii.size(),
                     "the census measures the nine fixtures of " + ASCII_DIRECTORY);
-            assertEquals(EBCDIC_TWIN_COUNT, ebcdic.size(),
-                    "the census reads one binary twin per fixture plus the security dataset");
+            assertEquals(authoritativeEBCDICFiles(), ebcdic,
+                    "the census names every binary fixture present in " + EBCDIC_DIRECTORY);
             assertEquals(CENSUS_ENTITY_COUNT, entities.size(),
                     "the census records the nine text fixtures and the security dataset");
             assertEquals(LAYOUTS.keySet(), new LinkedHashSet<>(entities.stream()
@@ -1920,8 +1937,9 @@ class FixtureCoverageEquivalenceTest {
                     CENSUS_PATH + " line 1 states the data row count the file holds");
             assertTrue(comment.contains(count(ASCII_FIXTURE_COUNT) + " ASCII fixtures"),
                     CENSUS_PATH + " line 1 states how many text fixtures the census measures");
-            assertTrue(comment.contains(count(EBCDIC_TWIN_COUNT) + " EBCDIC twins"),
-                    CENSUS_PATH + " line 1 states how many binary twins the census reads");
+            assertTrue(comment.contains(
+                            count(authoritativeEBCDICFiles().size()) + " EBCDIC fixtures"),
+                    CENSUS_PATH + " line 1 states how many binary fixtures the census reads");
             assertFalse(comment.contains(CardDemoFixtureLoader.class.getSimpleName()),
                     CENSUS_PATH + " line 1 must not name "
                             + CardDemoFixtureLoader.class.getSimpleName() + " as a reader of the "

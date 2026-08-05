@@ -6,8 +6,6 @@
 #
 # Decision rules: app/cbl/CBTRN02C.cbl paragraphs 1500-A and 1500-B. Request
 # contract: app/cbl/COTRN02C.cbl. Authentication fork: app/cbl/COSGN00C.cbl.
-#
-# Rationale for every version and exclusion: card-platform/docs/decision-log.md (planned)
 
 # The one runtime image every service in this mono-repo shares. A Java Runtime
 # Environment (JRE) 25.0.4 runs the archive. The digest pins the layer, and the

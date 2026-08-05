@@ -7,8 +7,9 @@ import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.domain.NotificationService.CardholderDetails;
-import com.carddemo.notification.entity.ProcessedEventEntity;
+import com.carddemo.notification.entity.CardholderContextEntity;
 import com.carddemo.notification.entity.StatementTransactionEntity;
+import com.carddemo.notification.repository.CardholderContextRepository;
 import com.carddemo.notification.repository.ProcessedEventRepository;
 import com.carddemo.notification.repository.StatementTransactionRepository;
 import java.time.Duration;
@@ -18,7 +19,6 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.kafka.support.KafkaHeaders;
@@ -27,7 +27,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Reads one {@code TransactionPosted} event, writes one row of the card-keyed read model, and asks
+ * Reads one {@code TransactionPosted} event, writes one row of the account-keyed read model, and asks
  * the domain layer for one cardholder alert.
  *
  * <p>The nightly sort-then-copy sequence of {@code app/jcl/CREASTMT.JCL}, a Job Control Language
@@ -36,16 +36,25 @@ import org.springframework.transaction.support.TransactionTemplate;
  * result into a keyed cluster at {@code app/jcl/CREASTMT.JCL:L61}, and ran the rendering program at
  * {@code app/jcl/CREASTMT.JCL:L79}. Rendering belongs to {@link NotificationService}.
  *
- * <p>One event carries six payload fields and one row holds thirteen columns, so eight columns take
- * a filled default. {@code INITIALIZE STATEMENT-LINES} at {@code app/cbl/CBSTM03A.CBL:L459} runs
- * ahead of every {@code MOVE} in that paragraph, so a field the program never fills stays spaces or
- * zeros and each line still occupies its declared width.
- * {@link #readModelRow(TransactionPosted)} names each column and the source line it maps.
+ * <p>One event fills every column of one row. {@code TransactionPosted} at schema version
+ * {@value TransactionPosted#TRANSACTION_DETAIL_SCHEMA_VERSION} carries the whole posted transaction
+ * record, so no column takes a filled default and no field of a response reads as spaces or zeros
+ * waiting for a second event. {@link #readModelRow(TransactionPosted)} names each column and the
+ * event field it copies. Each text value reaches its column at the declared width, which is the
+ * state a {@code MOVE} into a {@code PIC X(n)} field leaves.
  *
- * <p>The read-model key holds the masked card number. {@code app/cpy/COSTM01.CPY:L22} declares
- * {@code TRNX-CARD-NUM PIC X(16)}, which carried a full Primary Account Number (PAN). Each event of
- * this platform carries the masked form alone, so the primary key of {@code statement_transaction}
- * is the masked card number.
+ * <p>An event at schema version 1 carries four of those values and no card token, so it can key no
+ * row. {@link #readModelRow(TransactionPosted)} refuses it, and
+ * {@code config/KafkaConsumerConfig} routes the delivery to the dead-letter topic once the retries
+ * configured under {@code carddemo.consumer.retry} are spent. Refusing is the honest answer: a row
+ * keyed on an invented token, or one carrying eight blank columns, is worse than a delivery an
+ * operator can see and replay.
+ *
+ * <p>The read-model key holds the card token. {@code app/cpy/COSTM01.CPY:L22} declares
+ * {@code TRNX-CARD-NUM PIC X(16)}, which carried a full Primary Account Number (PAN). This platform
+ * stores no PAN, and the masked form cannot take the key's place: two cards sharing their last four
+ * digits mask to one value, so a key over it would merge their histories. The masked form travels
+ * beside the key as display data.
  *
  * <p>The idempotency guard here is ADDITIVE. No Common Business Oriented Language (COBOL) program
  * detects a duplicate delivery, and the transaction write at
@@ -95,29 +104,14 @@ public class TransactionPostedConsumer {
     private static final String NOTHING_WRITTEN =
             "no read-model row, alert or marker written for /transactionId";
 
-    /**
-     * The character the origin layout carries between the day and the hour, where the posting
-     * layout carries a dash.
-     *
-     * <p>All 300 records of {@code app/data/ASCII/dailytran.txt} carry a space at that position.
-     */
-    private static final char ORIGIN_DATE_SEPARATOR = ' ';
-
-    /**
-     * The character the origin layout carries between two time components, where the posting layout
-     * carries a dot.
-     *
-     * <p>{@code app/cbl/CBTRN02C.cbl:L703} moves that dot into all three positions of the posting
-     * layout, and the origin layout of {@code app/data/ASCII/dailytran.txt} carries a colon in the
-     * first two.
-     */
-    private static final char ORIGIN_TIME_SEPARATOR = ':';
-
     /** Reads and writes one row of the card-keyed read model. */
     private final StatementTransactionRepository statementTransactions;
 
-    /** Answers whether an event identifier has been handled, and stores the marker. */
+    /** Claims one event identifier, so a second delivery of it changes nothing. */
     private final ProcessedEventRepository processedEvents;
+
+    /** Reads the account-keyed cardholder fields one alert reports. */
+    private final CardholderContextRepository cardholderContexts;
 
     /** Renders one cardholder alert and records the delivery attempt. */
     private final NotificationService notificationService;
@@ -129,22 +123,27 @@ public class TransactionPostedConsumer {
     private final NotificationMetrics metrics;
 
     /**
-     * Takes the two repositories, the domain service, the transaction runner and the meters.
+     * Takes the three repositories, the domain service, the transaction runner and the meters.
      *
      * @param statementTransactions store of read-model rows
      * @param processedEvents       store of duplicate-delivery markers
+     * @param cardholderContexts    store of the account-keyed cardholder projection
      * @param notificationService   renderer of the cardholder alert and writer of the attempt row
      * @param transactionTemplate   runner of the one local transaction this listener opens
      * @param metrics               the meter holder {@code config/ObservabilityConfig} registers
      * @throws NullPointerException if any argument is null
      */
     public TransactionPostedConsumer(StatementTransactionRepository statementTransactions,
-            ProcessedEventRepository processedEvents, NotificationService notificationService,
+            ProcessedEventRepository processedEvents,
+            CardholderContextRepository cardholderContexts,
+            NotificationService notificationService,
             TransactionTemplate transactionTemplate, NotificationMetrics metrics) {
         this.statementTransactions =
                 Objects.requireNonNull(statementTransactions, "statementTransactions is required");
         this.processedEvents =
                 Objects.requireNonNull(processedEvents, "processedEvents is required");
+        this.cardholderContexts =
+                Objects.requireNonNull(cardholderContexts, "cardholderContexts is required");
         this.notificationService =
                 Objects.requireNonNull(notificationService, "notificationService is required");
         this.transactionTemplate =
@@ -162,21 +161,30 @@ public class TransactionPostedConsumer {
      * decides between another delivery attempt and the dead-letter topic. The acknowledgement below
      * is unreachable on that path, so a repeat delivery follows and the marker keeps it harmless.
      *
-     * <p>A marker written by a delivery running alongside this one collides on the primary key of
-     * {@code processed_event}. That collision rolls this transaction back, counts one skipped
-     * duplicate and acknowledges, so the other delivery's writes stand alone.
+     * <p>A delivery running alongside this one is settled by the claim
+     * {@link #applyOneEvent(TransactionPosted, StatementTransactionEntity, String)} takes, which
+     * reports whether this delivery took the event. Every integrity violation that reaches this
+     * method is therefore a fault of a write and not a duplicate, and it travels on unchanged.
+     *
+     * <p>The message key is checked against the aggregate the payload names before any side effect
+     * runs. {@link #requireKeyNamesPayloadAggregate(String, TransactionPosted)} states why.
      *
      * @param event          the validated event this delivery carries
      * @param acknowledgment the offset commit, invoked once the transaction has committed
      * @param consumedTopic  the topic the delivery arrived on, recorded on the marker
+     * @param messageKey     the key the delivery arrived under, which must name the payload's
+     *                       aggregate
      * @throws NullPointerException if {@code event} or {@code acknowledgment} is null
+     * @throws IllegalArgumentException if the key names an aggregate the payload does not
      */
     @KafkaListener(topics = "${carddemo.kafka.topics.transaction-posted}",
             groupId = "${carddemo.kafka.groups.transaction-posted}")
     public void onTransactionPosted(TransactionPosted event, Acknowledgment acknowledgment,
-            @Header(KafkaHeaders.RECEIVED_TOPIC) String consumedTopic) {
+            @Header(KafkaHeaders.RECEIVED_TOPIC) String consumedTopic,
+            @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String messageKey) {
         Objects.requireNonNull(event, "event is required");
         Objects.requireNonNull(acknowledgment, "acknowledgment is required");
+        requireKeyNamesPayloadAggregate(messageKey, event);
 
         metrics.eventsConsumed(NotificationMetrics.EVENT_TRANSACTION_POSTED).increment();
         long startedAt = System.nanoTime();
@@ -184,10 +192,6 @@ public class TransactionPostedConsumer {
             StatementTransactionEntity row = readModelRow(event);
             transactionTemplate
                     .executeWithoutResult(status -> applyOneEvent(event, row, consumedTopic));
-        } catch (DataIntegrityViolationException markerCollision) {
-            metrics.duplicatesSkipped().increment();
-            LOG.debug("Event {} gained a marker from a delivery running alongside this one, so this"
-                    + " one wrote nothing.", event.eventId());
         } catch (RuntimeException failure) {
             reportFailure(event.eventId(), failure);
             throw failure;
@@ -202,15 +206,13 @@ public class TransactionPostedConsumer {
     /**
      * Applies one event inside the open transaction, in a fixed order.
      *
-     * <p>The marker check runs first, and an event that already carries a marker leaves all three
-     * tables untouched. The row follows, then the alert, then the marker insert. Each write joins
-     * the transaction the caller opened, so the marker and the effects it guards commit together or
-     * not at all.
+     * <p>The claim runs first and reports whether this delivery took the event. An event another
+     * delivery already claimed leaves all three tables untouched. The row follows, then the alert.
+     * Each write joins the transaction the caller opened, so the claim and the effects it guards
+     * commit together or not at all.
      *
-     * <p>The marker goes last in the source's own order: {@code PERFORM 6000-WRITE-TRANS} at
-     * {@code app/cbl/CBSTM03A.CBL:L428} writes the row, and
-     * {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429} accounts for the
-     * amount afterwards.
+     * <p>One statement claims the event, so no delivery reads the marker table and then writes it.
+     * Two deliveries of one event therefore cannot both pass the claim.
      *
      * <p>The alert text reaches no table: {@code src/main/resources/db/migration/V1__schema.sql}
      * declares no column for a rendered document. {@link NotificationService} writes the attempt
@@ -223,7 +225,8 @@ public class TransactionPostedConsumer {
     private void applyOneEvent(TransactionPosted event, StatementTransactionEntity row,
             String consumedTopic) {
         UUID eventId = event.eventId();
-        if (processedEvents.existsById(eventId)) {
+        if (processedEvents.claimEvent(eventId, Instant.now(), topicOrNull(consumedTopic))
+                == ProcessedEventRepository.ALREADY_CLAIMED) {
             metrics.duplicatesSkipped().increment();
             LOG.debug("Event {} carries a marker already, so this delivery writes nothing.",
                     eventId);
@@ -231,170 +234,169 @@ public class TransactionPostedConsumer {
         }
 
         upsertReadModelRow(row);
-        notificationService.renderPostedTransactionAlert(event.maskedCardNumber(),
-                event.transactionId(), event.accountId(), event.newBalance(),
-                CardholderDetails.blank(), RenderedFormat.PLAIN_TEXT);
-        processedEvents.save(marker(eventId, consumedTopic));
+        notificationService.renderPostedTransactionAlert(row.getId().getCardToken(),
+                event.maskedCardNumber(), event.transactionId(), event.accountId(),
+                event.newBalance(), cardholderDetails(event.accountId()),
+                RenderedFormat.PLAIN_TEXT);
     }
 
     /**
      * Writes one row of the read model under its composite key, whether or not that key is held.
      *
-     * <p>The key is the 32-byte key of {@code KEYS(32 0)} at {@code app/jcl/CREASTMT.JCL:L30}: the
-     * card number, then the transaction identifier. One read holds those two parts in the order
-     * {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} at {@code app/jcl/CREASTMT.JCL:L53} produced,
-     * which the primary key of {@code statement_transaction} keeps.
+     * <p>The key stands in for the 32-byte key of {@code KEYS(32 0)} at
+     * {@code app/jcl/CREASTMT.JCL:L30}: the card, then the transaction identifier. One read holds
+     * those two parts in the order {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} at
+     * {@code app/jcl/CREASTMT.JCL:L53} produced, which the primary key of
+     * {@code statement_transaction} keeps.
      *
-     * <p>The entity carries no setter, so the eleven non-key values arrive on a fresh instance and
+     * <p>The entity carries no setter, so the twelve non-key values arrive on a fresh instance and
      * {@code save} carries them onto the stored row under the same key.
      *
-     * @param row the row to store, carrying all thirteen column values
+     * <p>The two diagnostic lines below name the card by its token, which is opaque and one-way, so
+     * neither a full nor a masked card number reaches a log.
+     *
+     * @param row the row to store, carrying all fourteen column values
      */
     private void upsertReadModelRow(StatementTransactionEntity row) {
-        String cardNumber = row.getId().getCardNumber();
+        String cardToken = row.getId().getCardToken();
         String transactionId = row.getId().getTransactionId();
 
         if (statementTransactions.findById(row.getId()).isPresent()) {
-            LOG.debug("Card {} transaction {} holds a read-model row already, and this delivery"
-                    + " replaces its eleven non-key values.", cardNumber, transactionId);
+            LOG.debug("Card token {} transaction {} holds a read-model row already, and this"
+                    + " delivery replaces its twelve non-key values.", cardToken, transactionId);
         } else {
-            LOG.debug("Card {} transaction {} enters the read model.", cardNumber, transactionId);
+            LOG.debug("Card token {} transaction {} enters the read model.", cardToken,
+                    transactionId);
         }
         statementTransactions.save(row);
     }
 
     /**
-     * Maps one event onto the thirteen column values of one read-model row.
+     * Maps one event onto the fourteen column values of one read-model row.
      *
-     * <p>Four columns copy a payload field. {@code card_number} takes the masked card number of
-     * {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22}, and
-     * {@code transaction_id} takes {@code TRNX-ID PIC X(16)} at
-     * {@code app/cpy/COSTM01.CPY:L23}. {@code amount} takes {@code TRNX-AMT PIC S9(09)V99} at
-     * {@code app/cpy/COSTM01.CPY:L29} at scale {@value PicClause#TRAN_AMT_SCALE}, and
-     * {@code processing_timestamp} takes {@code TRNX-PROC-TS PIC X(26)} at
-     * {@code app/cpy/COSTM01.CPY:L35} character for character.
+     * <p>Every column copies an event field, and none takes a filled default. The event carries the
+     * whole posted transaction record at schema version
+     * {@value TransactionPosted#TRANSACTION_DETAIL_SCHEMA_VERSION}, copied there from the
+     * authorization event by {@code TransactionPosted.forAuthorized}, so a row is complete on the
+     * first delivery and stays complete.
      *
-     * <p>Eight columns take the filled state {@code INITIALIZE STATEMENT-LINES} at
-     * {@code app/cbl/CBSTM03A.CBL:L459} leaves. Six carry spaces at their declared widths:
-     * {@code type_code} from L25, {@code source} from L27, {@code description} from L28,
-     * {@code merchant_name} from L31, {@code merchant_city} from L32 and {@code merchant_zip} from
-     * L33 of {@code app/cpy/COSTM01.CPY}. Two carry zero digits: {@code category_code} from
-     * {@code TRNX-CAT-CD PIC 9(04)} at {@code app/cpy/COSTM01.CPY:L26} and {@code merchant_id} from
-     * {@code TRNX-MERCHANT-ID PIC 9(09)} at {@code app/cpy/COSTM01.CPY:L30}.
+     * <p>Column by column, against {@code app/cpy/COSTM01.CPY}:</p>
      *
-     * <p>{@link #originTimestamp(String)} derives the thirteenth value, {@code origin_timestamp}
-     * from {@code TRNX-ORIG-TS PIC X(26)} at {@code app/cpy/COSTM01.CPY:L34}. The event's new
-     * balance reaches no column, and {@link NotificationService} reads it for the balance the alert
-     * carries.
+     * <pre>
+     * card_token            L22   cardToken             identity, stands in for TRNX-CARD-NUM
+     * transaction_id        L23   transactionId         TRNX-ID
+     * masked_card_number    L22   maskedCardNumber      display
+     * type_code             L25   transactionTypeCode   TRNX-TYPE-CD
+     * category_code         L26   merchantCategoryCode  TRNX-CAT-CD
+     * source                L27   source                TRNX-SOURCE
+     * description           L28   description           TRNX-DESC
+     * amount                L29   amount                TRNX-AMT
+     * merchant_id           L30   merchantId            TRNX-MERCHANT-ID
+     * merchant_name         L31   merchantName          TRNX-MERCHANT-NAME
+     * merchant_city         L32   merchantCity          TRNX-MERCHANT-CITY
+     * merchant_zip          L33   merchantZip           TRNX-MERCHANT-ZIP
+     * origin_timestamp      L34   originTimestamp       TRNX-ORIG-TS
+     * processing_timestamp  L35   postedAt              TRNX-PROC-TS
+     * </pre>
+     *
+     * <p>{@code origin_timestamp} carries the moment the transaction originated, which the
+     * authorization service captured and the event carries. It is not derived from the posting
+     * timestamp: the two are different moments, and reporting one as the other would misstate when a
+     * cardholder's transaction happened.
+     *
+     * <p>The event's new balance reaches no column, and {@link NotificationService} reads it for the
+     * balance the alert carries.
      *
      * @param event the validated event this delivery carries
-     * @return a row carrying all thirteen column values, none of them null
-     * @throws IllegalArgumentException if the card number is not masked, if the transaction
-     *                                  identifier is not {@value PicClause#TRAN_ID_WIDTH}
-     *                                  characters, or if the posting timestamp is not
-     *                                  {@value PicClause#PROCESSING_TIMESTAMP_WIDTH} characters
+     * @return a row carrying all fourteen column values, none of them null
+     * @throws IllegalArgumentException if the event carries no card token, which is every event at
+     *                                  schema version 1, if the card number is not masked, if the
+     *                                  transaction identifier is not
+     *                                  {@value PicClause#TRAN_ID_WIDTH} characters, or if a text
+     *                                  value is wider than the column that holds it
      */
     private static StatementTransactionEntity readModelRow(TransactionPosted event) {
         StatementTransactionEntity.StatementTransactionId identifier =
-                new StatementTransactionEntity.StatementTransactionId(event.maskedCardNumber(),
+                new StatementTransactionEntity.StatementTransactionId(requireCardToken(event),
                         event.transactionId());
-        String processingTimestamp = event.postedAt();
 
         return new StatementTransactionEntity(identifier,
-                spaces(PicClause.TRAN_TYPE_CD_WIDTH),
-                zeroDigits(PicClause.TRAN_CAT_CD_WIDTH),
-                spaces(PicClause.TRAN_SOURCE_WIDTH),
-                spaces(PicClause.TRAN_DESC_WIDTH),
+                event.maskedCardNumber(),
+                atWidth(event.transactionTypeCode(), PicClause.TRAN_TYPE_CD_WIDTH, "typeCode"),
+                event.merchantCategoryCode(),
+                atWidth(event.source(), PicClause.TRAN_SOURCE_WIDTH, "source"),
+                atWidth(event.description(), PicClause.TRAN_DESC_WIDTH, "description"),
                 CobolDecimal.truncateToScale(event.amount(), PicClause.TRAN_AMT_SCALE),
-                zeroDigits(PicClause.TRAN_MERCHANT_ID_WIDTH),
-                spaces(PicClause.TRAN_MERCHANT_NAME_WIDTH),
-                spaces(PicClause.TRAN_MERCHANT_CITY_WIDTH),
-                spaces(PicClause.TRAN_MERCHANT_ZIP_WIDTH),
-                originTimestamp(processingTimestamp),
-                processingTimestamp);
+                event.merchantId(),
+                atWidth(event.merchantName(), PicClause.TRAN_MERCHANT_NAME_WIDTH, "merchantName"),
+                atWidth(event.merchantCity(), PicClause.TRAN_MERCHANT_CITY_WIDTH, "merchantCity"),
+                atWidth(event.merchantZip(), PicClause.TRAN_MERCHANT_ZIP_WIDTH, "merchantZip"),
+                event.originTimestamp(),
+                event.postedAt());
     }
 
     /**
-     * Derives the origin timestamp from the posting timestamp by replacing three separators.
+     * Returns the card token the event carries, refusing an event that carries none.
      *
-     * <p>Both layouts hold {@value PicClause#PROCESSING_TIMESTAMP_WIDTH} characters. The posting
-     * layout carries a dash ahead of the hour and a dot ahead of the minute and the second, moved
-     * there by {@code app/cbl/CBTRN02C.cbl:L702} and {@code app/cbl/CBTRN02C.cbl:L703}. The origin
-     * layout carries a space and two colons at those three positions, and every other character is
-     * copied as it stands.
+     * <p>Only schema version {@value TransactionPosted#TRANSACTION_DETAIL_SCHEMA_VERSION} carries a
+     * token. An event at version 1 predates the card identity this read model is keyed on, and no
+     * token can be recovered from the masked card number it carries: masking discards twelve of the
+     * sixteen digits the derivation reads.
      *
-     * <p>A census of all 300 records of {@code app/data/ASCII/dailytran.txt} reports a space, a
-     * colon, a colon and a dot at the four separator positions of the origin timestamp. The dot
-     * ahead of the fraction and the six fraction characters therefore need no change.
+     * <p>The refusal names the field by its JavaScript Object Notation (JSON) pointer and the
+     * version that carries it, and no card number or event value reaches the message.
      *
-     * @param postedAt the posting timestamp the event carries
-     * @return the same moment in the origin layout, at the same width
-     * @throws IllegalArgumentException if {@code postedAt} is null or holds another width
+     * @param event the validated event this delivery carries
+     * @return the card token
+     * @throws IllegalArgumentException when the event carries no card token
      */
-    private static String originTimestamp(String postedAt) {
-        if (postedAt == null || postedAt.length() != PicClause.PROCESSING_TIMESTAMP_WIDTH) {
-            throw new IllegalArgumentException("/postedAt holds "
-                    + (postedAt == null ? "no value" : postedAt.length() + " characters")
-                    + " and this column holds " + PicClause.PROCESSING_TIMESTAMP_WIDTH);
+    private static String requireCardToken(TransactionPosted event) {
+        String cardToken = event.cardToken();
+        if (cardToken == null) {
+            throw new IllegalArgumentException("/cardToken carries no value, so this event keys no"
+                    + " read-model row: schema version "
+                    + TransactionPosted.TRANSACTION_DETAIL_SCHEMA_VERSION
+                    + " carries the card token and this event reports version "
+                    + event.schemaVersion());
         }
-
-        char[] characters = postedAt.toCharArray();
-        characters[separatorAhead(PicClause.PROCESSING_TIMESTAMP_HOUR_OFFSET)] =
-                ORIGIN_DATE_SEPARATOR;
-        characters[separatorAhead(PicClause.PROCESSING_TIMESTAMP_MINUTE_OFFSET)] =
-                ORIGIN_TIME_SEPARATOR;
-        characters[separatorAhead(PicClause.PROCESSING_TIMESTAMP_SECOND_OFFSET)] =
-                ORIGIN_TIME_SEPARATOR;
-        return new String(characters);
+        return cardToken;
     }
 
     /**
-     * The index of the separator that sits ahead of one timestamp component.
+     * Returns one text value at the width its column declares, padding on the right with spaces.
      *
-     * @param componentOffset the index of the component, from {@link PicClause}
-     * @return the index one separator width ahead of that component
-     */
-    private static int separatorAhead(int componentOffset) {
-        return componentOffset - PicClause.PROCESSING_TIMESTAMP_SEPARATOR_WIDTH;
-    }
-
-    /**
-     * A run of spaces at one declared width, the state a {@code PIC X(n)} field holds ahead of a
-     * {@code MOVE}.
+     * <p>A {@code PIC X(n)} field always holds n characters, and a {@code MOVE} of a shorter value
+     * into one pads the remainder with spaces. Padding here keeps the row this method builds equal to
+     * the row a later read returns from a {@code CHAR(n)} column, which pads on the same rule.
      *
+     * <p>The event validates each of these values against the same width, so a longer value cannot
+     * arrive through the listener. The check stays because a direct caller is not bound by that
+     * validation, and a silent truncation would drop the tail of a merchant name.
+     *
+     * @param value the value the event carries
      * @param width the declared width, from {@link PicClause}
-     * @return exactly {@code width} spaces
+     * @param field the field name the message reports
+     * @return the value at exactly {@code width} characters
+     * @throws NullPointerException when the value is null
+     * @throws IllegalArgumentException when the value is wider than the column
      */
-    private static String spaces(int width) {
-        return " ".repeat(width);
+    private static String atWidth(String value, int width, String field) {
+        Objects.requireNonNull(value, field + " is required");
+        if (value.length() > width) {
+            throw new IllegalArgumentException(field + " holds " + value.length()
+                    + " characters and this column holds " + width);
+        }
+        return value + " ".repeat(width - value.length());
     }
 
     /**
-     * A run of zero digits at one declared width, the state a numeric display field holds ahead
-     * of a {@code MOVE}.
+     * Normalises the consumed topic for the marker column, which holds null for none.
      *
-     * <p>Both columns filled this way hold text under a digit check, so a zero-filled value keeps
-     * every leading zero the source field carried.
-     *
-     * @param width the declared width, from {@link PicClause}
-     * @return exactly {@code width} zero characters
+     * @param consumedTopic the topic the delivery arrived on, possibly null or blank
+     * @return the topic, or null when the delivery named none
      */
-    private static String zeroDigits(int width) {
-        return "0".repeat(width);
-    }
-
-    /**
-     * Builds the duplicate-delivery marker for one handled event.
-     *
-     * @param eventId       the identifier the publishing service assigned, and the idempotency key
-     * @param consumedTopic the topic the delivery arrived on, or null to record none
-     * @return the marker to store
-     */
-    private static ProcessedEventEntity marker(UUID eventId, String consumedTopic) {
-        ProcessedEventEntity marker = new ProcessedEventEntity(eventId, Instant.now());
-        marker.setConsumedTopic(
-                consumedTopic == null || consumedTopic.isBlank() ? null : consumedTopic);
-        return marker;
+    private static String topicOrNull(String consumedTopic) {
+        return consumedTopic == null || consumedTopic.isBlank() ? null : consumedTopic;
     }
 
     /**
@@ -435,5 +437,80 @@ public class TransactionPostedConsumer {
         return failure instanceof DataAccessException
                 ? NotificationMetrics.FAILURE_PERSISTENCE
                 : NotificationMetrics.FAILURE_RENDERING;
+    }
+
+    /**
+     * Refuses a delivery whose key names an aggregate the payload does not.
+     *
+     * <p>Kafka orders messages within a partition and nothing else, and the key selects the
+     * partition. Every event this platform publishes is keyed by its account identifier, so all
+     * events of one account land on one partition and stay in order. A producer that keyed an event
+     * for account B under account A's key breaks that guarantee for both accounts at once: A's
+     * partition now carries a message about B, and B's own messages can be reordered against it.
+     * The read model is keyed by card, so the write would still land on the card's own rows while
+     * every ordering assumption behind it had already failed.
+     *
+     * <p>The check runs ahead of the marker read and every write. A mismatch is not retryable --
+     * a redelivery carries the same key -- so it raises {@link IllegalArgumentException}, which
+     * {@code config/KafkaConsumerConfig} routes to the dead-letter topic of this source topic after
+     * its attempts are spent.
+     *
+     * <p>A delivery carrying no key at all is refused for the same reason: an unkeyed record is
+     * assigned a partition by the broker, so nothing keeps it ordered against the account's other
+     * events.
+     *
+     * <p>The message names neither the key nor the aggregate. A key is producer-controlled, so it
+     * can hold anything a payload can, and repeating it in a refusal would put it in a log line.
+     *
+     * @param messageKey the key the delivery arrived under, or {@code null} for an unkeyed record
+     * @param event      the validated event this delivery carries
+     * @throws IllegalArgumentException when the key is absent or names another aggregate
+     */
+    private static void requireKeyNamesPayloadAggregate(String messageKey,
+            TransactionPosted event) {
+
+        if (messageKey == null || messageKey.isBlank()) {
+            throw new IllegalArgumentException(
+                    "This delivery carries no message key, and an unkeyed record is not ordered"
+                            + " against the other events of its account.");
+        }
+        if (!messageKey.equals(event.aggregateId())) {
+            throw new IllegalArgumentException(
+                    "The message key does not name the aggregate this payload names, so the"
+                            + " partition this record arrived on is not the one that orders it.");
+        }
+    }
+
+    /**
+     * Reads the ten cardholder fields one account carries, or blank fields when none is held.
+     *
+     * <p>{@code messaging/CustomerContextChangedConsumer} fills {@code cardholder_context} from the
+     * account service, which owns the customer record. An account with no row there yields
+     * {@link CardholderDetails#blank()}, and every field then renders as spaces, the state
+     * {@code INITIALIZE STATEMENT-LINES} at {@code app/cbl/CBSTM03A.CBL:L459} leaves.
+     *
+     * @param accountId the account the posted transaction belongs to
+     * @return the cardholder fields, blank when the projection holds no row for the account
+     */
+    private CardholderDetails cardholderDetails(String accountId) {
+        return cardholderContexts.findById(accountId)
+                .map(TransactionPostedConsumer::detailsOf)
+                .orElseGet(CardholderDetails::blank);
+    }
+
+    /**
+     * Maps one projection row onto the ten fields an alert reports.
+     *
+     * <p>The order matches {@code app/cbl/CBSTM03A.CBL:L462-L485}: the name, the three address
+     * lines, the state and country codes, the mail code and the credit score.
+     *
+     * @param context one row of the account-keyed cardholder projection
+     * @return the ten fields, each at the width its source field declares
+     */
+    private static CardholderDetails detailsOf(CardholderContextEntity context) {
+        return new CardholderDetails(context.getFirstName(), context.getMiddleName(),
+                context.getLastName(), context.getAddressLine1(), context.getAddressLine2(),
+                context.getAddressLine3(), context.getStateCode(), context.getCountryCode(),
+                context.getZipCode(), context.getFicoScore());
     }
 }

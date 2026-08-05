@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Reads the seven meters {@link ObservabilityConfig} registers, and records against each one.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor. Each test builds a context holding one
+ * <p>This class has no COBOL ancestor. Each test builds a context holding one
  * {@link SimpleMeterRegistry} and the configuration class, so no database and no message broker has
  * to run.
  *

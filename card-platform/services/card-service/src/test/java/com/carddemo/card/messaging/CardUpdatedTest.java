@@ -23,8 +23,8 @@ import tools.jackson.databind.ObjectMapper;
 /**
  * Holds {@link CardUpdated} to the contract the Agent Action Plan specifies for it.
  *
- * <p>Three properties matter most, and each has its own test. The record carries five payload
- * components and no sixth. The card verification value appears in no component and no serialized
+ * <p>Three properties matter most, and each has its own test. The record carries four payload
+ * components and no cardholder name. The card verification value appears in no component and no serialized
  * form. The wire form is flat, so the five envelope properties sit beside the payload properties at
  * one level.
  *
@@ -60,16 +60,16 @@ class CardUpdatedTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Test
-    @DisplayName("the record declares the flat envelope and exactly five payload components")
-    void theRecordDeclaresFivePayloadComponents() {
+    @DisplayName("the record declares the flat envelope and exactly four payload components")
+    void theRecordDeclaresFourPayloadComponents() {
         List<String> components = Arrays.stream(CardUpdated.class.getRecordComponents())
                 .map(RecordComponent::getName)
                 .toList();
 
         assertEquals(List.of("eventId", "eventType", "schemaVersion", "occurredAt", "aggregateId",
-                "maskedCardNumber", "accountId", "embossedName", "expirationDate", "activeStatus"),
+                "maskedCardNumber", "accountId", "expirationDate", "activeStatus"),
                 components,
-                "the five envelope components written flat, then the five payload components, in "
+                "the five envelope components written flat, then the four payload components, in "
                         + "this order and no other");
         assertFalse(components.contains("changeType"),
                 "no change-kind discriminator: one mutation produces one event");
@@ -113,20 +113,20 @@ class CardUpdatedTest {
         List.of("eventId", "eventType", "schemaVersion", "occurredAt", "aggregateId")
                 .forEach(property -> assertTrue(tree.has(property),
                         "envelope property " + property + " sits at the top level"));
-        List.of("maskedCardNumber", "accountId", "embossedName", "expirationDate", "activeStatus")
+        List.of("maskedCardNumber", "accountId", "expirationDate", "activeStatus")
                 .forEach(property -> assertTrue(tree.has(property),
                         "payload property " + property + " sits at the top level"));
 
-        assertEquals(10, tree.size(), "five envelope properties plus five payload properties");
+        assertEquals(9, tree.size(), "five envelope properties plus four payload properties");
         assertEquals("CardUpdated", tree.get("eventType").asString());
-        assertEquals(EventEnvelope.SCHEMA_VERSION, tree.get("schemaVersion").asInt());
+        assertEquals(CardUpdated.SCHEMA_VERSION, tree.get("schemaVersion").asInt());
     }
 
     @Test
     @DisplayName("the factory masks the full card number and keeps the account identifier")
     void theFactoryMasksTheFullCardNumber() {
         CardUpdated event = CardUpdated.ofUnmaskedCardNumber(FULL_CARD_NUMBER, ACCOUNT_ID,
-                "Aniya Von", "2023-03-09", "Y");
+                "2023-03-09", "Y");
 
         assertEquals(MASKED_CARD_NUMBER, event.maskedCardNumber(),
                 "twelve mask characters then the last four digits");
@@ -143,7 +143,7 @@ class CardUpdatedTest {
     @DisplayName("the canonical constructor refuses an unmasked card number")
     void theCanonicalConstructorRefusesAnUnmaskedCardNumber() {
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> CardUpdated.from(envelope(), FULL_CARD_NUMBER, ACCOUNT_ID, "Aniya Von",
+                () -> CardUpdated.from(envelope(), FULL_CARD_NUMBER, ACCOUNT_ID,
                         "2023-03-09", "Y"));
 
         assertTrue(failure.getMessage().contains("maskedCardNumber"),
@@ -158,8 +158,7 @@ class CardUpdatedTest {
     @DisplayName("only the masked form is accepted")
     void onlyTheMaskedFormIsAccepted(String candidate) {
         assertThrows(IllegalArgumentException.class,
-                () -> CardUpdated.from(envelope(), candidate, ACCOUNT_ID, "Aniya Von", "2023-03-09",
-                        "Y"));
+                () -> CardUpdated.from(envelope(), candidate, ACCOUNT_ID, "2023-03-09", "Y"));
     }
 
     @ParameterizedTest
@@ -168,28 +167,20 @@ class CardUpdatedTest {
     void theAccountIdentifierMustHoldElevenDigits(String candidate) {
         assertThrows(IllegalArgumentException.class,
                 () -> CardUpdated.from(envelope(candidate), MASKED_CARD_NUMBER, candidate,
-                        "Aniya Von", "2023-03-09", "Y"));
+                        "2023-03-09", "Y"));
     }
 
     @Test
-    @DisplayName("the remaining three components are held to their source widths")
+    @DisplayName("the remaining two components are held to their source widths")
     void theRemainingComponentsAreHeldToTheirSourceWidths() {
         assertThrows(IllegalArgumentException.class,
-                () -> CardUpdated.from(envelope(), MASKED_CARD_NUMBER, ACCOUNT_ID, "N".repeat(51),
-                        "2023-03-09", "Y"),
-                "CARD-EMBOSSED-NAME PIC X(50) caps the name at 50 characters");
-        assertThrows(IllegalArgumentException.class,
-                () -> CardUpdated.from(envelope(), MASKED_CARD_NUMBER, ACCOUNT_ID, "Aniya Von",
+                () -> CardUpdated.from(envelope(), MASKED_CARD_NUMBER, ACCOUNT_ID,
                         "2023-03-9", "Y"),
                 "CARD-EXPIRAION-DATE PIC X(10) is exactly ten characters");
         assertThrows(IllegalArgumentException.class,
-                () -> CardUpdated.from(envelope(), MASKED_CARD_NUMBER, ACCOUNT_ID, "Aniya Von",
+                () -> CardUpdated.from(envelope(), MASKED_CARD_NUMBER, ACCOUNT_ID,
                         "2023-03-09", "A"),
                 "app/cbl/COCRDUPC.cbl:L91 fixes the status domain to Y and N");
-
-        // A shorter embossed name is accepted, as a space-padded source field permits.
-        assertEquals("A", CardUpdated.from(envelope(), MASKED_CARD_NUMBER, ACCOUNT_ID, "A",
-                "2023-03-09", "N").embossedName());
     }
 
     @Test
@@ -199,7 +190,7 @@ class CardUpdatedTest {
                 EventEnvelope.SCHEMA_VERSION, java.time.Instant.now(), ACCOUNT_ID);
 
         assertThrows(IllegalArgumentException.class,
-                () -> CardUpdated.from(wrongType, MASKED_CARD_NUMBER, ACCOUNT_ID, "Aniya Von",
+                () -> CardUpdated.from(wrongType, MASKED_CARD_NUMBER, ACCOUNT_ID,
                         "2023-03-09", "Y"));
     }
 
@@ -219,7 +210,7 @@ class CardUpdatedTest {
     void theEventTypeIsGovernedByTheSharedTable() {
         assertEquals("CardUpdated", CardUpdated.EVENT_TYPE,
                 "the event type changed, so the schema its name selects no longer describes it");
-        assertEquals("schemas/card-updated-v1.json",
+        assertEquals("schemas/card-updated-v2.json",
                 EventSchemas.SCHEMA_RESOURCES.get(CardUpdated.EVENT_TYPE),
                 "the shared table no longer governs this event, so it would leave this service "
                         + "unchecked");
@@ -242,8 +233,8 @@ class CardUpdatedTest {
     }
 
     @Test
-    @DisplayName("no full card number and no card verification value reaches the validated wire form")
-    void neitherThePanNorTheCardVerificationValueReachesTheWire() {
+    @DisplayName("no full card number, card verification value or cardholder name reaches the wire")
+    void noUnneededCardholderDataReachesTheWire() {
         String json = event().toValidatedJson();
 
         assertFalse(json.contains(FULL_CARD_NUMBER),
@@ -256,6 +247,10 @@ class CardUpdatedTest {
                 "the wire form names a card verification value field: " + json);
         assertFalse(json.toLowerCase().contains("cvv"),
                 "the wire form names a card verification value field: " + json);
+        assertFalse(json.contains(EMBOSSED_NAME),
+                "the wire form carries an embossed cardholder name: " + json);
+        assertFalse(json.contains("\"embossedName\""),
+                "the wire form declares an embossed-name property: " + json);
     }
 
     @Test
@@ -275,8 +270,8 @@ class CardUpdatedTest {
      * @return the event
      */
     private static CardUpdated event() {
-        return CardUpdated.ofUnmaskedCardNumber(FULL_CARD_NUMBER, ACCOUNT_ID, "Aniya Von",
-                "2023-03-09", "Y");
+        return CardUpdated.ofUnmaskedCardNumber(
+                FULL_CARD_NUMBER, ACCOUNT_ID, "2023-03-09", "Y");
     }
 
     /**
@@ -295,6 +290,6 @@ class CardUpdatedTest {
      * @return the envelope
      */
     private static EventEnvelope envelope(String aggregateId) {
-        return EventEnvelope.of(CardUpdated.EVENT_TYPE, aggregateId);
+        return EventEnvelope.of(CardUpdated.EVENT_TYPE, aggregateId, CardUpdated.SCHEMA_VERSION);
     }
 }

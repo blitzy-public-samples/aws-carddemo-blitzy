@@ -1,15 +1,6 @@
 package com.carddemo.account.domain;
 
-import java.math.BigDecimal;
-import java.util.Objects;
-import java.util.Optional;
-
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
-
-import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
-
+import com.carddemo.account.config.ObservabilityConfig.AccountMeters;
 import com.carddemo.account.entity.AccountEntity;
 import com.carddemo.account.messaging.AccountStateChanged;
 import com.carddemo.account.messaging.AccountStateChanged.ChangeKind;
@@ -17,6 +8,11 @@ import com.carddemo.account.outbox.OutboxWriter;
 import com.carddemo.account.repository.AccountRepository;
 import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
+import java.math.BigDecimal;
+import java.util.Objects;
+import java.util.Optional;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Closes the billing cycle of one account by zeroing both cycle accumulators.
@@ -41,21 +37,14 @@ import com.carddemo.cobol.PicClause;
  *
  * <p>{@link #closeBillingCycle(String)} opens the transaction the outbox write joins. The account
  * row and the event row commit together, and {@code outbox/OutboxRelay.java} publishes the stored
- * row on a later sweep. Event paths: {@code card-platform/docs/event-flow.md}.</p>
+ * row on a later sweep.
  *
  * <p>Each committed close counts once against {@code carddemo.account.cycle.closed}.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Service
 public class BillingCycleService {
-
-    /**
-     * Name of the counter one committed close increments. The account service registers this meter
-     * at start-up and exposes it under {@code /actuator/metrics}.
-     */
-    private static final String CYCLE_CLOSED_METER = "carddemo.account.cycle.closed";
-
-    /** Description the registered counter carries. */
-    private static final String CYCLE_CLOSED_DESCRIPTION = "Billing cycle closes that committed";
 
     /** Reads the account row under a write lock and stores it again. */
     private final AccountRepository accountRepository;
@@ -63,8 +52,11 @@ public class BillingCycleService {
     /** Stores one event in the same transaction as the account row. */
     private final OutboxWriter outboxWriter;
 
-    /** Counts closes that reached a commit. */
-    private final Counter cycleClosed;
+    /** Explicit boundary around the account row and its outbox event. */
+    private final TransactionTemplate transactionTemplate;
+
+    /** Records a close only after commit and a failure only after rollback. */
+    private final AccountMeters meters;
 
     /**
      * Builds the service and resolves the counter one close increments.
@@ -74,40 +66,55 @@ public class BillingCycleService {
      *
      * @param accountRepository finds and stores the account row; must not be {@code null}
      * @param outboxWriter      stores the event row; must not be {@code null}
-     * @param meterRegistry     the registry the counter resolves against; must not be {@code null}
+     * @param transactionTemplate boundary around one close attempt; must not be {@code null}
+     * @param meters            recording surface used after the transaction completes
      * @throws NullPointerException when an argument is {@code null}
      */
     public BillingCycleService(AccountRepository accountRepository, OutboxWriter outboxWriter,
-            MeterRegistry meterRegistry) {
+            TransactionTemplate transactionTemplate, AccountMeters meters) {
         this.accountRepository =
                 Objects.requireNonNull(accountRepository, "accountRepository must be present");
         this.outboxWriter = Objects.requireNonNull(outboxWriter, "outboxWriter must be present");
-        Objects.requireNonNull(meterRegistry, "meterRegistry must be present");
-        this.cycleClosed = Counter.builder(CYCLE_CLOSED_METER)
-                .description(CYCLE_CLOSED_DESCRIPTION)
-                .register(meterRegistry);
+        this.transactionTemplate =
+                Objects.requireNonNull(transactionTemplate, "transactionTemplate must be present");
+        this.meters = Objects.requireNonNull(meters, "meters must be present");
     }
 
     /**
      * Zeroes both cycle accumulators of one account and stores one event for publication.
      *
-     * <p>The method changes two fields and reads three more for the event payload. It leaves
+     * <p>The method changes two fields and reads four more for the event payload. It leaves
      * {@code current_balance}, {@code cash_credit_limit}, {@code open_date}, {@code reissue_date},
      * {@code address_zip}, {@code group_id} and {@code active_status} as it found them.</p>
      *
      * <p>A missing identifier yields an empty {@link Optional} and stores no event. The outbox
-     * write carries {@code Propagation.MANDATORY}, and the annotation on this method supplies the
-     * transaction it joins.</p>
+     * write carries {@code Propagation.MANDATORY}, and the explicit transaction template supplies
+     * the transaction it joins.</p>
      *
      * @param accountId the eleven-digit account identifier; must not be {@code null}
      * @return the stored account with both accumulators at zero, or an empty {@link Optional} when
      *         no row carries that identifier
      * @throws NullPointerException when {@code accountId} is {@code null}
      */
-    @Transactional
     public Optional<AccountEntity> closeBillingCycle(String accountId) {
         Objects.requireNonNull(accountId, "accountId must be present");
 
+        try {
+            Optional<AccountEntity> closed = Objects.requireNonNull(
+                    transactionTemplate.execute(status -> closeWithinTransaction(accountId)),
+                    "the cycle-close transaction must answer with a result");
+            if (closed.isPresent()) {
+                meters.recordCycleClosed();
+            }
+            return closed;
+        } catch (RuntimeException failure) {
+            meters.recordCycleCloseFailure();
+            throw failure;
+        }
+    }
+
+    /** Runs the locked read, update, and outbox write inside one transaction. */
+    private Optional<AccountEntity> closeWithinTransaction(String accountId) {
         Optional<AccountEntity> stored = accountRepository.findForUpdateByAccountId(accountId);
         if (stored.isEmpty()) {
             return Optional.empty();
@@ -120,11 +127,10 @@ public class BillingCycleService {
         AccountEntity closed = accountRepository.save(account);
 
         outboxWriter.write(AccountStateChanged.of(closed.getAccountId(),
-                ChangeKind.BILLING_CYCLE_CLOSED, closed.getCreditLimit(),
-                closed.getCurrentCycleCredit(), closed.getCurrentCycleDebit(),
-                closed.getExpirationDate()));
+                ChangeKind.BILLING_CYCLE_CLOSED, closed.getCurrentBalance(),
+                closed.getCreditLimit(), closed.getCurrentCycleCredit(),
+                closed.getCurrentCycleDebit(), closed.getExpirationDate()));
 
-        cycleClosed.increment();
         return Optional.of(closed);
     }
 

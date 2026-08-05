@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://carddemo.example.com/schemas/transaction-authorized-v1.json",
   "title": "TransactionAuthorized",
-  "description": "One approved authorization call publishes one TransactionAuthorized event. Fourteen payload fields carry the transaction, taken from the 350-byte daily transaction record at app/cpy/CVTRA06Y.cpy and its posted twin at app/cpy/CVTRA05Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. Evolution and version policy: card-platform/docs/event-flow.md (planned).",
+  "description": "One approved authorization call publishes one TransactionAuthorized event. Fourteen payload fields carry the transaction, taken from the 350-byte daily transaction record at app/cpy/CVTRA06Y.cpy and its posted twin at app/cpy/CVTRA05Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one.",
   "$comment": "aggregateId and accountId carry one account identifier, and the Kafka message key is that value, so the key and the payload cannot disagree.",
   "type": "object",
   "properties": {
@@ -39,7 +39,7 @@
     "aggregateId": {
       "type": "string",
       "pattern": "^[0-9]{11}$",
-      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. This is the routing and partitioning key, and the accountId property carries the same value, so a consumer that maps the payload onto its own account column reaches the account the message was keyed on.",
+      "description": "The account identifier, eleven digits, and always the Kafka message key. Width from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7. This is the routing and partitioning key. The accountId property carries the same value. A consumer that maps the payload onto its own account column therefore reaches the account the message was keyed on.",
       "examples": ["00000000007"]
     },
     "transactionId": {
@@ -135,7 +135,7 @@
     },
     "extensions": {
       "type": "object",
-      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction: at most 16 members, each name a short identifier, each value a string of at most 256 characters, and no nested object or array. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction. It holds at most 16 members. Each name is a short identifier and each value a string of at most 256 characters. No nested object or array is allowed. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
       "propertyNames": {
         "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
       },

@@ -12,9 +12,16 @@ import java.util.UUID;
 /**
  * Marks one event identifier as already processed by the ledger posting service.
  *
- * <p>One instance maps to one row of the table {@code processed_event}, whose two columns are
- * declared in this module at {@code src/main/resources/db/migration/V1__schema.sql}. ADDITIVE: no
- * Common Business Oriented Language (COBOL) program carries an equivalent record.</p>
+ * <p>One instance maps to one row of the table {@code processed_event}. Three columns come from
+ * {@code src/main/resources/db/migration/V1__schema.sql}, which is authoritative for them:
+ * {@code event_id} as the primary key {@code pk_processed_event}, {@code processed_at}, and
+ * {@code consumed_topic}. A retention index over {@code processed_at} accompanies them. No Common
+ * Business Oriented Language (COBOL) program carries an equivalent record.</p>
+ *
+ * <p>The contract is fixed for whichever consumer writes the marker. One row commits inside the
+ * same local transaction as the side effects of its event, marker after effects, and the delivery
+ * is acknowledged only once that transaction commits. A redelivery finds the row present and does
+ * nothing.</p>
  */
 @Entity
 @Table(name = "processed_event",
@@ -50,10 +57,10 @@ public class ProcessedEventEntity {
      * Which topic the delivery that first handled this event arrived on, or null when the
      * marker was written without one.
      *
-     * <p>A marker on its own says an event was handled and nothing about where it came from, which
-     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
-     * came from or arrive on a dead-letter topic during a recovery, and those are different
-     * situations. Recording the topic separates them.
+     * <p>A marker on its own says an event was handled and nothing about where it came from,
+     * which is not enough to investigate a replay. The same identifier can be redelivered on the
+     * topic it came from, or arrive on a dead-letter topic during a recovery. Those are different
+     * situations, and recording the topic separates them.
      */
     @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
     private String consumedTopic;
@@ -61,8 +68,9 @@ public class ProcessedEventEntity {
     /**
      * No-argument constructor for the Jakarta Persistence API (JPA) provider.
      *
-     * <p>The provider calls it while materialising a row, then assigns both fields. Application
-     * code calls {@link #ProcessedEventEntity(UUID, Instant)}.</p>
+     * <p>The provider calls it while materialising a row, then assigns all three fields.
+     * Application code calls {@link #ProcessedEventEntity(UUID, Instant)} and
+     * {@link #setConsumedTopic(String)}.</p>
      */
     protected ProcessedEventEntity() {
     }
@@ -115,8 +123,9 @@ public class ProcessedEventEntity {
     }
 
     /**
-     * Renders both fields. The event identifier is opaque and the instant is operational, so
-     * neither field names an account, an amount or a cardholder.
+     * Renders the event identifier and the instant, and omits {@code consumedTopic}. The
+     * identifier is opaque and the instant is operational, so neither names an account, an amount
+     * or a cardholder.
      *
      * @return the simple class name followed by the event identifier and the processing instant
      */

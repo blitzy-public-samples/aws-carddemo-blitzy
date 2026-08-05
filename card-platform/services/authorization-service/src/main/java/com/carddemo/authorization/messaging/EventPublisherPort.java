@@ -1,9 +1,11 @@
 package com.carddemo.authorization.messaging;
 
+import com.carddemo.events.EventEnvelope;
+
 /**
  * Publishes one serialized event payload to one topic on the event bus.
  *
- * <p>ADDITIVE. This interface has no COBOL ancestor. No program, copybook, or job in the CardDemo
+ * <p>This interface has no COBOL ancestor. No program, copybook, or job in the CardDemo
  * source declares an event bus or a publish abstraction.
  *
  * <p>A different event bus needs one more implementation of this interface.
@@ -11,21 +13,31 @@ package com.carddemo.authorization.messaging;
 public interface EventPublisherPort {
 
     /**
-     * Pattern every {@code aggregateId} argument matches: exactly eleven decimal digits, the width
-     * of {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. The same pattern
-     * constrains {@code aggregateId} in every event schema under
-     * {@code card-platform/libs/event-contracts/src/main/resources/schemas}.
+     * Pattern every {@code aggregateId} argument matches, which is the pattern of the Kafka message
+     * key. Most events use the eleven decimal digits of {@code XREF-ACCT-ID PIC 9(11)} at
+     * {@code app/cpy/CVACT03Y.cpy:L7}. The unresolved card decline has no account and uses its
+     * sixteen-character transaction identifier instead, as
+     * {@code schemas/transaction-declined-v2.json} requires.
+     *
+     * <p>The value is {@link EventEnvelope#AGGREGATE_KEY_PATTERN}, so the port, the envelope and the
+     * {@code aggregate_id} column all admit exactly the same two forms.
      */
-    String AGGREGATE_ID_PATTERN = "^[0-9]{11}$";
+    String MESSAGE_KEY_PATTERN = EventEnvelope.AGGREGATE_KEY_PATTERN;
+
+    /**
+     * The same pattern as {@link #MESSAGE_KEY_PATTERN}, under the name that reads from the payload
+     * side rather than the broker side. Both names are read across this service.
+     */
+    String AGGREGATE_ID_PATTERN = MESSAGE_KEY_PATTERN;
 
     /**
      * Publishes one payload to one topic, keyed on the aggregate the payload belongs to.
      *
      * <p>A broker keeps message order inside a single partition, and the message key selects the
      * partition. The implementation derives that key from {@code aggregateId} and takes no
-     * separate key argument, so the key and the payload cannot name different accounts.
+     * separate key argument, so the key and the payload cannot name different aggregates.
      *
-     * <p>An implementation checks {@code aggregateId} against {@link #AGGREGATE_ID_PATTERN} and
+     * <p>An implementation checks {@code aggregateId} against {@link #MESSAGE_KEY_PATTERN} and
      * rejects any other value. An implementation reports a failed publish with an unchecked
      * exception.
      *
@@ -43,13 +55,13 @@ public interface EventPublisherPort {
      * records no Primary Account Number (PAN) and no account identifier.
      *
      * @param topic       the destination topic name, which the caller reads from configuration
-     * @param aggregateId the account identifier the event belongs to, and the value the payload
-     *                    carries in its own {@code aggregateId} field. Eleven digits, and a
-     *                    {@code String} keeps the leading zeros
+     * @param aggregateId the value the payload carries in its own {@code aggregateId} field:
+     *                    eleven account digits, or the sixteen-character transaction identifier
+     *                    of an unresolved-card decline
      * @param payload     one event, serialized as JavaScript Object Notation (JSON) before the
      *                    call
      * @throws IllegalArgumentException when an argument is absent, when {@code aggregateId} misses
-     *         {@link #AGGREGATE_ID_PATTERN}, when the payload declares an event type that does not
+     *         {@link #MESSAGE_KEY_PATTERN}, when the payload declares an event type that does not
      *         belong on {@code topic}, or when the payload fails the document that type names
      */
     void publish(String topic, String aggregateId, String payload);

@@ -1,28 +1,27 @@
-# One PostgreSQL instance for the six card-platform services, plus the Service they reach
-# it through, the claim that holds its data, the program that provisions it and the policy
-# that decides who may open a connection. The workload is a Deployment of one replica.
+# One PostgreSQL instance for the six card-platform services. The workload is a Deployment
+# of one replica. Four more objects follow it here.
+#
+#   Service               the address the six services connect to
+#   PersistentVolumeClaim the storage that holds the data
+#   ConfigMap             the script that provisions logins and schemas
+#   NetworkPolicy         the rule deciding who may open a connection
 #
 # Each service owns one schema inside the database named below, and its own Flyway
 # migration creates every table in that schema. This file declares no table.
 #
-# What changed and why it matters. One login used to serve all six services, which meant
-# the private schema each service claims to own was a convention rather than a control: a
-# compromise of any service could read and alter every other service's card, customer,
-# balance, fraud and event data. There are now six logins, one per service, each owning its
-# own schema, and PUBLIC holds nothing on the database or on the public schema. The
-# provisioning program in the fourth document is what installs that, and the NetworkPolicy
-# in the fifth admits a connection only from the six named service Pods.
+# Six logins exist, one per service, each owning its own schema. PUBLIC holds nothing on
+# the database or on the public schema. The provisioning script in the fourth document
+# installs that. The NetworkPolicy in the fifth admits a connection only from the six
+# named service Pods.
 #
 # Connections are encrypted. The server runs with ssl=on presenting the certificate in
 # carddemo-postgres-secret, and 30-configmap.yaml asks every client for sslmode=verify-full
-# against the authority in carddemo-tls-secret. A certificate whose subject alternative
+# against the authority in carddemo-trust-secret. A certificate whose subject alternative
 # name is not postgres fails that check, which is the control working rather than a broken
 # deployment.
 #
 # A service runs its Flyway migration while it starts, so it needs a database that already
 # answers. The readiness probe holds the Service endpoint back until then.
-#
-# The decision log this platform still owes is to record every choice in this folder.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -121,12 +120,11 @@ spec:
                 secretKeyRef:
                   name: carddemo-postgres-secret
                   key: POSTGRES_PASSWORD
-            # The image writes `trust` for local and loopback connections by default, so
-            # any process that reached the inside of this container would authenticate as
-            # any role with no password, and the six separate logins below would stop
-            # being separate for anything already on the host. Asking initdb for
-            # scram-sha-256 on both families means a password is required from every
-            # direction. The provisioning program authenticates over the local socket as
+            # The image writes `trust` for local and loopback connections by default. Any
+            # process inside this container would then authenticate as any role with no
+            # password, and the six separate logins below would stop being separate for
+            # anything already on the host. Asking initdb for scram-sha-256 on both
+            # families requires a password from every direction. The provisioning program authenticates over the local socket as
             # the superuser, and the probes run pg_isready, which authenticates nothing.
             - name: POSTGRES_INITDB_ARGS
               value: --auth-local=scram-sha-256 --auth-host=scram-sha-256
@@ -267,9 +265,9 @@ spec:
           # Two steps, and each rules out a different way this Pod can look ready while
           # a service cannot use it.
           #
-          # The first names the host. pg_isready with no --host reads the local socket,
-          # and the entry point serves that socket from a TEMPORARY server while it runs
-          # the programs in /docker-entrypoint-initdb.d, before the real server binds any
+          # The first names the host. pg_isready with no --host reads the local socket.
+          # The entry point serves that socket from a TEMPORARY server while it runs the
+          # programs in /docker-entrypoint-initdb.d, before the real server binds any
           # network address. A socket probe therefore passes during provisioning, the
           # Service publishes an endpoint, and the six services meet
           # "Connection to postgres:5432 refused" on a Pod that reported itself ready.
@@ -277,19 +275,16 @@ spec:
           # false until the real server is up.
           #
           # The second counts the six databases by name, which is the readable form of
-          # "provisioning finished". It reads the catalogue rather than a marker file,
-          # and the reason is that a marker cannot answer this question twice here: the
-          # entry point runs the provisioning program only on an empty data directory, so
-          # a Pod replaced with the claim already populated starts a correctly
+          # "provisioning finished". It reads the catalogue rather than a marker file. The
+          # entry point runs the provisioning program only on an empty data directory. A
+          # Pod replaced with the claim already populated therefore starts a correctly
           # provisioned server whose container filesystem is new and carries no marker.
           # A catalogue read is true on the first start and on every start after it.
           #
-          # card-platform/docker-compose.yml does use a marker, and the difference is not
-          # inconsistency: it wraps the entry point and runs its provisioning program on
-          # every start, so the file is rewritten every time and the healthcheck can read
-          # it. This path provisions from /docker-entrypoint-initdb.d instead, which the
-          # entry point runs once, so the same file would be written once and missed
-          # forever afterwards.
+          # card-platform/docker-compose.yml does use a marker. It wraps the entry point
+          # and runs its provisioning program on every start, so the file is rewritten
+          # every time and the healthcheck can read it. This path provisions from
+          # /docker-entrypoint-initdb.d instead, which the entry point runs once.
           #
           # It costs one psql connection every period. psql starts no Java virtual
           # machine, reaches no address outside this Pod, and reads one row.
@@ -298,9 +293,9 @@ spec:
           # supplies it.
           #
           # The statement arrives on standard input from printf rather than through
-          # --command, which is the same idiom the provisioning program below uses and for
-          # the same reason: psql substitutes :'names' only in input it reads, never in a
-          # --command string, so --command would send the colon to the server and the
+          # --command, the same idiom the provisioning program below uses. psql
+          # substitutes :'names' only in input it reads, never in a --command string.
+          # --command would send the colon to the server and the
           # probe would fail on a syntax error. Substitution matters because it quotes:
           # the six names reach the server as one literal rather than as statement text.
           #
@@ -329,9 +324,8 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 24
           # Liveness asks only whether the server still answers, over the local socket
-          # this time, and counts nothing: a provisioning failure must withdraw this Pod
-          # from its Service, not restart a server that is running correctly. The
-          # asymmetry with readiness above is the whole point of having two probes.
+          # this time, and counts nothing. A provisioning failure withdraws this Pod from
+          # its Service rather than restarting a server that is running correctly.
           livenessProbe:
             exec:
               command:
@@ -445,7 +439,7 @@ spec:
 #
 # followed by the matching edit to carddemo-postgres-secret and carddemo-ledger-secret.
 #
-# Every name reaching a statement passes an identifier gate first, and psql interpolates
+# Every name reaching a statement passes an identifier gate first. psql interpolates
 # :"name" as one quoted identifier and :'value' as one quoted literal, so neither a name
 # nor a password can add a statement of its own.
 apiVersion: v1
@@ -471,8 +465,8 @@ data:
     # POSTGRES_INITDB_ARGS asked initdb for scram-sha-256 on the local family too.
     #
     # Every statement arrives on standard input from printf rather than from a here
-    # document, because a here document terminator has to sit at column zero and this
-    # program is indented inside a ConfigMap value. The SQL text is double quoted, so
+    # document. A here document terminator has to sit at column zero, and this program is
+    # indented inside a ConfigMap value. The SQL text is double quoted, so
     # :"name" and :'value' reach psql exactly as written and psql performs the quoting.
     psql_run() {
       PGPASSWORD="${POSTGRES_PASSWORD}" psql --no-psqlrc --set ON_ERROR_STOP=1 --quiet \
@@ -490,12 +484,11 @@ data:
         ;;
     esac
 
-    # PUBLIC keeps nothing, which is the literal claim the loop below prints. Without these
-    # statements every login could connect to the database, create a schema of its own in
-    # it and write into the public schema, and the six boundaries below would describe an
-    # arrangement rather than enforce one. Each login receives CONNECT back individually as
-    # it is created. TEMPORARY goes too: a temporary table reads no other schema, but it
-    # consumes the volume this claim provides and nothing here needs one.
+    # PUBLIC keeps nothing, which is the literal claim the loop below prints. Without
+    # these statements every login could connect to the database, create a schema of its
+    # own in it and write into the public schema. Each login receives CONNECT back
+    # individually as it is created. TEMPORARY goes too. A temporary table reads no other
+    # schema, and nothing here needs one.
     printf %s "
         REVOKE ALL ON DATABASE :\"database_name\" FROM PUBLIC;
         REVOKE ALL ON SCHEMA public FROM PUBLIC;
@@ -511,9 +504,9 @@ data:
       owner_name="${!user_var:-}"
       owner_password="${!password_var:-}"
 
-      # A database name, a schema name and a login name all become identifiers, so all three
-      # pass the same gate: lower-case letters, digits and underscores, not opening with a
-      # digit, at most the 63 characters PostgreSQL keeps.
+      # A database name, a schema name and a login name all become identifiers, so all
+      # three pass one gate. It admits lower-case letters, digits and underscores. A name
+      # does not open with a digit, and PostgreSQL keeps at most 63 characters.
       for identifier in "${database_name}" "${schema_name}" "${owner_name}"; do
         case "${identifier}" in
           *[!abcdefghijklmnopqrstuvwxyz0123456789_]* | [!abcdefghijklmnopqrstuvwxyz_]* | "")
@@ -556,12 +549,12 @@ data:
         psql_run --command "CREATE DATABASE \"${database_name}\""
       fi
 
-      # The login, then CONNECT on the one database it owns and nothing on any other, then
-      # the schema it owns inside that database, then a search path that resolves into its own
-      # schema rather than into anyone else's. PUBLIC keeps nothing in the new database
-      # either: without the two REVOKE statements every login could connect to it and write
-      # into its public schema, and the boundary would describe an arrangement rather than
-      # enforce one. No GRANT names another schema, and PostgreSQL grants none by default.
+      # The login first, then CONNECT on the one database it owns and nothing on any
+      # other. Then the schema it owns inside that database, then a search path that
+      # resolves into its own schema. PUBLIC keeps nothing in the new database either.
+      # Without the two REVOKE statements every login could connect to it and write into
+      # its public schema. No GRANT names another schema, and PostgreSQL grants none by
+      # default.
       printf %s "
           CREATE ROLE :\"owner_name\" WITH LOGIN PASSWORD :'owner_password';
           GRANT CONNECT ON DATABASE :\"database_name\" TO :\"owner_name\";
@@ -587,14 +580,13 @@ data:
 ---
 # Who may open a connection to the database, at the network layer.
 #
-# The six logins above are the first control and this policy is the second: a Pod that
-# holds no login cannot even reach the port, and a Pod that is not one of the six named
-# below is refused whatever it holds. The previous form of this file declared no policy at
-# all, so every Pod in the cluster could reach 5432 and try passwords.
+# The six logins above are the first control and this policy is the second. A Pod that
+# holds no login cannot reach the port, and a Pod outside the six named below is refused
+# whatever it holds.
 #
 # The selector lists services by name rather than matching the broad part-of label. That
 # label reaches the broker Pod and anything else later labelled as part of this platform,
-# and none of those has any business opening a database connection.
+# and none of those opens a database connection.
 #
 # A cluster whose Container Network Interface plug-in does not implement NetworkPolicy
 # ignores this object. Confirm support before treating the database as isolated.

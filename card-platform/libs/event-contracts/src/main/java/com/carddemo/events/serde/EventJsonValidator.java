@@ -22,7 +22,7 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Checks one already-serialized event against the schema its own {@code eventType} names.
  *
- * <p>ADDITIVE IN FULL. No COBOL program and no copybook defines this class.
+ * <p>No COBOL program and no copybook defines this class.
  *
  * <p>This is the gate for a publisher that holds an event as text rather than as an object. The
  * transactional outbox produces exactly that: the {@code payload} column holds one serialized event,

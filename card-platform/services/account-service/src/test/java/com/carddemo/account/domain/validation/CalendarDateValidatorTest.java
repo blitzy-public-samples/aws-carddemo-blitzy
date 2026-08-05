@@ -60,6 +60,8 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
  * target field.</p>
  *
  * <p>No Spring context, no container and no database take part.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("CalendarDateValidator, the eight-character calendar date gate")
 class CalendarDateValidatorTest {

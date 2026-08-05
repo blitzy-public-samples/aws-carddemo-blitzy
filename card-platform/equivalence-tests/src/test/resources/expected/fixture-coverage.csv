@@ -1,4 +1,4 @@
-# evaluation_model NOT_APPLICABLE: fixture shape does not depend on accumulator state. 188 data rows measured over the 9 ASCII fixtures of app/data/ASCII and the 10 EBCDIC twins of app/data/EBCDIC; LF means line feed. FixtureCoverageEquivalenceTest rederives every row from those files on every run and fails on any row it cannot derive.
+# evaluation_model NOT_APPLICABLE: fixture shape does not depend on accumulator state. 190 data rows measured over the 9 ASCII fixtures of app/data/ASCII and the 12 EBCDIC fixtures of app/data/EBCDIC; LF means line feed. FixtureCoverageEquivalenceTest rederives every row from those files on every run and fails on any row it cannot derive.
 evaluation_model,derived_from,record_seq,entity_key,expected_field,expected_value,pic_clause,source_locator
 NOT_APPLICABLE,app/data/ASCII/acctdata.txt,1,acctdata,record_count,50,NONE,app/data/ASCII/acctdata.txt
 NOT_APPLICABLE,app/data/ASCII/acctdata.txt,2,acctdata,record_width_as_delivered,300,NONE,app/data/ASCII/acctdata.txt
@@ -188,3 +188,5 @@ NOT_APPLICABLE,app/data/ASCII/trancatg.txt,185,trancatg,distinct_category_codes,
 NOT_APPLICABLE,app/data/ASCII/trantype.txt,186,trantype,distinct_type_codes,7,X(02),app/cpy/CVTRA03Y.cpy:L5
 NOT_APPLICABLE,app/data/ASCII/trantype.txt,187,trantype,type_code_values,"01,02,03,04,05,06,07",X(02),app/cpy/CVTRA03Y.cpy:L5
 NOT_APPLICABLE,app/data/ASCII/custdata.txt,188,custdata,distinct_customer_ids,50,9(09),app/cpy/CVCUS01Y.cpy:L5
+NOT_APPLICABLE,app/data/EBCDIC/AWS.M2.CARDDEMO.ACCDATA.PS,189,acctdata,inventory_member,yes,NONE,app/data/EBCDIC/AWS.M2.CARDDEMO.ACCDATA.PS
+NOT_APPLICABLE,app/data/EBCDIC/AWS.M2.CARDDEMO.DALYTRAN.PS.INIT,190,dailytran,inventory_member,yes,NONE,app/data/EBCDIC/AWS.M2.CARDDEMO.DALYTRAN.PS.INIT

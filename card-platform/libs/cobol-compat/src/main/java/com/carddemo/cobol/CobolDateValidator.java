@@ -234,8 +234,8 @@ public final class CobolDateValidator {
     public static final String UNRECOGNISED_FEEDBACK_RESULT_TEXT = "Date is invalid";
 
     /**
-     * Text that stands in for a tested date in a diagnostic rendering. ADDITIVE, with no COBOL
-     * ancestor. {@link DateValidationResult#toString()} carries it in place of the date.
+     * Text that stands in for a tested date in a diagnostic rendering. No COBOL ancestor.
+     * {@link DateValidationResult#toString()} carries it in place of the date.
      */
     public static final String REDACTED = "<redacted>";
 

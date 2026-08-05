@@ -17,8 +17,8 @@ import java.util.regex.Pattern;
 /**
  * One row of the table {@code outbox_event} in the card service's private schema.
  *
- * <p>ADDITIVE. This table has no COBOL (Common Business Oriented Language) ancestor. No program,
- * copybook or job in the CardDemo source stores an event row.
+ * <p>No COBOL ancestor. This table has no COBOL (Common Business Oriented Language) ancestor. No
+ * program, copybook or job in the CardDemo source stores an event row.
  *
  * <p>The card update path writes one row in the same local database transaction as the card change
  * that row describes. The relay under {@code com.carddemo.card.outbox} reads unpublished rows in
@@ -35,32 +35,32 @@ import java.util.regex.Pattern;
  * Information Control System (CICS) transient data queue {@code QUEUE ('JOBS')}, and a separate job
  * reads the Job Control Language (JCL) record back. That handoff supplies the pattern and no data.
  *
- * <p>Flyway creates this table from {@code src/main/resources/db/migration/V1__schema.sql}, and
- * Hibernate runs under {@code ddl-auto: validate}. Every mapping below matches that migration, which
- * declares six columns and no seventh. The schema name arrives at run time from the environment
- * variable {@code SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA}, so the {@link Table} annotation
- * names no schema.
+ * <p>Flyway creates this table from {@code src/main/resources/db/migration/V1__schema.sql}, which
+ * is authoritative for every column, index and constraint, and Hibernate runs under {@code
+ * ddl-auto: validate} so every mapping below matches it. The schema name arrives at run time from
+ * the environment variable {@code SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA}, so the {@link
+ * Table} annotation names no schema.
  *
- * <pre>
- * event_id     UUID                        NOT NULL, primary key
- * event_type   VARCHAR(50)                 NOT NULL
- * aggregate_id CHAR(11)                    NOT NULL
- * payload      TEXT                        NOT NULL
- * published    BOOLEAN                     NOT NULL DEFAULT FALSE
- * created_at   TIMESTAMP(6) WITH TIME ZONE NOT NULL
- * published_at TIMESTAMP(6) WITH TIME ZONE
- * </pre>
+ * <p>The mapped columns fall into three groups: the event itself ({@code event_id}, {@code
+ * event_type}, {@code aggregate_id}, {@code payload}), its publication ({@code published}, {@code
+ * created_at}, {@code published_at}), and the relay's own bookkeeping ({@code relay_state}, {@code
+ * attempt_count}, {@code next_attempt_at}, {@code last_attempt_at}, {@code last_error}, {@code
+ * claimed_by}, {@code claimed_at}). Three indexes serve the pending scan, the claim query and the
+ * published purge.
  *
  * <p>{@link #getPayload()} holds one event serialized as JavaScript Object Notation (JSON). That
  * document is flat, one object one level deep, carrying five envelope fields beside the payload
- * fields. The schema {@code card-updated-v1.json} that {@code com.carddemo:event-contracts}
- * ships lists all ten of them in one {@code required} array. A caller serializes and validates the
+ * fields. The current schema {@code card-updated-v2.json} that
+ * {@code com.carddemo:event-contracts} ships lists all nine of them in one {@code required} array.
+ * Version 1 remains governed for old records. A caller serializes and validates the
  * document before construction, and this class stores that text unchanged.
  *
  * <p>Monetary fields inside the document are decimal strings. A card number inside it arrives
  * masked, and no card verification value reaches it.
  *
  * <p>A new consumer reads the published event with no change to this class.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "outbox_event",
@@ -76,7 +76,7 @@ public class OutboxEventEntity {
      * Widest {@code eventType} this row holds, from {@code event_type VARCHAR(50)} in
      * {@code src/main/resources/db/migration/V1__schema.sql}. The one value this service writes is
      * {@code CardUpdated} at eleven characters, fixed by the {@code const} that
-     * {@code card-updated-v1.json} declares.
+     * {@code card-updated-v2.json} declares.
      */
     public static final int EVENT_TYPE_MAX_LENGTH = 50;
 
@@ -92,7 +92,7 @@ public class OutboxEventEntity {
      * Characters this row accepts in {@code payload}.
      *
      * <p>The column is {@code TEXT} and holds more, so this is a guard rather than a column width.
-     * The outbox sits on the write path of every request that produces an event, and a payload past
+     * The outbox sits on the write path of every request that produces an event. A payload past
      * this size means a caller has put something in an event that does not belong there.
      */
     public static final int PAYLOAD_MAX_LENGTH = 4000;
@@ -100,7 +100,7 @@ public class OutboxEventEntity {
     /**
      * Pattern every {@code aggregateId} matches: exactly eleven decimal digits, compiled once. The
      * text below is the {@code pattern} that the {@code aggregateId} property of
-     * {@code card-updated-v1.json} carries, so a leading zero survives the round trip.
+     * {@code card-updated-v2.json} carries, so a leading zero survives the round trip.
      */
     private static final Pattern AGGREGATE_ID_PATTERN = Pattern.compile("^[0-9]{11}$");
 
@@ -252,8 +252,8 @@ public class OutboxEventEntity {
      * boolean would be refused by the database rather than quietly leave a published row looking
      * pending. The claim is released, because a published row needs none.
      *
-     * <p>A second call on an already published row is ignored, so a relay that publishes and then
-     * fails before its own transaction commits does not corrupt the row on the retry that follows.
+     * <p>A second call on an already published row is ignored. A relay that publishes and then
+     * fails before its own transaction commits therefore leaves the row intact for the retry.
      *
      * @param publishedAt when the publish succeeded
      * @throws NullPointerException  if {@code publishedAt} is null
@@ -312,16 +312,12 @@ public class OutboxEventEntity {
     }
 
     // ------------------------------------------------------------------------------------
-    // Relay state. ADDITIVE: the CardDemo source has no relay and therefore no lease. Its one
-    // asynchronous handoff, the transient data queue write at app/cbl/CORPT00C.cbl:L517, is
-    // picked up by a single scheduled job, so nothing there can claim a row twice or give up on
-    // one. The enum, the four constants, the seven columns and the three operations below are
-    // one concern and are kept together rather than scattered through the class.
-    //
-    // Two failures are what these columns exist to prevent. Without a claim, two relay instances
-    // read the same unpublished row and publish the same event twice, which a consumer then has
-    // to deduplicate. Without an attempt count and a next-attempt time, one undeliverable row is
-    // retried forever and every row behind it waits.
+    // Relay state. No COBOL ancestor: the source's one asynchronous handoff is the transient data
+    // queue write at app/cbl/CORPT00C.cbl:L517, which carries no lease. The enum, the four
+    // constants, the seven columns and the three operations below hold two invariants. A row is
+    // claimed by at most one relay instance, so one event is published once. A row carries an
+    // attempt count and a next-attempt time, so an undeliverable row is abandoned rather than
+    // retried forever ahead of the rows behind it.
     // ------------------------------------------------------------------------------------
 
     /**
@@ -350,17 +346,17 @@ public class OutboxEventEntity {
     /**
      * How many attempts a row takes before the relay abandons it.
      *
-     * <p>The ceiling lives here and not in a check constraint on purpose: abandoning a row is a
-     * decision the relay records, and a constraint would instead turn the attempt that crosses
-     * the ceiling into a failed statement.
+     * <p>The ceiling lives here and not in a check constraint. Abandoning a row is a decision
+     * the relay records, whereas a constraint would turn the attempt that crosses the ceiling
+     * into a failed statement.
      */
     public static final int MAX_DELIVERY_ATTEMPTS = 10;
 
     /**
      * Widest value {@code last_error} holds, from {@code last_error VARCHAR(500)} in
-     * {@code src/main/resources/db/migration/V1__schema.sql}. The column is bounded so that a
-     * stack trace cannot be stored in it by accident, and a longer reason is truncated rather
-     * than refused: losing the tail of a diagnostic is better than losing the row.
+     * {@code src/main/resources/db/migration/V1__schema.sql}. The bound keeps a stack trace out
+     * of the column by accident. A longer reason is truncated rather than refused, so the row
+     * survives and only the tail of the diagnostic is lost.
      */
     public static final int LAST_ERROR_MAX_LENGTH = 500;
 

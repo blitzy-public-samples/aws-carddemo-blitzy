@@ -144,9 +144,9 @@ public enum DeclineReason {
      *
      * <p>The other three reasons are assigned after
      * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code app/cbl/CBTRN02C.cbl:L394}, so an account
-     * identifier is in hand. {@link TransactionDeclined} publishes the one reason that answers
-     * {@code false} under {@link TransactionDeclined#UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, the
-     * contract that declares no account identifier at all.
+     * identifier is in hand. The canonical constructor of {@link TransactionDeclined} consults this
+     * predicate and refuses the reason that answers {@code false}, so no published event names an
+     * account the platform never resolved.
      *
      * @return {@code true} for the three reasons that follow a successful cross-reference read,
      *         {@code false} for {@link #INVALID_CARD_NUMBER}

@@ -13,30 +13,31 @@ import java.util.UUID;
  * Marks one event identifier the card service has already handled, as one row of table
  * {@code processed_event}.
  *
- * <p>ADDITIVE: no Common Business Oriented Language (COBOL) copybook and no COBOL program declares
- * this record, and the source detects no duplicate anywhere. Paragraph
- * {@code 2900-WRITE-TRANSACTION-FILE} at {@code app/cbl/CBTRN02C.cbl:L562-L579} writes each posted
+ * <p>No COBOL ancestor: no Common Business Oriented Language (COBOL) copybook and no COBOL program
+ * declares this record, and the source detects no duplicate anywhere. Paragraph {@code
+ * 2900-WRITE-TRANSACTION-FILE} at {@code app/cbl/CBTRN02C.cbl:L562-L579} writes each posted
  * transaction and tests {@code IF TRANFILE-STATUS = '00'} at L566. A duplicate key fails that test
  * and reaches {@code PERFORM 9999-ABEND-PROGRAM} at L577, whose routine at L707-L711 holds four
- * statements and cleans nothing up. Each of the eight file definitions in
- * {@code app/csd/CARDDEMO.CSD} carries {@code RECOVERY(NONE)}.
+ * statements and cleans nothing up. Each of the eight file definitions in {@code
+ * app/csd/CARDDEMO.CSD} carries {@code RECOVERY(NONE)}.
  *
  * <p>This service consumes no event today, and that is a measured fact rather than an omission:
- * {@code card-platform/.env.example} declares four consumer groups, {@code ledger-posting},
- * {@code fraud-detection}, {@code notification-posted} and {@code notification-fraud}, and none of
- * them is a card group. The table is declared because every service of this platform declares the
- * same marker with the same two columns, so a consumer added to this service inherits the contract
+ * {@code card-platform/.env.example} declares no card-service consumer group. The table is declared
+ * because every service of this platform declares the same
+ * marker with the same three columns, so a consumer added to this service inherits the contract
  * unchanged rather than inventing one.
  *
- * <p>That contract is fixed. A consumer inserts one row inside the same local transaction as its
- * side effects, once those side effects succeed, and supplies both values. A redelivery finds the
- * row present and does nothing, and the {@code repository} package owns that lookup by primary
- * key.
+ * <p>That contract is fixed. A consumer commits one row inside the same local transaction as its
+ * side effects, marker after effects, and acknowledges the delivery only once that transaction
+ * commits. A redelivery finds the row present and does nothing, and the {@code repository} package
+ * owns that lookup by primary key.
  *
- * <p>Both columns, and the primary key that is their only access path, come from
- * {@code src/main/resources/db/migration/V1__schema.sql:L80-L84}. The {@link Table} annotation
- * names no schema, and {@code src/main/resources/application.yml} supplies one and sets
- * {@code ddl-auto: validate}, so Hibernate checks this mapping against that migration at start-up.
+ * <p>Three columns come from {@code src/main/resources/db/migration/V1__schema.sql}, which is
+ * authoritative for them: {@code event_id} as the primary key, {@code processed_at}, and
+ * {@code consumed_topic}. A retention index over {@code processed_at} accompanies them. The
+ * {@link Table} annotation names no schema, and {@code src/main/resources/application.yml} supplies
+ * one and sets {@code ddl-auto: validate}, so Hibernate checks this mapping against that migration
+ * at start-up.
  */
 @Entity
 @Table(name = "processed_event",
@@ -63,15 +64,15 @@ public class ProcessedEventEntity {
      * Which topic the delivery that first handled this event arrived on, or null when the
      * marker was written without one.
      *
-     * <p>A marker on its own says an event was handled and nothing about where it came from, which
-     * is not enough to investigate a replay: the same identifier can be redelivered on the topic it
-     * came from or arrive on a dead-letter topic during a recovery, and those are different
-     * situations. Recording the topic separates them.
+     * <p>A marker on its own says an event was handled and nothing about where it came from,
+     * which is not enough to investigate a replay. The same identifier can be redelivered on the
+     * topic it came from, or arrive on a dead-letter topic during a recovery. Those are different
+     * situations, and recording the topic separates them.
      */
     @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
     private String consumedTopic;
 
-    /** No-argument constructor the persistence provider calls before assigning both fields. */
+    /** No-argument constructor the persistence provider calls before assigning all three fields. */
     protected ProcessedEventEntity() {
     }
 
@@ -120,8 +121,9 @@ public class ProcessedEventEntity {
     }
 
     /**
-     * Renders both columns. The event identifier is opaque and the instant is operational, so
-     * neither names an account, an amount or a cardholder.
+     * Renders the event identifier and the instant, and omits {@code consumedTopic}. The identifier
+     * is opaque and the instant is operational, so neither names an account, an amount or a
+     * cardholder.
      */
     @Override
     public String toString() {

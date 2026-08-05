@@ -9,8 +9,8 @@ import java.util.regex.Pattern;
  * The event the fraud detection service publishes when its risk rules clear an authorized
  * transaction.
  *
- * <p>ADDITIVE IN FULL. No COBOL program and no copybook defines this event: the CardDemo source
- * assesses no risk, so nothing here is a translation. Two widths are borrowed.
+ * <p>No COBOL program and no copybook defines this event: the CardDemo source assesses no risk,
+ * so nothing here is a translation. Two widths are borrowed.
  * {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5} gives {@code transactionId} sixteen
  * characters, and {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} gives
  * {@code accountId} eleven digits. Both locators are width borrowings, and neither is provenance.
@@ -24,13 +24,16 @@ import java.util.regex.Pattern;
  *
  * <p>{@code FraudFlagged} and {@code FraudCleared} share the {@code fraud.assessed} topic. A
  * consumer reads {@code eventType} to learn which payload arrived, so the canonical constructor
- * accepts {@link #EVENT_TYPE} and rejects every other value. The notification service reads that
- * topic in the {@code notification-fraud} consumer group.
+ * accepts {@link #EVENT_TYPE} and rejects every other value. No service consumes that topic today:
+ * the {@code notification-fraud} consumer group is declared in {@code card-platform/.env.example}
+ * and no listener is registered against it.
  *
  * <p>The fraud detection service reads the authorization event and publishes this one. That
  * service never sits in the authorization response path and calls no other consumer.
  *
- * @param eventId       the idempotency key, as {@link EventEnvelope} defines it
+ * @param eventId       the idempotency key, as {@link EventEnvelope} defines it. A consumer records
+ *                      it in its own marker table inside the same local transaction as its side
+ *                      effects, marker after effects
  * @param eventType     the routing discriminator, always {@link #EVENT_TYPE}
  * @param schemaVersion the contract version, always {@link EventEnvelope#SCHEMA_VERSION}
  * @param occurredAt    the moment the fraud detection service wrote the event, in Coordinated
@@ -40,8 +43,8 @@ import java.util.regex.Pattern;
  *                      {@link #TRANSACTION_ID_LENGTH} characters
  * @param accountId     the eleven-digit account identifier the transaction belongs to. Leading
  *                      zeros belong to the value
- * @param assessedAt    the moment the assessment finished, in Coordinated Universal Time.
- *                      ADDITIVE
+ * @param assessedAt    the moment the assessment finished, in Coordinated Universal Time. No
+ *                      source field carries it
  */
 public record FraudCleared(UUID eventId, String eventType, int schemaVersion, Instant occurredAt,
         String aggregateId, String transactionId, String accountId, Instant assessedAt) {

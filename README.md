@@ -3,6 +3,7 @@
 - [CardDemo -- Mainframe CardDemo Application](#carddemo----mainframe-card-demo-application)
 - [Description](#description)
 - [Technologies used](#technologies-used)
+- [Modernized card platform](#modernized-card-platform)
 - [Installation on the mainframe](#installation-on-the-mainframe)
 - [Application Details](#application-details)
   - [User Functions](#user-functions)
@@ -35,6 +36,84 @@ Note that the intent of this application is to provide mainframe coding scenario
 3. VSAM
 4. JCL
 5. RACF
+
+<br/>
+
+## Modernized card platform
+
+A forward-engineered, event-driven implementation of this application's card-processing behaviour lives
+under [card-platform/](card-platform/). It is a pure addition: nothing under `app/`, `diagrams/` or
+`samples/` changes, and nothing in it calls the mainframe at runtime.
+
+Six independently deployable services written in Java 25 on Spring Boot 4.1.0 replace the online
+authorization path and the nightly posting job. They exchange events over Apache Kafka, and each owns a
+private PostgreSQL schema no other service reads. One synchronous authorization call publishes one
+event, and two services consume it independently; what those two publish is what reaches the third.
+
+| Service | Replaces |
+| :--- | :--- |
+| `authorization-service` | The synchronous authorization decision, from the validation rules of `app/cbl/CBTRN02C.cbl` and the request contract of `app/cbl/COTRN02C.cbl` |
+| `ledger-posting-service` | The `POSTTRAN` job, run once per event in place of once per night |
+| `fraud-detection-service` | Nothing. A new capability with no COBOL ancestor |
+| `notification-service` | The cardholder-facing tail of `app/cbl/CBSTM03A.CBL` |
+| `account-service` | `COACTVWC` and `COACTUPC`, plus the billing-cycle close |
+| `card-service` | `COCRDLIC`, `COCRDSLC` and `COCRDUPC` |
+
+Interest calculation and full statement generation stay as batch processes and are not migrated.
+
+**Getting it running takes a laptop, not a mainframe.** The instructions below in this file describe the
+z/OS installation path and remain accurate for it. For the modernized platform, start here:
+
+- [card-platform/docs/onboarding.md](card-platform/docs/onboarding.md) takes a clean machine to a running
+  platform, and lists the five pitfalls that cost time during the build.
+- [card-platform/README.md](card-platform/README.md) is the map of the platform.
+- [card-platform/docs/traceability-matrix.md](card-platform/docs/traceability-matrix.md) maps every one of
+  the 28 programs and 28 copybooks to a target or to a stated exclusion.
+- [card-platform/docs/business-rule-flags.md](card-platform/docs/business-rule-flags.md) records every
+  business rule in this source that is ambiguous, undocumented or inconsistent, with citations.
+
+Figure 1 compares the retained mainframe application with the independently deployable platform.
+
+**Figure 1 — CardDemo Before and After: Shared CICS and VSAM Processing Becomes Event-Driven Services**
+
+```mermaid
+graph LR
+    subgraph BEFORE["BEFORE — retained mainframe application"]
+        TERM["3270 terminal"]
+        CICS["CICS programs"]
+        BATCH["JCL batch jobs"]
+        VSAM[("8 shared VSAM files")]
+        TERM --> CICS
+        CICS -.-> VSAM
+        BATCH -.-> VSAM
+    end
+
+    subgraph AFTER["AFTER — card-platform"]
+        CLIENT["REST client"]
+        AUTH["authorization-service"]
+        KAFKA{{"Kafka events"}}
+        CONSUMERS["ledger, fraud, notification"]
+        SUPPORT["account and card services"]
+        DATABASES[("6 private schemas")]
+        CLIENT --> AUTH
+        AUTH ==> KAFKA
+        KAFKA ==> CONSUMERS
+        SUPPORT ==> KAFKA
+        AUTH -.-> DATABASES
+        CONSUMERS -.-> DATABASES
+        SUPPORT -.-> DATABASES
+    end
+
+    VSAM ~~~ CLIENT
+```
+
+Legend for Figure 1:
+
+- Plain arrows show synchronous interaction or mainframe control flow.
+- Thick arrows show asynchronous Kafka publication and consumption.
+- Dotted arrows show access to persistent data.
+- Cylinders show shared files before modernization and private schemas after it.
+- The original application remains available through the installation path below.
 
 <br/>
 

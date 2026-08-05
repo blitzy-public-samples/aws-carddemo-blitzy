@@ -19,8 +19,7 @@ import org.springframework.stereotype.Component;
  * {@code app/cbl/CBTRN02C.cbl:L403-L405}, then approves only while
  * {@code ACCT-CREDIT-LIMIT >= WS-TEMP-BAL} at {@code app/cbl/CBTRN02C.cbl:L407}.
  *
- * <p>Three properties of that computation are reproduced deliberately, and each is catalogued in
- * {@code card-platform/docs/business-rule-flags.md} (planned).
+ * <p>Three properties of that computation are reproduced deliberately.
  *
  * <p>First, the current balance takes no part. {@code ACCT-CURR-BAL} at
  * {@code app/cpy/CVACT01Y.cpy:L7} is never read here, so the test works from the two cycle

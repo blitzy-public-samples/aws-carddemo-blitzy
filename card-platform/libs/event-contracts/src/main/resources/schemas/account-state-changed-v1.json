@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://carddemo.example.com/schemas/account-state-changed-v1.json",
   "title": "AccountStateChanged",
-  "description": "The account service publishes one AccountStateChanged event whenever account state changes, and publishes nothing on a read. Nine payload fields carry the account after the change, with widths from the 300-byte account record at app/cpy/CVACT01Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. The authorization service keeps its account_credit_snapshot projection current from the credit limit, the two cycle accumulators and the expiry date this event carries. Evolution is additive only, and it is bounded. additionalProperties is false and maxProperties is declared, so an unknown top-level property is refused and a producer cannot hide a Primary Account Number, a card verification value or any other undeclared field inside a known event type. Additive evolution inside this version travels in the optional extensions object, whose property names, property count and value lengths are all bounded, so a consumer validating against this version still accepts an event a later version enriched. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
+  "description": "The account service publishes one AccountStateChanged event whenever account state changes, and publishes nothing on a read. Eight payload fields carry the account after the change, with widths from the 300-byte account record at app/cpy/CVACT01Y.cpy. The customer record app/cbl/COACTUPC.cbl:L4086 rewrites beside the account travels on CustomerContextChanged, so a consumer that needs no cardholder name or address receives none. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. The authorization service keeps its account_credit_snapshot projection current from the credit limit, the two cycle accumulators and the expiry date this event carries. The ledger keeps its account_balance_projection current from the balance and the two accumulators. Evolution is additive only, and it is bounded. additionalProperties is false and maxProperties is declared, so an unknown top-level property is refused and a producer cannot hide a Primary Account Number, a card verification value or any other undeclared field inside a known event type. Additive evolution inside this version travels in the optional extensions object, whose property names, property count and value lengths are all bounded, so a consumer validating against this version still accepts an event a later version enriched. Inside one version no field is removed, renamed, retyped or narrowed; a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
   "$comment": "The 178-byte trailing FILLER at app/cpy/CVACT01Y.cpy:L17 carries no data and no field here maps to it. The source spells two fields ACCT-EXPIRAION-DATE at app/cpy/CVACT01Y.cpy:L11 and CARD-EXPIRAION-DATE at app/cpy/CVACT02Y.cpy:L9; the target corrects the spelling.",
   "type": "object",
   "properties": {
@@ -58,6 +58,15 @@
       "description": "The account identifier, eleven digits. From ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5, the key the account dataset is defined on at app/jcl/ACCTFILE.jcl. A text field keeps a leading zero.",
       "examples": [
         "00000000007"
+      ]
+    },
+    "currentBalance": {
+      "type": "string",
+      "pattern": "^-?\\d{1,10}\\.\\d{2}$",
+      "description": "The account balance after the change, as a decimal string with two fractional digits. From ACCT-CURR-BAL PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L7. A leading minus is valid. app/cbl/CBTRN02C.cbl:L547 adds a transaction amount to this field during posting, and app/cbl/CBSTM03A.CBL:L483 renders it on a statement, so a consumer that keeps a balance projection or renders an alert reads it here.",
+      "examples": [
+        "1250.75",
+        "-43.10"
       ]
     },
     "creditLimit": {
@@ -126,12 +135,13 @@
     "occurredAt",
     "aggregateId",
     "accountId",
+    "currentBalance",
     "creditLimit",
     "currentCycleCredit",
     "currentCycleDebit",
     "expirationDate",
     "changeKind"
   ],
-  "maxProperties": 12,
+  "maxProperties": 13,
   "additionalProperties": false
 }

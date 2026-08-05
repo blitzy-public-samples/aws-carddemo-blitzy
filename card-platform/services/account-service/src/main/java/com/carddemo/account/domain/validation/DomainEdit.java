@@ -12,11 +12,12 @@ import jakarta.validation.Payload;
 /**
  * Runs one of the field edits of {@code app/cbl/COACTUPC.cbl} against the annotated component.
  *
- * <p>ADDITIVE as a mechanism, and not as behaviour. Every rule this annotation reaches already lives
- * in a validator class of this package, translated from paragraphs {@code 1205-EDIT-*} through
- * {@code 1280-EDIT-*} at {@code app/cbl/COACTUPC.cbl:L1820-L2560}. What was missing was the wiring: a
- * validator that nothing calls edits nothing. Bean Validation runs a constraint only where one is
- * declared, so a data-transfer object carrying width bounds alone was bounded and unedited.
+ * <p>The mechanism has no COBOL ancestor; the behaviour does. Every rule this annotation reaches
+ * already lives in a validator class of this package, translated from paragraphs {@code
+ * 1205-EDIT-*} through {@code 1280-EDIT-*} at {@code app/cbl/COACTUPC.cbl:L1820-L2560}. What was
+ * missing was the wiring: a validator that nothing calls edits nothing. Bean Validation runs a
+ * constraint only where one is declared, so a data-transfer object carrying width bounds alone was
+ * bounded and unedited.
  *
  * <p>One annotation covers every single-component edit, selected by {@link #value()}. The
  * alternative, one annotation type and one validator class per edit, would have added twenty files

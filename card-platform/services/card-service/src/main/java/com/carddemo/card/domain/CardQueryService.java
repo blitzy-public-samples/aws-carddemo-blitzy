@@ -4,10 +4,12 @@ import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.repository.CardRepository;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
+import com.carddemo.events.EventEnvelope;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.regex.Pattern;
 import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,20 +22,18 @@ import org.springframework.transaction.annotation.Transactional;
  * list row. The card detail program {@code app/cbl/COCRDSLC.cbl} supplies the two finders.
  *
  * <p>Paging reads one row past the page and derives the next-page flag from whether that row
- * arrived. {@link #listForward} and {@link #listBackward} carry that read. Neither runs a count
- * query and neither makes a second round trip.
+ * arrived. {@link #listForward} and {@link #listBackward} carry that read. A request carrying a
+ * cursor first resolves its opaque random token to the private card-number key; no client receives
+ * that key as paging state.
  *
  * <p>Both filters travel to the database as query arguments, so the predicate runs ahead of the
- * row limit. {@code 9500-FILTER-RECORDS} at {@code app/cbl/COCRDLIC.cbl:L1382-L1411} holds the two
- * tests they carry, and the screen counter at {@code app/cbl/COCRDLIC.cbl:L1162-L1163} advances
- * only past those tests. A full page therefore holds filtered rows, and no method here filters a
- * list the repository has already returned.
+ * row limit. The public card filter is an opaque token and resolves to the private card-number key
+ * first. {@code 9500-FILTER-RECORDS} at {@code app/cbl/COCRDLIC.cbl:L1382-L1411} holds the two
+ * tests, and the screen counter advances only past them.
  *
  * <p>This class writes nothing. A lookup that matches no row yields an empty page, an empty
  * {@link Optional} or an empty {@link List}, and no method here builds a message for a caller to
  * display.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Service
 @Transactional(readOnly = true)
@@ -86,6 +86,14 @@ public class CardQueryService {
     /** The highest character a {@code PIC 9} display field admits. */
     private static final char DIGIT_NINE = '9';
 
+    /**
+     * The shape a paging cursor holds, compiled once.
+     *
+     * <p>{@link PanMasker#CARD_TOKEN_PATTERN} is the one declaration of that shape across this
+     * platform. Compiling it here costs one field and saves a compile on every request.
+     */
+    private static final Pattern CARD_TOKEN_SHAPE = Pattern.compile(PanMasker.CARD_TOKEN_PATTERN);
+
     private final CardRepository cardRepository;
 
     /**
@@ -116,26 +124,43 @@ public class CardQueryService {
      * <p>The cursor is exclusive, so the row it names is never returned twice. A {@code null} or
      * blank cursor asks for the first page.
      *
-     * @param afterCardNumber  the exclusive lower bound, or {@code null} for the first page
+     * <p>The cursor is a card token and never a card number. {@link #resolveCursor} turns it back
+     * into the browse position, and {@link CardPage} documents why the two forms differ.
+     *
+     * @param afterCardToken   the card token of the last row of the previous page, or {@code null}
+     *                         for the first page
      * @param pageSize         rows on the page, or {@code null} for {@value #DEFAULT_PAGE_SIZE}
      * @param accountIdFilter  the account identifier to match, or {@code null} to match every
      *                         account
      * @param cardNumberFilter the card number to match, or {@code null} to match every card
      * @return the page, which holds no row when nothing matches
      * @throws IllegalArgumentException if {@code pageSize} falls outside {@value #MIN_PAGE_SIZE}
-     *                                  through {@value #MAX_PAGE_SIZE}, or if any card number or
-     *                                  account identifier exceeds the width its Picture clause
-     *                                  declares
+     *                                  through {@value #MAX_PAGE_SIZE}, if the cursor is not a
+     *                                  card token this service issued, or if either filter breaks
+     *                                  the width or the character class its Picture clause declares
      */
-    public CardPage listForward(String afterCardNumber, Integer pageSize, String accountIdFilter,
+    public CardPage listForward(String afterCardToken, Integer pageSize, String accountIdFilter,
             String cardNumberFilter) {
         int rowsPerPage = resolvePageSize(pageSize);
-        List<CardEntity> fetched = cardRepository.findPageForward(
-                normalizeCursor(afterCardNumber),
-                normalizeAccountIdFilter(accountIdFilter),
-                normalizeCardNumberFilter(cardNumberFilter),
-                Limit.of(rowsPerPage + LOOKAHEAD_ROW_COUNT));
+        String cursor = resolveCursor(afterCardToken);
+        String accountId = normalizeAccountIdFilter(accountIdFilter);
+        String cardNumber = normalizeCardNumberFilter(cardNumberFilter);
 
+        if (cardNumber != null) {
+            return oneCardPage(cardNumber, accountId, cursor, false, rowsPerPage);
+        }
+
+        Limit limit = Limit.of(rowsPerPage + LOOKAHEAD_ROW_COUNT);
+        List<CardEntity> fetched;
+        if (accountId == null) {
+            fetched = cursor == null
+                    ? cardRepository.findFirstPage(limit)
+                    : cardRepository.findPageAfter(cursor, limit);
+        } else {
+            fetched = cursor == null
+                    ? cardRepository.findFirstPageForAccount(accountId, limit)
+                    : cardRepository.findPageAfterForAccount(accountId, cursor, limit);
+        }
         return buildPage(fetched, rowsPerPage, false);
     }
 
@@ -160,27 +185,74 @@ public class CardQueryService {
      * code reaches them. This method derives its flag from the same extra row that
      * {@link #listForward} uses.
      *
-     * @param beforeCardNumber the exclusive upper bound, or {@code null} for the last page
+     * <p>The cursor is a card token and never a card number, exactly as on the forward path.
+     *
+     * @param beforeCardToken  the card token of the first row of the following page, or
+     *                         {@code null} for the last page
      * @param pageSize         rows on the page, or {@code null} for {@value #DEFAULT_PAGE_SIZE}
      * @param accountIdFilter  the account identifier to match, or {@code null} to match every
      *                         account
      * @param cardNumberFilter the card number to match, or {@code null} to match every card
      * @return the page, which holds no row when nothing matches
      * @throws IllegalArgumentException if {@code pageSize} falls outside {@value #MIN_PAGE_SIZE}
-     *                                  through {@value #MAX_PAGE_SIZE}, or if any card number or
-     *                                  account identifier exceeds the width its Picture clause
-     *                                  declares
+     *                                  through {@value #MAX_PAGE_SIZE}, if the cursor is not a
+     *                                  card token this service issued, or if either filter breaks
+     *                                  the width or the character class its Picture clause declares
      */
-    public CardPage listBackward(String beforeCardNumber, Integer pageSize, String accountIdFilter,
+    public CardPage listBackward(String beforeCardToken, Integer pageSize, String accountIdFilter,
             String cardNumberFilter) {
         int rowsPerPage = resolvePageSize(pageSize);
-        List<CardEntity> fetched = cardRepository.findPageBackward(
-                normalizeCursor(beforeCardNumber),
-                normalizeAccountIdFilter(accountIdFilter),
-                normalizeCardNumberFilter(cardNumberFilter),
-                Limit.of(rowsPerPage + LOOKAHEAD_ROW_COUNT));
+        String cursor = resolveCursor(beforeCardToken);
+        String accountId = normalizeAccountIdFilter(accountIdFilter);
+        String cardNumber = normalizeCardNumberFilter(cardNumberFilter);
 
+        if (cardNumber != null) {
+            return oneCardPage(cardNumber, accountId, cursor, true, rowsPerPage);
+        }
+
+        Limit limit = Limit.of(rowsPerPage + LOOKAHEAD_ROW_COUNT);
+        List<CardEntity> fetched;
+        if (accountId == null) {
+            fetched = cursor == null
+                    ? cardRepository.findLastPage(limit)
+                    : cardRepository.findPageBefore(cursor, limit);
+        } else {
+            fetched = cursor == null
+                    ? cardRepository.findLastPageForAccount(accountId, limit)
+                    : cardRepository.findPageBeforeForAccount(accountId, cursor, limit);
+        }
         return buildPage(fetched, rowsPerPage, true);
+    }
+
+    /**
+     * Returns the page a card number filter selects, which holds one row or none.
+     *
+     * <p>{@code card_number} is the primary key, from {@code KEYS(16 0)} at
+     * {@code app/jcl/CARDFILE.jcl:L54}, so the filter {@code CARD-NUM = CC-CARD-NUM-N} at
+     * {@code app/cbl/COCRDLIC.cbl:L1397} selects at most one row. The account test at
+     * {@code app/cbl/COCRDLIC.cbl:L1386} and the browse bound then apply to that one row, which is
+     * what {@code 9500-FILTER-RECORDS} does to each row the browse hands it.
+     *
+     * <p>A page holding one row reports no further page, so the lookahead has nothing to read.
+     *
+     * @param cardNumber      the sixteen-character filter
+     * @param accountId       the account filter, or {@code null} to match every account
+     * @param cursor          the exclusive browse bound, or {@code null} for the first or last page
+     * @param cursorIsUpper   {@code true} when the bound is an upper one, as a backward page carries
+     * @param rowsPerPage     rows the page holds
+     * @return the page, holding the matching row or no row at all
+     */
+    private CardPage oneCardPage(String cardNumber, String accountId, String cursor,
+            boolean cursorIsUpper, int rowsPerPage) {
+        List<CardEntity> matching = cardRepository.findByCardNumber(cardNumber)
+                .filter(card -> accountId == null || accountId.equals(card.getAccountId()))
+                .filter(card -> cursor == null || (cursorIsUpper
+                        ? card.getCardNumber().compareTo(cursor) < 0
+                        : card.getCardNumber().compareTo(cursor) > 0))
+                .map(List::of)
+                .orElseGet(List::of);
+
+        return buildPage(matching, rowsPerPage, false);
     }
 
     /**
@@ -204,16 +276,32 @@ public class CardQueryService {
      * <p>The argument carries the full Primary Account Number (PAN). A masked value matches no
      * row.
      *
-     * @param cardNumber the full card number, at most {@value PicClause#CARD_NUM_WIDTH} characters
+     * <p>The value carries digits and nothing else. The storage Picture clause
+     * {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} is alphanumeric, and every
+     * input path in the source narrows it. {@code IF CC-CARD-NUM IS NOT NUMERIC} at
+     * {@code app/cbl/COCRDUPC.cbl:L784} rejects the value, and the condition name
+     * {@code SEARCHED-CARD-NOT-NUMERIC} at {@code app/cbl/COCRDUPC.cbl:L193-L194} states the rule
+     * as {@code Card number if supplied must be a 16 digit number}. Width alone would admit a
+     * value the source rejects, and the alphanumeric key would then carry it into a lookup that
+     * matches nothing.
+     *
+     * <p>No checksum applies and no card status is read. {@code app/cbl/COCRDUPC.cbl:L194} names
+     * sixteen digits and nothing further, and AAP section 0.2.2 records that adding a checksum
+     * check would change an outcome the source produces.
+     *
+     * @param cardNumber the full card number, at most {@value PicClause#CARD_NUM_WIDTH} digits,
+     *                   left-padded with zeros to that width
      * @return the matching card, or an empty {@link Optional} when the table holds none
      * @throws NullPointerException     if {@code cardNumber} is {@code null}
-     * @throws IllegalArgumentException if {@code cardNumber} is blank or exceeds
-     *                                  {@value PicClause#CARD_NUM_WIDTH} characters
+     * @throws IllegalArgumentException if {@code cardNumber} is blank, exceeds
+     *                                  {@value PicClause#CARD_NUM_WIDTH} characters, or holds a
+     *                                  character outside {@code 0} through {@code 9}
      */
     public Optional<CardEntity> findByCardNumber(String cardNumber) {
         Objects.requireNonNull(cardNumber, "cardNumber is required");
-        return cardRepository.findByCardNumber(requireKey("cardNumber", cardNumber,
-                PicClause.CARD_NUM_WIDTH));
+        String key = requireKey("cardNumber", cardNumber, PicClause.CARD_NUM_WIDTH);
+        requireDigitsOnly("cardNumber", key);
+        return cardRepository.findByCardNumber(key);
     }
 
     /**
@@ -238,9 +326,14 @@ public class CardQueryService {
      *
      * <p>An account with no card yields an empty {@link List}.
      *
+     * <p>The read is bounded at {@value #MAX_PAGE_SIZE} rows, the same ceiling a page carries. The
+     * alternate index admits many rows under one key, so an unbounded read would materialise however
+     * many cards one account has come to hold.
+     *
      * @param accountId the account identifier, at most {@value PicClause#CARD_ACCT_ID_WIDTH}
      *                  digits, left-padded with zeros to that width
-     * @return every matching card, or an empty {@link List} when the table holds none
+     * @return every matching card up to {@value #MAX_PAGE_SIZE} of them, or an empty {@link List}
+     *         when the table holds none
      * @throws NullPointerException     if {@code accountId} is {@code null}
      * @throws IllegalArgumentException if {@code accountId} is blank, exceeds
      *                                  {@value PicClause#CARD_ACCT_ID_WIDTH} digits, or holds a
@@ -250,7 +343,7 @@ public class CardQueryService {
         Objects.requireNonNull(accountId, "accountId is required");
         String key = requireKey("accountId", accountId, PicClause.CARD_ACCT_ID_WIDTH);
         requireDigitsOnly("accountId", key);
-        return cardRepository.findByAccountId(key);
+        return cardRepository.findByAccountId(key, Limit.of(MAX_PAGE_SIZE));
     }
 
     /**
@@ -269,6 +362,11 @@ public class CardQueryService {
      * <p>{@code WS-CA-LAST-CARDKEY} takes the last row at L1194-L1195. Two later statements write
      * it again: L1212-L1214 from the extra row, and L1236-L1237 on end of file.
      *
+     * <p>Both cursors carry the card token of their row and never its card number. The source
+     * holds its two cursors in working storage that no terminal ever displays, so a card number
+     * there reaches nobody. A cursor here travels to a caller and back, so it carries the token
+     * instead. {@link #resolveCursor} turns it into the browse position the query needs.
+     *
      * @param fetched           the rows the database returned, one more than the page holds when a
      *                          further page exists
      * @param rowsPerPage       rows the page holds
@@ -283,14 +381,40 @@ public class CardQueryService {
         List<CardEntity> ascending = fetchedDescending ? onPage.reversed() : onPage;
 
         List<CardListRow> rows = new ArrayList<>(ascending.size());
+        String firstCardToken = null;
+        String lastCardToken = null;
         for (CardEntity card : ascending) {
             rows.add(new CardListRow(card.getCardNumber(), card.getAccountId(),
                     card.getActiveStatus()));
+            if (firstCardToken == null) {
+                firstCardToken = requireCardToken(card);
+            }
+            lastCardToken = requireCardToken(card);
         }
 
-        String firstCardNumber = rows.isEmpty() ? null : rows.getFirst().cardNumber();
-        String lastCardNumber = rows.isEmpty() ? null : rows.getLast().cardNumber();
-        return new CardPage(rows, nextPageExists, firstCardNumber, lastCardNumber);
+        return new CardPage(rows, nextPageExists, firstCardToken, lastCardToken);
+    }
+
+    /**
+     * Reads the card token of one row and refuses a row that carries none.
+     *
+     * <p>Column {@code card_token} is {@code NOT NULL}, so a row read from the database always
+     * carries one. A row built in memory carries one too, because
+     * {@link com.carddemo.card.entity.CardEntity} derives it in its constructor. A {@code null}
+     * therefore names a row that reached neither path, and a cursor built from it would name no
+     * card.
+     *
+     * @param card the row to read
+     * @return the card token
+     * @throws IllegalStateException if the row carries no card token
+     */
+    private static String requireCardToken(CardEntity card) {
+        String cardToken = card.getCardToken();
+        if (cardToken == null) {
+            throw new IllegalStateException(
+                    "a card row carries no card token, so this page can carry no cursor");
+        }
+        return cardToken;
     }
 
     /**
@@ -315,19 +439,59 @@ public class CardQueryService {
     }
 
     /**
-     * Settles the browse position, treating a blank value as no position at all.
+     * Settles the browse position from a card token, treating a blank value as no position at all.
      *
-     * @param cardNumber the card number the caller paged from, or {@code null}
-     * @return the position, or {@code null} for the first or the last page
-     * @throws IllegalArgumentException if the value exceeds
-     *                                  {@value PicClause#CARD_NUM_WIDTH} characters
+     * <p>The caller supplies a card token, and the browse needs the card number that token names.
+     * The lookup below is that translation, and it is the only path from a token back to a card
+     * number: {@link PanMasker#cardToken(String)} is a digest, so nothing computes the number from
+     * the token.
+     *
+     * <p>A token this service never issued reaches no row, and this method rejects it rather than
+     * starting the browse over. Returning {@code null} for an unresolved cursor would answer a
+     * request for page nine with page one, and the caller would read rows it already holds.
+     *
+     * @param cardToken the card token the caller paged from, or {@code null}
+     * @return the card number the browse positions on, or {@code null} for the first or the last
+     *         page
+     * @throws IllegalArgumentException if the value is not
+     *                                  {@value PanMasker#CARD_TOKEN_LENGTH} lower-case
+     *                                  hexadecimal characters, or if it names no card
      */
-    private static String normalizeCursor(String cardNumber) {
-        String trimmed = trimToNull(cardNumber);
+    private String resolveCursor(String cardToken) {
+        String trimmed = trimToNull(cardToken);
         if (trimmed == null) {
             return null;
         }
-        return requireKey("cursor", trimmed, PicClause.CARD_NUM_WIDTH);
+
+        requireCardTokenShape(trimmed);
+        return cardRepository.findByCardToken(trimmed)
+                .map(CardEntity::getCardNumber)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "cursor names no card, so this browse has no position to start from"));
+    }
+
+    /**
+     * Rejects a cursor that is not shaped like a card token.
+     *
+     * <p>{@link PanMasker#CARD_TOKEN_PATTERN} is the one declaration of that shape. The same
+     * pattern appears as the check constraint {@code ck_card_card_token_hex} in
+     * {@code V1__schema.sql} and as the route constraint of the notification history endpoint, so
+     * one change reaches every guard.
+     *
+     * <p>The check runs before the lookup so that a caller passing a card number where a token
+     * belongs is told the shape is wrong rather than that the card is absent. Sixteen digits fail
+     * the pattern on width and again on character class.
+     *
+     * @param value the stripped, non-empty cursor to check
+     * @throws IllegalArgumentException if the value does not match
+     *                                  {@link PanMasker#CARD_TOKEN_PATTERN}
+     */
+    private static void requireCardTokenShape(String value) {
+        if (!CARD_TOKEN_SHAPE.matcher(value).matches()) {
+            throw new IllegalArgumentException("cursor holds " + value.length()
+                    + " characters and a card token holds " + PanMasker.CARD_TOKEN_LENGTH
+                    + " lower-case hexadecimal characters");
+        }
     }
 
     /**
@@ -337,11 +501,15 @@ public class CardQueryService {
      * {@code FLG-ACCTFILTER-ISVALID} holds and applies nothing while it does not. A {@code null}
      * return carries that second case to the query, which then matches every account.
      *
+     * <p>{@code app/cbl/COCRDLIC.cbl:L1017} tests {@code IF CC-ACCT-ID IS NOT NUMERIC} and rejects
+     * the filter, and the class test runs after the width is settled. A value narrower than the
+     * stored key is padded first, so the digits a caller sent are what the test reads.
+     *
      * @param accountId the account identifier a caller named, or {@code null}
      * @return the eleven-digit filter, or {@code null} to match every account
-     * @throws IllegalArgumentException if the value exceeds
-     *                                  {@value PicClause#CARD_ACCT_ID_WIDTH} digits or holds a
-     *                                  character outside {@code 0} through {@code 9}
+     * @throws CardFilterRejectedException if the value exceeds
+     *                                    {@value PicClause#CARD_ACCT_ID_WIDTH} digits or holds a
+     *                                    character outside {@code 0} through {@code 9}
      */
     private static String normalizeAccountIdFilter(String accountId) {
         String trimmed = trimToNull(accountId);
@@ -364,17 +532,32 @@ public class CardQueryService {
      *
      * <p>The filter holds the full Primary Account Number. A masked value matches no row.
      *
+     * <p>The value carries digits and nothing else. {@code 2220-EDIT-CARD} at
+     * {@code app/cbl/COCRDLIC.cbl:L1042-L1066} runs exactly two tests on this filter, in this
+     * order. {@code app/cbl/COCRDLIC.cbl:L1042-L1044} treats low values, spaces and zeros as no
+     * filter at all, which the blank and all-zero test above carries. Then
+     * {@code IF CC-CARD-NUM IS NOT NUMERIC} at {@code app/cbl/COCRDLIC.cbl:L1052} rejects the
+     * value with the message {@code CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER} at
+     * {@code app/cbl/COCRDLIC.cbl:L1058}, and only the {@code ELSE} branch at
+     * {@code app/cbl/COCRDLIC.cbl:L1063-L1065} sets {@code FLG-CARDFILTER-ISVALID}. A filter that
+     * fails the numeric test therefore never reaches {@code 9500-FILTER-RECORDS}, and this method
+     * rejects it for the same reason rather than sending it to the database.
+     *
      * @param cardNumber the card number a caller named, or {@code null}
      * @return the sixteen-character filter, or {@code null} to match every card
      * @throws IllegalArgumentException if the value exceeds
-     *                                  {@value PicClause#CARD_NUM_WIDTH} characters
+     *                                  {@value PicClause#CARD_NUM_WIDTH} characters or holds a
+     *                                  character outside {@code 0} through {@code 9}
      */
     private static String normalizeCardNumberFilter(String cardNumber) {
         String trimmed = trimToNull(cardNumber);
         if (trimmed == null || isAllZeroDigits(trimmed)) {
             return null;
         }
-        return requireKey("cardNumberFilter", trimmed, PicClause.CARD_NUM_WIDTH);
+
+        String filter = requireKey("cardNumberFilter", trimmed, PicClause.CARD_NUM_WIDTH);
+        requireDigitsOnly("cardNumberFilter", filter);
+        return filter;
     }
 
     /**
@@ -404,8 +587,15 @@ public class CardQueryService {
     /**
      * Rejects a value holding a character outside {@code 0} through {@code 9}.
      *
-     * <p>{@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6} is a numeric display
-     * field, so every one of its characters is a digit.
+     * <p>Two kinds of field reach this check. {@code CARD-ACCT-ID PIC 9(11)} at
+     * {@code app/cpy/CVACT02Y.cpy:L6} is a numeric display field, so every one of its characters is
+     * a digit by declaration. {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} is
+     * alphanumeric by declaration, and the source narrows it at every input path instead:
+     * {@code app/cbl/COCRDLIC.cbl:L1052} on the list filter and
+     * {@code app/cbl/COCRDUPC.cbl:L784} on the update screen both reject a non-numeric value.
+     *
+     * <p>The check reads the character class and nothing else. No checksum applies, per AAP
+     * section 0.2.2.
      *
      * @param fieldName the field under check, named in any failure message
      * @param value     the value to check
@@ -420,6 +610,26 @@ public class CardQueryService {
                         + (position + 1));
             }
         }
+    }
+
+    /**
+     * Reports whether every character of a value is a digit.
+     *
+     * <p>This is the class test {@code IS NUMERIC} performs on an alphanumeric item. The source
+     * applies it to both filters, at {@code app/cbl/COCRDLIC.cbl:L1017} and at
+     * {@code app/cbl/COCRDLIC.cbl:L1052}.
+     *
+     * @param value the stripped, non-empty value to test
+     * @return {@code true} when every character falls between {@code 0} and {@code 9}
+     */
+    private static boolean holdsDigitsOnly(String value) {
+        for (int position = 0; position < value.length(); position++) {
+            char character = value.charAt(position);
+            if (character < DIGIT_ZERO || character > DIGIT_NINE) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -502,15 +712,17 @@ public class CardQueryService {
          * Returns a rendering that masks the card number and carries the other two components.
          *
          * <p>The card number is a Primary Account Number, and the rendering a record carries by
-         * default would print all sixteen characters into any log line that interpolates a row.
+         * default would print all sixteen characters into any log line that interpolates a row. The
+         * account identifier is stable and names one account across every table of this platform, so
+         * it is withheld beside it.
          *
-         * @return one line naming the class, the masked card number, the account identifier and
+         * @return one line naming the class, the masked card number, one withheld component and
          *         the active status
          */
         @Override
         public String toString() {
             return "CardListRow[cardNumber=" + PanMasker.maskCardNumber(cardNumber)
-                    + ", accountId=" + accountId
+                    + ", accountId=" + EventEnvelope.WITHHELD
                     + ", activeStatus=" + activeStatus + "]";
         }
     }
@@ -521,31 +733,46 @@ public class CardQueryService {
      * <p>The source holds the same state across its screen turns, in
      * {@code WS-CA-FIRST-CARDKEY} and {@code WS-CA-LAST-CARDKEY} at
      * {@code app/cbl/COCRDLIC.cbl:L230-L235} and in {@code WS-CA-NEXT-PAGE-IND} at
-     * {@code app/cbl/COCRDLIC.cbl:L242-L244}. Both cursors are card numbers and neither is a page
-     * ordinal, so an insert between two requests renumbers nothing.
+     * {@code app/cbl/COCRDLIC.cbl:L242-L244}. Neither cursor is a page ordinal, so an insert
+     * between two requests renumbers nothing.
+     *
+     * <p>Both cursors carry a card token where the source carries a card number, and the
+     * difference follows from where the value travels. The source keeps its two keys in working
+     * storage the terminal never receives, so a card number there reaches nobody. A cursor here
+     * leaves the service in a response and returns in the next request, which makes it published
+     * data: AAP section 0.6.4 admits only a tokenized or masked form there, and a masked form names
+     * every card sharing four digits rather than one row.
+     *
+     * <p>A card token names exactly one row, reveals no digit of the card number and is not
+     * reversible, so it carries the browse position without carrying the card.
+     * {@link CardQueryService#resolveCursor} turns it back into that position.
      *
      * @param rows            the cards on this page, in ascending card-number order. The list is
      *                        copied on construction and admits no modification. A page matching no
      *                        card holds an empty list.
      * @param nextPageExists  {@code true} when a further page follows this one, derived from the
      *                        extra row at {@code app/cbl/COCRDLIC.cbl:L1191-L1216}
-     * @param firstCardNumber the card number of the first row, which a backward request passes as
+     * @param firstCardToken  the card token of the first row, which a backward request passes as
      *                        its cursor, or {@code null} when the page holds no row
-     * @param lastCardNumber  the card number of the last row, which a forward request passes as its
+     * @param lastCardToken   the card token of the last row, which a forward request passes as its
      *                        cursor, or {@code null} when the page holds no row
      */
-    public record CardPage(List<CardListRow> rows, boolean nextPageExists, String firstCardNumber,
-            String lastCardNumber) {
+    public record CardPage(List<CardListRow> rows, boolean nextPageExists, String firstCardToken,
+            String lastCardToken) {
 
         /**
          * Copies the row list and checks the cursors against it.
          *
          * <p>A {@code null} row list becomes an empty list.
          *
+         * <p>Each cursor is checked against {@link PanMasker#CARD_TOKEN_PATTERN}. The check is what
+         * stops a card number reaching a caller through this component: sixteen digits fail the
+         * pattern, so a page carrying one cannot be built at all.
+         *
          * @throws NullPointerException     if the row list holds a {@code null} entry
          * @throws IllegalArgumentException if a page holding no row reports a further page or
-         *                                  carries a cursor, or if a page holding rows carries no
-         *                                  cursor
+         *                                  carries a cursor, if a page holding rows carries no
+         *                                  cursor, or if a cursor is not a card token
          */
         public CardPage {
             rows = rows == null ? List.of() : List.copyOf(rows);
@@ -555,41 +782,59 @@ public class CardQueryService {
                     throw new IllegalArgumentException(
                             "a page holding no row reports no further page");
                 }
-                if (firstCardNumber != null || lastCardNumber != null) {
+                if (firstCardToken != null || lastCardToken != null) {
                     throw new IllegalArgumentException("a page holding no row carries no cursor");
                 }
-            } else if (firstCardNumber == null || lastCardNumber == null) {
+            } else if (firstCardToken == null || lastCardToken == null) {
                 throw new IllegalArgumentException(
-                        "a page holding rows carries the card number of its first and last row");
+                        "a page holding rows carries the card token of its first and last row");
+            } else {
+                requireCursorIsCardToken("firstCardToken", firstCardToken);
+                requireCursorIsCardToken("lastCardToken", lastCardToken);
             }
         }
 
         /**
-         * Returns a rendering that counts the rows, names the paging state and masks both cursors.
+         * Returns a rendering that counts the rows and names the paging state.
          *
-         * <p>Each cursor is a full card number. The rendering a record carries by default prints
-         * both of them, and expands the row list to as many more as the page holds. A count answers
-         * what a paging problem asks.
+         * <p>The rendering a record carries by default expands the row list to as many entries as
+         * the page holds. A count answers what a paging problem asks. Both cursors are card tokens,
+         * which reveal no digit of a card number, so both appear in full.
          *
-         * @return one line naming the class, the row count, the paging state and both masked
-         *         cursors
+         * @return one line naming the class, the row count, the paging state and both cursors
          */
         @Override
         public String toString() {
             return "CardPage[rows=" + rows.size() + " on this page"
                     + ", nextPageExists=" + nextPageExists
-                    + ", firstCardNumber=" + maskCursor(firstCardNumber)
-                    + ", lastCardNumber=" + maskCursor(lastCardNumber) + "]";
+                    + ", firstCardToken=" + namedCursor(firstCardToken)
+                    + ", lastCardToken=" + namedCursor(lastCardToken) + "]";
         }
 
         /**
-         * Masks a cursor, naming an absent one.
+         * Rejects a cursor that is not shaped like a card token.
          *
-         * @param cursor the cursor to mask, which may be {@code null}
-         * @return the masked cursor, or {@code absent}
+         * @param componentName the component under check, named in any failure message
+         * @param cursor        the cursor to check
+         * @throws IllegalArgumentException if the value does not match
+         *                                  {@link PanMasker#CARD_TOKEN_PATTERN}
          */
-        private static String maskCursor(String cursor) {
-            return cursor == null ? "absent" : PanMasker.maskCardNumber(cursor);
+        private static void requireCursorIsCardToken(String componentName, String cursor) {
+            if (!CARD_TOKEN_SHAPE.matcher(cursor).matches()) {
+                throw new IllegalArgumentException(componentName + " holds " + cursor.length()
+                        + " characters and a card token holds " + PanMasker.CARD_TOKEN_LENGTH
+                        + " lower-case hexadecimal characters");
+            }
+        }
+
+        /**
+         * Names an absent cursor.
+         *
+         * @param cursor the cursor to render, which may be {@code null}
+         * @return the cursor, or {@code absent}
+         */
+        private static String namedCursor(String cursor) {
+            return cursor == null ? "absent" : cursor;
         }
     }
 }

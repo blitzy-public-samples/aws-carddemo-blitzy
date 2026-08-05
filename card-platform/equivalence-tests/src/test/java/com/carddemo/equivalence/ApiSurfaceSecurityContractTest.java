@@ -3,22 +3,27 @@ package com.carddemo.equivalence;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.account.api.ApiProblem;
 import com.carddemo.account.api.dto.AccountDataRequest;
+import com.carddemo.account.api.dto.AccountReadResponse;
 import com.carddemo.account.api.dto.AccountUpdateRequest;
 import com.carddemo.account.api.dto.AccountUpdateResponse;
 import com.carddemo.account.api.dto.AccountView;
 import com.carddemo.account.api.dto.CustomerDataRequest;
+import com.carddemo.account.api.dto.CustomerReadResponse;
 import com.carddemo.account.api.dto.CustomerView;
 import com.carddemo.account.api.dto.CycleCloseResponse;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.authorization.api.AuthorizationRequest;
 import com.carddemo.authorization.api.AuthorizationResponse;
 import com.carddemo.card.api.dto.ApiErrorResponse;
+import com.carddemo.card.api.dto.CardDetailRequest;
 import com.carddemo.card.api.dto.CardDetailResponse;
 import com.carddemo.card.api.dto.CardListResponse;
 import com.carddemo.card.api.dto.CardSummary;
@@ -29,6 +34,7 @@ import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.messaging.CardUpdated;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.events.DeclineReason;
+import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.serde.SensitiveEventProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -66,16 +72,19 @@ import tools.jackson.databind.node.JsonNodeType;
 
 /**
  * Pins every security property the shipped Application Programming Interface surface expresses, and
- * states the boundary of what this checkpoint can express at all.
+ * states the boundary of what that surface can express at all.
  *
- * <p>Fifteen source files across three service modules make up that surface. Fourteen declare a
- * record and one declares the message inventory {@link CardValidationMessages}. Ten record types
- * leave a service as a response body, four enter one as a request body, and this class holds every
- * one of them in a declared inventory so a new type cannot join the surface unclassified.</p>
+ * <p>Twenty-seven source files across three service modules make up that surface. Eighteen declare a
+ * record, and two of those declare the same name in two modules, so seventeen record names make up
+ * the classified inventory. The other nine are the six endpoints those modules answer a request on,
+ * the two handlers that answer a rejected request, and the message inventory
+ * {@link CardValidationMessages}. Twelve record types leave a service as a response body, six enter
+ * one as a request body, and this class holds every one of them in a declared inventory so a new type
+ * cannot join the surface unclassified.</p>
  *
  * <h2>What is asserted</h2>
  *
- * <p><strong>Response redaction.</strong> Every one of the fifty-nine response components is
+ * <p><strong>Response redaction.</strong> Every one of the sixty-four response components is
  * classified, and no classified component may carry a value the platform refuses to emit. The rule
  * is the one {@link SensitiveEventProperties} applies at the event boundary, widened by the names a
  * customer record adds, and it is aware of type as well as name:
@@ -101,7 +110,10 @@ import tools.jackson.databind.node.JsonNodeType;
  * <p><strong>Error-body exposure.</strong> {@link ApiErrorResponse} carries a status, one message
  * and one route template. It declares no throwable, no stack trace and no echo of a request, and its
  * own constructor refuses a route that holds a run of more than four digits, which is the shape of a
- * resolved card number or account identifier.</p>
+ * resolved card number or account identifier. {@link ApiProblem} is the account service's error body
+ * and carries the four members RFC 9457 defines plus one list of field texts. It declares no route at
+ * all, so there is no path for it to echo, and its own representation withholds the field texts while
+ * naming how many there are.</p>
  *
  * <p><strong>Serialized shape.</strong> Every response is built and serialized through Jackson, and
  * the emitted key set is compared against the declared components. A getter added beside the
@@ -153,14 +165,14 @@ class ApiSurfaceSecurityContractTest {
 
     /**
      * Source files making up the Application Programming Interface surface of the three modules
-     * this class classifies: the account, authorization and card services. Sixteen of the
-     * nineteen declare a record; the other three are the authorization endpoint, the handler that
-     * answers a rejected request, and the card message inventory.
+     * this class classifies: the account, authorization and card services. Eighteen of the
+     * twenty-seven declare a record; the other nine are the six endpoints those modules answer a
+     * request on, the two handlers that answer a rejected request, and the card message inventory.
      */
-    private static final int API_SOURCE_FILE_COUNT = 19;
+    private static final int API_SOURCE_FILE_COUNT = 30;
 
-    /** Components the eleven response types declare between them. */
-    private static final int RESPONSE_COMPONENT_COUNT = 59;
+    /** Components the twelve response types declare between them. */
+    private static final int RESPONSE_COMPONENT_COUNT = 68;
 
     /**
      * Fewest main sources the six services and the two libraries carry between them, all of which
@@ -205,6 +217,15 @@ class ApiSurfaceSecurityContractTest {
     /** An eleven-digit account identifier, the width {@code ACCT-ID PIC 9(11)} declares. */
     private static final String SHAPED_ACCOUNT_ID = "00000000011";
 
+    /**
+     * The card token of {@link #SHAPED_CARD_NUMBER}, derived by the production helper.
+     *
+     * <p>The paging cursor of the card list carries this form and never a card number. A card
+     * number leaves the service only masked, and a masked value names every card sharing four
+     * digits, so it identifies no single browse position. AAP section 0.6.4 fixes the rule.
+     */
+    private static final String SHAPED_CARD_TOKEN = PanMasker.cardToken(SHAPED_CARD_NUMBER);
+
     /** How a response component may carry its value. */
     private enum Disclosure {
 
@@ -226,12 +247,15 @@ class ApiSurfaceSecurityContractTest {
         SOURCE_DISCLOSED
     }
 
-    /** The eleven types a service returns as a response body. */
+    /** The twelve types a service returns as a response body. */
     private static final List<Class<?>> RESPONSE_TYPES = List.of(
             AccountView.class,
             CustomerView.class,
+            AccountReadResponse.class,
+            CustomerReadResponse.class,
             AccountUpdateResponse.class,
             CycleCloseResponse.class,
+            ApiProblem.class,
             AuthorizationResponse.class,
             ApiErrorResponse.class,
             CardDetailResponse.class,
@@ -240,12 +264,13 @@ class ApiSurfaceSecurityContractTest {
             CardUpdateResponse.class,
             CardUpdateResponse.RefreshedCard.class);
 
-    /** The five types a service accepts as a request body. */
+    /** The six types a service accepts as a request body. */
     private static final List<Class<?>> REQUEST_TYPES = List.of(
             AccountDataRequest.class,
             AccountUpdateRequest.class,
             CustomerDataRequest.class,
             AuthorizationRequest.class,
+            CardDetailRequest.class,
             CardUpdateRequest.class);
 
     /**
@@ -257,7 +282,7 @@ class ApiSurfaceSecurityContractTest {
      */
     private static final Map<String, Disclosure> RESPONSE_COMPONENTS = responseComponents();
 
-    /** Builds the classification of all fifty-nine response components. */
+    /** Builds the classification of all sixty-eight response components. */
     private static Map<String, Disclosure> responseComponents() {
         Map<String, Disclosure> components = new LinkedHashMap<>();
 
@@ -280,6 +305,18 @@ class ApiSurfaceSecurityContractTest {
         // CUST-EFT-ACCOUNT-ID reaches the screen at app/cbl/COACTVWC.cbl:L520.
         components.put("CustomerView.eftAccountId", Disclosure.SOURCE_DISCLOSED);
 
+        // AccountReadResponse. The message slot is WS-RETURN-MSG at app/cbl/COACTVWC.cbl:L117,
+        // which carries a not-found line and never a submitted value. The account slot nests
+        // AccountView, whose eleven components are classified above.
+        for (String component : List.of("message", "account")) {
+            components.put("AccountReadResponse." + component, Disclosure.SAFE);
+        }
+
+        // CustomerReadResponse. Same message slot, nesting CustomerView.
+        for (String component : List.of("message", "customer")) {
+            components.put("CustomerReadResponse." + component, Disclosure.SAFE);
+        }
+
         // AccountUpdateResponse. The message slot is WS-RETURN-MSG at app/cbl/COACTUPC.cbl:L479,
         // which carries a field label and never a submitted value. The account slot nests
         // AccountView, whose eleven components are classified above.
@@ -290,6 +327,15 @@ class ApiSurfaceSecurityContractTest {
         // CycleCloseResponse. Counters app/cbl/CBACT04C.cbl:L353-L354 zeroes.
         for (String component : List.of("accountId", "currentCycleCredit", "currentCycleDebit")) {
             components.put("CycleCloseResponse." + component, Disclosure.SAFE);
+        }
+
+        // ApiProblem. The account service's error body, whose four standard members are the ones RFC
+        // 9457 defines and are spelled as account-service config/SecurityConfig spells them when it
+        // answers 401 and 403. The messages member carries the field texts the validation pass at
+        // app/cbl/COACTUPC.cbl:L1470-L1676 emits, each a field label joined to a fixed literal, so no
+        // submitted value travels in it.
+        for (String component : List.of("type", "title", "status", "detail", "messages")) {
+            components.put("ApiProblem." + component, Disclosure.SAFE);
         }
 
         // AuthorizationResponse. Reason codes app/cbl/CBTRN02C.cbl:L385-L420.
@@ -310,7 +356,9 @@ class ApiSurfaceSecurityContractTest {
             components.put("CardDetailResponse." + component, Disclosure.SAFE);
         }
 
-        // CardListResponse. Page size and lookahead app/cbl/COCRDLIC.cbl:L1285.
+        // CardListResponse. Page size and lookahead app/cbl/COCRDLIC.cbl:L1285. The cursor is
+        // SAFE because it carries a card token: opaque, not reversible, and naming exactly one
+        // browse position. A cursor carrying a card number would be neither SAFE nor MASKED.
         for (String component : List.of("cards", "nextPageExists", "nextCursor")) {
             components.put("CardListResponse." + component, Disclosure.SAFE);
         }
@@ -349,7 +397,7 @@ class ApiSurfaceSecurityContractTest {
             "taxidentification",
             "passportnumber");
 
-    /** Annotations and types a web endpoint requires, none of which this checkpoint declares. */
+    /** Annotations and types a web endpoint requires, none of which this surface declares. */
     private static final List<String> WEB_ENDPOINT_TOKENS = List.of(
             "@RestController",
             "@Controller",
@@ -365,17 +413,32 @@ class ApiSurfaceSecurityContractTest {
             "@ResponseStatus");
 
     /**
-     * Files declaring a web-endpoint annotation. Four carry a controller and two carry the handler
+     * Files declaring a web-endpoint annotation. Eight carry a controller and four carry the handler
      * that answers a rejected request. Keys take the form {@code module/FileName.java}, which is how
      * {@link #MAIN_SOURCES} keys a source.
+     *
+     * <p>The account service carries three controllers, because it answers three resources: the
+     * account view and update of {@code app/cbl/COACTVWC.cbl} and {@code app/cbl/COACTUPC.cbl}, the
+     * customer read those two resolve through the cross-reference, and the cycle close that
+     * reproduces {@code app/cbl/CBACT04C.cbl:L353-L354}. One handler serves all three.</p>
+     *
+     * <p>The card service carries one controller for three routes, because
+     * {@code app/cbl/COCRDLIC.cbl}, {@code app/cbl/COCRDSLC.cbl} and {@code app/cbl/COCRDUPC.cbl}
+     * all address one collection of cards. One handler sits beside it.</p>
      *
      * <p>The ledger controller and the fraud controller carry no handler beside them. Each
      * constrains the identifier its route accepts, and the framework answers a miss with its own
      * problem document.</p>
      */
     private static final Set<String> ENDPOINT_SOURCE_FILES = Set.of(
+            "account-service/AccountController.java",
+            "account-service/CustomerController.java",
+            "account-service/BillingCycleController.java",
             "authorization-service/AuthorizationController.java",
             "authorization-service/GlobalExceptionHandler.java",
+            "account-service/AccountApiExceptionHandler.java",
+            "card-service/CardController.java",
+            "card-service/CardApiExceptionHandler.java",
             "ledger-posting-service/BalanceQueryController.java",
             "notification-service/NotificationHistoryController.java",
             "notification-service/NotificationApiExceptionHandler.java",
@@ -506,8 +569,8 @@ class ApiSurfaceSecurityContractTest {
             "fraud-detection-service", List.of(
                     "GET /fraud-assessments/** -> hasRole(ADMIN)"),
             "notification-service", List.of(
-                    "GET /notifications/{maskedCardNumber} -> "
-                            + "access(ownsPathVariable(CARD, maskedCardNumber))"),
+                    "GET /notifications/{cardToken} -> "
+                            + "access(ownsPathVariable(CARD, cardToken))"),
             "account-service", List.of(
                     "POST /accounts/{accountId}/cycle-close -> hasRole(ADMIN)",
                     "PUT /accounts/{accountId} -> hasRole(ADMIN)",
@@ -556,11 +619,10 @@ class ApiSurfaceSecurityContractTest {
     private static final String REFUSED_ROUTE = "/accounts/" + SHAPED_ACCOUNT_ID;
 
     /**
-     * Wraps a supplier so its value is read once.
+     * Wraps a supplier so its value is read once, on first use.
      *
-     * <p>The tables below read files and build records. A constant initialised eagerly would run
-     * that work during class initialisation, where a failure surfaces as an initialisation error
-     * naming no test. Reading on first use keeps a failure inside the test that asks for the value.
+     * <p>The tables below read files, and reading on first use keeps a read failure inside the
+     * test that asks for the value rather than in class initialisation.
      *
      * @param <T>    type the supplier yields
      * @param source supplier to read once
@@ -656,10 +718,10 @@ class ApiSurfaceSecurityContractTest {
     /**
      * Builds one populated instance of every response type.
      *
-     * <p>Each value satisfies the constructor of the type that receives it. Five types
-     * validate what they are given, so the values are chosen to pass rather than to be minimal: an
-     * account identifier of exactly eleven digits, a declined authorization carrying both a reason
-     * and its text, and the one update outcome that carries a refreshed snapshot. The decline
+     * <p>Each value satisfies the constructor of the type that receives it. Five types validate
+     * what they are given: an account identifier of exactly eleven digits, a declined authorization
+     * carrying both a reason and its text, and the one update outcome that carries a refreshed
+     * snapshot. The decline
      * names {@link DeclineReason#OVER_CREDIT_LIMIT} because a response carrying an account
      * identifier cannot also carry {@link DeclineReason#INVALID_CARD_NUMBER}: reason
      * {@code 0100} is the one outcome where the cross-reference read at
@@ -679,15 +741,26 @@ class ApiSurfaceSecurityContractTest {
                 new BigDecimal("0.00"), new BigDecimal("0.00"),
                 "2020-01-01", "2026-12-31", "2024-01-01", "ZEROAPR");
         instances.put("AccountView", accountView);
-        instances.put("CustomerView", new CustomerView("000000011", 750, "1975-04-12",
+        CustomerView customerView = new CustomerView("000000011", 750, "1975-04-12",
                 "FIRST", "M", "LAST", "ADDRESS LINE ONE", "ADDRESS LINE TWO", "CITY", "NY",
-                "10001", "USA", "2125551234", "2125555678", "0000000001", "Y"));
+                "10001", "USA", "2125551234", "2125555678", "0000000001", "Y");
+        instances.put("CustomerView", customerView);
+        // Both read responses carry the not-found slot empty, which is what a found row returns.
+        instances.put("AccountReadResponse", new AccountReadResponse("", accountView));
+        instances.put("CustomerReadResponse", new CustomerReadResponse("", customerView));
         // The message is the one app/cbl/COACTUPC.cbl:L2206-L2211 composes: a trimmed field label
         // joined to the literal at app/cbl/COACTUPC.cbl:L2209, which carries no trailing period.
         instances.put("AccountUpdateResponse",
                 new AccountUpdateResponse("Current Balance is not valid", accountView));
         instances.put("CycleCloseResponse", new CycleCloseResponse(SHAPED_ACCOUNT_ID,
                 new BigDecimal("0.00"), new BigDecimal("0.00")));
+        // The messages member is populated rather than omitted, because the serialized-shape
+        // assertion compares the emitted keys against the declared components and the record omits a
+        // null member from the wire form. The one text is the message app/cbl/COACTUPC.cbl:L2206-L2211
+        // composes for a rejected balance.
+        instances.put("ApiProblem", ApiProblem.of(422, ApiProblem.VALIDATION_FAILED,
+                ApiProblem.VALIDATION_FAILED_DETAIL,
+                List.of("Current Balance is not valid")));
         instances.put("AuthorizationResponse", new AuthorizationResponse("0000000000000001",
                 SHAPED_ACCOUNT_ID, false, DeclineReason.OVER_CREDIT_LIMIT,
                 DeclineReason.OVER_CREDIT_LIMIT.description()));
@@ -696,7 +769,7 @@ class ApiSurfaceSecurityContractTest {
         instances.put("CardDetailResponse", new CardDetailResponse(masked, SHAPED_ACCOUNT_ID,
                 "EMBOSSED NAME", LocalDate.of(2026, 12, 31), "Y"));
         instances.put("CardListResponse",
-                new CardListResponse(List.of(summary), true, SHAPED_CARD_NUMBER));
+                new CardListResponse(List.of(summary), true, SHAPED_CARD_TOKEN));
         instances.put("CardSummary", summary);
         instances.put("CardUpdateResponse", new CardUpdateResponse(
                 CardUpdateResponse.UpdateOutcome.CHANGED_BEFORE_UPDATE,
@@ -766,6 +839,19 @@ class ApiSurfaceSecurityContractTest {
             }
         }
         return values;
+    }
+
+    /**
+     * The actuator web-exposure include value, excluding health-group membership lists that use the
+     * same YAML leaf key.
+     *
+     * @param configuration configuration text to read
+     * @return the one value bound from the shared management-endpoint environment setting
+     */
+    private static List<String> actuatorExposureIncludes(String configuration) {
+        return valuesOf(configuration, "include").stream()
+                .filter(value -> value.contains("MANAGEMENT_ENDPOINTS"))
+                .toList();
     }
 
     /**
@@ -1028,9 +1114,8 @@ class ApiSurfaceSecurityContractTest {
     /**
      * One declared method of a configuration class, made reachable.
      *
-     * <p>Both refusals are package-private on purpose: nothing outside the configuration builds a
-     * response. Reaching them reflectively measures the response the framework would receive without
-     * widening their visibility to do it.</p>
+     * <p>Both refusals are package-private, so reflection is what lets this class measure the
+     * response the framework would receive without widening their visibility.</p>
      *
      * @param module         module whose configuration declares the method
      * @param name           method name
@@ -1152,15 +1237,29 @@ class ApiSurfaceSecurityContractTest {
     class ResponseRedaction {
 
         /**
-         * The surface is nineteen files, and every record among them is classified as a response or
-         * a request. A new file or a new record fails here, which is where classification is
-         * enforced. Three of the nineteen declare no record: the authorization endpoint and the
+         * The surface is thirty files, and every record among them is classified as a response
+         * or a request. A new file or a new record fails here, which is where classification is
+         * enforced. Ten of the thirty declare no record: the authorization endpoint and the
          * handler that answers a rejected request, both of which the plan requires at
-         * {@code POST /authorizations}, and the card message inventory.
+         * {@code POST /authorizations}; the three account-service endpoints and the handler beside
+         * them, plus the package-private account mapper, which the plan requires for the account
+         * view, the account update and the cycle close; the card endpoint and the handler beside it,
+         * which the plan requires for the card list, the card view and the card update; and the card
+         * message inventory.
+         *
+         * <p>Eighteen files declare a record and seventeen record names come out of them, because
+         * {@code ApiErrorResponse} is declared once in the authorization service and once in the card
+         * service. The two declarations carry different components, and the classified inventory
+         * holds the card one, which is the shape {@code ErrorBodyExposure} measures.</p>
+         *
+         * <p>One endpoint file serves three routes. {@code CardController} maps the list, the read
+         * and the update of {@code app/cbl/COCRDLIC.cbl}, {@code app/cbl/COCRDSLC.cbl} and
+         * {@code app/cbl/COCRDUPC.cbl} on one collection, so the file count and the route count are
+         * different numbers and neither substitutes for the other.</p>
          */
         @Test
-        @DisplayName("the surface is nineteen files and every record on it is classified")
-        void theApiSurfaceIsNineteenFilesAndEveryRecordIsClassified() {
+        @DisplayName("the surface is thirty files and every record on it is classified")
+        void theApiSurfaceIsThirtyFilesAndEveryRecordIsClassified() {
             Map<String, String> apiSources = new LinkedHashMap<>();
             readSourcesBelow(REPOSITORY_ROOT.get().resolve(SERVICES_DIRECTORY)
                     .resolve("account-service").resolve(MAIN_SOURCE_PATH)
@@ -1201,16 +1300,21 @@ class ApiSurfaceSecurityContractTest {
             assertEquals(classified, declaredRecords,
                     "every record of the surface is classified as a response or a request");
             assertEquals(Set.of("AuthorizationController", "GlobalExceptionHandler",
+                            "AccountController", "CustomerController", "BillingCycleController",
+                            "AccountApiExceptionHandler", "AccountRecordMapper", "CardController",
+                            "CardApiExceptionHandler",
                             CardValidationMessages.class.getSimpleName()), declaredClasses,
-                    "the three files that declare no record are the authorization endpoint, the "
-                            + "handler that answers a rejected request, and the message inventory");
-            assertEquals(11, RESPONSE_TYPES.size(), "eleven types leave as a response body");
-            assertEquals(5, REQUEST_TYPES.size(), "five types enter as a request body");
+                    "the ten files that declare no record are the authorization endpoint, the "
+                            + "three account-service endpoints, the account mapper, the card "
+                            + "endpoint, the three handlers that answer a rejected request, and "
+                            + "the message inventory");
+            assertEquals(14, RESPONSE_TYPES.size(), "fourteen types leave as a response body");
+            assertEquals(6, REQUEST_TYPES.size(), "six types enter as a request body");
         }
 
         /** Every declared component is classified, and every classified component is declared. */
         @Test
-        @DisplayName("all fifty-nine response components are classified in both directions")
+        @DisplayName("all sixty-eight response components are classified in both directions")
         void everyResponseComponentIsClassified() {
             Set<String> declared = new TreeSet<>();
             for (Class<?> type : RESPONSE_TYPES) {
@@ -1461,6 +1565,34 @@ class ApiSurfaceSecurityContractTest {
         }
 
         /**
+         * The paging cursor of the card list carries a card token, so no response component of the
+         * platform carries a card number in any form other than the masked one.
+         *
+         * <p>A cursor is the one response value a caller sends back, which makes it the one place a
+         * card number could travel out and return unnoticed. The assertion reads the serialized
+         * value rather than the record component, because serialization is where a response reaches
+         * a caller.
+         */
+        @Test
+        @DisplayName("the paging cursor serializes as a card token and not as a card number")
+        void thePagingCursorSerializesAsACardTokenAndNotAsACardNumber() {
+            ObjectMapper mapper = mapper();
+            JsonNode page = mapper.valueToTree(RESPONSE_INSTANCES.get().get("CardListResponse"));
+            String cursor = page.get("nextCursor").stringValue();
+
+            assertEquals(SHAPED_CARD_TOKEN, cursor,
+                    "the cursor emits what PanMasker.cardToken derives");
+            assertTrue(cursor.matches(PanMasker.CARD_TOKEN_PATTERN),
+                    "the cursor holds the one card-token shape this platform declares, found "
+                            + cursor.length() + " characters");
+            assertFalse(cursor.contains(SHAPED_CARD_NUMBER),
+                    "no card number survives into the cursor");
+            assertNotEquals(PanMasker.maskCardNumber(SHAPED_CARD_NUMBER), cursor,
+                    "the cursor is not the masked form either, which names every card sharing "
+                            + "four digits and therefore names no single browse position");
+        }
+
+        /**
          * The unmasked number and the customer identifiers enter on the request side only. Section
          * 0.6.4 of the plan requires the decision to run on the full number, exactly as
          * {@code app/cbl/CBTRN02C.cbl:L383-L387} keys the cross-reference read on it.
@@ -1599,6 +1731,119 @@ class ApiSurfaceSecurityContractTest {
             assertFalse(tree.toString().contains(SHAPED_CARD_NUMBER),
                     "no card number reaches the serialized error body");
         }
+
+        /**
+         * The account service's error body carries the four members RFC 9457 defines and one list of
+         * field texts, spelled exactly as the refusal that service's chain writes spells them.
+         *
+         * <p>One service answering two shapes of error would make a client parse both. The four names
+         * this asserts are the same four {@link #PROBLEM_MEMBERS} holds, which is what the two
+         * refusals of {@code WebSurfaceAccessControl} measure on the chain side, so a rename on either
+         * side fails on the other.</p>
+         */
+        @Test
+        @DisplayName("the account error body carries the four RFC 9457 members and one message list")
+        void theAccountErrorBodyCarriesTheFourProblemMembersAndOneMessageList() {
+            RecordComponent[] components = ApiProblem.class.getRecordComponents();
+
+            assertEquals(5, components.length, "the account error body declares five components");
+            assertEquals(List.of("type", "title", "status", "detail", "messages"),
+                    componentNamesOf(ApiProblem.class),
+                    "the account error body declares the four standard members then the field texts");
+            assertEquals(PROBLEM_MEMBERS,
+                    componentNamesOf(ApiProblem.class).subList(0, PROBLEM_MEMBERS.size()),
+                    "the four standard members are spelled as the refusal the chain writes spells "
+                            + "them, and in the same order");
+            assertEquals(String.class, components[0].getType(), "the type is text");
+            assertEquals(String.class, components[1].getType(), "the title is text");
+            assertEquals(int.class, components[2].getType(), "the status is a number");
+            assertEquals(String.class, components[3].getType(), "the detail is text");
+            assertEquals(List.class, components[4].getType(), "the field texts are a list");
+        }
+
+        /**
+         * The account error body declares no throwable, no stack trace, no open map and no component
+         * that would echo a request.
+         *
+         * <p>{@code detail} is exempt from the fragment scan and from nothing else. RFC 9457 names
+         * that member, {@link #PROBLEM_MEMBERS} holds it, and the chain of every one of the six
+         * services already writes it, so refusing the name here would refuse the standard. What the
+         * member carries is asserted instead: every value comes from a constant of the record, and the
+         * assertion below measures that no constant names an identifier or a route.</p>
+         */
+        @Test
+        @DisplayName("the account error body declares no throwable and no diagnostic component")
+        void theAccountErrorBodyDeclaresNoThrowableAndNoDiagnosticComponent() {
+            for (RecordComponent component : ApiProblem.class.getRecordComponents()) {
+                assertFalse(Throwable.class.isAssignableFrom(component.getType()),
+                        component.getName() + " would carry a throwable");
+                assertFalse(StackTraceElement[].class.isAssignableFrom(component.getType()),
+                        component.getName() + " would carry a stack trace");
+                assertFalse(Map.class.isAssignableFrom(component.getType()),
+                        component.getName() + " would carry an open map of values");
+
+                String folded = component.getName().toLowerCase(Locale.ROOT);
+                for (String fragment : DIAGNOSTIC_COMPONENT_FRAGMENTS) {
+                    if ("detail".equals(component.getName()) && "detail".equals(fragment)) {
+                        continue;
+                    }
+                    assertFalse(folded.contains(fragment),
+                            component.getName() + " names a diagnostic value through " + fragment);
+                }
+                assertFalse(isForbiddenOnAResponse(component.getName()),
+                        component.getName() + " names a value no response may carry");
+            }
+
+            for (String fixed : List.of(ApiProblem.VALIDATION_FAILED_DETAIL,
+                    ApiProblem.NOT_FOUND_DETAIL, ApiProblem.MALFORMED_REQUEST_DETAIL,
+                    ApiProblem.INTERNAL_FAILURE_DETAIL)) {
+                assertFalse(fixed.contains("/"),
+                        "a detail naming a path would put the requested route in the body: " + fixed);
+                assertFalse(fixed.matches(".*\\d{5,}.*"),
+                        "a detail carrying a run of five or more digits would carry an identifier: "
+                                + fixed);
+            }
+        }
+
+        /**
+         * The account error body refuses an empty message list and withholds the field texts from its
+         * own representation.
+         *
+         * <p>A document carrying an empty {@code messages} member says a field failed and declines to
+         * say which, so the constructor refuses it and a failure with no field text omits the member.
+         * The representation withholds the texts because a text produced by an edit quotes the label
+         * of a field the caller supplied, and a representation reaching a log would copy it.</p>
+         */
+        @Test
+        @DisplayName("the account error body refuses an empty message list and withholds the texts")
+        void theAccountErrorBodyRefusesAnEmptyMessageListAndWithholdsTheTexts() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> ApiProblem.of(422, ApiProblem.VALIDATION_FAILED,
+                            ApiProblem.VALIDATION_FAILED_DETAIL, List.of()),
+                    "an empty message list is refused rather than stored");
+            assertThrows(NullPointerException.class,
+                    () -> new ApiProblem(null, ApiProblem.NOT_FOUND, 404,
+                            ApiProblem.NOT_FOUND_DETAIL, null),
+                    "the problem type is required");
+
+            ApiProblem withoutTexts = ApiProblem.of(404, ApiProblem.NOT_FOUND,
+                    ApiProblem.NOT_FOUND_DETAIL);
+            assertNull(withoutTexts.messages(), "a failure with no field text carries no member");
+            assertEquals(List.of("type", "title", "status", "detail"),
+                    keysOf(mapper().valueToTree(withoutTexts)),
+                    "the absent member is omitted from the wire form rather than sent as null");
+
+            String rejected = "Current Balance is not valid";
+            ApiProblem withTexts = ApiProblem.of(422, ApiProblem.VALIDATION_FAILED,
+                    ApiProblem.VALIDATION_FAILED_DETAIL, List.of(rejected));
+            assertFalse(withTexts.toString().contains(rejected),
+                    "the representation would copy a field text into every log line that prints it");
+            assertTrue(withTexts.toString().contains("1 " + EventEnvelope.WITHHELD),
+                    "the representation says how many texts there are and withholds them: "
+                            + withTexts.toString());
+            assertEquals(List.of(rejected), withTexts.messages(),
+                    "the caller still receives the text the edit produced");
+        }
     }
 
     @Nested
@@ -1621,7 +1866,8 @@ class ApiSurfaceSecurityContractTest {
         @DisplayName("every service exposes health, metrics and Prometheus and nothing else")
         void everyServiceExposesHealthMetricsAndPrometheusOnly() {
             for (String module : ALL_MODULES) {
-                List<String> declared = valuesOf(APPLICATION_YAMLS.get().get(module), "include");
+                List<String> declared =
+                        actuatorExposureIncludes(APPLICATION_YAMLS.get().get(module));
                 assertEquals(1, declared.size(),
                         module + " declares one actuator exposure list: " + declared);
 
@@ -1639,7 +1885,8 @@ class ApiSurfaceSecurityContractTest {
         void noServiceExposesADiagnosticActuatorEndpoint() {
             for (String module : ALL_MODULES) {
                 Set<String> exposed =
-                        exposedEndpointsOf(valuesOf(APPLICATION_YAMLS.get().get(module), "include")
+                        exposedEndpointsOf(actuatorExposureIncludes(
+                                APPLICATION_YAMLS.get().get(module))
                                 .get(0));
                 for (String diagnostic : DIAGNOSTIC_ACTUATOR_ENDPOINTS) {
                     assertFalse(exposed.contains(diagnostic),
@@ -1693,10 +1940,11 @@ class ApiSurfaceSecurityContractTest {
          * configuration comment states: a login name is not a credential, and an unset password stops
          * start-up rather than presenting one this repository published.</p>
          *
-         * <p>ADDITIVE: the CardDemo source authenticates nothing to anything. A batch step reads a
-         * dataset the scheduler already entitled it to read, and no program presents a credential to
-         * a message broker because there is no broker. This assertion measures a mechanism the
-         * platform introduced, so it names the deviation rather than a source line.</p>
+         * <p>No COBOL ancestor: the CardDemo source authenticates nothing to anything. A batch step
+         * reads a dataset the scheduler already entitled it to read, and no program presents a
+         * credential to a message broker because there is no broker. This assertion measures a
+         * mechanism the platform introduced, so it names the deviation rather than a source
+         * line.</p>
          */
         @Test
         @DisplayName("every service presents a broker credential the environment supplies")
@@ -1750,12 +1998,25 @@ class ApiSurfaceSecurityContractTest {
     class WebSurfaceAccessControl {
 
         /**
-         * Four modules declare a web endpoint and six files carry the annotations: the synchronous
-         * authorization surface the plan requires at {@code POST /authorizations}, the read-only
-         * balance query at {@code GET /balances/{accountId}}, the read-only notification history,
-         * and the read-only fraud assessment query at {@code GET /fraud-assessments}. All four are
-         * named here by file, so a fifth module or a seventh file fails this assertion and the
-         * failure text names what then has to be written.
+         * Five modules declare a web endpoint and ten files carry the annotations: the synchronous
+         * authorization surface the plan requires at {@code POST /authorizations}, the account and
+         * customer reads and the account update the plan requires of the account service, the cycle
+         * close beside them, the read-only balance query at {@code GET /balances/{accountId}}, the
+         * read-only notification history, and the read-only fraud assessment query at
+         * {@code GET /fraud-assessments}. All five are named here by file, so a sixth module or an
+         * eleventh file fails this assertion and the failure text names what then has to be written.
+         *
+         * <p>The account service is the only module here that answers a request which writes. Its
+         * three routes and their authorities sit in {@link #API_ROUTE_RULES}, and the two writing
+         * routes require the administrator role, because {@code app/cbl/COACTUPC.cbl} is reached from
+         * the administrator menu and {@code app/cbl/CBACT04C.cbl} runs as a scheduled job rather than
+         * from a terminal at all. The three assertions this contract owes a new endpoint already
+         * cover it: {@link #anUnauthenticatedCallerReceivesAChallengeThatNamesNothing} measures the
+         * status an anonymous caller receives,
+         * {@link #anAuthenticatedCallerWithoutTheAuthorityReceivesARefusalNamingNothing} measures the
+         * refusal body, both measure the headers the response carries, and
+         * {@code ErrorBodyExposure} measures the body its handler returns for a failure the chain
+         * admitted.</p>
          *
          * <p>The balance query returns the four values {@code 1200-SETUP-SCREEN-VARS} at
          * {@code app/cbl/COACTVWC.cbl:L460} moves, less the six the account service owns. It reads
@@ -1773,8 +2034,8 @@ class ApiSurfaceSecurityContractTest {
          * {@link #ALL_MODULES}, so the fraud detection service was already among them.</p>
          */
         @Test
-        @DisplayName("the web endpoints are the six files four services declare")
-        void theWebEndpointsAreTheSixFilesFourServicesDeclare() {
+        @DisplayName("the web endpoints are the twelve files six services declare")
+        void theWebEndpointsAreTheTwelveFilesSixServicesDeclare() {
             assertTrue(MAIN_SOURCES.get().size() >= MAIN_SOURCE_FILE_FLOOR,
                     "the scan reached " + MAIN_SOURCES.get().size() + " main sources of the six "
                             + "services and the two libraries, under the "
@@ -1795,12 +2056,14 @@ class ApiSurfaceSecurityContractTest {
                             + "and the headers the response carries. Add them beside the redaction "
                             + "assertions above: " + declaring);
             assertEquals(
-                    Set.of("authorization-service", "ledger-posting-service",
-                            "notification-service", "fraud-detection-service"),
+                    Set.of("authorization-service", "account-service", "card-service",
+                            "ledger-posting-service", "notification-service",
+                            "fraud-detection-service"),
                     modules,
-                    "the synchronous surface is the authorization endpoint, the balance query, the "
-                            + "notification history and the fraud assessment query, and no other "
-                            + "module answers a request: " + modules);
+                    "the synchronous surface is the authorization endpoint, the account, customer "
+                            + "and cycle-close routes, the card list, read and update, the balance "
+                            + "query, the notification history and the fraud assessment query, and "
+                            + "no other module answers a request: " + modules);
         }
 
         /**

@@ -3,6 +3,7 @@ package com.carddemo.equivalence;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.cobol.PanMasker;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,6 +11,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
@@ -35,7 +37,8 @@ class CardSeedEquivalenceTest {
     private static final String MODULE = "card-service";
 
     /**
-     * One row of the {@code card} insert: six values in column order.
+     * One row of the {@code card} insert: the six copybook values in column order, then the card
+     * token.
      *
      * <p>{@link #seededCardRows()} joins the statement's lines before matching, so a row written on
      * one line and a row split across two both parse. Line breaks and the spaces that align the
@@ -46,10 +49,13 @@ class CardSeedEquivalenceTest {
      */
     private static final Pattern CARD_ROW = Pattern.compile(
             "\\('([0-9]{16})', '([0-9]{11})', '([0-9]{3})', '((?:[^']|'')*?)', *"
-                    + "'([0-9]{4}-[0-9]{2}-[0-9]{2})', '([YN])'\\)");
+                    + "'([0-9]{4}-[0-9]{2}-[0-9]{2})', '([YN])', *'([0-9a-f]{64})'\\)");
 
     /** Embossed name each seeded row writes, unstripped, filled by {@link #seededCardRows()}. */
     private static final Map<String, String> SEEDED_NAMES = new LinkedHashMap<>();
+
+    /** Card token each seeded row writes, filled by {@link #seededCardRows()}. */
+    private static final Map<String, String> SEEDED_TOKENS = new LinkedHashMap<>();
 
     /** One row of the {@code card_xref} insert. */
     private static final Pattern XREF_ROW =
@@ -172,6 +178,41 @@ class CardSeedEquivalenceTest {
     }
 
     /**
+     * Holds every seeded card token to the one derivation this platform declares.
+     *
+     * <p>{@code card_token} derives from no fixture field. {@code app/cpy/CVACT02Y.cpy} declares no
+     * such field, and the column exists because a paging cursor may carry no card number: section
+     * 0.6.4 of the plan admits only a tokenized or masked form in published data, and a masked
+     * number names every card sharing four digits rather than one row.
+     *
+     * <p>Fifty checked-in literals carry the value, and one Java helper derives it for every row the
+     * card service writes. Two carriers of one value can drift, and a drift would split a card's
+     * identity: a cursor issued for a seeded row would resolve, one issued for an inserted row would
+     * not. This test is the guard, and it needs no database, so a mistyped literal fails during the
+     * ordinary build.
+     */
+    @Test
+    @DisplayName("every seeded card token is the digest PanMasker.cardToken produces")
+    void everySeededCardTokenIsTheDigestOfItsCardNumber() {
+        seededCardRows();
+
+        assertEquals(50, SEEDED_TOKENS.size(), "one card token per seeded row");
+        assertEquals(50, Set.copyOf(SEEDED_TOKENS.values()).size(),
+                "one card reaches one token, and no two cards share one. A repeated literal would "
+                        + "break uq_card_card_token and point two cursors at one row");
+        SEEDED_TOKENS.forEach((cardNumber, token) -> {
+            assertEquals(PanMasker.cardToken(cardNumber), token,
+                    "card " + cardNumber + " carries a literal that is not the digest "
+                            + "PanMasker.cardToken derives from its card number");
+            assertTrue(token.matches(PanMasker.CARD_TOKEN_PATTERN),
+                    "card " + cardNumber + " carries a token outside the shape "
+                            + "ck_card_card_token_hex declares in V1__schema.sql");
+            assertTrue(!token.contains(cardNumber),
+                    "card " + cardNumber + " carries a token holding its own card number");
+        });
+    }
+
+    /**
      * Reads every {@code card} row the seed writes.
      *
      * @return card number to the account identifier, the verification value, the embossed name, the
@@ -180,15 +221,18 @@ class CardSeedEquivalenceTest {
     private static Map<String, List<String>> seededCardRows() {
         Map<String, List<String>> rows = new LinkedHashMap<>();
         Map<String, String> namesByCardNumber = new LinkedHashMap<>();
+        Map<String, String> tokensByCardNumber = new LinkedHashMap<>();
         Matcher row = CARD_ROW.matcher(String.join(" ", insertBlock("card")));
         while (row.find()) {
             String name = row.group(4).replace("''", "'");
             rows.put(row.group(1), List.of(row.group(2), row.group(3), name.strip(),
                     row.group(5), row.group(6)));
             namesByCardNumber.put(row.group(1), name);
+            tokensByCardNumber.put(row.group(1), row.group(7));
         }
         assertEquals(50, rows.size(), "the card seed writes 50 rows");
         SEEDED_NAMES.putAll(namesByCardNumber);
+        SEEDED_TOKENS.putAll(tokensByCardNumber);
         return rows;
     }
 

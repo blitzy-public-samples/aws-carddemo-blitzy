@@ -3,7 +3,7 @@ package com.carddemo.account.repository;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * Starts one PostgreSQL container for the account-service test tree and points the Spring context
@@ -18,7 +18,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
  * <p><b>What every subclass checks by starting.</b> {@code src/main/resources/application.yml}
  * asks Hibernate to validate the entity mapping against the migrated schema, and leaves schema
  * creation to Flyway. A context fails to start when an entity class disagrees with that schema.
- * Hibernate reads all five Jakarta Persistence (JPA) entity classes and checks each column name,
+ * Hibernate reads all six Jakarta Persistence (JPA) entity classes and checks each column name,
  * type, precision, scale and nullability. Every subclass carries that check.</p>
  *
  * <p><b>Four variables the shipped configuration leaves undefined.</b>
@@ -51,14 +51,10 @@ import org.testcontainers.containers.PostgreSQLContainer;
  * type. The comparison at {@code app/cbl/CBTRN02C.cbl:L414} reads
  * {@code IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)}.</p>
  *
- * <p><b>Where the reasoning lives.</b>
- * {@code card-platform/docs/decision-log.md} records four decisions the class embodies. Two concern
- * the database: Testcontainers over an in-memory database, and one container shared across the Java
- * Virtual Machine (JVM) over one container per test class. Two concern the annotations: the
- * {@code SpringBootTest} annotation over the {@code DataJpaTest} slice, and the
+ * <p>Two concern the database: Testcontainers over an in-memory database, and one container shared
+ * across the Java Virtual Machine (JVM) over one container per test class. Two concern the
+ * annotations: the {@code SpringBootTest} annotation over the {@code DataJpaTest} slice, and the
  * {@code DynamicPropertySource} method over the {@code ServiceConnection} annotation.
- * {@code card-platform/docs/data-model.md} draws the table shapes and the lookup path between
- * them.</p>
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
@@ -80,16 +76,30 @@ public abstract class AbstractAccountPostgresTest {
      */
     private static final String POSTGRES_CREDENTIAL = "carddemo";
 
+    /** The private schema the account service owns. */
+    private static final String ACCOUNT_SCHEMA = "account_service";
+
+    /**
+     * The schema {@code src/main/resources/application.yml} names for Flyway and for the
+     * persistence layer, and the schema this class puts on the connection search path.
+     */
+    private static final String MIGRATED_SCHEMA = "account_service";
+
     /**
      * The one container every test class in the module shares.
      *
+     * <p>The class name comes from {@code org.testcontainers.postgresql}, the package
+     * Testcontainers 2.0.5 ships it in.
+     * {@code org.testcontainers.containers.PostgreSQLContainer} carries a deprecation on the same
+     * artifact.</p>
+     *
      * <p>No annotation manages the lifecycle of the field, and no code here stops the container.
-     * Testcontainers removes it when the JVM exits.</p>
+     * Testcontainers removes it when the Java Virtual Machine (JVM) exits.</p>
      */
-    private static final PostgreSQLContainer<?> POSTGRES;
+    private static final PostgreSQLContainer POSTGRES;
 
     static {
-        POSTGRES = new PostgreSQLContainer<>(POSTGRES_IMAGE)
+        POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
                 .withDatabaseName(POSTGRES_CREDENTIAL)
                 .withUsername(POSTGRES_CREDENTIAL)
                 .withPassword(POSTGRES_CREDENTIAL);
@@ -101,7 +111,7 @@ public abstract class AbstractAccountPostgresTest {
      *
      * @return the one container every test class in the module shares
      */
-    protected static PostgreSQLContainer<?> postgres() {
+    protected static PostgreSQLContainer postgres() {
         return POSTGRES;
     }
 
@@ -112,12 +122,28 @@ public abstract class AbstractAccountPostgresTest {
      * carries every other datasource, Flyway and persistence setting, so no line below repeats
      * one.</p>
      *
+     * <p>The uniform resource locator carries {@code currentSchema}, as the shipped one at
+     * {@code src/main/resources/application.yml:L39} does. {@code hibernate.default_schema}
+     * qualifies a mapped query alone, so a native statement such as
+     * {@code OutboxEventRepository.claimDueRows} resolves its table name against the connection
+     * search path.</p>
+     *
      * @param registry the registry the Spring test context supplies
      */
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", AbstractAccountPostgresTest::jdbcUrlOnAccountSchema);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+    }
+
+    /**
+     * Returns the container URL with the service schema on the connection search path.
+     *
+     * @return the account-service database URL
+     */
+    private static String jdbcUrlOnAccountSchema() {
+        String url = POSTGRES.getJdbcUrl();
+        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + ACCOUNT_SCHEMA;
     }
 }

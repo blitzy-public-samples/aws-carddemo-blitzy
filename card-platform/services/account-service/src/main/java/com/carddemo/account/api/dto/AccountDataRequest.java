@@ -100,6 +100,8 @@ import jakarta.validation.constraints.Size;
  *                           {@code ACUP-NEW-GROUP-ID PIC X(10)} at
  *                           {@code app/cbl/COACTUPC.cbl:L796}. No edit reads this component and the
  *                           program moves no label for it, so width alone bounds it
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record AccountDataRequest(
 
@@ -263,15 +265,15 @@ public record AccountDataRequest(
      * The characters {@code groupId} may hold: printable ones and nothing else.
      *
      * <p>The range runs from the space at {@code 0x20} to the tilde at {@code 0x7E}, so every C0
-     * control character is outside it. The group identifier takes no edit in
-     * {@code app/cbl/COACTUPC.cbl}, and this guard is what bounds its character set. ADDITIVE: the
-     * source reads the field from a fixed-width map area, which no control character can reach.
+     * control character is outside it. The group identifier takes no edit in {@code
+     * app/cbl/COACTUPC.cbl}, and this guard is what bounds its character set. No COBOL ancestor:
+     * the source reads the field from a fixed-width map area, which no control character can reach.
      */
     public static final String PRINTABLE_TEXT_PATTERN = "^[ -~]*$";
 
     /**
      * Message a caller reads when {@code groupId} carries a character outside
-     * {@value #PRINTABLE_TEXT_PATTERN}. ADDITIVE, for the reason that pattern records.
+     * {@value #PRINTABLE_TEXT_PATTERN}. No source counterpart, for the reason that pattern records.
      */
     public static final String CONTROL_CHARACTER_MESSAGE =
             "Text fields must hold printable characters only.";
@@ -280,9 +282,9 @@ public record AccountDataRequest(
      * Names all ten components and withholds every value.
      *
      * <p>This override replaces the representation the compiler generates for a record. That
-     * generated form prints the balance, both credit limits and both cycle accumulators, so one
-     * interpolation into a log line, an assertion failure or an exception message would place a
-     * cardholder's balance and available credit there.
+     * generated form prints the balance, both credit limits and both cycle accumulators. One
+     * interpolation into a log line, an assertion failure or an exception message would then
+     * place a cardholder's balance and available credit there.
      *
      * <p>Each component appears as {@link EventEnvelope#WITHHELD}, the platform-wide redaction
      * marker, so a validation failure or a debugger view discloses no cardholder finances.

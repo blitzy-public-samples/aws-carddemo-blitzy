@@ -34,9 +34,6 @@ import java.util.List;
  * {@code app/cpy/CVTRA02Y.cpy} </td> <td>51</td><td>50</td> </tr> </table>
  *
  * <p>The counts and widths in that table come from measuring the three files.</p>
- *
- * <p>This reader is module-local rather than shared with the equivalence suite, a choice recorded
- * in {@code card-platform/docs/decision-log.md} (planned).</p>
  */
 final class AsciiFixtureReader {
 

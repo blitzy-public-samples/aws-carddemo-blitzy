@@ -154,13 +154,13 @@ class RepositorySurfaceTest {
     private static List<Surface> surfaces() {
         return List.of(
                 new Surface(AccountBalanceProjectionRepository.class,
-                        Set.of("findById", "save", "count")),
+                        Set.of("findById", "findForUpdateById", "save", "count")),
                 new Surface(TransactionRepository.class,
                         Set.of("save", "findById", "existsById", "count")),
                 new Surface(RejectedTransactionRepository.class,
                         Set.of("save", "count")),
                 new Surface(TransactionCategoryBalanceRepository.class,
-                        Set.of("findById", "save", "count")),
+                        Set.of("findById", "save", "addToCategoryBalance", "count")),
                 new Surface(DisclosureGroupRepository.class,
                         Set.of("findById", "findAll")));
     }
@@ -192,14 +192,17 @@ class RepositorySurfaceTest {
 
     @ParameterizedTest(name = "{0}")
     @MethodSource("surfaces")
-    @DisplayName("No repository exposes a delete, because no source paragraph removes a row")
+    @DisplayName("No business aggregate exposes a delete; no source paragraph removes such a row")
     void noRepositoryExposesDelete(Surface surface) {
         List<String> deletes = Arrays.stream(surface.repository().getMethods())
                 .map(Method::getName)
                 .filter(name -> name.startsWith("delete") || name.startsWith("remove"))
                 .toList();
         assertTrue(deletes.isEmpty(), surface + " exposes " + deletes
-                + ", and no paragraph in app/cbl/ deletes a row of this aggregate");
+                + ", and no paragraph in app/cbl/ deletes a row of this aggregate. A bounded "
+                + "retention delete belongs on the additive infrastructure tables only: "
+                + "outbox_event, processed_event, velocity_window, statement_transaction, "
+                + "notification_log and authorization_decision");
     }
 
     @Test

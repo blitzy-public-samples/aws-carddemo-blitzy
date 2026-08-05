@@ -60,6 +60,13 @@ class SecurityConfigTest {
     /** Masked card the stub caller owns, from record 1 of app/data/ASCII/cardxref.txt. */
     private static final String OWNED_CARD = "************5740";
 
+    /**
+     * Sixteen digits shaped like a card number, whose visible tail is the tail {@link #OWNED_CARD}
+     * shows. Its four leading digits are {@code 9999}, and no card of
+     * {@code app/data/ASCII/carddata.txt} begins with them.
+     */
+    private static final String FULL_CARD_NUMBER = "9999" + "024453765740";
+
     /** An encoded password, which is the only form a configured identity carries. */
     private static final String ENCODED_PASSWORD =
             "{bcrypt}$2a$10$09aw53YezqFzaOe9qHVMR.KYVTyZ497/zI1dK2cpMnKcolhsF2XEW";
@@ -223,7 +230,7 @@ class SecurityConfigTest {
                                     .isGranted(),
                             "another card sharing no last four digits is refused"),
                     () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("maskedCardNumber", "0500024453765740"))
+                                    pathContext("maskedCardNumber", FULL_CARD_NUMBER))
                                     .isGranted(),
                             "a full card number matches no scope, so a caller cannot substitute "
                                     + "one for the masked form the route declares"));

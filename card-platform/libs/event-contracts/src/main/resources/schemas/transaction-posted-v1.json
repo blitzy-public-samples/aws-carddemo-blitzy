@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://carddemo.example.com/schemas/transaction-posted-v1.json",
   "title": "TransactionPosted",
-  "description": "The ledger publishes one TransactionPosted event after it applies one posting. Six payload fields carry the new account balance, the posting timestamp, and the transaction that moved the balance, with widths from app/cpy/CVACT01Y.cpy and app/cpy/CVTRA05Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one. Evolution and version policy: card-platform/docs/event-flow.md (planned).",
+  "description": "The ledger publishes one TransactionPosted event after it applies one posting. Six payload fields carry the new account balance, the posting timestamp, and the transaction that moved the balance, with widths from app/cpy/CVACT01Y.cpy and app/cpy/CVTRA05Y.cpy. Five envelope fields precede them, and the envelope is additive in full: no source record carries one.",
   "$comment": "aggregateId and accountId carry one account identifier, and the Kafka message key is that value, so the key and the payload cannot disagree.",
   "type": "object",
   "properties": {
@@ -87,7 +87,7 @@
     },
     "extensions": {
       "type": "object",
-      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction: at most 16 members, each name a short identifier, each value a string of at most 256 characters, and no nested object or array. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
+      "description": "Optional, bounded room for additive evolution inside this version. A later producer puts a new value here and a consumer on this version still validates the event, which is what keeps a new consumer from breaking an existing one. The object is closed in every other direction. It holds at most 16 members. Each name is a short identifier and each value a string of at most 256 characters. No nested object or array is allowed. A field that belongs to the event contract is declared above instead; this object never carries a Primary Account Number, a card verification value or any other sensitive value. Additive. No source field exists.",
       "propertyNames": {
         "pattern": "^[a-zA-Z][a-zA-Z0-9_]{0,39}$"
       },

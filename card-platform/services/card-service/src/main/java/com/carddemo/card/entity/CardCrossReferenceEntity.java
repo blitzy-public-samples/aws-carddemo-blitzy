@@ -89,6 +89,8 @@ import java.util.UUID;
  * those sixteen positions, matching {@code PIC X}. The constructor adds no checksum. The one
  * card-number rule in the source names sixteen digits, at
  * {@code app/cbl/COCRDUPC.cbl:L194}.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "card_xref",
@@ -157,7 +159,7 @@ public class CardCrossReferenceEntity {
     private String accountId;
 
     // ------------------------------------------------------------------------------------
-    // Replica freshness. ADDITIVE: the source has no replica to keep current.
+    // Replica freshness. No COBOL ancestor: the source has no replica to keep current.
     // app/cbl/COCRDSLC.cbl reads the cross-reference dataset itself, so it cannot be stale.
     // A copy that cannot say how old it is cannot be refused when it is too old, which is the
     // whole point of the three columns below.
@@ -243,9 +245,9 @@ public class CardCrossReferenceEntity {
      * Rejects an identifier that is the wrong width or carries a character outside {@code 0}
      * through {@code 9}.
      *
-     * <p>A {@code PIC 9(n)} display field is exactly n characters wide and holds only digits, so
-     * both halves of that contract are checked here and the column check constraint repeats them
-     * in the database. Neither failure message carries a character of the rejected value: the
+     * <p>A {@code PIC 9(n)} display field is exactly n characters wide and holds only digits.
+     * Both halves of that contract are checked here, and the column check constraint repeats them
+     * in the database. Neither failure message carries a character of the rejected value. The
      * width message reports a length and the digit message reports a position.</p>
      *
      * @param fieldName the field under check, named in any failure message
@@ -355,9 +357,7 @@ public class CardCrossReferenceEntity {
      * Reports whether this row was observed recently enough to authorize against.
      *
      * <p>The caller supplies the window, so the policy lives in configuration and not here. A row
-     * with no observation time is reported stale rather than fresh: a replica that cannot establish
-     * its own freshness has to be treated as unfit, because the alternative is authorizing against
-     * a copy that may have stopped being updated at any point in the past.
+     * with no observation time is reported stale.
      *
      * @param now       the current time
      * @param maxAge    how old an observation may be and still count as fresh

@@ -63,8 +63,6 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * configured identity carries an already-encoded password, {@link PasswordEncoderFactories}
  * supplies the delegating encoder that reads its {@code {bcrypt}} prefix, and no plaintext password
  * is stored, compared or logged anywhere on this platform.
- * {@code card-platform/docs/business-rule-flags.md} (planned) carries the source behaviour for the
- * record.
  *
  * <h2>The four properties this class holds</h2>
  *
@@ -118,7 +116,6 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * their own routes are the intended shape, and each copy differs only in
  * {@link #apiSecurity(HttpSecurity)}.
  *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Configuration
 @EnableWebSecurity
@@ -191,8 +188,9 @@ public class SecurityConfig {
      * <p>An identity becomes one authority for its role and one authority per ownership scope, so
      * the whole entitlement of a caller travels in the authority list and no custom principal type
      * is needed. A scope reads {@code SCOPE_ACCOUNT_00000000001} or
-     * {@code SCOPE_CARD_************5740}: the kind, then the identifier exactly as the column
-     * holds it, leading zeros and mask characters included.
+     * {@code SCOPE_CARD_1134636222d1a2485d20203d0e970c72124893eb01be73a5fde5fdcccc2c4ac9}:
+     * the kind, then the identifier exactly as
+     * the column holds it, leading zeros included.
      *
      * @param identities the configured identities
      * @return one {@link UserDetails} per configured identity
@@ -480,7 +478,7 @@ public class SecurityConfig {
          * @param role     {@code ADMIN}, {@code USER} or {@code MONITORING}
          * @param scopes   the ownership authorities this identity holds, each
          *                 {@code SCOPE_ACCOUNT_<id>}, {@code SCOPE_CUSTOMER_<id>} or
-         *                 {@code SCOPE_CARD_<masked>}. Empty for an administrator and for a
+         *                 {@code SCOPE_CARD_<token>}. Empty for an administrator and for a
          *                 monitoring identity
          */
         public record Identity(String username, String password, String role, List<String> scopes) {
@@ -488,7 +486,7 @@ public class SecurityConfig {
     }
 
     // ------------------------------------------------------------------------------------
-    // Published-credential guard. ADDITIVE: the CardDemo source compares a stored password
+    // Published-credential guard. No COBOL ancestor: the CardDemo source compares a stored password
     // against a supplied one directly at app/cbl/COSGN00C.cbl:L223, so it has no notion of a
     // credential being unfit to run with. This platform publishes example values in
     // card-platform/.env.example and deploy/k8s/31-secret.example.yaml, and a reader following the

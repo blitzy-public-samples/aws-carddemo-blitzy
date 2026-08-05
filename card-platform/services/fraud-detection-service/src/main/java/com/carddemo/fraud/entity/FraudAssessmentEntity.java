@@ -10,19 +10,21 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import org.springframework.data.domain.Persistable;
 import tools.jackson.databind.ObjectMapper;
 
 /**
  * One risk assessment of one authorized transaction, held in the table {@code fraud_assessment} and
  * keyed by the transaction identifier.
  *
- * <p>ADDITIVE IN FULL. No COBOL (Common Business Oriented Language) program scores risk. This table
+ * <p>No COBOL (Common Business Oriented Language) program scores risk. This table
  * is net new; no COBOL ancestor exists.</p>
  *
  * <p>Two column widths are borrowed shape only. {@code transaction_id} takes its width from
@@ -38,7 +40,7 @@ import tools.jackson.databind.ObjectMapper;
  *       {@code ix_fraud_assessment_account}. Shape only from {@code app/cpy/CVACT03Y.cpy:L7}.</li>
  *   <li>{@code risk_score INTEGER NOT NULL}. A whole number from 0 through 100 inclusive, and not
  *       a monetary value.</li>
- *   <li>{@code flagged BOOLEAN NOT NULL}. True when at least one rule triggered.</li>
+ *   <li>{@code flagged BOOLEAN NOT NULL}. True when the score reached the configured threshold.</li>
  *   <li>{@code triggered_rules VARCHAR(64) NOT NULL}. The rule identifiers in evaluation order, as
  *       a JavaScript Object Notation (JSON) array. An assessment that triggered no rule stores
  *       {@code []}.</li>
@@ -49,18 +51,18 @@ import tools.jackson.databind.ObjectMapper;
  * <p>{@link TriggeredRuleListConverter} maps {@code triggered_rules} onto a list of identifiers and
  * keeps the order it reads. The permitted identifiers are {@link FraudFlagged#RULE_IDENTIFIERS},
  * which the published contract and the schema document {@code fraud-flagged-v1.json} both
- * enumerate. An assessment that triggered no rule carries {@code flagged} false and an empty
- * {@code triggered_rules} value, and publishes as {@code FraudCleared}.</p>
+ * enumerate. A rule may contribute points while the total remains below the configured threshold,
+ * so a cleared row may retain rules. A flagged row must name at least one rule, which the migrated
+ * schema enforces.</p>
  *
- * <p>Every invariant this row carries is checked when it is built, and the migrated schema repeats
- * each one as a {@code CHECK} constraint. The bounds and the identifier set are read from
- * {@link FraudFlagged}, so this row and the event it produces cannot disagree.</p>
+ * <p>The constructor checks the value-local invariants, and the migrated schema repeats the score
+ * and rule-list constraints. The database additionally refuses a flagged row with no rule and a
+ * stored array that repeats a rule. The exact score threshold depends on deployment configuration
+ * and therefore cannot be recomputed by a static database constraint.</p>
  *
  * <ul>
  *   <li>{@code riskScore} falls from {@link FraudFlagged#MINIMUM_RISK_SCORE} through
  *       {@link FraudFlagged#MAXIMUM_RISK_SCORE}.</li>
- *   <li>{@code flagged} is true exactly when {@code triggeredRules} names a rule. A row claiming a
- *       verdict its rule list contradicts describes no assessment that happened.</li>
  *   <li>{@code triggeredRules} names only known rules, repeats none, and serializes within the
  *       column width.</li>
  *   <li>{@code transactionId} and {@code accountId} hold the exact width of their columns.</li>
@@ -68,16 +70,23 @@ import tools.jackson.databind.ObjectMapper;
  *
  * <p>The Jakarta Persistence API (JPA) provider validates this mapping against the migrated schema
  * and creates no schema object, so a column name or column type that differs stops start-up.</p>
+ *
+ * <p><b>Insert only.</b> {@link #isNew()} answers {@code true} for every instance, so a store
+ * inserts and never updates. One transaction carries one verdict: a second store of a transaction
+ * identifier the table already holds raises a primary-key violation and rolls the whole delivery
+ * back, so the first verdict stands and no event announces a verdict the table no longer holds.</p>
  */
 @Entity
 @Table(
     name = "fraud_assessment",
     indexes = {
         @Index(name = "ix_fraud_assessment_account", columnList = "account_id"),
+        @Index(name = "ix_fraud_assessment_account_assessed_at",
+                columnList = "account_id, assessed_at DESC"),
         @Index(name = "ix_fraud_assessment_assessed_at", columnList = "assessed_at")
     }
 )
-public class FraudAssessmentEntity {
+public class FraudAssessmentEntity implements Persistable<String> {
 
     /**
      * Width of {@code triggered_rules}, which holds every identifier of
@@ -126,7 +135,7 @@ public class FraudAssessmentEntity {
     @Column(name = "risk_score", nullable = false)
     private int riskScore;
 
-    /** Whether at least one rule triggered. */
+    /** Whether the score reached the configured flag threshold. */
     @Column(name = "flagged", nullable = false)
     private boolean flagged;
 
@@ -148,7 +157,7 @@ public class FraudAssessmentEntity {
      * @param transactionId  identifier of the assessed transaction, sixteen characters
      * @param accountId      account the transaction belongs to, eleven characters
      * @param riskScore      score the risk rules produced, from 0 through 100 inclusive
-     * @param flagged        whether at least one rule triggered
+     * @param flagged        whether the score reached the configured flag threshold
      * @param triggeredRules identifiers of the rules that triggered, in evaluation order, empty
      *                       when none did
      * @param assessedAt     time the risk rules finished
@@ -160,8 +169,7 @@ public class FraudAssessmentEntity {
      *                                  {@link FraudFlagged#MINIMUM_RISK_SCORE} through
      *                                  {@link FraudFlagged#MAXIMUM_RISK_SCORE}, if
      *                                  {@code triggeredRules} names an unknown rule or repeats one,
-     *                                  if the serialized rule list exceeds its column, or if
-     *                                  {@code flagged} contradicts {@code triggeredRules}
+     *                                  if the serialized rule list exceeds its column
      */
     public FraudAssessmentEntity(String transactionId, String accountId, int riskScore,
             boolean flagged, List<String> triggeredRules, Instant assessedAt) {
@@ -169,7 +177,7 @@ public class FraudAssessmentEntity {
         this.accountId = requireAccountId(accountId);
         this.riskScore = requireRiskScore(riskScore);
         this.triggeredRules = requireTriggeredRules(triggeredRules);
-        this.flagged = requireVerdictAgrees(flagged, this.triggeredRules);
+        this.flagged = flagged;
         this.assessedAt = Objects.requireNonNull(assessedAt, "assessedAt must not be null");
     }
 
@@ -270,33 +278,37 @@ public class FraudAssessmentEntity {
     }
 
     /**
-     * Checks that the verdict and the rule list say the same thing.
-     *
-     * <p>{@code flagged} is a summary of the rule list, so the two cannot disagree. A row flagged
-     * with no rule names no reason, and a row carrying rules without the flag hides them from every
-     * consumer that reads the flag alone.
-     *
-     * @param flagged        candidate verdict
-     * @param triggeredRules the rule list already checked
-     * @return {@code flagged}
-     * @throws IllegalArgumentException if the verdict contradicts the rule list
-     */
-    private static boolean requireVerdictAgrees(boolean flagged, List<String> triggeredRules) {
-        if (flagged != !triggeredRules.isEmpty()) {
-            throw new IllegalArgumentException("flagged is true exactly when triggeredRules names a"
-                    + " rule; the values supplied are flagged " + flagged + " with "
-                    + triggeredRules.size() + " rules");
-        }
-        return flagged;
-    }
-
-    /**
      * Returns the transaction this row assesses.
      *
      * @return identifier of the assessed transaction, sixteen characters
      */
     public String getTransactionId() {
         return transactionId;
+    }
+
+    /**
+     * Returns the primary key of this row.
+     *
+     * @return identifier of the assessed transaction, sixteen characters
+     */
+    @Override
+    public String getId() {
+        return transactionId;
+    }
+
+    /**
+     * Reports this row as new, always.
+     *
+     * <p>The identifier arrives from the assessed event and not from the database, so a provider
+     * given a populated key would otherwise read the table and choose an update. This answer
+     * removes that choice: every store is an insert.
+     *
+     * @return {@code true}
+     */
+    @Override
+    @Transient
+    public boolean isNew() {
+        return true;
     }
 
     public String getAccountId() {
@@ -373,10 +385,8 @@ public class FraudAssessmentEntity {
      * {@code []}, and {@code []}, the empty string and a {@code null} value all read back as an
      * empty list. The list it returns is immutable.</p>
      *
-     * <p>A JSON array is delimiter-safe. An identifier holding a comma is written inside its quoted
-     * string and read back whole, where joining on a comma would split it into two identifiers.
-     * {@link #requireTriggeredRules(List)} keeps such an identifier out of the column in the first
-     * place, so the two defences are independent.</p>
+     * <p>Values read from storage pass through {@link #requireTriggeredRules(List)}, so an unknown
+     * or repeated identifier fails before it reaches the domain.</p>
      */
     public static class TriggeredRuleListConverter
             implements AttributeConverter<List<String>, String> {
@@ -421,7 +431,7 @@ public class FraudAssessmentEntity {
             for (String rule : rules) {
                 read.add(Objects.requireNonNull(rule, "triggered_rules holds no null rule"));
             }
-            return List.copyOf(read);
+            return requireTriggeredRules(read);
         }
 
         /**

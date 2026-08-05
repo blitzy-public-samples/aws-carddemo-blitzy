@@ -1,5 +1,6 @@
 package com.carddemo.card.entity;
 
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.EventEnvelope;
 import com.fasterxml.jackson.annotation.JsonIgnore;
@@ -10,6 +11,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.time.LocalDate;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * One row of {@code card}, the table the card service owns.
@@ -46,6 +48,10 @@ import java.util.Objects;
  * here. The authorization service declares the same source field {@code VARCHAR(16)} in its own
  * {@code card_xref} replica. The two services share no table.
  *
+ * <p>ADDITIVE, opaque paging token: {@code card_token} has no copybook field. The source keeps a
+ * card-number browse key in private transaction state, while a REST cursor can enter URL and proxy
+ * logs. A one-way digest preserves keyset paging without exposing the Primary Account Number.
+ *
  * <p>The key strategy comes from the Job Control Language (JCL) member that defines the Virtual
  * Storage Access Method (VSAM) dataset. {@code KEYS(16 0)} at {@code app/jcl/CARDFILE.jcl:L54}
  * declares a sixteen-byte key at offset zero, which is {@code CARD-NUM}, and
@@ -65,8 +71,9 @@ import java.util.Objects;
  * identifier. The path definition at {@code app/jcl/CARDFILE.jcl:L100-L102} names the dataset that
  * {@code app/csd/CARDDEMO.CSD:L13-L14} opens as {@code CARDAIX}.
  *
- * <p>{@code src/main/resources/db/migration/V1__schema.sql:L18-L37} creates the table and the
- * index. Hibernate runs under {@code ddl-auto: validate} at
+ * <p>{@code src/main/resources/db/migration/V1__schema.sql:L10-L74} creates the source-derived
+ * columns, the derived card token and the account index.
+ * Hibernate runs under {@code ddl-auto: validate} at
  * {@code src/main/resources/application.yml:L39}, so a column name, type or nullability that drifts
  * from the migration fails at start-up against PostgreSQL 18.4. The migration writes every Data
  * Definition Language (DDL) object unqualified, and
@@ -85,10 +92,12 @@ import java.util.Objects;
  * card-number rule in the source, and its text names sixteen digits. This class also adds no rule
  * around {@code active_status}: {@code app/jcl/POSTTRAN.jcl} allocates six datasets for the posting
  * program and no card dataset, so posting reads no card status.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "card",
-        indexes = @Index(name = "idx_card_account_id", columnList = "account_id"))
+        indexes = @Index(name = "idx_card_account_id", columnList = "account_id, card_number"))
 public class CardEntity {
 
     /**
@@ -135,9 +144,9 @@ public class CardEntity {
      *
      * <p>The field is a {@link String} and not a number. {@code PIC 9(11)} is a display field
      * eleven characters wide, and a numeric column stores {@code 00000000050} as fifty and
-     * returns {@code 50}, which no longer matches the eleven-byte alternate-index key at
-     * {@code KEYS(11 16)} in {@code app/jcl/CARDFILE.jcl:L85}, the account identifier in
-     * {@code card_xref}, or the aggregate identifier an event carries. The column check
+     * returns {@code 50}. That value matches none of three destinations: the eleven-byte
+     * alternate-index key at {@code KEYS(11 16)} in {@code app/jcl/CARDFILE.jcl:L85}, the account
+     * identifier in {@code card_xref}, or the aggregate identifier an event carries. The column check
      * constraint {@code ck_card_account_id_digits} holds the width and the digit class.
      */
     @Column(name = "account_id", nullable = false,
@@ -149,13 +158,19 @@ public class CardEntity {
      * Card verification value, {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}.
      *
      * <p>Column {@code card_verification_value CHAR(3) NOT NULL}. The source stores this field in
-     * the clear and the column keeps it: {@code app/cpy/CVACT02Y.cpy:L7} declares the field, AAP
-     * section 0.4.1 records that this platform stores it and never serializes it into any event or
-     * log, section 0.6.4 repeats that rule, and section 0.2.2 places payment-card industry
-     * controls beyond the one documented masking deviation out of scope. Columns 28 through 30 of
-     * every row of {@code app/data/ASCII/carddata.txt} carry three numeric characters, and this
-     * comment states none of them: a verification value repeated here is one a reader copies out
-     * of documentation.
+     * the clear and the column keeps it. {@code app/cpy/CVACT02Y.cpy:L7} declares the field, and
+     * three AAP sections govern it.
+     *
+     * <ul>
+     *   <li>0.4.1 stores it, and never serializes it into any event or log</li>
+     *   <li>0.6.4 repeats that rule</li>
+     *   <li>0.2.2 places payment-card industry controls beyond the one documented masking
+     *       deviation out of scope</li>
+     * </ul>
+     *
+     * <p>Columns 28 through 30 of every row of {@code app/data/ASCII/carddata.txt} carry three
+     * numeric characters. This comment states none of them, because a verification value repeated
+     * here is one a reader copies out of documentation.
      *
      * <p>Four properties keep the value inside this class, and
      * {@code CardholderDataExposureTest} asserts each one. This class declares no accessor that
@@ -165,10 +180,9 @@ public class CardEntity {
      * place. {@link #applyUpdate} never changes it, matching {@code app/bms/COCRDUP.bms}, whose
      * card update map declares no field for it.
      *
-     * <p>The type is {@link String} and not a number for the same reason
-     * {@link #accountId} is: {@code PIC 9(03)} is a three-character display field, and a numeric
-     * column returns {@code 7} for a stored {@code 007}, which is a different card verification
-     * value. The column check constraint {@code ck_card_verification_value_digits} holds the
+     * <p>The type is {@link String} and not a number for the same reason {@link #accountId} is.
+     * {@code PIC 9(03)} is a three-character display field, and a numeric column returns
+     * {@code 7} for a stored {@code 007}. That is a different card verification value. The column check constraint {@code ck_card_verification_value_digits} holds the
      * width and the digit class.
      */
     @JsonIgnore
@@ -227,9 +241,33 @@ public class CardEntity {
     private String activeStatus;
 
     /**
+     * Card token, the platform identity of one card. No field of
+     * {@code app/cpy/CVACT02Y.cpy} declares it.
+     *
+     * <p>Column {@code card_token CHAR(64) NOT NULL}, unique and derived. The constructor
+     * derives it from the card number through {@link PanMasker#cardToken(String)}, and
+     * {@code V2__seed.sql} derives the same value in SQL. Both derivations are documented on the
+     * column in {@code V1__schema.sql}, and {@code CardRepositoryIT} compares them over every
+     * seeded row.
+     *
+     * <p>This value, not the masked card number, identifies a card outside this service. The
+     * masked form keeps four digits, so every card sharing those four digits masks to one value
+     * and names no single row. Section 0.1.1 of the plan requires a tokenized or masked card
+     * number on the wire, and section 0.6.4 keeps the full Primary Account Number (PAN) for the
+     * decision and a substitute for the payload.
+     *
+     * <p>Nothing derives a card number back from this value: {@link PanMasker#cardToken(String)}
+     * is a digest, so a caller holding a token and no card number holds no card number.
+     */
+    @Column(name = "card_token", nullable = false,
+            length = PanMasker.CARD_TOKEN_LENGTH,
+            columnDefinition = "bpchar(" + PanMasker.CARD_TOKEN_LENGTH + ")")
+    private String cardToken;
+
+    /**
      * No-argument constructor for the persistence provider.
      *
-     * <p>Hibernate calls this constructor to materialise a row, then populates the six fields
+     * <p>Hibernate calls this constructor to materialise a row, then populates the seven fields
      * directly. A row already in the database reaches no guard below. Application code calls
      * {@link #CardEntity(String, String, String, String, LocalDate, String)}.
      */
@@ -237,7 +275,8 @@ public class CardEntity {
     }
 
     /**
-     * Builds one card row from the six mapped fields, in copybook order.
+     * Builds one card row from the six source fields, in copybook order. The derived card token is
+     * assigned after those fields pass their source-shaped validation.
      *
      * @param cardNumber            the full card number, exactly
      *                              {@value PicClause#CARD_NUM_WIDTH} characters wide
@@ -264,6 +303,8 @@ public class CardEntity {
      *                                  each carry their declared width and no character outside
      *                                  {@code 0} through {@code 9}.</li>
      *                                  </ul>
+     * @see #getCardToken() for the seventh field, which this constructor derives rather than
+     *      accepting
      */
     public CardEntity(String cardNumber, String accountId, String cardVerificationValue,
             String embossedName, LocalDate expirationDate, String activeStatus) {
@@ -287,6 +328,7 @@ public class CardEntity {
         this.embossedName = embossedName;
         this.expirationDate = expirationDate;
         this.activeStatus = activeStatus;
+        this.cardToken = PanMasker.cardToken(cardNumber);
     }
 
     /**
@@ -352,9 +394,9 @@ public class CardEntity {
      * Rejects a digit field that is the wrong width or carries a character outside {@code 0}
      * through {@code 9}.
      *
-     * <p>A {@code PIC 9(n)} display field is exactly n characters wide and holds only digits, so
-     * both halves of that contract are checked here and the column check constraint repeats them
-     * in the database. Neither failure message carries a character of the rejected value: the
+     * <p>A {@code PIC 9(n)} display field is exactly n characters wide and holds only digits.
+     * Both halves of that contract are checked here, and the column check constraint repeats them
+     * in the database. Neither failure message carries a character of the rejected value. The
      * width message reports a length and the digit message reports a position. That keeps a card
      * verification value out of every message this class produces, including the message a caller
      * logs after a rejected update.
@@ -433,11 +475,8 @@ public class CardEntity {
     }
 
     // No accessor returns card_verification_value. The column keeps the value because
-    // app/cpy/CVACT02Y.cpy:L7 declares the field and AAP section 0.4.1 requires that this
-    // platform store it, and the same section requires that it never leave the service. An
-    // accessor is the shortest path out, so this class declares none: a caller that needs to
-    // verify a card verification value belongs behind a purpose-built comparison method that
-    // returns a verdict rather than the value, which no requirement in scope asks for.
+    // app/cpy/CVACT02Y.cpy:L7 declares the field, and the value never leaves the service. An
+    // accessor is the shortest path out, so this class declares none.
     // CardholderDataExposureTest fails if an accessor for the field appears.
 
     public String getEmbossedName() {
@@ -450,6 +489,19 @@ public class CardEntity {
 
     public String getActiveStatus() {
         return activeStatus;
+    }
+
+    /**
+     * Returns the card token, the value that identifies this card outside this service.
+     *
+     * <p>The paging cursor of the card list carries this value. It is opaque, it names exactly one
+     * card, and it reveals no digit of the card number, so it travels where a card number must not.
+     *
+     * @return the value of column {@code card_token}, exactly
+     *         {@value PanMasker#CARD_TOKEN_LENGTH} lower-case hexadecimal characters
+     */
+    public String getCardToken() {
+        return cardToken;
     }
 
     /**
@@ -489,21 +541,20 @@ public class CardEntity {
      *
      * <p>A rendering of an entity reaches a log line as soon as any code concatenates the object
      * into a message, so this one carries no cardholder data at all. The card number is a Primary
-     * Account Number and the card verification value is authentication data, neither of which
-     * belongs in a log; the embossed name is the cardholder's name and the expiration date
-     * completes a card record, so both are withheld too. The account identifier names the row a
-     * reader needs, and the active status is the field an update changes.
+     * Account Number and the card verification value is authentication data. Neither belongs in a
+     * log. The embossed name is the cardholder's name and the expiration date completes a card
+     * record, so both are withheld too. The account identifier names the row a reader needs, and
+     * the active status is the field an update changes.
      *
-     * <p>The card number is withheld rather than masked here on purpose. A caller that needs to
-     * name a card in a log line passes it through {@code com.carddemo.cobol.PanMasker} at the
-     * point of use, which states the intent at the call site.
+     * <p>The card number is withheld here rather than masked. A caller that needs to name a card
+     * in a log line passes it through {@code com.carddemo.cobol.PanMasker} at the point of use.
      *
      * @return a single-line rendering carrying no cardholder data
      */
     @Override
     public String toString() {
         return "CardEntity[cardNumber=" + EventEnvelope.WITHHELD
-                + ", accountId=" + accountId
+                + ", accountId=" + EventEnvelope.WITHHELD
                 + ", cardVerificationValue=" + EventEnvelope.WITHHELD
                 + ", embossedName=" + EventEnvelope.WITHHELD
                 + ", expirationDate=" + EventEnvelope.WITHHELD

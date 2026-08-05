@@ -1,7 +1,6 @@
 package com.carddemo.ledger.config;
 
 import com.carddemo.events.DeadLetterEnvelope;
-import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.serde.JsonSchemaValidatingDeserializer;
 import com.carddemo.ledger.messaging.DeadLetterMetadata;
 
@@ -9,7 +8,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.regex.Pattern;
+import java.util.Set;
 
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -19,6 +18,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
+import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.serialization.StringDeserializer;
 
 import org.springframework.boot.kafka.autoconfigure.KafkaConnectionDetails;
@@ -47,12 +47,12 @@ import org.springframework.util.backoff.FixedBackOff;
  * <p>The container replaces the job step at {@code app/jcl/POSTTRAN.jcl:L23}, {@code PGM=CBTRN02C},
  * which read the sequential file that job allocates at {@code app/jcl/POSTTRAN.jcl:L30-L31}.
  *
- * <p>ADDITIVE: idempotency, atomicity and the dead-letter topic. {@code app/cbl/CBTRN02C.cbl}
- * detects no duplicate, and it answered an input or output failure by abending at
- * {@code app/cbl/CBTRN02C.cbl:L707-L711}, without retrying and without cleanup.
+ * <p>No COBOL ancestor: idempotency, atomicity and the dead-letter topic. {@code
+ * app/cbl/CBTRN02C.cbl} detects no duplicate, and it answered an input or output failure by
+ * abending at {@code app/cbl/CBTRN02C.cbl:L707-L711}, without retrying and without cleanup.
  *
  * <p>Every setting here is bound, from {@code spring.kafka} and from the {@code carddemo} block
- * {@link LedgerProperties} holds. Decisions: {@code card-platform/docs/decision-log.md} (planned).
+ * {@link LedgerProperties} holds.
  */
 @Configuration
 public class KafkaConsumerConfig {
@@ -73,15 +73,15 @@ public class KafkaConsumerConfig {
     private static final String DEAD_LETTER_MESSAGE =
             "attempts governed by carddemo.consumer.retry.max-attempts";
 
+    /** In-process header carrying only the failure type selected by this service. */
+    static final String HEADER_REASON = "carddemo-dl-reason";
+
     /**
      * The {@code aggregateId} of a dead letter whose failing record carried no account key. That
      * component admits the eleven-digit form alone, and no account identifier in
      * {@code app/data/ASCII/cardxref.txt} is eleven zeros.
      */
     private static final String UNRESOLVED_ACCOUNT_KEY = "00000000000";
-
-    /** The account form of {@link EventEnvelope#AGGREGATE_ID_PATTERN}, compiled once. */
-    private static final Pattern ACCOUNT_KEY = Pattern.compile(EventEnvelope.AGGREGATE_ID_PATTERN);
 
     /** The partition a dead letter is addressed to. A negative value lets the broker select one. */
     private static final int BROKER_SELECTS_PARTITION = -1;
@@ -94,6 +94,16 @@ public class KafkaConsumerConfig {
 
     /** The prefix the two acknowledgement modes that require the listener to acknowledge share. */
     private static final String MANUAL_ACK_MODE_PREFIX = "MANUAL";
+
+    /**
+     * Broker coordinates safe to retain after the refused record and producer-controlled headers
+     * have been discarded.
+     */
+    private static final Set<String> ALLOWED_DEAD_LETTER_HEADERS = Set.of(
+            KafkaHeaders.DLT_ORIGINAL_TOPIC,
+            KafkaHeaders.DLT_ORIGINAL_PARTITION,
+            KafkaHeaders.DLT_ORIGINAL_OFFSET,
+            KafkaHeaders.DLT_ORIGINAL_TIMESTAMP);
 
     /**
      * Builds the consumer every inbound record passes through.
@@ -153,8 +163,15 @@ public class KafkaConsumerConfig {
      * <p>A listener that names no container factory of its own resolves this bean name, and
      * declaring the name here stands the auto-configured factory down. The acknowledgement mode
      * comes from {@code spring.kafka.listener.ack-mode}, concurrency from
-     * {@code spring.kafka.listener.concurrency} when that key carries a value, and the
-     * delivery-attempt header is switched on.
+     * {@code spring.kafka.listener.concurrency} when that key carries a value, the start-up
+     * decision from {@code spring.kafka.listener.auto-startup}, and the delivery-attempt header is
+     * switched on.
+     *
+     * <p>Carrying the start-up decision through matters: this factory replaces the auto-configured
+     * one, so any {@code spring.kafka.listener} value it did not read would be bound, accepted and
+     * then quietly ignored. A deployment or a test that holds the listener down has to be obeyed
+     * rather than overruled, and a container starting against an address that does not resolve
+     * fails the whole application context.
      *
      * @param ledgerEventConsumerFactory the pinned consumer factory
      * @param kafkaProperties            the bound {@code spring.kafka} block
@@ -171,10 +188,21 @@ public class KafkaConsumerConfig {
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(ledgerEventConsumerFactory);
         factory.setCommonErrorHandler(ledgerConsumerErrorHandler);
+        factory.setAutoStartup(kafkaProperties.getListener().isAutoStartup());
 
         Integer concurrency = kafkaProperties.getListener().getConcurrency();
         if (concurrency != null) {
             factory.setConcurrency(concurrency);
+        }
+        factory.setAutoStartup(kafkaProperties.getListener().isAutoStartup());
+
+        // spring.kafka.listener.auto-startup reaches the auto-configured factory on its own, and
+        // this factory replaces that one, so the setting has to be carried across by hand. A test
+        // that exercises a transaction boundary and no broker sets it to false; leaving it unread
+        // would start a consumer against an address no broker answers on.
+        Boolean autoStartup = kafkaProperties.getListener().isAutoStartup();
+        if (autoStartup != null) {
+            factory.setAutoStartup(autoStartup);
         }
 
         ContainerProperties containerProperties = factory.getContainerProperties();
@@ -190,7 +218,8 @@ public class KafkaConsumerConfig {
      *
      * <p>One record is taken up to {@code carddemo.consumer.retry.max-attempts} times, waiting
      * {@code carddemo.consumer.retry.backoff-ms} milliseconds between two attempts, and a spent
-     * record is addressed to the topic {@code carddemo.kafka.topics.dead-letter} names.
+     * record is addressed to a source-specific dead-letter topic. The shared dead-letter topic is a
+     * fallback for records whose source topic is unavailable.
      *
      * <p>{@link DeserializationException} and {@link SerializationException} are registered as not
      * retryable, so a record the value deserializer refused is taken once.
@@ -207,8 +236,9 @@ public class KafkaConsumerConfig {
             LedgerProperties ledgerProperties) {
 
         LedgerProperties.Consumer.Retry retry = ledgerProperties.consumer().retry();
+        LedgerProperties.Kafka.Topics topics = ledgerProperties.kafka().topics();
         DeadLetterEnvelopeRecoverer recoverer = new DeadLetterEnvelopeRecoverer(
-                ledgerEventKafkaTemplate, ledgerProperties.kafka().topics().deadLetter());
+                ledgerEventKafkaTemplate, topics.deadLetter(), topics.deadLetterSuffix());
 
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer,
                 new FixedBackOff(retry.backoffMs(), retry.maxAttempts() - FIRST_DELIVERY));
@@ -247,6 +277,83 @@ public class KafkaConsumerConfig {
     }
 
     /**
+     * Resolves a dead-letter destination that preserves the source event format boundary.
+     *
+     * @param failedRecord the refused source record
+     * @param fallbackTopic the shared fallback topic
+     * @param suffix the suffix appended to a present source topic
+     * @return the broker-selected partition of the source-specific dead-letter topic
+     */
+    static TopicPartition resolveDeadLetterDestination(ConsumerRecord<?, ?> failedRecord,
+            String fallbackTopic, String suffix) {
+
+        String sourceTopic = failedRecord.topic();
+        String destination = sourceTopic == null || sourceTopic.isBlank()
+                ? fallbackTopic
+                : sourceTopic + suffix;
+        return new TopicPartition(destination, BROKER_SELECTS_PARTITION);
+    }
+
+    /**
+     * Rebuilds a dead letter without the refused bytes, producer key or arbitrary headers.
+     *
+     * <p>The envelope uses a documented sentinel because its schema requires an account-shaped
+     * aggregate identifier. Broker coordinates form the outgoing record key and identify the
+     * refused delivery without trusting the producer-supplied key.
+     *
+     * @param record the refused source record
+     * @param topicPartition the resolved destination
+     * @param headers the headers enriched by the framework
+     * @return a safe dead-letter record
+     */
+    static ProducerRecord<Object, Object> sanitizedDeadLetterRecord(ConsumerRecord<?, ?> record,
+            TopicPartition topicPartition, Headers headers) {
+
+        DeadLetterEnvelope envelope = DeadLetterMetadata
+                .of(DEAD_LETTER_ABEND_CODE, POSTING_JOB_NAME, reasonOf(headers),
+                        DEAD_LETTER_MESSAGE)
+                .toEnvelope(UNRESOLVED_ACCOUNT_KEY, record.topic(), record.partition(),
+                        record.offset(), null, null, attemptCountOf(record));
+
+        return new ProducerRecord<>(topicPartition.topic(), partitionOf(topicPartition),
+                recordCoordinates(record), envelope, allowedDeadLetterHeaders(headers));
+    }
+
+    /** Identifies a source record without retaining its producer-controlled key. */
+    static String recordCoordinates(ConsumerRecord<?, ?> record) {
+        return record.topic() + "-" + record.partition() + "-" + record.offset();
+    }
+
+    /** Copies at most one trusted value for each explicitly admitted broker header. */
+    static Headers allowedDeadLetterHeaders(Headers headers) {
+        RecordHeaders allowed = new RecordHeaders();
+        for (String name : ALLOWED_DEAD_LETTER_HEADERS) {
+            Header header = headers.lastHeader(name);
+            if (header != null && header.value() != null) {
+                allowed.add(name, header.value().clone());
+            }
+        }
+        return allowed;
+    }
+
+    /**
+     * Builds one bounded diagnostic header from the failure type and never from its message.
+     */
+    static Headers diagnosticHeaders(Exception failure) {
+        String reason = UNCLASSIFIED_REASON;
+        Throwable cause = failure;
+        while (cause != null) {
+            String simpleName = cause.getClass().getSimpleName();
+            if (!simpleName.isBlank()) {
+                reason = simpleName;
+            }
+            cause = cause.getCause();
+        }
+        return new RecordHeaders().add(HEADER_REASON,
+                reason.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
      * Addresses one {@link DeadLetterEnvelope} to the dead-letter topic for a record no listener
      * could take.
      *
@@ -256,103 +363,70 @@ public class KafkaConsumerConfig {
      * payload travels nowhere. Neither a card number nor a verification value can reach the topic
      * through it.
      *
-     * <p>The outgoing headers carry the source coordinates the superclass adds, without the
-     * exception message and without the stack trace. The failure class still travels, under
-     * {@link KafkaHeaders#DLT_EXCEPTION_FQCN} and {@link KafkaHeaders#DLT_EXCEPTION_CAUSE_FQCN}. An
-     * instance holds no mutable state, so consumer threads may share one.
+     * <p>The outgoing record is rebuilt from an allowlist. The refused bytes, original key,
+     * arbitrary producer headers, exception message and stack trace do not travel. The failure
+     * class contributes only its short name to the schema-validated envelope. An instance holds no
+     * mutable state, so consumer threads may share one.
      */
     private static final class DeadLetterEnvelopeRecoverer extends DeadLetterPublishingRecoverer {
 
         /**
-         * Builds a recoverer addressing the topic {@code carddemo.kafka.topics.dead-letter}
-         * names.
+         * Builds a recoverer addressing one dead-letter topic per source topic, with the configured
+         * shared topic as a fallback.
          */
         private DeadLetterEnvelopeRecoverer(KafkaOperations<?, ?> template,
-                String deadLetterTopic) {
+                String deadLetterTopic, String deadLetterSuffix) {
             super(template, (failedRecord, failure) ->
-                    new TopicPartition(deadLetterTopic, BROKER_SELECTS_PARTITION));
+                    resolveDeadLetterDestination(
+                            failedRecord, deadLetterTopic, deadLetterSuffix));
             excludeHeader(HeadersToAdd.EX_MSG, HeadersToAdd.EX_STACKTRACE);
+            setHeadersFunction((record, failure) -> diagnosticHeaders(failure));
         }
 
         /**
-         * Builds the outgoing record: the envelope, keyed on the account the failing record named,
-         * carrying the enriched headers and no payload value. {@code failedEventId} and
-         * {@code failedEventType} are left absent, which their schema admits. The two byte arrays
-         * the superclass supplies hold the refused key and value, and neither travels on.
+         * Builds the outgoing record without trusting either refused byte array or the original key.
          */
         @Override
         protected ProducerRecord<Object, Object> createProducerRecord(ConsumerRecord<?, ?> record,
                 TopicPartition topicPartition, Headers headers, byte[] key, byte[] value) {
 
-            String accountKey = accountKeyOf(record.key());
-
-            DeadLetterEnvelope envelope = DeadLetterMetadata
-                    .of(DEAD_LETTER_ABEND_CODE, POSTING_JOB_NAME, reasonOf(headers),
-                            DEAD_LETTER_MESSAGE)
-                    .toEnvelope(accountKey, record.topic(), record.partition(), record.offset(),
-                            null, null, attemptCountOf(record));
-
-            return new ProducerRecord<>(topicPartition.topic(), partitionOf(topicPartition),
-                    accountKey, envelope, headers);
+            return sanitizedDeadLetterRecord(record, topicPartition, headers);
         }
+    }
 
-        /**
-         * The record key when it holds eleven digits, and {@link #UNRESOLVED_ACCOUNT_KEY} if
-         * not.
-         */
-        private static String accountKeyOf(Object key) {
-            if (key instanceof String text && ACCOUNT_KEY.matcher(text).matches()) {
-                return text;
-            }
-            return UNRESOLVED_ACCOUNT_KEY;
+    /**
+     * The unqualified failure class this service recorded, or an unclassified sentinel.
+     */
+    private static String reasonOf(Headers headers) {
+        String simpleName = headerText(headers, HEADER_REASON);
+        if (simpleName == null || simpleName.isBlank()) {
+            return UNCLASSIFIED_REASON;
         }
+        return simpleName;
+    }
 
-        /**
-         * The unqualified name of the failure class the superclass named, taken from
-         * {@link KafkaHeaders#DLT_EXCEPTION_CAUSE_FQCN} where that header is present and from
-         * {@link KafkaHeaders#DLT_EXCEPTION_FQCN} where it is not. A listener failure arrives
-         * wrapped, and its cause carries the class that failed. {@link DeadLetterMetadata} shortens
-         * a name past the width its component holds.
-         */
-        private static String reasonOf(Headers headers) {
-            String qualifiedName = headerText(headers, KafkaHeaders.DLT_EXCEPTION_CAUSE_FQCN);
+    /** One header as text, and {@code null} when the header carries no value. */
+    private static String headerText(Headers headers, String name) {
+        Header header = headers.lastHeader(name);
+        return header == null || header.value() == null
+                ? null
+                : new String(header.value(), StandardCharsets.UTF_8);
+    }
 
-            if (qualifiedName == null) {
-                qualifiedName = headerText(headers, KafkaHeaders.DLT_EXCEPTION_FQCN);
-            }
-            if (qualifiedName == null) {
-                return UNCLASSIFIED_REASON;
-            }
-            int lastSeparator =
-                    Math.max(qualifiedName.lastIndexOf('.'), qualifiedName.lastIndexOf('$'));
-            String simpleName = qualifiedName.substring(lastSeparator + 1);
+    /** The attempt the container recorded, and {@link #ONE_ATTEMPT} when it recorded none. */
+    private static int attemptCountOf(ConsumerRecord<?, ?> record) {
+        Header attempt = record.headers().lastHeader(KafkaHeaders.DELIVERY_ATTEMPT);
 
-            return simpleName.isBlank() ? UNCLASSIFIED_REASON : simpleName;
+        if (attempt == null || attempt.value() == null
+                || attempt.value().length != Integer.BYTES) {
+            return ONE_ATTEMPT;
         }
+        return ByteBuffer.wrap(attempt.value()).getInt();
+    }
 
-        /** One header as text, and {@code null} when the header carries no value. */
-        private static String headerText(Headers headers, String name) {
-            Header header = headers.lastHeader(name);
-            return header == null || header.value() == null
-                    ? null
-                    : new String(header.value(), StandardCharsets.UTF_8);
-        }
-
-        /** The attempt the container recorded, and {@link #ONE_ATTEMPT} when it recorded none. */
-        private static int attemptCountOf(ConsumerRecord<?, ?> record) {
-            Header attempt = record.headers().lastHeader(KafkaHeaders.DELIVERY_ATTEMPT);
-
-            if (attempt == null || attempt.value() == null
-                    || attempt.value().length != Integer.BYTES) {
-                return ONE_ATTEMPT;
-            }
-            return ByteBuffer.wrap(attempt.value()).getInt();
-        }
-
-        /** The resolved partition, and {@code null} when the resolver named a negative one. */
-        private static Integer partitionOf(TopicPartition topicPartition) {
-            int partition = topicPartition.partition();
-            return partition < 0 ? null : partition;
-        }
+    /** The resolved partition, and {@code null} when the resolver named a negative one. */
+    private static Integer partitionOf(TopicPartition topicPartition) {
+        int partition = topicPartition.partition();
+        return partition < 0 ? null : partition;
     }
 }

@@ -363,8 +363,14 @@ class PlainTextRendererTest {
     /** The transaction the fraud alert names, from {@code TRNX-ID} at app/cpy/COSTM01.CPY:L23. */
     private static final String FLAGGED_TRANSACTION_ID = "TRNXAA0000000003";
 
-    /** Name of the one card component {@code TransactionPosted} declares. */
+    /** Name of the masked card component {@code TransactionPosted} declares. */
     private static final String MASKED_CARD_COMPONENT = "maskedCardNumber";
+
+    /**
+     * The component of {@code TransactionPosted} carrying the card identity: sixty-four hexadecimal
+     * characters holding no character of a card number.
+     */
+    private static final String CARD_TOKEN_COMPONENT = "cardToken";
 
     /**
      * A value carrying all five characters that mean something in markup. The text format escapes
@@ -1007,7 +1013,7 @@ class PlainTextRendererTest {
     /**
      * Checks the input boundary of the renderer. Neither record it reads declares a card number or
      * a card verification value, so no caller can route either into a statement record. None of the
-     * seventeen groups at app/cbl/CBSTM03A.CBL:L86-L146 declares a card-number field either, and the
+     * seventeen groups at app/cbl/CBSTM03A.CBL:L86-L146 declares a card-number field either. The
      * read model holds the number in {@code TRNX-CARD-NUM PIC X(16)} at app/cpy/COSTM01.CPY:L22,
      * which no record the renderer reads carries forward.
      */
@@ -1026,23 +1032,31 @@ class PlainTextRendererTest {
 
     /**
      * Checks the availability of a card number to this service. {@code TransactionPosted} carries
-     * one card component and it is the masked one, and {@code FraudFlagged} carries none, so the
-     * only card value a listener can read is already masked.
+     * two card components and neither is a card number: one is the masked form this service
+     * renders, the other the token it keys rows on. {@code FraudFlagged} carries neither, so no
+     * listener can read a Primary Account Number at all.
      */
     @Test
-    @DisplayName("The consumed events carry a masked card number at most")
+    @DisplayName("The consumed events carry a masked card number and a token, never a card number")
     void theConsumedEventsCarryAMaskedCardNumberAtMost() {
         List<String> posted = componentNamesOf(TransactionPosted.class);
         List<String> flagged = componentNamesOf(FraudFlagged.class);
 
         assertThat(posted).as("components TransactionPosted declares")
-                .contains(MASKED_CARD_COMPONENT);
+                .contains(MASKED_CARD_COMPONENT, CARD_TOKEN_COMPONENT);
         assertThat(posted).as("card components TransactionPosted declares")
                 .filteredOn(PlainTextRendererTest::namesACardField)
-                .containsExactly(MASKED_CARD_COMPONENT);
+                .containsExactlyInAnyOrder(MASKED_CARD_COMPONENT, CARD_TOKEN_COMPONENT);
         assertThat(flagged).as("card components FraudFlagged declares")
                 .isNotEmpty()
                 .noneMatch(PlainTextRendererTest::namesACardField);
+
+        String cardNumber = "4859452612877065";
+        assertThat(PanMasker.cardToken(cardNumber))
+                .as("the token this service keys on discloses no character of a card number")
+                .doesNotContain(cardNumber)
+                .doesNotContain(cardNumber.substring(12))
+                .matches(PanMasker.CARD_TOKEN_PATTERN);
     }
 
     /**
@@ -1051,9 +1065,8 @@ class PlainTextRendererTest {
      * The masked form keeps the last four characters alone, so the twelve leading characters cannot
      * reach a record through any field.
      *
-     * <p>Masking is an additive deviation, recorded in card-platform/docs/decision-log.md
-     * (planned). The source masks nothing: the card detail screen shows all sixteen characters at
-     * {@code LENGTH=16} in app/bms/COCRDSL.bms:L99.</p>
+     * <p>The source masks nothing: the card detail screen shows all sixteen characters at {@code
+     * LENGTH=16} in app/bms/COCRDSL.bms:L99.</p>
      */
     @Test
     @DisplayName("A full card number reaches no record once the production masker has run")
@@ -1149,9 +1162,9 @@ class PlainTextRendererTest {
     }
 
     /**
-     * Checks the width of every record of the fraud alert. The operation is ADDITIVE and has no
-     * ancestor in app/cbl/CBSTM03A.CBL, and it reuses the 80-column record of
-     * {@code 01 FD-STMTFILE-REC PIC X(80).} at app/cbl/CBSTM03A.CBL:L45.
+     * Checks the width of every record of the fraud alert. The operation has no COBOL ancestor and
+     * has no ancestor in app/cbl/CBSTM03A.CBL, and it reuses the 80-column record of {@code 01
+     * FD-STMTFILE-REC PIC X(80).} at app/cbl/CBSTM03A.CBL:L45.
      */
     @Test
     @DisplayName("Every fraud alert record holds 80 characters")
@@ -1230,6 +1243,21 @@ class PlainTextRendererTest {
     }
 
     /**
+     * Reports whether a component name promises an unmasked card value.
+     *
+     * <p>A masked number and a token over a digest are the two card values this service may read.
+     * Every other card name is an unmasked one.
+     *
+     * @param componentName the record component name to test
+     * @return true when the name is a card name other than the masked number or the token
+     */
+    private static boolean namesAnUnmaskedCardField(String componentName) {
+        return namesACardField(componentName)
+                && !MASKED_CARD_COMPONENT.equals(componentName)
+                && !CARD_TOKEN_COMPONENT.equals(componentName);
+    }
+
+    /**
      * Renders the two-transaction statement the content assertions read, covering the write blocks
      * at app/cbl/CBSTM03A.CBL:L460, app/cbl/CBSTM03A.CBL:L488-L502, app/cbl/CBSTM03A.CBL:L679 and
      * app/cbl/CBSTM03A.CBL:L435-L437.
@@ -1267,8 +1295,8 @@ class PlainTextRendererTest {
     }
 
     /**
-     * Renders one fraud alert. The operation is ADDITIVE and reuses the 80-column record of
-     * {@code 01 FD-STMTFILE-REC PIC X(80).} at app/cbl/CBSTM03A.CBL:L45.
+     * Renders one fraud alert. The operation has no COBOL ancestor and reuses the 80-column record
+     * of {@code 01 FD-STMTFILE-REC PIC X(80).} at app/cbl/CBSTM03A.CBL:L45.
      *
      * @return the emitted records, in order
      */
@@ -1346,9 +1374,9 @@ class PlainTextRendererTest {
      * Checks that a carriage return and line feed inside a description cannot add a record.
      *
      * <p>The statement file is a sequence of fixed-width records, {@code FD-STMTFILE-REC PIC X(80)}
-     * at app/cbl/CBSTM03A.CBL:L45. A reader splits it by width or by line, and a description
-     * carrying a line ending would let a caller close the current record early and have the
-     * characters after it read as a further one. The forged text below is shaped to look like a
+     * at app/cbl/CBSTM03A.CBL:L45. A reader splits it by width or by line. A description carrying
+     * a line ending would let a caller close the current record early. The characters after it
+     * would then read as a further record. The forged text below is shaped to look like a
      * genuine detail record: an identifier, a description and an amount.
      */
     @Test
@@ -1398,9 +1426,15 @@ class PlainTextRendererTest {
     /**
      * Checks that the remaining control characters a caller might try are normalised too.
      *
-     * <p>A null character truncates the record for a reader written in C, an escape opens a
-     * terminal control sequence in a console log, a vertical tab and a form feed both end a line
-     * for some readers, and delete is invisible. Each becomes one space.
+     * <p>Each of five further control characters becomes one space:</p>
+     *
+     * <ul>
+     *   <li>null truncates the record for a reader written in C</li>
+     *   <li>escape opens a terminal control sequence in a console log</li>
+     *   <li>vertical tab ends a line for some readers</li>
+     *   <li>form feed ends a line for some readers</li>
+     *   <li>delete is invisible</li>
+     * </ul>
      */
     @Test
     @DisplayName("Every other control character becomes a space")

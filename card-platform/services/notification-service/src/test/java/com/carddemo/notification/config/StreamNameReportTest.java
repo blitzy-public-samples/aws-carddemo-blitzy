@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Reads back what {@link StreamNameReport} would write for the notification service.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor.
+ * <p>This class has no COBOL ancestor.
  *
  * <p>The first test is the coverage check: every name the shipped {@code application.yml} carries
  * must appear in the report, and with the value the shipped file documents. A name missing here is a
@@ -50,6 +50,8 @@ class StreamNameReportTest {
                             "GROUP_NOTIFICATION_POSTED",
                             "TOPIC_FRAUD_ASSESSED",
                             "GROUP_NOTIFICATION_FRAUD",
+                            "TOPIC_CUSTOMER_CONTEXT_CHANGED",
+                            "GROUP_NOTIFICATION_CUSTOMER",
                             "TOPIC_DEAD_LETTER");
             assertThat(report.reportedNames())
                     .extracting(StreamNameReport.ReportedName::value)
@@ -57,6 +59,8 @@ class StreamNameReportTest {
                             "notification-posted",
                             "fraud.assessed",
                             "notification-fraud",
+                            "customer.context-changed",
+                            "notification-customer",
                             "carddemo.dead-letter");
         });
     }

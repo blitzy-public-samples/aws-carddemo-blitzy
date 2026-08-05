@@ -51,9 +51,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code app/cbl/CBSTM03B.CBL:L118-L127} routes one call to one of four datasets. The keyed read
  * code maps to {@code findById}. The open and close codes map to nothing here, and the framework
  * owns the connection lifecycle.</p>
- *
- * <p>{@code card-platform/docs/data-model.md} carries the diagram of this table and its key.
- * {@code card-platform/docs/traceability-matrix.md} carries the field-to-column mapping.</p>
  */
 @DisplayName("DisclosureGroupRepository over the 51 seeded disclosure group rows")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)

@@ -45,6 +45,13 @@ class EventRedactionTest {
     private static final String MASKED_CARD_NUMBER = "************4321";
 
     /**
+     * Card token every fixture carries. Sixty-four hexadecimal characters, and a value no rendering
+     * may disclose: it identifies one card.
+     */
+    private static final String CARD_TOKEN =
+            "3b8d1f5a7c02e94168bd53a0fc7e21949d6a08b53f1c74e02a9d6b3815f0c47e";
+
+    /**
      * Event identifier every fixture carries, fixed so a rendering stays comparable. The value
      * holds none of the markers above, so it cannot collide with an assertion below.
      */
@@ -67,14 +74,18 @@ class EventRedactionTest {
     private static List<Object> allEventRecords() {
         EventEnvelope envelope =
                 new EventEnvelope(EVENT_ID, "TransactionAuthorized", 1, WHEN, ACCOUNT_ID);
+        TransactionAuthorized authorized = TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID,
+                "01", "0001", "POS", "a description", new BigDecimal(AMOUNT), "000000123",
+                "a merchant", "a city", "0000012345", MASKED_CARD_NUMBER, CARD_TOKEN,
+                ORIGIN_TIMESTAMP);
         return List.of(
                 envelope,
-                TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS",
-                        "a description", new BigDecimal(AMOUNT), "000000123", "a merchant",
-                        "a city", "0000012345", MASKED_CARD_NUMBER, ORIGIN_TIMESTAMP),
+                authorized,
                 TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
                         DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal(AMOUNT),
                         MASKED_CARD_NUMBER),
+                TransactionPosted.forAuthorized(authorized, new BigDecimal(BALANCE),
+                        POSTED_TIMESTAMP),
                 TransactionPosted.forAccount(ACCOUNT_ID, TRANSACTION_ID, new BigDecimal(BALANCE),
                         POSTED_TIMESTAMP, new BigDecimal(AMOUNT), MASKED_CARD_NUMBER),
                 FraudFlagged.of(ACCOUNT_ID, TRANSACTION_ID, 87,
@@ -82,9 +93,25 @@ class EventRedactionTest {
                 FraudCleared.of(TRANSACTION_ID, ACCOUNT_ID, WHEN));
     }
 
+    /**
+     * Builds the authorization fixture the posted fixture derives from.
+     *
+     * <p>{@link TransactionPosted#from(TransactionAuthorized, java.math.BigDecimal, String)} copies
+     * eleven components from this record, so both fixtures carry the same marker values and one
+     * rendering assertion covers both.
+     *
+     * @return one authorization carrying every marker value of this class
+     */
+    private static TransactionAuthorized authorizedFixture() {
+        return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS",
+                "a description", new BigDecimal(AMOUNT), "000000123", "a merchant", "a city",
+                "0000012345", MASKED_CARD_NUMBER, CARD_TOKEN, ORIGIN_TIMESTAMP);
+    }
+
     @ParameterizedTest
     @MethodSource("allEventRecords")
-    @DisplayName("no event record renders an account identifier, an amount or a card number")
+    @DisplayName("no event record renders an account identifier, an amount, a card number or a "
+            + "card token")
     void rendersNoSensitiveValue(Object event) {
         String rendered = event.toString();
 
@@ -102,6 +129,10 @@ class EventRedactionTest {
                         event.getClass().getSimpleName())
                 .doesNotContain(MASKED_CARD_NUMBER)
                 .doesNotContain("4321");
+        assertThat(rendered)
+                .as("rendering of %s must not disclose the card token",
+                        event.getClass().getSimpleName())
+                .doesNotContain(CARD_TOKEN);
     }
 
     @ParameterizedTest
@@ -152,7 +183,8 @@ class EventRedactionTest {
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                 () -> TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS TERM",
                         "Purchase at Abshire-Lowe", tooWide, "800000000", "Abshire-Lowe",
-                        "North Enoshaven", "72112", MASKED_CARD_NUMBER, ORIGIN_TIMESTAMP));
+                        "North Enoshaven", "72112", MASKED_CARD_NUMBER, CARD_TOKEN,
+                        ORIGIN_TIMESTAMP));
 
         assertFalse(refused.getMessage().contains("1234567890.12"),
                 "the refusal echoed the rejected amount: " + refused.getMessage());
@@ -166,9 +198,8 @@ class EventRedactionTest {
         BigDecimal tooWide = new BigDecimal("12345678901.12");
 
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> TransactionPosted.of(EventEnvelope.of("TransactionPosted", ACCOUNT_ID),
-                        TRANSACTION_ID, tooWide, POSTED_TIMESTAMP, new BigDecimal(AMOUNT),
-                        MASKED_CARD_NUMBER));
+                () -> TransactionPosted.forAccount(ACCOUNT_ID, TRANSACTION_ID, tooWide,
+                        POSTED_TIMESTAMP, new BigDecimal(AMOUNT), MASKED_CARD_NUMBER));
 
         assertFalse(refused.getMessage().contains("12345678901.12"),
                 "the refusal echoed the rejected balance: " + refused.getMessage());
@@ -180,9 +211,9 @@ class EventRedactionTest {
     @DisplayName("a refused timestamp and a refused merchant identifier are described by length")
     void aRefusedTextComponentIsNotEchoed() {
         IllegalArgumentException refusedTimestamp = assertThrows(IllegalArgumentException.class,
-                () -> TransactionPosted.of(EventEnvelope.of("TransactionPosted", ACCOUNT_ID),
-                        TRANSACTION_ID, new BigDecimal(BALANCE), ORIGIN_TIMESTAMP,
-                        new BigDecimal(AMOUNT), MASKED_CARD_NUMBER));
+                () -> TransactionPosted.forAccount(ACCOUNT_ID, TRANSACTION_ID,
+                        new BigDecimal(BALANCE), ORIGIN_TIMESTAMP, new BigDecimal(AMOUNT),
+                        MASKED_CARD_NUMBER));
 
         assertFalse(refusedTimestamp.getMessage().contains(ORIGIN_TIMESTAMP),
                 "the refusal echoed the rejected timestamp: " + refusedTimestamp.getMessage());
@@ -193,7 +224,7 @@ class EventRedactionTest {
         IllegalArgumentException refusedMerchant = assertThrows(IllegalArgumentException.class,
                 () -> TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS TERM",
                         "Purchase at Abshire-Lowe", new BigDecimal(AMOUNT), "80000000A",
-                        "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER,
+                        "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER, CARD_TOKEN,
                         ORIGIN_TIMESTAMP));
 
         assertFalse(refusedMerchant.getMessage().contains("80000000A"),
@@ -204,11 +235,28 @@ class EventRedactionTest {
                         + refusedMerchant.getMessage());
     }
 
+    /**
+     * Builds a sixteen-digit card number this repository does not carry.
+     *
+     * <p>The four leading digits are {@code 9999}, and none of the fifty records of
+     * {@code app/data/ASCII/carddata.txt} begins with them, so no value this method returns
+     * equals a card number the repository holds. The value is derived without a committed
+     * literal, so no
+     * card-number literal reaches this source file.
+     *
+     * @param serial the trailing serial, at most twelve digits
+     * @return sixteen digits, opening with {@code 9999}
+     */
+    private static String syntheticCardNumber(long serial) {
+        return "9999" + String.format("%012d", serial);
+    }
+
     @Test
     @DisplayName("the dead-letter envelope carries no exception message and no payload")
     void theDeadLetterEnvelopeCarriesNoFailureText() {
+        String cardNumber = syntheticCardNumber(24453765740L);
         DeadLetterEnvelope envelope = DeadLetterEnvelope.fromFailure(ACCOUNT_ID, "0999",
-                new IllegalStateException("card 0500024453765740 amount 50.47"), "SCHEMA",
+                new IllegalStateException("card " + cardNumber + " amount 50.47"), "SCHEMA",
                 "validation refused the record\r\ninjected line", "transaction.authorized", 1, 42L,
                 null, null, 3);
 
@@ -218,7 +266,7 @@ class EventRedactionTest {
                 "a line break reached the dead-letter message: " + envelope.message());
         assertEquals("IllegalS", envelope.culprit(),
                 "the culprit was not cut to the width the source field holds");
-        assertFalse(envelope.toString().contains("0500024453765740"),
+        assertFalse(envelope.toString().contains(cardNumber),
                 "the rendering carries a card number from the failure: " + envelope);
         assertFalse(envelope.toString().contains("50.47"),
                 "the rendering carries an amount from the failure: " + envelope);

@@ -22,6 +22,8 @@ import org.springframework.data.repository.ListCrudRepository;
  * {@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5}; the inherited {@code save}
  * reproduces the write {@code 'W'} at {@code app/cbl/CBSTM03B.CBL:L107} and the rewrite
  * {@code 'Z'} at {@code L108}.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public interface AccountRepository extends ListCrudRepository<AccountEntity, String> {
 

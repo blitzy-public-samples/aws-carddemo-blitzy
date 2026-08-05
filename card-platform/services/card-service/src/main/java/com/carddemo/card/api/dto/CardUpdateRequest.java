@@ -14,10 +14,10 @@ import jakarta.validation.constraints.Pattern;
  * the {@code CCUP-NEW-EXPIRAION-DATE} subgroup opened at L309 holds the three expiry parts.
  *
  * <p>The card number arrives here, in the body, and not as a path variable. A path reaches an
- * access log, a reverse proxy log, a distributed trace, a browser history and the instance member of
- * a default error document, and a full Primary Account Number (PAN) belongs in none of them; a
- * request body reaches none of those by default. The route is therefore {@code PUT /cards} with the
- * key inside the payload. That also matches the source more closely than the earlier route did:
+ * access log, a reverse proxy log, a distributed trace, a browser history and the instance member
+ * of a default error document. A full Primary Account Number (PAN) belongs in none of them, and a
+ * request body reaches none of them by default. The route is therefore {@code PUT /cards} with the
+ * key inside the payload. That also matches the source, where
  * {@code CCUP-NEW-CARDID PIC X(16)} at {@code app/cbl/COCRDUPC.cbl:L305} is part of the same
  * payload group as the five fields below.
  *
@@ -29,9 +29,9 @@ import jakarta.validation.constraints.Pattern;
  * surfaces the first failing message. Every constraint below names a constant from
  * {@link CardValidationMessages}, so a new edit costs one annotation here and one constant there.
  *
- * <p>One field of the source payload stays absent. The source declares a card verification value at
- * {@code app/cbl/COCRDUPC.cbl:L306} and this record accepts no component for it: the card update map
- * {@code app/bms/COCRDUP.bms} declares no field for it either, and
+ * <p>One field of the source payload stays absent. The source declares a card verification value
+ * at {@code app/cbl/COCRDUPC.cbl:L306} and this record accepts no component for it. The card
+ * update map {@code app/bms/COCRDUP.bms} declares no field for it either, and
  * {@code entity/CardEntity#applyUpdate} changes it never.
  *
  * <p>The card-number component carries the width and character class the source tests and nothing
@@ -44,20 +44,16 @@ import jakarta.validation.constraints.Pattern;
  * {@code CCUP-NEW-EXPDAY PIC X(2)} holds, because a 3270 field two characters wide cannot deliver a
  * third character and a Representational State Transfer request can.
  *
- * <p>The expiry day carries no constraint. The source edits the name, the active status, the expiry
- * month and the expiry year, and it edits no day, so this record adds no width bound and no test of
- * which days a month holds.
- *
  * @param cardNumber the sixteen-digit card number this update names, from
  *        {@code CCUP-NEW-CARDID PIC X(16)} at {@code app/cbl/COCRDUPC.cbl:L305} and held as
  *        {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}. A missing value takes
  *        {@link CardValidationMessages#PROMPT_FOR_CARD}, the text at
- *        {@code app/cbl/COCRDUPC.cbl:L180} set at L774, and a value that is not sixteen digits takes
+ *        {@code app/cbl/COCRDUPC.cbl:L180} set at L774. A value that is not sixteen digits takes
  *        {@link CardValidationMessages#CARD_FILTER_NOT_NUMERIC}, the text at L789 set at L790
- *        under the test at L784. The value reaches no response body and no log line: a response
- *        carries the masked form, which {@link CardDetailResponse} and {@link CardSummary} enforce in
- *        their canonical constructors, and {@link ApiErrorResponse} refuses a route that holds a
- *        resolved identifier.
+ *        under the test at L784. The value reaches no response body and no log line. A response
+ *        carries the masked form, which {@link CardDetailResponse} and {@link CardSummary} enforce
+ *        in their canonical constructors, and {@link ApiErrorResponse} refuses a route that holds
+ *        a resolved identifier.
  * @param embossedName cardholder name embossed on the card, from
  *        {@code CCUP-NEW-CRDNAME PIC X(50)} at {@code app/cbl/COCRDUPC.cbl:L308} and held as
  *        {@code CARD-EMBOSSED-NAME PIC X(50)} at {@code app/cpy/CVACT02Y.cpy:L8}, which fixes the
@@ -87,9 +83,9 @@ import jakarta.validation.constraints.Pattern;
  *        month and the expiry year, and it edits no day. Paragraph
  *        {@code 1260-EDIT-EXPIRY-YEAR-EXIT.} closes the edit chain at L945 and
  *        {@code 2000-DECIDE-ACTION.} opens on L948, so no paragraph between them reaches the day.
- *        L621 moves the day in and L1471 joins it into the reassembled date. This component
- *        therefore carries no constraint: any value passes, including 31 in a thirty-day month,
- *        exactly as the source accepts it.
+ *        L621 moves the day in and L1471 joins it into the reassembled date. This component is
+ *        bound to two digits and nothing more: no calendar-day rule is applied, so any two digits
+ *        pass, including 31 in a thirty-day month, exactly as the source accepts it.
  * @param activeStatus one-character active status, from {@code CCUP-NEW-CRDSTCD PIC X(1)} at
  *        {@code app/cbl/COCRDUPC.cbl:L313}. Accepts upper-case {@code Y} and upper-case {@code N},
  *        from {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at {@code app/cbl/COCRDUPC.cbl:L91}.
@@ -97,6 +93,8 @@ import jakarta.validation.constraints.Pattern;
  *        {@code FLG-YES-NO-CHECK PIC X(1)} on L861 and tests that condition name on L863, and it
  *        folds no case. A missing value and any other character both take
  *        {@link CardValidationMessages#CARD_STATUS_MUST_BE_YES_NO}, set at L856 and at L869.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record CardUpdateRequest(
 
@@ -144,11 +142,10 @@ public record CardUpdateRequest(
      * enough to use the card. A log line, an assertion failure, a debugger view or the message of
      * an exception that interpolated the request would persist all of it.
      *
-     * <p>Nothing is masked rather than withheld here, deliberately. Masking needs a value of the
-     * declared width, and this record exists precisely to carry values that have not yet passed
-     * their constraints, so a malformed number would either break the masker or be printed as it
-     * arrived. What is reported instead is the count of components that arrived, which separates a
-     * sparse request from a full one and identifies no card.
+     * <p>Nothing is masked here; every value is withheld. Masking needs a value of the declared
+     * width, and this record carries values that have not yet passed their constraints. What is
+     * reported instead is the count of components that arrived, which separates a sparse request
+     * from a full one and identifies no card.
      *
      * @return the count of supplied components, and no value
      */

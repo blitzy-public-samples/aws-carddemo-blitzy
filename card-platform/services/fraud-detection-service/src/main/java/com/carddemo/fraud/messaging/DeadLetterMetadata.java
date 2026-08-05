@@ -7,10 +7,9 @@ import java.util.List;
 /**
  * Four text fields that travel with a message routed to the dead-letter topic.
  *
- * <p>SOURCE-DERIVED SHAPE, ADDITIVE ROUTING. The four widths come from the Common Business
- * Oriented Language (COBOL) abend reporting record; dead-letter routing itself has no COBOL
- * ancestor. The widths come from
- * {@code 01 ABEND-DATA} at {@code app/cpy/CSMSG02Y.cpy:L21-L29}. The four-character
+ * <p>The four widths come from {@code 01 ABEND-DATA} at
+ * {@code app/cpy/CSMSG02Y.cpy:L21-L29}, the Common Business Oriented Language (COBOL) abend
+ * reporting record. Dead-letter routing itself has no COBOL ancestor. The four-character
  * {@code abendCode} follows the file-status formatter at {@code app/cbl/CBTRN02C.cbl:L714-L727},
  * which widens a two-byte status to four digits. Both locators are shape only, no logic.
  *
@@ -33,6 +32,8 @@ import java.util.List;
  * @param culprit   the failing component
  * @param reason    the failure classification
  * @param message   the failure detail
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record DeadLetterMetadata(String abendCode, String culprit, String reason,
         String message) {
@@ -62,6 +63,12 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
     public static final int MESSAGE_MAX_LENGTH = 72;
 
     /**
+     * Byte and character length of the source-shaped diagnostic record.
+     */
+    public static final int RECORD_LENGTH =
+            ABEND_CODE_MAX_LENGTH + CULPRIT_MAX_LENGTH + REASON_MAX_LENGTH + MESSAGE_MAX_LENGTH;
+
+    /**
      * Replacement for any character outside printable American Standard Code for Information
      * Interchange (ASCII). Sanitising to printable ASCII first is what makes the length cap below
      * safe: every retained character is one code unit, so shortening a component can never split a
@@ -79,8 +86,8 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
      * Sanitises all four text components.
      *
      * <p>This constructor throws nothing. A dead-letter record describes a failure that already
-     * happened, so a second failure raised while building it would suppress the dead-letter
-     * message and leave the broker redelivering the same message for ever.</p>
+     * happened. A second failure raised while building it would suppress the dead-letter message,
+     * and leave the broker redelivering the same message for ever.</p>
      */
     public DeadLetterMetadata {
         abendCode = sanitise(abendCode, ABEND_CODE_MAX_LENGTH);
@@ -123,6 +130,23 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
             String message) {
         String culprit = failure == null ? "" : failure.getClass().getSimpleName();
         return of(abendCode, culprit, reason, message);
+    }
+
+    /**
+     * Renders the four components in copybook order, padded to their declared widths.
+     *
+     * @return one printable ASCII record of exactly {@value #RECORD_LENGTH} characters
+     */
+    public String toFixedWidthRecord() {
+        return fixedWidth(abendCode, ABEND_CODE_MAX_LENGTH)
+                + fixedWidth(culprit, CULPRIT_MAX_LENGTH)
+                + fixedWidth(reason, REASON_MAX_LENGTH)
+                + fixedWidth(message, MESSAGE_MAX_LENGTH);
+    }
+
+    /** Pads one already-sanitized component with spaces to its declared width. */
+    private static String fixedWidth(String value, int width) {
+        return value + " ".repeat(width - value.length());
     }
 
     /**
@@ -173,9 +197,9 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
      * <p>What the envelope adds is where the failing record was: topic, partition and offset. An
      * operator needs those to reach the record itself, and none of the three is derivable from the
      * diagnostics. The list of shortened components is left empty here, and that is exact rather
-     * than lazy: this record bounds each diagnostic to the same width
-     * {@link DeadLetterEnvelope} bounds it to, so every value handed over already fits and the
-     * envelope has nothing left to shorten. A producer that bounds its diagnostics more narrowly
+     * than lazy. This record bounds each diagnostic to the same width {@link DeadLetterEnvelope}
+     * bounds it to, so every value handed over already fits and the envelope has nothing left to
+     * shorten. A producer that bounds its diagnostics more narrowly
      * than this record does should build the envelope directly, so its own shortening is named.
      *
      * @param aggregateId     the eleven-digit account identifier of the failing record, and the

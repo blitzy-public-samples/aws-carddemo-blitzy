@@ -19,21 +19,18 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
 /**
  * One account state change. The account service publishes it on a mutation and never on a read.
  *
- * <p>Eleven components serialize at one level: the five {@link EventEnvelope} components first,
- * then the six payload components. No {@code envelope} key appears in the JavaScript Object
+ * <p>Twelve components serialize at one level: the five {@link EventEnvelope} components first,
+ * then the seven payload components. No {@code envelope} key appears in the JavaScript Object
  * Notation (JSON) text, and {@link #toEnvelope()} returns the five envelope components as one
  * {@link EventEnvelope}.
  *
  * <p>Widths come from the 300-byte account record at {@code app/cpy/CVACT01Y.cpy}. The 178-byte
  * trailing {@code FILLER} at {@code app/cpy/CVACT01Y.cpy:L17} holds no data and no component maps
- * to it. Each of the three monetary components carries a scale of exactly {@link #MONETARY_SCALE}
+ * to it. Each of the four monetary components carries a scale of exactly {@link #MONETARY_SCALE}
  * and travels as a quoted decimal string matching {@link #MONETARY_PATTERN}.
  *
- * <p>ADDITIVE: {@link #changeKind()} and the five envelope components. No copybook and no program
- * under {@code app/cbl/} records a change kind or an event envelope. Both additions are recorded in
- * {@code card-platform/docs/decision-log.md} (planned).
- *
- * <p>Field-by-field source mapping: {@code card-platform/docs/traceability-matrix.md} (planned).
+ * <p>No COBOL ancestor: {@link #changeKind()} and the five envelope components. No copybook and no
+ * program under {@code app/cbl/} records a change kind or an event envelope.
  *
  * @param eventId            the idempotency key. A consumer checks it, then writes its side effects
  *                           and the marker row in one local transaction, and acknowledges only
@@ -47,7 +44,7 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  *                           order
  * @param accountId          the eleven-digit account identifier, from {@code ACCT-ID PIC 9(11)} at
  *                           {@code app/cpy/CVACT01Y.cpy:L5}. A leading zero belongs to the value
- * @param changeKind         which mutation produced the event. ADDITIVE
+ * @param changeKind         which mutation produced the event. No source field carries it
  * @param creditLimit        the credit limit, from {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} at
  *                           {@code app/cpy/CVACT01Y.cpy:L8}
  * @param currentCycleCredit the cycle credit accumulator, from
@@ -70,6 +67,7 @@ public record AccountStateChanged(
         String aggregateId,
         String accountId,
         ChangeKind changeKind,
+        @JsonSerialize(using = ToStringSerializer.class) BigDecimal currentBalance,
         @JsonSerialize(using = ToStringSerializer.class) BigDecimal creditLimit,
         @JsonSerialize(using = ToStringSerializer.class) BigDecimal currentCycleCredit,
         @JsonSerialize(using = ToStringSerializer.class) BigDecimal currentCycleDebit,
@@ -108,8 +106,8 @@ public record AccountStateChanged(
     /**
      * Which mutation produced one event, and the type {@code changeKind} carries.
      *
-     * <p>ADDITIVE. The source publishes nothing and records no change kind. Both constants name a
-     * mutation the source performs.
+     * <p>No COBOL ancestor. The source publishes nothing and records no change kind. Both constants
+     * name a mutation the source performs.
      */
     public enum ChangeKind {
 
@@ -128,7 +126,7 @@ public record AccountStateChanged(
     }
 
     /**
-     * Checks all eleven components and truncates each monetary component to
+     * Checks all twelve components and truncates each monetary component to
      * {@link #MONETARY_SCALE} fractional digits.
      *
      * <p>The five envelope components pass through {@link EventEnvelope}, which applies the
@@ -148,12 +146,14 @@ public record AccountStateChanged(
      *                                  {@code eventId}, {@code eventType}, {@code occurredAt},
      *                                  {@code accountId}, {@code changeKind}, a monetary component
      *                                  and {@code expirationDate}
-     * @throws IllegalArgumentException when {@code eventType} is not {@link #EVENT_TYPE}, when
-     *                                  {@code schemaVersion} is not {@link #SCHEMA_VERSION}, when
+     * @throws IllegalArgumentException on any of six conditions.
+     *                                  {@code eventType} is not {@link #EVENT_TYPE}.
+     *                                  {@code schemaVersion} is not {@link #SCHEMA_VERSION}.
      *                                  {@code aggregateId} is {@code null} or is not eleven
-     *                                  decimal digits, when {@code accountId} differs from
-     *                                  {@code aggregateId}, when a truncated monetary component
-     *                                  carries more than ten integer digits, or when
+     *                                  decimal digits.
+     *                                  {@code accountId} differs from {@code aggregateId}.
+     *                                  A truncated monetary component carries more than ten
+     *                                  integer digits.
      *                                  {@code expirationDate} is longer than
      *                                  {@link #EXPIRATION_DATE_MAX_LENGTH}
      */
@@ -172,6 +172,7 @@ public record AccountStateChanged(
         }
         Objects.requireNonNull(changeKind, "changeKind must be present");
 
+        currentBalance = truncate("currentBalance", currentBalance);
         creditLimit = truncate("creditLimit", creditLimit);
         currentCycleCredit = truncate("currentCycleCredit", currentCycleCredit);
         currentCycleDebit = truncate("currentCycleDebit", currentCycleDebit);
@@ -182,6 +183,7 @@ public record AccountStateChanged(
                     + EXPIRATION_DATE_MAX_LENGTH + " characters and the supplied value holds "
                     + expirationDate.length());
         }
+
     }
 
     /**
@@ -192,6 +194,7 @@ public record AccountStateChanged(
      *
      * @param accountId          the eleven-digit account identifier
      * @param changeKind         which mutation produced the event
+     * @param currentBalance     the account balance after the change
      * @param creditLimit        the credit limit after the change
      * @param currentCycleCredit the cycle credit accumulator after the change
      * @param currentCycleDebit  the cycle debit accumulator after the change
@@ -201,10 +204,10 @@ public record AccountStateChanged(
      * @throws IllegalArgumentException when a component misses the form this record states
      */
     public static AccountStateChanged of(String accountId, ChangeKind changeKind,
-            BigDecimal creditLimit, BigDecimal currentCycleCredit, BigDecimal currentCycleDebit,
-            String expirationDate) {
-        return from(EventEnvelope.of(EVENT_TYPE, accountId), accountId, changeKind, creditLimit,
-                currentCycleCredit, currentCycleDebit, expirationDate);
+            BigDecimal currentBalance, BigDecimal creditLimit, BigDecimal currentCycleCredit,
+            BigDecimal currentCycleDebit, String expirationDate) {
+        return from(EventEnvelope.of(EVENT_TYPE, accountId), accountId, changeKind, currentBalance,
+                creditLimit, currentCycleCredit, currentCycleDebit, expirationDate);
     }
 
     /**
@@ -217,6 +220,7 @@ public record AccountStateChanged(
      * @param accountId          the eleven-digit account identifier, equal to the envelope
      *                           {@code aggregateId}
      * @param changeKind         which mutation produced the event
+     * @param currentBalance     the account balance after the change
      * @param creditLimit        the credit limit after the change
      * @param currentCycleCredit the cycle credit accumulator after the change
      * @param currentCycleDebit  the cycle debit accumulator after the change
@@ -227,19 +231,20 @@ public record AccountStateChanged(
      * @throws IllegalArgumentException when a component misses the form this record states
      */
     public static AccountStateChanged from(EventEnvelope envelope, String accountId,
-            ChangeKind changeKind, BigDecimal creditLimit, BigDecimal currentCycleCredit,
-            BigDecimal currentCycleDebit, String expirationDate) {
+            ChangeKind changeKind, BigDecimal currentBalance, BigDecimal creditLimit,
+            BigDecimal currentCycleCredit, BigDecimal currentCycleDebit, String expirationDate) {
         Objects.requireNonNull(envelope, "envelope must be present");
         return new AccountStateChanged(envelope.eventId(), envelope.eventType(),
                 envelope.schemaVersion(), envelope.occurredAt(), envelope.aggregateId(), accountId,
-                changeKind, creditLimit, currentCycleCredit, currentCycleDebit, expirationDate);
+                changeKind, currentBalance, creditLimit, currentCycleCredit, currentCycleDebit,
+                expirationDate);
     }
 
     /**
      * Returns the five envelope components as one {@link EventEnvelope}.
      *
      * <p>The returned envelope equals the one the canonical constructor checked. Serialization
-     * reads the eleven record components and never this method, so no {@code envelope} key reaches
+     * reads the twelve record components and never this method, so no {@code envelope} key reaches
      * a topic.
      *
      * @return the envelope this event carries
@@ -325,10 +330,10 @@ public record AccountStateChanged(
      * {@code outbox_event} and what the relay later hands to the broker unchanged.
      *
      * <p>This method exists so that no publisher of this event can reach a topic without passing
-     * that gate. Before it existed, this service serialized its own event with its own conventions
-     * while the shared serializer governed only the five core events, so a mutation event's payload
-     * was never checked against the contract that describes it and the closed property set that
-     * keeps an undeclared field out of a known event type never applied to it.
+     * that gate. Before it existed, this service serialized its own event with its own conventions,
+     * and the shared serializer governed only the five core events. A mutation event's payload was
+     * therefore never checked against the contract describing it. The closed property set that
+     * keeps an undeclared field out of a known event type never applied to it either.
      *
      * @return this event as validated JavaScript Object Notation text, in UTF-8
      * @throws org.apache.kafka.common.errors.SerializationException when this event breaks its
@@ -348,12 +353,12 @@ public record AccountStateChanged(
      * Renders the technical identifiers and withholds every value the payload carries.
      *
      * <p>This override replaces the representation the compiler generates for a record. That
-     * generated form prints the account identifier twice, the credit limit and both cycle
-     * accumulators.
+     * generated form prints the account identifier twice, the balance, the credit limit and both
+     * cycle accumulators.
      *
      * <p>The event identifier, the event type, the schema version, the occurrence time and the
-     * change kind stay, because a reader tracing this event through the relay needs them and none
-     * carries cardholder data. Every other component appears as {@link EventEnvelope#WITHHELD}, the
+     * change kind stay. A reader tracing this event through the relay needs them, and none carries
+     * cardholder data. Every other component appears as {@link EventEnvelope#WITHHELD}, the
      * platform-wide redaction marker.
      *
      * @return the identifiers of this event with every payload value withheld, never {@code null}
@@ -363,7 +368,8 @@ public record AccountStateChanged(
         return "AccountStateChanged[eventId=" + eventId + ", eventType=" + eventType
                 + ", schemaVersion=" + schemaVersion + ", occurredAt=" + occurredAt
                 + ", aggregateId=" + EventEnvelope.WITHHELD + ", accountId="
-                + EventEnvelope.WITHHELD + ", creditLimit=" + EventEnvelope.WITHHELD
+                + EventEnvelope.WITHHELD + ", currentBalance=" + EventEnvelope.WITHHELD
+                + ", creditLimit=" + EventEnvelope.WITHHELD
                 + ", currentCycleCredit=" + EventEnvelope.WITHHELD
                 + ", currentCycleDebit=" + EventEnvelope.WITHHELD + ", expirationDate="
                 + EventEnvelope.WITHHELD + ", changeKind=" + changeKind + "]";

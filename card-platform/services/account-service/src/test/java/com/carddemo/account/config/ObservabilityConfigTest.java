@@ -24,9 +24,9 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Reads the seven meters {@link ObservabilityConfig} registers, and records against each one.
+ * Reads the account meter series {@link ObservabilityConfig} registers, and records against each.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor. Each test builds a context holding one
+ * <p>This class has no COBOL ancestor. Each test builds a context holding one
  * {@link SimpleMeterRegistry} and the configuration class, so no database and no message broker has
  * to run.
  *
@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * with {@code domain/AccountUpdateService.java}, {@code domain/BillingCycleService.java} and
  * {@code outbox/OutboxRelay.java}.
  */
-@DisplayName("ObservabilityConfig, the seven meters of the account service")
+@DisplayName("ObservabilityConfig, the account-service meter set")
 class ObservabilityConfigTest {
 
     /** Prefix every meter name carries. */
@@ -69,9 +69,13 @@ class ObservabilityConfigTest {
     /** Outbox publish attempts that failed. */
     private static final String PUBLISH_FAILED = PREFIX + "publish.failed";
 
+    /** Transaction rollback and commit failures, separated by operation. */
+    private static final String TRANSACTION_FAILURES = PREFIX + "transaction.failures";
+
     /** Every meter name this service reports. */
     private static final Set<String> DECLARED_METER_NAMES = Set.of(EVENTS_CONSUMED, UPDATE_LATENCY,
-            UPDATE_APPLIED, VALIDATION_FAILED, CYCLE_CLOSED, OUTBOX_PUBLISHED, PUBLISH_FAILED);
+            UPDATE_APPLIED, VALIDATION_FAILED, CYCLE_CLOSED, OUTBOX_PUBLISHED, PUBLISH_FAILED,
+            TRANSACTION_FAILURES);
 
     /** The six counter names. {@link #UPDATE_LATENCY} is the one timer. */
     private static final List<String> COUNTER_NAMES = List.of(EVENTS_CONSUMED, UPDATE_APPLIED,
@@ -79,12 +83,16 @@ class ObservabilityConfigTest {
 
     /** Starts the configuration class over one registry that holds nothing else. */
     private static final ApplicationContextRunner RUNNER = new ApplicationContextRunner()
-            .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+            .withBean(MeterRegistry.class, () -> {
+                SimpleMeterRegistry registry = new SimpleMeterRegistry();
+                registry.config().commonTags(ObservabilityConfig.SERVICE_TAG, "account-service");
+                return registry;
+            })
             .withUserConfiguration(ObservabilityConfig.class);
 
     @Test
-    @DisplayName("the seven declared names are the only meters, and each opens with the prefix")
-    void theSevenDeclaredNamesAreTheOnlyMeters() {
+    @DisplayName("the declared names are the only meters, and each opens with the prefix")
+    void theDeclaredNamesAreTheOnlyMeters() {
         RUNNER.run(context -> {
             assertThat(context).hasNotFailed();
             MeterRegistry registry = context.getBean(MeterRegistry.class);
@@ -94,17 +102,23 @@ class ObservabilityConfigTest {
             assertThat(meterNamesOf(registry)).allSatisfy(name -> assertThat(name)
                     .withFailMessage("meter %s left the carddemo.account namespace", name)
                     .startsWith(PREFIX));
-            assertThat(registry.getMeters()).hasSize(7);
+            assertThat(registry.getMeters()).hasSize(9);
         });
     }
 
     @Test
-    @DisplayName("no meter carries a tag")
-    void noMeterCarriesATag() {
+    @DisplayName("every meter carries the service tag and failure operations stay bounded")
+    void everyMeterCarriesTheServiceTagAndFailureOperationsStayBounded() {
         RUNNER.run(context -> assertThat(context.getBean(MeterRegistry.class).getMeters())
-                .allSatisfy(meter -> assertThat(meter.getId().getTags())
-                        .withFailMessage("meter %s gained a tag", meter.getId().getName())
-                        .isEmpty()));
+                .allSatisfy(meter -> {
+                    assertThat(meter.getId().getTag(ObservabilityConfig.SERVICE_TAG))
+                            .isEqualTo("account-service");
+                    if (meter.getId().getName().equals(TRANSACTION_FAILURES)) {
+                        assertThat(meter.getId().getTag(ObservabilityConfig.OPERATION_TAG))
+                                .isIn(ObservabilityConfig.UPDATE_OPERATION,
+                                        ObservabilityConfig.CYCLE_CLOSE_OPERATION);
+                    }
+                }));
     }
 
     @Test
@@ -160,9 +174,15 @@ class ObservabilityConfigTest {
 
             meters.recordValidationFailure();
             meters.recordPublishFailure();
+            meters.recordUpdateFailure();
+            meters.recordCycleCloseFailure();
 
             assertThat(counterOf(registry, VALIDATION_FAILED).count()).isEqualTo(1.0D);
             assertThat(counterOf(registry, PUBLISH_FAILED).count()).isEqualTo(1.0D);
+            assertThat(counterOf(registry, TRANSACTION_FAILURES,
+                    ObservabilityConfig.UPDATE_OPERATION).count()).isEqualTo(1.0D);
+            assertThat(counterOf(registry, TRANSACTION_FAILURES,
+                    ObservabilityConfig.CYCLE_CLOSE_OPERATION).count()).isEqualTo(1.0D);
             assertThat(counterOf(registry, UPDATE_APPLIED).count())
                     .withFailMessage("a failure counted as a committed update")
                     .isZero();
@@ -182,6 +202,8 @@ class ObservabilityConfigTest {
             meters.recordOutboxPublished(9L);
             meters.recordValidationFailure();
             meters.recordPublishFailure();
+            meters.recordUpdateFailure();
+            meters.recordCycleCloseFailure();
             meters.recordUpdateLatency(Duration.ofMillis(1));
 
             assertThat(meters.eventsConsumedTotal())
@@ -199,7 +221,7 @@ class ObservabilityConfigTest {
                     .withFailMessage("a recording method for the events-consumed counter appeared, "
                             + "and this service consumes no event")
                     .doesNotContain("recordEventConsumed", "recordEventsConsumed");
-            assertThat(recordingMethods).hasSize(6);
+            assertThat(recordingMethods).hasSize(8);
         });
     }
 
@@ -216,9 +238,11 @@ class ObservabilityConfigTest {
                     .withFailMessage("the processing-latency family left the account service")
                     .isNotNull();
             assertThat(List.of(counterOf(registry, VALIDATION_FAILED),
-                    counterOf(registry, PUBLISH_FAILED)))
+                    counterOf(registry, PUBLISH_FAILED),
+                    counterOf(registry, TRANSACTION_FAILURES,
+                            ObservabilityConfig.UPDATE_OPERATION)))
                     .withFailMessage("the failure-count family left the account service")
-                    .hasSize(2);
+                    .hasSize(3);
         });
     }
 
@@ -238,6 +262,13 @@ class ObservabilityConfigTest {
     private static Counter counterOf(MeterRegistry registry, String name) {
         return Objects.requireNonNull(registry.find(name).counter(),
                 "no counter named " + name);
+    }
+
+    private static Counter counterOf(MeterRegistry registry, String name, String operation) {
+        return Objects.requireNonNull(registry.find(name)
+                        .tag(ObservabilityConfig.OPERATION_TAG, operation)
+                        .counter(),
+                "no counter named " + name + " for operation " + operation);
     }
 
     /**

@@ -36,22 +36,18 @@ import java.util.regex.Pattern;
  * {@code 2500-WRITE-REJECT-REC} at L446 fills both halves and writes them as one 430-byte record,
  * a total that appears again as {@code LRECL=430} at {@code app/jcl/POSTTRAN.jcl:L36}.</p>
  *
- * <p>DEVIATION from the source record, deliberate: the 350 characters do NOT stay whole.
- * {@code REJECT-TRAN-DATA} is a copy of the daily transaction record laid out by
- * {@code 01 DALYTRAN-RECORD} at {@code app/cpy/CVTRA06Y.cpy:L4}, and
- * {@code DALYTRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA06Y.cpy:L15} sits inside it. Holding
- * the block whole would keep one unmasked Primary Account Number per refused transaction in a table
- * that only accumulates and that no authorization decision reads. This class holds instead the six
- * fields a reader needs to diagnose or replay a refusal, with the card number masked on the way in
- * by {@link PanMasker#maskCardNumber(String)}. The constructor masks it here rather than trusting a
- * caller to have done so, and the column check constraint
- * {@code ck_rejected_transaction_masked_card_number} refuses any value whose first twelve positions
- * hold a digit.</p>
+ * <p>The 350 characters do NOT stay whole. {@code REJECT-TRAN-DATA} is a copy of the daily
+ * transaction record laid out by {@code 01 DALYTRAN-RECORD} at {@code app/cpy/CVTRA06Y.cpy:L4}, and
+ * {@code DALYTRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA06Y.cpy:L15} sits inside it. This
+ * class holds the nine source-derived fields a reader needs to diagnose or replay a refusal, beside
+ * an assigned identifier and the instant of the refusal. The card number is masked on the way in by
+ * {@link PanMasker#maskCardNumber(String)}, and the column check constraint {@code
+ * ck_rejected_transaction_masked_card_number} refuses any value whose first twelve positions hold a
+ * digit.</p>
  *
  * <p>The four free-text fields of the source record, the merchant name, the merchant city, the
  * merchant postal code and the transaction description, are dropped.
- * {@code reject_reason_description} already names the failure, and unbounded free text is where an
- * unmasked card number would reappear.</p>
+ * {@code reject_reason_description} names the failure.</p>
  *
  * <pre>
  * COBOL field                     Column
@@ -70,6 +66,8 @@ import java.util.regex.Pattern;
  *                                 DALYTRAN-SOURCE
  * (additive)                      rejected_at
  * </pre>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "rejected_transaction",
@@ -186,8 +184,8 @@ public class RejectedTransactionEntity {
      * Origin timestamp of the refused transaction, {@code DALYTRAN-ORIG-TS PIC X(26)} at
      * {@code app/cpy/CVTRA06Y.cpy:L16}. Reason code 0103 at
      * {@code app/cbl/CBTRN02C.cbl:L414-L420} compares its first ten characters against the account
-     * expiry, so a reader diagnosing that refusal needs it, and it stays text for the same reason
-     * the comparison does.
+     * expiry. A reader diagnosing that refusal needs it, and it stays text for the same reason the
+     * comparison does.
      */
     @Column(name = "origin_timestamp", nullable = false, length = DALYTRAN_ORIG_TS_WIDTH,
             columnDefinition = "bpchar(" + DALYTRAN_ORIG_TS_WIDTH + ")")
@@ -206,11 +204,12 @@ public class RejectedTransactionEntity {
     /**
      * Holds the values of one reject row, masking the card number on the way in.
      *
-     * <p>{@code cardNumber} is the only argument this constructor changes. It arrives unmasked,
-     * because the refused event carries it that way, and {@link PanMasker#maskCardNumber(String)}
-     * replaces its first twelve characters before the value reaches the field. Masking here rather
-     * than at the call site means no caller can forget, and the assertion after the call proves the
-     * result matches what the column accepts.</p>
+     * <p>{@code cardNumber} is the only argument this constructor changes.
+     * {@code domain.RejectRecorder}, the one caller, passes the {@code maskedCardNumber} the
+     * consumed event already carries, and {@link PanMasker#maskCardNumber(String)} is applied again
+     * here. That call keeps the last four characters and replaces the first twelve, so masking an
+     * already-masked value yields the same value: the mask is enforced whichever form arrives, and
+     * the assertion after the call proves the result matches what the column accepts.</p>
      *
      * @param id                        identifier of the row
      * @param transactionId             identifier of the refused transaction, at most 16 characters
@@ -226,11 +225,12 @@ public class RejectedTransactionEntity {
      * @param originTimestamp           origin timestamp, twenty-six characters
      * @param rejectedAt                point in time the ledger recorded the refusal
      * @throws NullPointerException     when any argument is {@code null}
-     * @throws IllegalArgumentException when {@code rejectReasonCode} is not four decimal digits,
-     *                                  when {@code transactionId} or
-     *                                  {@code rejectReasonDescription} exceeds its width, when a
-     *                                  fixed-width field is the wrong width, or when the amount
-     *                                  carries the wrong scale
+     * @throws IllegalArgumentException on any of four conditions.
+     *                                  {@code rejectReasonCode} is not four decimal digits.
+     *                                  {@code transactionId} or
+     *                                  {@code rejectReasonDescription} exceeds its width.
+     *                                  A fixed-width field is the wrong width.
+     *                                  The amount carries the wrong scale
      */
     public RejectedTransactionEntity(UUID id, String transactionId, String rejectReasonCode,
             String rejectReasonDescription, String cardNumber, BigDecimal transactionAmount,
@@ -258,9 +258,8 @@ public class RejectedTransactionEntity {
     /**
      * Checks that a masked card number matches {@link #MASKED_CARD_NUMBER_PATTERN}.
      *
-     * <p>The constructor applies the mask itself, so a failure here means the masking helper
-     * changed shape rather than that a caller passed the wrong thing. The failure names the shape
-     * and never the value.</p>
+     * <p>The constructor applies the mask itself, so a failure here reports that the masking
+     * helper changed shape. The failure names the shape and never the value.</p>
      *
      * @param value the masked card number
      * @return {@code value} unchanged

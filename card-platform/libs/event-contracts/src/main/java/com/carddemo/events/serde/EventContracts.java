@@ -23,9 +23,8 @@ import tools.jackson.databind.json.JsonMapper;
  * The one registry that binds each event type to its schema document and to the topic it travels
  * on, and the one place a payload is checked against that document.
  *
- * <p>ADDITIVE IN FULL. No COBOL program and no copybook in this repository declares an event bus, a
- * topic or a schema. The rationale for the choices this class implements sits in
- * {@code card-platform/docs/decision-log.md} (planned).
+ * <p>No COBOL program and no copybook in this repository declares an event bus, a topic or a
+ * schema.
  *
  * <p>Seven event types are registered, which is every event the platform publishes at runtime:
  * {@code TransactionAuthorized}, {@code TransactionDeclined} and {@code TransactionPosted} for the
@@ -72,6 +71,15 @@ public final class EventContracts {
     /** The event type the account service publishes when an account changes state. */
     public static final String ACCOUNT_STATE_CHANGED = "AccountStateChanged";
 
+    /**
+     * The event type the account service publishes when it rewrites the customer record.
+     *
+     * <p>{@code app/cbl/COACTUPC.cbl:L4086} rewrites the customer record beside the account rewrite
+     * at {@code app/cbl/COACTUPC.cbl:L4066}. The customer half travels on its own topic, so a
+     * consumer that needs credit values alone receives no cardholder name, address or credit score.
+     */
+    public static final String CUSTOMER_CONTEXT_CHANGED = "CustomerContextChanged";
+
     /** The event type the card service publishes when a card update commits. */
     public static final String CARD_UPDATED = "CardUpdated";
 
@@ -103,6 +111,7 @@ public final class EventContracts {
             Map.entry(FRAUD_FLAGGED, "fraud.assessed"),
             Map.entry(FRAUD_CLEARED, "fraud.assessed"),
             Map.entry(ACCOUNT_STATE_CHANGED, "account.state-changed"),
+            Map.entry(CUSTOMER_CONTEXT_CHANGED, "customer.context-changed"),
             Map.entry(CARD_UPDATED, "card.updated"),
             Map.entry(DEAD_LETTER, "carddemo.dead-letter"));
 

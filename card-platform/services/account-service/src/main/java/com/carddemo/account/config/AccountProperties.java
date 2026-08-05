@@ -1,17 +1,20 @@
 package com.carddemo.account.config;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
-
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.convert.DurationUnit;
 import org.springframework.validation.annotation.Validated;
 
 /**
  * The {@code carddemo} block of {@code application.yml}, bound and checked at start-up.
  *
- * <p>ADDITIVE IN FULL. The account programs {@code app/cbl/COACTVWC.cbl} and
+ * <p>The account programs {@code app/cbl/COACTVWC.cbl} and
  * {@code app/cbl/COACTUPC.cbl} read no configuration file, and the interest job
  * {@code app/jcl/INTCALC.jcl} passes its one parameter as a Job Control Language literal, so no
  * configuration record has an ancestor here.
@@ -26,8 +29,9 @@ import org.springframework.validation.annotation.Validated;
  * record as a bean. An injected instance is immutable. This module consumes no event, so it carries
  * no consumer group and no retry setting.
  *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
+ * <p>Decisions: {@code card-platform/docs/decision-log.md}.
  *
+ * @param api    the request-body ceiling of the web surface
  * @param kafka  the topic name this service publishes to
  * @param outbox the relay sweep settings
  */
@@ -35,29 +39,48 @@ import org.springframework.validation.annotation.Validated;
 @Validated
 public record AccountProperties(
 
+        @NotNull @Valid Api api,
+
         @NotNull @Valid Kafka kafka,
 
-        @NotNull @Valid Outbox outbox) {
+        @NotNull @Valid Outbox outbox,
+
+        @NotNull @Valid ProcessedEvent processedEvent,
+
+        @NotNull @Valid Retention retention) {
+
+    /**
+     * Bounds the request parser before domain validation begins.
+     *
+     * @param maxRequestBodyBytes largest declared request body the service accepts
+     */
+    public record Api(@Positive long maxRequestBodyBytes) {
+    }
 
     /**
      * The broker-facing names this service uses.
      *
-     * @param topics the one topic this service publishes to
+     * @param topics the topics this service publishes to
      */
     public record Kafka(@NotNull @Valid Topics topics) {
 
         /**
-         * The one published topic. An account read publishes nothing.
+         * The published topics. An account read publishes nothing.
          *
-         * @param accountStateChanged the topic an account update and a billing-cycle close travel
-         *                            on. The cycle close reproduces the two accumulator statements
-         *                            at {@code app/cbl/CBACT04C.cbl:L353-L354}
-         * @param deadLetter         the one topic every record no listener could consume
-         *                           reaches, shared by every service
+         * @param accountStateChanged     the topic an account update and a billing-cycle close
+         *                                travel on. The cycle close reproduces the two accumulator
+         *                                statements at {@code app/cbl/CBACT04C.cbl:L353-L354}
+         * @param customerContextChanged  the topic the ten cardholder fields of
+         *                                {@code app/cpy/CVCUS01Y.cpy:L6-L22} travel on when a
+         *                                customer update changes one of them
+         * @param deadLetter              the one topic every record no listener could consume
+         *                                reaches, shared by every service
          */
         public record Topics(
 
                 @NotBlank String accountStateChanged,
+
+                @NotBlank String customerContextChanged,
 
                 @NotBlank String deadLetter) {
         }
@@ -66,21 +89,68 @@ public record AccountProperties(
     /**
      * The transactional outbox settings.
      *
-     * @param relay the sweep the relay performs
+     * @param relay                   the sweep the relay performs
+     * @param publishedRetentionHours hours a published row remains for diagnosis
      */
-    public record Outbox(@NotNull @Valid Relay relay) {
+    public record Outbox(
+            @NotNull @Valid Relay relay,
+            @Positive long publishedRetentionHours) {
 
         /**
-         * How often the relay sweeps unpublished rows, and how many it takes per sweep.
+         * How often the relay sweeps due rows, how many it takes per sweep, which instance it says
+         * it is, and how long one of its claims may stand.
          *
-         * @param fixedDelayMs milliseconds between the end of one sweep and the start of the next
-         * @param batchSize    unpublished rows one sweep reads
+         * <p>{@code instanceId} is written into {@code outbox_event.claimed_by}, so a claim can be
+         * traced to a process. It has to differ per replica, which is why the shipped file derives it
+         * from the host name rather than carrying a literal.
+         *
+         * <p>{@code claimTimeout} is how long a claim stands before another sweep treats the claiming
+         * instance as dead and returns the row to {@code PENDING}. It also caps the retry backoff, so
+         * a row the broker keeps refusing is always claimable again within one timeout.
+         *
+         * <p>{@code publishTimeout} is how long one send waits for the broker. A send that does not
+         * complete inside it leaves the row unpublished, so the next sweep claims it again.
+         *
+         * @param fixedDelayMs   milliseconds between the end of one sweep and the start of the next
+         * @param batchSize      unpublished rows one sweep reads
+         * @param instanceId     what this instance writes into {@code outbox_event.claimed_by}
+         * @param claimTimeout   how long one claim stands before another sweep recovers the row
+         * @param maxDurationMs  maximum wall time one sweep may spend waiting on sends
+         * @param publishTimeout longest one send waits for the broker
          */
         public record Relay(
-
                 @Positive long fixedDelayMs,
 
-                @Positive int batchSize) {
+                @Positive int batchSize,
+
+                @NotBlank String instanceId,
+
+                @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration claimTimeout,
+
+                @Positive @Max(300000) long maxDurationMs,
+
+                @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration publishTimeout) {
+
+            public Relay {
+                if (claimTimeout != null
+                        && (claimTimeout.isZero() || claimTimeout.isNegative())) {
+                    throw new IllegalArgumentException(
+                            "carddemo.outbox.relay.claim-timeout must be positive");
+                }
+                if (publishTimeout != null
+                        && (publishTimeout.isZero() || publishTimeout.isNegative())) {
+                    throw new IllegalArgumentException(
+                            "carddemo.outbox.relay.publish-timeout must be positive");
+                }
+            }
         }
+    }
+
+    /** @param markerRetentionHours hours a processed-event marker remains */
+    public record ProcessedEvent(@Positive long markerRetentionHours) {
+    }
+
+    /** @param sweepIntervalMs milliseconds between retention sweeps */
+    public record Retention(@Positive long sweepIntervalMs) {
     }
 }

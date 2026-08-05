@@ -1,31 +1,32 @@
 # The other manifests in this folder declare their objects in this namespace.
-# Short-name Domain Name System (DNS) lookups for kafka and postgres depend on a
-# shared namespace.
+# Short-name Domain Name System (DNS) lookups for kafka and postgres resolve
+# within it.
 #
-# APPLY ORDER. Three steps, because two of them cannot be folded into one command.
+# APPLY ORDER. Three steps.
 #
-#   1. This file, so the namespace the rest declare exists:
+#   1. This file:
 #        kubectl apply -f card-platform/deploy/k8s/00-namespace.yaml
 #
-#   2. The ten credential Secrets, from a filled-in copy of 31-secret.example.yaml
-#      kept OUTSIDE this folder, or created with kubectl create secret. That file
-#      carries both routes in full:
-#        kubectl apply -f ~/carddemo-secrets.yaml
-#      This step comes before the workloads because 10-kafka.yaml and 20-postgres.yaml
-#      read Secrets on start-up. A Pod that starts first is not broken — the kubelet
-#      retries until the Secret appears — but it reports CreateContainerConfigError
-#      until then, which reads like a defect and is only an ordering artefact.
+#   2. The ten credential Secrets. Take a filled-in copy of 31-secret.example.yaml
+#      kept OUTSIDE this folder, or use kubectl create secret.
 #
-#   3. Everything else, in filename order, with the template excluded:
+#        kubectl apply -f ~/carddemo-secrets.yaml
+#
+#      10-kafka.yaml and 20-postgres.yaml read Secrets on start-up. A Pod that
+#      starts before its Secret exists reports CreateContainerConfigError until
+#      the kubelet retry succeeds.
+#
+#   3. Everything else, in filename order, with the template excluded.
+#
 #        ls card-platform/deploy/k8s/*.yaml \
 #          | grep -v '31-secret.example.yaml' \
 #          | xargs -n1 kubectl apply -f
 #
-# Why step 3 excludes it: kubectl apply -f card-platform/deploy/k8s/ applies every file
-# in the folder, this template among them, so it would overwrite the real Secrets from
-# step 2 with the placeholders the template publishes. Every workload then refuses to
-# start rather than running on a published credential, which is the guard working and an
-# hour lost to reading logs. The exclusion is one grep.
+#      Applying the whole folder would overwrite the Secrets from step 2 with the
+#      placeholders 31-secret.example.yaml publishes. Every workload would then
+#      refuse to start.
+#
+# Rationale for the choices in this folder: card-platform/docs/decision-log.md
 ---
 apiVersion: v1
 kind: Namespace
@@ -37,8 +38,8 @@ metadata:
     app.kubernetes.io/managed-by: kubectl
     # Pod Security admission, restricted profile. The control plane refuses a Pod
     # that asks to run as root, to escalate privilege, to share a host namespace
-    # or to mount a host path. enforce refuses it, audit records it and warn
-    # reports it to whoever applied it, so a rejection is never silent.
+    # or to mount a host path. enforce refuses, audit records and warn reports to
+    # whoever applied the manifest.
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/enforce-version: latest
     pod-security.kubernetes.io/audit: restricted

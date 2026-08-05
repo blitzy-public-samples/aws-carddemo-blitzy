@@ -37,10 +37,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code 1260-EDIT-US-PHONE-NUM} at app/cbl/COACTUPC.cbl:L2225 tests the general-purpose set alone,
  * at app/cbl/COACTUPC.cbl:L2298.</p>
  *
- * <p>{@code card-platform/docs/decision-log.md} records the row count this class expects, the
- * occurrence count it supersedes, and the reading of these three tables through plain Structured
- * Query Language (SQL).</p>
- *
  * <p><b>One fact the validation tests carry.</b> Record 1 of app/data/ASCII/custdata.txt holds
  * state code {@code NC} at offsets 235 to 236 and zip code {@code 12546} from offset 240, per the
  * layout at app/cpy/CVCUS01Y.cpy:L12 and app/cpy/CVCUS01Y.cpy:L14. Paragraph
@@ -53,8 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p><b>Scope.</b> Every query below reads, and none writes. The three tables carry no Jakarta
  * Persistence (JPA) entity and no repository, and each query is plain SQL against the database
  * {@link AbstractAccountPostgresTest} supplies. Column types, seed row counts and validator
- * behaviour sit in other classes of this module. {@code card-platform/docs/data-model.md} draws the
- * three tables.</p>
+ * behaviour sit in other classes of this module.
  */
 @DisplayName("V3 reference data, 786 rows from the three copybook bands of app/cpy/CSLKPCDY.cpy")
 class ReferenceDataMigrationTest extends AbstractAccountPostgresTest {

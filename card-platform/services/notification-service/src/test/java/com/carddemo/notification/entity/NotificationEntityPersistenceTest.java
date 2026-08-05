@@ -1,13 +1,11 @@
 package com.carddemo.notification.entity;
 
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.notification.entity.StatementTransactionEntity.StatementTransactionId;
+import com.carddemo.notification.repository.CardholderContextRepository;
+import com.carddemo.notification.repository.NotificationLogRepository;
+import com.carddemo.notification.repository.ProcessedEventRepository;
+import com.carddemo.notification.repository.StatementTransactionRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 import jakarta.persistence.metamodel.EmbeddableType;
@@ -16,11 +14,14 @@ import jakarta.persistence.metamodel.Metamodel;
 import java.math.BigDecimal;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.UUID;
 import java.util.regex.Pattern;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -37,6 +38,14 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Proves the three notification entities match the migrated schema, and proves a second delivery of
@@ -67,15 +76,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * Testcontainers 2.0.5, JUnit Jupiter 6.0.3 and Java 25.
  *
  * <p>Design decisions, the additive {@code processed_event} marker and the masked stored card
- * number among them: {@code card-platform/docs/decision-log.md} (planned). Source-to-target
+ * number among them: {@code card-platform/docs/decision-log.md}. Source-to-target
  * mapping, the dropped trailing filler among it:
- * {@code card-platform/docs/traceability-matrix.md} (planned). Flagged source findings:
- * {@code card-platform/docs/business-rule-flags.md} (planned). The masked and the raw card-number
- * form both fitting {@code CHAR(16)}: {@code card-platform/docs/suggested-next-tasks.md} (planned).
+ * {@code card-platform/docs/traceability-matrix.md}. Flagged source findings:
+ * {@code card-platform/docs/business-rule-flags.md}. The masked and the raw card-number
+ * form both fitting {@code CHAR(16)}: {@code card-platform/docs/suggested-next-tasks.md}.
  */
 @Testcontainers
 @SpringBootTest(properties = {
-    // The two listeners this module plans would retry an absent broker for the life of the run.
+    // The three listeners this module runs would retry an absent broker for the life of the run.
     "spring.kafka.listener.auto-startup=false",
     // The four credentials application.yml leaves without a default, so a context can start.
     // config/SecurityConfig refuses a blank, published or unprefixed value at start-up, and
@@ -86,7 +95,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
     "USER_PASSWORD_HASH={noop}a-generated-user-value-for-the-persistence-test",
     "MONITORING_PASSWORD_HASH={noop}a-generated-monitoring-value-for-the-persistence-test",
 })
-@DisplayName("The notification schema, its three entities, and the read-model upsert")
+@DisplayName("The notification schema, its four entities, and the read-model upsert")
 class NotificationEntityPersistenceTest {
 
     // ---------------------------------------------------------------------------------------
@@ -95,6 +104,13 @@ class NotificationEntityPersistenceTest {
 
     /** Database image this class starts, pinned by Agent Action Plan section 0.5.1. */
     private static final String POSTGRES_IMAGE = "postgres:18.4";
+
+    /**
+     * Schema every connection of this context searches, and the default
+     * {@code src/main/resources/application.yml} names under
+     * {@code spring.jpa.properties.hibernate.default_schema}.
+     */
+    private static final String MIGRATED_SCHEMA = "notification_service";
 
     /** Database, login and password of the disposable container. */
     private static final String DATABASE_CREDENTIAL = "carddemo";
@@ -119,13 +135,32 @@ class NotificationEntityPersistenceTest {
      * {@code spring.jpa.hibernate.ddl-auto}, every {@code spring.flyway} key and
      * {@code hibernate.default_schema} keep the values {@code application.yml} declares.</p>
      *
+     * <p>The uniform resource locator carries {@code currentSchema}, which sets the search path of
+     * every connection. {@code hibernate.default_schema} qualifies a mapped query and leaves a
+     * native statement unqualified, so the native claim and the native context upsert resolve
+     * against the search path alone.</p>
+     *
      * @param registry the registry the test context reads the three values from
      */
     @DynamicPropertySource
     static void bindContainerCoordinates(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", NotificationEntityPersistenceTest::migratedSchemaUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+    }
+
+    /**
+     * Returns the container locator with {@code currentSchema} appended.
+     *
+     * <p>{@code PostgreSQLContainer.getJdbcUrl()} already carries a query string, so the separator
+     * is chosen from what the locator holds.</p>
+     *
+     * @return the locator every connection of this context opens
+     */
+    private static String migratedSchemaUrl() {
+        String url = POSTGRES.getJdbcUrl();
+        String separator = url.contains("?") ? "&" : "?";
+        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
     }
 
     // ---------------------------------------------------------------------------------------
@@ -141,9 +176,12 @@ class NotificationEntityPersistenceTest {
     /** One row per consumed event identifier. Additive: no COBOL program detects a duplicate. */
     private static final String PROCESSED_EVENT = "processed_event";
 
-    /** The three tables {@code V1__schema.sql} declares. */
-    private static final Set<String> MIGRATION_TABLES =
-            Set.of(STATEMENT_TRANSACTION, NOTIFICATION_LOG, PROCESSED_EVENT);
+    /** The account-keyed cardholder projection one alert reports from. */
+    private static final String CARDHOLDER_CONTEXT = "cardholder_context";
+
+    /** The four tables {@code V1__schema.sql} declares. */
+    private static final Set<String> MIGRATION_TABLES = Set.of(STATEMENT_TRANSACTION,
+            NOTIFICATION_LOG, PROCESSED_EVENT, CARDHOLDER_CONTEXT);
 
     /** Flyway's own bookkeeping table, which the migration does not declare. */
     private static final String FLYWAY_HISTORY = "flyway_schema_history";
@@ -151,11 +189,20 @@ class NotificationEntityPersistenceTest {
     /** A table this service does not own. It publishes no event, so it declares no relay table. */
     private static final String ABSENT_TABLE = "outbox_event";
 
-    /** Columns {@code statement_transaction} declares, one per field of the source record. */
-    private static final int STATEMENT_TRANSACTION_COLUMNS = 13;
+    /**
+     * Columns {@code statement_transaction} declares.
+     *
+     * <p>One per field of {@code 01 TRNX-RECORD}, the trailing filler dropped, plus the masked
+     * display column: one source field becomes two columns, because a card token identifies the card
+     * and a masked card number displays it, and neither value can do both jobs.</p>
+     */
+    private static final int STATEMENT_TRANSACTION_COLUMNS = 14;
 
     /** Columns {@code notification_log} declares. */
-    private static final int NOTIFICATION_LOG_COLUMNS = 5;
+    private static final int NOTIFICATION_LOG_COLUMNS = 6;
+
+    /** Columns {@code cardholder_context} declares: the key, ten fields and two instants. */
+    private static final int CARDHOLDER_CONTEXT_COLUMNS = 13;
 
     /** Columns {@code processed_event} declares. */
     private static final int PROCESSED_EVENT_COLUMNS = 3;
@@ -178,8 +225,11 @@ class NotificationEntityPersistenceTest {
     /** What {@code information_schema} reports for a {@code NUMERIC(p,s)} column. */
     private static final String NUMERIC_TYPE = "numeric";
 
-    /** Characters both halves of the composite key hold. */
+    /** Characters the transaction half of the composite key holds, and the masked card column. */
     private static final int KEY_PART_WIDTH = 16;
+
+    /** Characters the card half of the composite key holds, from {@code PanMasker.CARD_TOKEN_LENGTH}. */
+    private static final int CARD_TOKEN_WIDTH = PanMasker.CARD_TOKEN_LENGTH;
 
     /** Characters each timestamp column holds. */
     private static final int TIMESTAMP_WIDTH = 26;
@@ -198,8 +248,35 @@ class NotificationEntityPersistenceTest {
     // pads nothing and every round-trip assertion is a strict equality.
     // ---------------------------------------------------------------------------------------
 
+    /**
+     * A card number at its stored width, composed without a committed literal.
+     *
+     * <p>Its four leading digits are {@code 9999}, and no card of
+     * {@code app/data/ASCII/carddata.txt} begins with them.</p>
+     */
+    private static final String FULL_CARD = "9999" + "000000004021";
+
     /** A masked card number: twelve mask characters then the last four digits. */
-    private static final String MASKED_CARD = "************4021";
+    private static final String MASKED_CARD = PanMasker.maskCardNumber(FULL_CARD);
+
+    /** The token of {@link #FULL_CARD}, which the key column holds. */
+    private static final String CARD_TOKEN = PanMasker.cardToken(FULL_CARD);
+
+    /** Batch bound one purge statement is given, larger than any fixture this class writes. */
+    private static final int PURGE_BATCH = 1000;
+
+    /**
+     * A second card number whose last four digits are the last four of {@link #FULL_CARD}.
+     *
+     * <p>The two share one masked form and carry two tokens.</p>
+     */
+    private static final String SAME_TAIL_FULL_CARD = "9999" + "555555554021";
+
+    /** The token of {@link #SAME_TAIL_FULL_CARD}, distinct from {@link #CARD_TOKEN}. */
+    private static final String SAME_TAIL_CARD_TOKEN = PanMasker.cardToken(SAME_TAIL_FULL_CARD);
+
+    /** The account identifier the read model keys on, at the width account_id CHAR(11) declares. */
+    private static final String ACCOUNT_ID = "00000000011";
 
     /**
      * Key of the row the timestamp assertions write, zero-padded to the declared width.
@@ -212,11 +289,29 @@ class NotificationEntityPersistenceTest {
     /** Key of the row the upsert assertions write twice. The value reads 9102 behind zeros. */
     private static final String UPSERT_ROW_ID = zeroPadded("9102");
 
+    /**
+     * Transaction identifier both cards of the isolation assertions write under.
+     *
+     * <p>One identifier for two cards is what makes the card half of the key load-bearing.</p>
+     */
+    private static final String ISOLATION_ROW_ID = zeroPadded("9103");
+
     /** A space separates the date from the time, and six fractional digits follow the seconds. */
     private static final String ORIGIN_TIMESTAMP = "2022-06-10 19:27:53.000000";
 
     /** A dash separates the date from the time, and four zero characters follow the hundredths. */
     private static final String PROCESSING_TIMESTAMP = "2022-06-10-19.27.53.120000";
+
+    /** The horizon the retention checks apply, in the twenty-six character source form. */
+    private static final String RETENTION_HORIZON_TEXT = "2025-01-01-00.00.00.000000";
+
+    /** A marker this class writes and expects the retention delete to take. */
+    private static final java.util.UUID RETENTION_EXPIRED_EVENT_ID =
+            java.util.UUID.fromString("00000000-0000-4000-8000-0000000000b1");
+
+    /** A marker this class writes and expects the retention delete to keep. */
+    private static final java.util.UUID RETENTION_RECENT_EVENT_ID =
+            java.util.UUID.fromString("00000000-0000-4000-8000-0000000000b2");
 
     /** Shape of {@link #ORIGIN_TIMESTAMP}. */
     private static final Pattern ORIGIN_SHAPE =
@@ -246,6 +341,25 @@ class NotificationEntityPersistenceTest {
 
     /** Amount the second delivery carries. */
     private static final BigDecimal SECOND_AMOUNT = new BigDecimal("276.55");
+
+    /** Identifier the claim assertion claims twice. */
+    private static final UUID CLAIMED_EVENT_ID =
+            UUID.fromString("7a6f0c52-0000-4000-8000-000000009201");
+
+    /** Topic the claimed delivery arrived on. */
+    private static final String CLAIMED_TOPIC = "transaction.posted";
+
+    /** Account the context assertion writes, eleven digit characters. */
+    private static final String CONTEXT_ACCOUNT_ID = "00000000011";
+
+    /** Family name the first context change carries. */
+    private static final String FIRST_LAST_NAME = "Von";
+
+    /** Family name the newer context change carries. */
+    private static final String SECOND_LAST_NAME = "Vaughn";
+
+    /** Family name the older context change carries, which no row ever holds. */
+    private static final String STALE_LAST_NAME = "Stale";
 
     /** Description the first delivery carries, before padding. */
     private static final String FIRST_DESCRIPTION = "Purchase";
@@ -328,10 +442,6 @@ class NotificationEntityPersistenceTest {
     private static final String ROW_COUNT_SQL =
             "SELECT count(*) FROM statement_transaction";
 
-    /** Removes every row this class wrote, whichever method wrote it. */
-    private static final String CLEAN_UP_SQL =
-            "DELETE FROM statement_transaction WHERE card_number = ?";
-
     // ---------------------------------------------------------------------------------------
     // Collaborators.
     // ---------------------------------------------------------------------------------------
@@ -348,6 +458,18 @@ class NotificationEntityPersistenceTest {
     @Autowired
     private DataSource dataSource;
 
+    /** Executes bounded retention deletes over the statement read model. */
+    @Autowired
+    private StatementTransactionRepository statementTransactions;
+
+    /** Executes bounded retention deletes over delivery attempts. */
+    @Autowired
+    private NotificationLogRepository notificationLogs;
+
+    /** Executes bounded retention deletes over duplicate-delivery markers. */
+    @Autowired
+    private ProcessedEventRepository processedEvents;
+
     /** Commits each write of the upsert assertions on its own. */
     @Autowired
     private PlatformTransactionManager transactionManager;
@@ -361,10 +483,17 @@ class NotificationEntityPersistenceTest {
     @Value("${spring.jpa.properties.hibernate.default_schema}")
     private String schema;
 
+    /** Applies one cardholder-context change, or applies nothing older. */
+    @Autowired
+    private CardholderContextRepository cardholderContexts;
+
     /** Removes the rows this class writes, so no method depends on running before another. */
     @AfterEach
     void removeWrittenRows() {
-        jdbc().sql(qualified(CLEAN_UP_SQL)).param(MASKED_CARD).update();
+        jdbc().sql("DELETE FROM " + schema + ".statement_transaction").update();
+        jdbc().sql("DELETE FROM " + schema + ".notification_log").update();
+        jdbc().sql("DELETE FROM " + schema + ".processed_event").update();
+        jdbc().sql("DELETE FROM " + schema + ".cardholder_context").update();
     }
 
     // ---------------------------------------------------------------------------------------
@@ -384,6 +513,17 @@ class NotificationEntityPersistenceTest {
      */
     private String qualified(String sql) {
         return sql.replace(STATEMENT_TRANSACTION, schema + "." + STATEMENT_TRANSACTION);
+    }
+
+    /**
+     * Qualifies one named table with the migrated schema.
+     *
+     * @param sql   a statement naming {@code table} unqualified
+     * @param table the table name to qualify
+     * @return the same statement naming that table in the migrated schema
+     */
+    private String schemaQualified(String sql, String table) {
+        return sql.replace(table, schema + "." + table);
     }
 
     /** @return a template that commits each unit of work on return */
@@ -454,6 +594,90 @@ class NotificationEntityPersistenceTest {
         return jdbc().sql(qualified(ROW_COUNT_SQL)).query(Long.class).single();
     }
 
+
+    /**
+     * Runs the bounded read-model retention delete and reads the result back.
+     *
+     * <p>The horizon is text. {@code processing_timestamp} is {@code CHAR(26)}, carrying
+     * {@code TRNX-PROC-TS PIC X(26)} of {@code app/cpy/COSTM01.CPY}, and
+     * {@code app/cbl/CBTRN02C.cbl:L414-L420} compares such a field as characters. Running the
+     * statement here proves the comparison the column's collation applies matches the order
+     * {@code ix_statement_transaction_processing_timestamp} holds.
+     */
+    @Test
+    @DisplayName("The read-model retention delete takes the row whose timestamp text precedes the "
+            + "horizon and honours its limit")
+    void theReadModelRetentionDeleteTakesOnlyRowsPrecedingTheHorizon() {
+        committedTransaction().executeWithoutResult(status -> {
+            entityManager.merge(rowStampedAt("RETAIN-OLD-00001", "2019-01-01-00.00.00.000000"));
+            entityManager.merge(rowStampedAt("RETAIN-OLD-00002", "2019-06-01-00.00.00.000000"));
+            entityManager.merge(rowStampedAt("RETAIN-NEW-00001", "2030-01-01-00.00.00.000000"));
+        });
+
+        int firstStatement = committedTransaction().execute(status ->
+                statementTransactions.deleteProcessedBefore(RETENTION_HORIZON_TEXT, 1));
+        int secondStatement = committedTransaction().execute(status ->
+                statementTransactions.deleteProcessedBefore(RETENTION_HORIZON_TEXT, 100));
+        int thirdStatement = committedTransaction().execute(status ->
+                statementTransactions.deleteProcessedBefore(RETENTION_HORIZON_TEXT, 100));
+
+        assertAll("the bounded read-model delete",
+                () -> assertEquals(1, firstStatement, "the limit bounds one statement"),
+                () -> assertEquals(1, secondStatement, "the remaining expired row follows"),
+                () -> assertEquals(0, thirdStatement,
+                        "domain/RetentionSweeper stops on a count below the batch size"),
+                () -> assertTrue(statementTransactions
+                        .findById(new StatementTransactionId(CARD_TOKEN, "RETAIN-NEW-00001"))
+                        .isPresent(),
+                        "the row whose timestamp text follows the horizon stays"));
+    }
+
+    /**
+     * Runs the bounded marker retention delete and reads the result back.
+     *
+     * <p>A marker outliving the broker's retention of its event is what makes a redelivery harmless,
+     * so this delete removing the wrong row would reintroduce double processing.
+     */
+    @Test
+    @DisplayName("The marker retention delete takes the expired marker and keeps the newer one")
+    void theMarkerRetentionDeleteTakesOnlyExpiredMarkers() {
+        Instant expiredAt = Instant.parse("2020-01-01T00:00:00Z");
+        Instant recentAt = Instant.parse("2030-01-01T00:00:00Z");
+        committedTransaction().executeWithoutResult(status -> {
+            processedEvents.claimEvent(RETENTION_EXPIRED_EVENT_ID, expiredAt, CLAIMED_TOPIC);
+            processedEvents.claimEvent(RETENTION_RECENT_EVENT_ID, recentAt, CLAIMED_TOPIC);
+        });
+
+        int removed = committedTransaction().execute(status ->
+                processedEvents.deleteMarkersProcessedBefore(
+                        Instant.parse("2021-01-01T00:00:00Z"), 100));
+
+        assertAll("the bounded marker delete",
+                () -> assertEquals(1, removed, "one marker precedes the horizon"),
+                () -> assertFalse(processedEvents.existsById(RETENTION_EXPIRED_EVENT_ID),
+                        "the expired marker is gone"),
+                () -> assertTrue(processedEvents.existsById(RETENTION_RECENT_EVENT_ID),
+                        "a marker inside the horizon stays, so its redelivery is still refused"));
+    }
+
+    /**
+     * Builds one read-model row carrying the given processing timestamp text.
+     *
+     * @param transactionId the second half of the composite key
+     * @param stamp         twenty-six characters, in the source's own form
+     * @return a row ready to write
+     */
+    private static StatementTransactionEntity rowStampedAt(String transactionId, String stamp) {
+        StatementTransactionEntity built = row(transactionId, "RETENTION", new BigDecimal("1.00"));
+        return new StatementTransactionEntity(
+                new StatementTransactionId(CARD_TOKEN, transactionId),
+                built.getMaskedCardNumber(), built.getTypeCode(),
+                built.getCategoryCode(), built.getSource(),
+                built.getDescription(), built.getAmount(), built.getMerchantId(),
+                built.getMerchantName(), built.getMerchantCity(), built.getMerchantZip(),
+                built.getOriginTimestamp(), stamp);
+    }
+
     /**
      * Builds one read-model row filling every column to its declared width.
      *
@@ -464,8 +688,52 @@ class NotificationEntityPersistenceTest {
      */
     private static StatementTransactionEntity row(String transactionId, String description,
             BigDecimal amount) {
+        return rowAt(transactionId, description, amount, PROCESSING_TIMESTAMP);
+    }
+
+    /**
+     * Builds one read-model row at a caller-selected processing timestamp.
+     *
+     * @param transactionId the second half of the composite key
+     * @param description the description, padded to its declared width
+     * @param amount the amount, at scale {@value #AMOUNT_SCALE}
+     * @param processingTimestamp the purge key, at its fixed width
+     * @return a row ready to write
+     */
+    private static StatementTransactionEntity rowAt(String transactionId, String description,
+            BigDecimal amount, String processingTimestamp) {
+        return rowOfCard(CARD_TOKEN, transactionId, description, amount, processingTimestamp);
+    }
+
+    /**
+     * Builds one read-model row of one card, filling every column to its declared width.
+     *
+     * @param cardToken the card half of the composite key
+     * @param transactionId the second half of the composite key
+     * @param description the description, padded here to the declared hundred characters
+     * @param amount the amount, at scale {@value #AMOUNT_SCALE}
+     * @return a row ready to write
+     */
+    private static StatementTransactionEntity rowOfCard(String cardToken, String transactionId,
+            String description, BigDecimal amount) {
+        return rowOfCard(cardToken, transactionId, description, amount, PROCESSING_TIMESTAMP);
+    }
+
+    /**
+     * Builds one read-model row of one card at a caller-selected processing timestamp.
+     *
+     * @param cardToken the card half of the composite key
+     * @param transactionId the second half of the composite key
+     * @param description the description, padded here to the declared hundred characters
+     * @param amount the amount, at scale {@value #AMOUNT_SCALE}
+     * @param processingTimestamp the purge key, at its fixed width
+     * @return a row ready to write
+     */
+    private static StatementTransactionEntity rowOfCard(String cardToken, String transactionId,
+            String description, BigDecimal amount, String processingTimestamp) {
         return new StatementTransactionEntity(
-                new StatementTransactionId(MASKED_CARD, transactionId),
+                new StatementTransactionId(cardToken, transactionId),
+                MASKED_CARD,
                 TYPE_CODE,
                 CATEGORY_CODE,
                 padded("POS TERM", 10),
@@ -476,7 +744,7 @@ class NotificationEntityPersistenceTest {
                 padded("CITY", 50),
                 MERCHANT_ZIP,
                 ORIGIN_TIMESTAMP,
-                PROCESSING_TIMESTAMP);
+                processingTimestamp);
     }
 
     /**
@@ -533,7 +801,7 @@ class NotificationEntityPersistenceTest {
      * {@code src/main/resources/db/migration/V1__schema.sql}.</p>
      */
     @Test
-    void theContextReachesTheEntityManagerWithTheThreeEntitiesMapped() {
+    void theContextReachesTheEntityManagerWithTheFourEntitiesMapped() {
         Metamodel metamodel = entityManagerFactory.getMetamodel();
         Set<String> mapped = new TreeSet<>();
         for (EntityType<?> entity : metamodel.getEntities()) {
@@ -544,10 +812,10 @@ class NotificationEntityPersistenceTest {
                 () -> assertNotNull(entityManager, "the entity manager is reachable"),
                 () -> assertNotNull(entityManagerFactory.getMetamodel(), "the metamodel is built"),
                 () -> assertEquals(Set.of("StatementTransactionEntity", "NotificationLogEntity",
-                                "ProcessedEventEntity"), mapped,
-                        "the module maps three entities, one per table of V1__schema.sql"),
-                () -> assertEquals(3, metamodel.getEntities().size(),
-                        "a fourth entity or a missing entity changes this count"));
+                                "ProcessedEventEntity", "CardholderContextEntity"), mapped,
+                        "the module maps four entities, one per table of V1__schema.sql"),
+                () -> assertEquals(4, metamodel.getEntities().size(),
+                        "a fifth entity or a missing entity changes this count"));
     }
 
     /**
@@ -577,20 +845,20 @@ class NotificationEntityPersistenceTest {
     // ---------------------------------------------------------------------------------------
 
     /**
-     * Asserts the migrated schema holds the three tables {@code V1__schema.sql} declares, and no
+     * Asserts the migrated schema holds the four tables {@code V1__schema.sql} declares, and no
      * relay table.
      *
-     * <p>This service consumes two topics and publishes nothing, so it owns no
+     * <p>This service consumes three topics and publishes nothing, so it owns no
      * {@value #ABSENT_TABLE} table. Flyway's own bookkeeping table is excluded by name, since the
      * migration does not declare it.</p>
      */
     @Test
-    void theSchemaHoldsTheThreeMigratedTablesAndNoRelayTable() {
+    void theSchemaHoldsTheFourMigratedTablesAndNoRelayTable() {
         Set<String> tables = migratedTables();
 
         assertAll("the tables of schema " + schema,
                 () -> assertEquals(new TreeSet<>(MIGRATION_TABLES), tables,
-                        "the migration declares exactly three tables"),
+                        "the migration declares exactly four tables"),
                 () -> assertFalse(tables.contains(ABSENT_TABLE),
                         "a service that publishes nothing owns no " + ABSENT_TABLE + " table"));
     }
@@ -599,12 +867,12 @@ class NotificationEntityPersistenceTest {
      * Asserts each table holds the column count its declaration carries, and that one column
      * accepts no value.
      *
-     * <p>The thirteen columns of {@value #STATEMENT_TRANSACTION} are the thirteen fields of
+     * <p>The fourteen columns of {@value #STATEMENT_TRANSACTION} are the thirteen fields of
      * {@code 01 TRNX-RECORD.} at {@code app/cpy/COSTM01.CPY:L20}. The trailing
      * {@code FILLER PIC X(20)} at {@code app/cpy/COSTM01.CPY:L36} is dropped, and the group
      * {@code 05 TRNX-REST.} at {@code app/cpy/COSTM01.CPY:L24} carries no column of its own.
      *
-     * <p>One column across the three tables accepts no value: {@value #NULLABLE_COLUMN}, which
+     * <p>One column across the four tables accepts no value: {@value #NULLABLE_COLUMN}, which
      * names the topic a marker arrived on.</p>
      */
     @Test
@@ -622,13 +890,16 @@ class NotificationEntityPersistenceTest {
         assertAll("column counts of schema " + schema,
                 () -> assertEquals(STATEMENT_TRANSACTION_COLUMNS,
                         counts.get(STATEMENT_TRANSACTION),
-                        "one column per field of 01 TRNX-RECORD, the trailing filler dropped"),
+                        "one column per field of 01 TRNX-RECORD, the trailing filler dropped, plus the"
+                        + " masked display column beside the token key"),
                 () -> assertEquals(NOTIFICATION_LOG_COLUMNS, counts.get(NOTIFICATION_LOG),
                         NOTIFICATION_LOG + " columns"),
                 () -> assertEquals(PROCESSED_EVENT_COLUMNS, counts.get(PROCESSED_EVENT),
                         PROCESSED_EVENT + " columns"),
+                () -> assertEquals(CARDHOLDER_CONTEXT_COLUMNS, counts.get(CARDHOLDER_CONTEXT),
+                        CARDHOLDER_CONTEXT + " columns"),
                 () -> assertEquals(Set.of(NULLABLE_COLUMN), nullable,
-                        "one column across the three migrated tables accepts no value, and it "
+                        "one column across the four migrated tables accepts no value, and it "
                                 + "names the topic a marker arrived on"));
     }
 
@@ -685,10 +956,13 @@ class NotificationEntityPersistenceTest {
     }
 
     /**
-     * Asserts the two key columns and the two digit columns hold their declared character widths.
+     * Asserts the key, display and digit columns hold their declared character widths.
      *
-     * <p>{@code TRNX-CARD-NUM PIC X(16)} and {@code TRNX-ID PIC X(16)} at
-     * {@code app/cpy/COSTM01.CPY:L22-L23} give the key halves.
+     * <p>{@code TRNX-ID PIC X(16)} at {@code app/cpy/COSTM01.CPY:L23} gives the transaction half of
+     * the key and {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22} gives the masked
+     * display column. The card half of the key is a card token at
+     * {@code PanMasker.CARD_TOKEN_LENGTH} characters, which is wider than the source field it stands
+     * in for.
      * {@code TRNX-CAT-CD PIC 9(04)} at {@code app/cpy/COSTM01.CPY:L26} and
      * {@code TRNX-MERCHANT-ID PIC 9(09)} at {@code app/cpy/COSTM01.CPY:L30} are display fields, so
      * both are held as text at their declared digit counts and a leading zero survives.</p>
@@ -698,9 +972,12 @@ class NotificationEntityPersistenceTest {
         Map<String, ColumnFact> facts = columnFacts();
 
         assertAll("declared widths of statement_transaction",
-                () -> assertCharacterColumn(facts, STATEMENT_TRANSACTION + ".card_number",
-                        FIXED_CHARACTER, KEY_PART_WIDTH),
+                () -> assertCharacterColumn(facts, STATEMENT_TRANSACTION + ".card_token",
+                        FIXED_CHARACTER, CARD_TOKEN_WIDTH),
                 () -> assertCharacterColumn(facts, STATEMENT_TRANSACTION + ".transaction_id",
+                        FIXED_CHARACTER, KEY_PART_WIDTH),
+                () -> assertCharacterColumn(facts,
+                        STATEMENT_TRANSACTION + ".masked_card_number",
                         FIXED_CHARACTER, KEY_PART_WIDTH),
                 () -> assertCharacterColumn(facts, STATEMENT_TRANSACTION + ".category_code",
                         FIXED_CHARACTER, 4),
@@ -733,7 +1010,11 @@ class NotificationEntityPersistenceTest {
         assertAll("notification_log and processed_event",
                 () -> assertCharacterColumn(facts, NOTIFICATION_LOG + ".channel",
                         VARYING_CHARACTER, 20),
-                () -> assertCharacterColumn(facts, NOTIFICATION_LOG + ".card_number",
+                () -> assertCharacterColumn(facts, NOTIFICATION_LOG + ".card_token",
+                        FIXED_CHARACTER, CARD_TOKEN_WIDTH),
+                () -> assertCharacterColumn(facts, NOTIFICATION_LOG + ".transaction_id",
+                        FIXED_CHARACTER, KEY_PART_WIDTH),
+                () -> assertCharacterColumn(facts, NOTIFICATION_LOG + ".masked_card_number",
                         FIXED_CHARACTER, KEY_PART_WIDTH),
                 () -> assertEquals(TIMESTAMP_WITH_ZONE,
                         facts.get(NOTIFICATION_LOG + ".attempted_at").dataType(),
@@ -748,17 +1029,25 @@ class NotificationEntityPersistenceTest {
     }
 
     /**
-     * Asserts four column names appear nowhere in the schema.
+     * Asserts three column names appear nowhere in the schema, and that no card-keyed table
+     * carries an account identifier.
      *
-     * <p>The trailing {@code FILLER PIC X(20)} at {@code app/cpy/COSTM01.CPY:L36} is dropped. The
-     * read model is keyed by card, so it carries no account identifier. No table stamps its own
-     * creation. No column carries a card verification value, and none ever will.</p>
+     * <p>The trailing {@code FILLER PIC X(20)} at {@code app/cpy/COSTM01.CPY:L36} is dropped. No
+     * table stamps its own creation. No column carries a card verification value, and none ever
+     * will. {@value #STATEMENT_TRANSACTION} and {@value #NOTIFICATION_LOG} are keyed by card, so
+     * neither carries an account identifier; {@value #CARDHOLDER_CONTEXT} is keyed by account and
+     * holds one.</p>
      */
     @Test
-    void fourColumnNamesAppearNowhereInTheSchema() {
+    void threeColumnNamesAppearNowhereAndNoCardKeyedTableCarriesAnAccount() {
         Set<String> columns = new TreeSet<>();
+        Set<String> cardKeyedColumns = new TreeSet<>();
         for (ColumnFact fact : columnFacts().values()) {
             columns.add(fact.column());
+            if (STATEMENT_TRANSACTION.equals(fact.table())
+                    || NOTIFICATION_LOG.equals(fact.table())) {
+                cardKeyedColumns.add(fact.column());
+            }
         }
         long verificationValueColumns =
                 jdbc().sql(VERIFICATION_VALUE_SQL).param(schema).query(Long.class).single();
@@ -766,8 +1055,10 @@ class NotificationEntityPersistenceTest {
         assertAll("columns the schema does not declare",
                 () -> assertFalse(columns.contains("filler"),
                         "the trailing 20-byte filler of the source record carries no column"),
-                () -> assertFalse(columns.contains("account_id"),
-                        "the read model is keyed by card number and transaction identifier"),
+                () -> assertFalse(cardKeyedColumns.contains("account_id"),
+                        "the read model is keyed by card token and transaction identifier"),
+                () -> assertTrue(columns.contains("account_id"),
+                        "the cardholder projection is keyed by account identifier"),
                 () -> assertFalse(columns.contains("created_at"), "no table stamps its creation"),
                 () -> assertEquals(0L, verificationValueColumns,
                         "no column carries a card verification value"));
@@ -801,41 +1092,48 @@ class NotificationEntityPersistenceTest {
         }).list();
 
         assertAll("keys and indexes of schema " + schema,
-                () -> assertEquals(3, primaryKeys.size(),
+                () -> assertEquals(4, primaryKeys.size(),
                         "one primary key per migrated table, found " + primaryKeys),
                 () -> assertEquals(Map.of(
                                 STATEMENT_TRANSACTION, "pk_statement_transaction",
                                 NOTIFICATION_LOG, "pk_notification_log",
-                                PROCESSED_EVENT, "pk_processed_event"), primaryKeys,
+                                PROCESSED_EVENT, "pk_processed_event",
+                                CARDHOLDER_CONTEXT, "pk_cardholder_context"), primaryKeys,
                         "each primary key carries the name the migration gives it"),
                 () -> assertEquals(Set.of("pk_statement_transaction",
                                 "ix_statement_transaction_processing_timestamp"),
                         indexes.get(STATEMENT_TRANSACTION), STATEMENT_TRANSACTION + " indexes"),
-                () -> assertEquals(Set.of("pk_notification_log", "ix_notification_log_card_number",
+                () -> assertEquals(Set.of("pk_notification_log", "ix_notification_log_card_token",
                                 "ix_notification_log_attempted_at"),
                         indexes.get(NOTIFICATION_LOG), NOTIFICATION_LOG + " indexes"),
                 () -> assertEquals(Set.of("pk_processed_event", "ix_processed_event_processed_at"),
-                        indexes.get(PROCESSED_EVENT), PROCESSED_EVENT + " indexes"));
+                        indexes.get(PROCESSED_EVENT), PROCESSED_EVENT + " indexes"),
+                () -> assertEquals(Set.of("pk_cardholder_context",
+                                "ix_cardholder_context_observed_at"),
+                        indexes.get(CARDHOLDER_CONTEXT), CARDHOLDER_CONTEXT + " indexes"));
     }
 
     /**
-     * Asserts the composite key orders the card number first and the transaction identifier second.
+     * Asserts the composite key orders the card token first and the transaction identifier second.
      *
-     * <p>{@code KEYS(32 0)} at {@code app/jcl/CREASTMT.JCL:L30} declares a 32-byte key at offset
-     * zero, spanning {@code TRNX-CARD-NUM} then {@code TRNX-ID}, sixteen bytes each. The sort step
-     * at {@code app/jcl/CREASTMT.JCL:L53} produces that order and the job states the same intent at
-     * {@code app/jcl/CREASTMT.JCL:L42}.
+     * <p>The source uses {@code TRNX-CARD-NUM} then {@code TRNX-ID}. The platform cannot preserve
+     * the first half because it transports only a masked, non-unique value. The unique
+     * {@code account_id} therefore supplies the identity prefix and {@code transaction_id} keeps
+     * the source ordering inside that account.
+     *
+     * <p>The card half is the token rather than the card number, which is the one departure from the
+     * source key: a masked number identifies no single card and a full one belongs in no index.
      *
      * <p>This assertion is the authoritative one for component order. The sibling
      * {@code StatementTransactionEntityTest} reads the declared field order by reflection, which the
      * language specification leaves unspecified, so the catalogue order settles it.</p>
      */
     @Test
-    void theCompositeKeyOrdersTheCardNumberBeforeTheTransactionIdentifier() {
+    void theCompositeKeyOrdersTheCardTokenBeforeTheTransactionIdentifier() {
         List<String> keyColumns = jdbc().sql(KEY_COLUMN_ORDER_SQL)
                 .param(schema).param(STATEMENT_TRANSACTION).query(String.class).list();
 
-        assertEquals(List.of("card_number", "transaction_id"), keyColumns,
+        assertEquals(List.of("card_token", "transaction_id"), keyColumns,
                 "one composite key over two columns in the order KEYS(32 0) declares");
     }
 
@@ -876,7 +1174,7 @@ class NotificationEntityPersistenceTest {
      */
     @Test
     void bothTimestampShapesSurviveAWriteAndAReadAndNeitherTakesTheOtherShape() {
-        StatementTransactionId key = new StatementTransactionId(MASKED_CARD, TIMESTAMP_ROW_ID);
+        StatementTransactionId key = new StatementTransactionId(CARD_TOKEN, TIMESTAMP_ROW_ID);
         committedTransaction().executeWithoutResult(status ->
                 entityManager.persist(row(TIMESTAMP_ROW_ID, FIRST_DESCRIPTION, FIRST_AMOUNT)));
 
@@ -909,17 +1207,16 @@ class NotificationEntityPersistenceTest {
     }
 
     /**
-     * Asserts a sixteen-character card number and an amount at scale {@value #AMOUNT_SCALE} survive
-     * a write and a read unchanged.
+     * Asserts the account key, masked display value and amount survive a write and read unchanged.
      *
      * <p>Both the masked form and a full Primary Account Number (PAN) occupy sixteen characters, so
-     * the width settles neither. The assertions below hold to what the column states: sixteen
-     * characters, a value present, and a read that returns what the write supplied. The test value
-     * is masked, and no full PAN reaches this table.</p>
+     * the width settles neither. The assertions below hold to what the columns state: a key of
+     * thirty-two token characters, a display column of sixteen masked characters, and a read that
+     * returns what the write supplied. No full PAN reaches this table.</p>
      */
     @Test
     void theCardNumberAndTheAmountSurviveAWriteAndAReadUnchanged() {
-        StatementTransactionId key = new StatementTransactionId(MASKED_CARD, TIMESTAMP_ROW_ID);
+        StatementTransactionId key = new StatementTransactionId(CARD_TOKEN, TIMESTAMP_ROW_ID);
         committedTransaction().executeWithoutResult(status ->
                 entityManager.persist(row(TIMESTAMP_ROW_ID, FIRST_DESCRIPTION, FIRST_AMOUNT)));
 
@@ -928,10 +1225,12 @@ class NotificationEntityPersistenceTest {
         assertNotNull(stored, "the written row is readable under its composite key");
 
         assertAll("the key halves and the amount",
-                () -> assertEquals(MASKED_CARD, stored.getId().getCardNumber(),
-                        "the card number reads back character for character"),
-                () -> assertEquals(KEY_PART_WIDTH, stored.getId().getCardNumber().length(),
-                        "card number width"),
+                () -> assertEquals(CARD_TOKEN, stored.getId().getCardToken(),
+                        "the card token reads back character for character"),
+                () -> assertEquals(CARD_TOKEN_WIDTH, stored.getId().getCardToken().length(),
+                        "card token width"),
+                () -> assertEquals(MASKED_CARD, stored.getMaskedCardNumber(),
+                        "the masked display card number reads back character for character"),
                 () -> assertEquals(TIMESTAMP_ROW_ID, stored.getId().getTransactionId(),
                         "the transaction identifier reads back character for character"),
                 () -> assertEquals(KEY_PART_WIDTH, stored.getId().getTransactionId().length(),
@@ -944,8 +1243,142 @@ class NotificationEntityPersistenceTest {
                         "the description reads back at its declared hundred characters"));
     }
 
+    @Test
+    void theStatementPurgeDeletesOnlyRowsBeforeItsCutoff() {
+        String oldId = zeroPadded("9103");
+        String currentId = zeroPadded("9104");
+        statementTransactions.saveAll(List.of(
+                rowAt(oldId, FIRST_DESCRIPTION, FIRST_AMOUNT,
+                        "2022-06-10-19.27.53.120000"),
+                rowAt(currentId, SECOND_DESCRIPTION, SECOND_AMOUNT,
+                        "2024-06-10-19.27.53.120000")));
+
+        int removed = committedTransaction().execute(status -> statementTransactions
+                .deleteProcessedBefore("2023-01-01-00.00.00.000000", PURGE_BATCH));
+
+        assertAll("bounded statement retention delete",
+                () -> assertEquals(1, removed, "one old row removed"),
+                () -> assertFalse(statementTransactions.existsById(
+                        new StatementTransactionId(CARD_TOKEN, oldId))),
+                () -> assertTrue(statementTransactions.existsById(
+                        new StatementTransactionId(CARD_TOKEN, currentId))));
+    }
+
+    @Test
+    void theAttemptPurgeDeletesOnlyRowsBeforeItsCutoff() {
+        UUID oldId = UUID.fromString("2f158d36-adbb-46b4-91f8-51e8060bef01");
+        UUID currentId = UUID.fromString("2f158d36-adbb-46b4-91f8-51e8060bef02");
+        notificationLogs.save(new NotificationLogEntity(
+                oldId, CARD_TOKEN, MASKED_CARD, TIMESTAMP_ROW_ID, "PLAIN_TEXT",
+                Instant.parse("2024-01-01T00:00:00Z")));
+        notificationLogs.save(new NotificationLogEntity(
+                currentId, CARD_TOKEN, MASKED_CARD, UPSERT_ROW_ID, "PLAIN_TEXT",
+                Instant.parse("2026-01-01T00:00:00Z")));
+
+        int removed = committedTransaction().execute(status -> notificationLogs
+                .deleteAttemptsBefore(Instant.parse("2025-01-01T00:00:00Z")));
+
+        assertAll("bounded attempt retention delete",
+                () -> assertEquals(1, removed, "one old attempt removed"),
+                () -> assertEquals(1L, notificationLogs.count(), "one current attempt remains"));
+    }
+
+    @Test
+    void theMarkerPurgeDeletesOnlyRowsBeforeItsCutoff() {
+        UUID oldId = UUID.fromString("9267c7fd-b346-4701-b613-1bf89b7f43f1");
+        UUID currentId = UUID.fromString("9267c7fd-b346-4701-b613-1bf89b7f43f2");
+        processedEvents.save(new ProcessedEventEntity(
+                oldId, Instant.parse("2024-01-01T00:00:00Z")));
+        processedEvents.save(new ProcessedEventEntity(
+                currentId, Instant.parse("2026-01-01T00:00:00Z")));
+
+        int removed = committedTransaction().execute(status -> processedEvents
+                .deleteMarkersProcessedBefore(
+                        Instant.parse("2025-01-01T00:00:00Z"), PURGE_BATCH));
+
+        assertAll("bounded marker retention delete",
+                () -> assertEquals(1, removed, "one old marker removed"),
+                () -> assertFalse(processedEvents.existsById(oldId)),
+                () -> assertTrue(processedEvents.existsById(currentId)));
+    }
+
     // ---------------------------------------------------------------------------------------
-    // Group D. A second delivery of one event.
+    // Group D. Two cards ending in the same four digits.
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * Asserts two cards sharing a last four hold two independent rows under one transaction
+     * identifier.
+     *
+     * <p>{@link PanMasker#maskCardNumber(String)} returns one value for both cards, so a masked key
+     * would gather both rows under one key and the second write would replace the first. The key
+     * carries {@link PanMasker#cardToken(String)}, which is derived per card, so the two rows stand
+     * apart. The source key held a full Primary Account Number at
+     * {@code TRNX-CARD-NUM PIC X(16)} in {@code app/cpy/COSTM01.CPY:L22}, which distinguished
+     * them.</p>
+     */
+    @Test
+    void twoCardsSharingALastFourHoldTwoIndependentRows() {
+        StatementTransactionId firstKey =
+                new StatementTransactionId(CARD_TOKEN, ISOLATION_ROW_ID);
+        StatementTransactionId secondKey =
+                new StatementTransactionId(SAME_TAIL_CARD_TOKEN, ISOLATION_ROW_ID);
+
+        committedTransaction().executeWithoutResult(status -> entityManager.persist(
+                rowOfCard(CARD_TOKEN, ISOLATION_ROW_ID, FIRST_DESCRIPTION, FIRST_AMOUNT)));
+        committedTransaction().executeWithoutResult(status -> entityManager.persist(
+                rowOfCard(SAME_TAIL_CARD_TOKEN, ISOLATION_ROW_ID, SECOND_DESCRIPTION,
+                        SECOND_AMOUNT)));
+
+        long rows = rowCount();
+        StatementTransactionEntity first = committedTransaction().execute(status ->
+                entityManager.find(StatementTransactionEntity.class, firstKey));
+        StatementTransactionEntity second = committedTransaction().execute(status ->
+                entityManager.find(StatementTransactionEntity.class, secondKey));
+
+        assertAll("two cards, one transaction identifier",
+                () -> assertEquals(MASKED_CARD, PanMasker.maskCardNumber(SAME_TAIL_FULL_CARD),
+                        "the two cards share one masked form, which is why the key is a token"),
+                () -> assertNotEquals(CARD_TOKEN, SAME_TAIL_CARD_TOKEN,
+                        "the two cards carry two tokens"),
+                () -> assertEquals(2L, rows,
+                        "one row per card; a masked key collapses both cards into one row"),
+                () -> assertNotNull(first, "the first card's row is readable under its own key"),
+                () -> assertNotNull(second, "the second card's row is readable under its own key"),
+                () -> assertEquals(padded(FIRST_DESCRIPTION, 100), first.getDescription(),
+                        "the first row holds what the first card wrote"),
+                () -> assertEquals(padded(SECOND_DESCRIPTION, 100), second.getDescription(),
+                        "the second row holds what the second card wrote"),
+                () -> assertEquals(0, FIRST_AMOUNT.compareTo(first.getAmount()),
+                        "the second write left the first amount alone"),
+                () -> assertEquals(0, SECOND_AMOUNT.compareTo(second.getAmount()),
+                        "the second row holds its own amount"));
+    }
+
+    /**
+     * Asserts the key column refuses a masked card number and a full one.
+     *
+     * <p>{@code ck_statement_transaction_card_token} constrains {@code card_token} to 64 lower-case
+     * hexadecimal characters, so neither sixteen digits nor twelve asterisks and four digits reach
+     * the key. The entity refuses both ahead of the database, and this test drives the entity.</p>
+     */
+    @Test
+    void theKeyRefusesAMaskedCardNumberAndAFullOne() {
+        assertAll("values the key column does not hold",
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> new StatementTransactionId(MASKED_CARD, ISOLATION_ROW_ID),
+                        "a masked card number in the key position"),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> new StatementTransactionId(FULL_CARD, ISOLATION_ROW_ID),
+                        "a full card number in the key position"),
+                () -> assertThrows(IllegalArgumentException.class,
+                        () -> new StatementTransactionId(
+                                CARD_TOKEN.toUpperCase(Locale.ROOT), ISOLATION_ROW_ID),
+                        "a token in upper case"));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Group E. A second delivery of one event.
     // ---------------------------------------------------------------------------------------
 
     /**
@@ -963,7 +1396,7 @@ class NotificationEntityPersistenceTest {
      */
     @Test
     void aSecondDeliveryOfOneEventUpdatesTheRowAndAddsNone() {
-        StatementTransactionId key = new StatementTransactionId(MASKED_CARD, UPSERT_ROW_ID);
+        StatementTransactionId key = new StatementTransactionId(CARD_TOKEN, UPSERT_ROW_ID);
 
         committedTransaction().executeWithoutResult(status ->
                 entityManager.persist(row(UPSERT_ROW_ID, FIRST_DESCRIPTION, FIRST_AMOUNT)));

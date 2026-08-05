@@ -17,12 +17,12 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Method;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.KafkaException;
@@ -45,14 +45,17 @@ import org.springframework.stereotype.Component;
  * one partition only, and it partitions on the key. The key must therefore equal the account
  * identifier.</p>
  *
- * <p>{@code send} returns a future and the publisher calls {@code join} on it, so a broker failure
- * arrives as an unchecked {@link CompletionException} wrapping the cause. The failure escapes the
- * publisher and leaves the outbox row unpublished.</p>
+ * <p>{@code send} returns a future and the publisher waits on it for no longer than the configured
+ * publish timeout, so a broker failure arrives as an unchecked
+ * {@code org.springframework.kafka.KafkaException} carrying the reported cause. The failure escapes
+ * the publisher and leaves the outbox row unpublished. A broker that never answers costs the caller
+ * the bound and no more, which is what keeps one unreachable broker from holding the relay sweep
+ * open indefinitely.</p>
  *
  * <p>The publisher checks the producer settings once, at construction. It checks two properties of
  * every message: the key equals the account identity the payload carries, and the payload satisfies
  * the versioned schema document its envelope names. Every payload below is therefore a complete
- * {@code CardUpdated} version 1 event, and the stub template reports the four producer settings the
+ * {@code CardUpdated} version 2 event, and the stub template reports the four producer settings the
  * platform pins.</p>
  */
 class KafkaEventPublisherTest {
@@ -79,11 +82,23 @@ class KafkaEventPublisherTest {
     private static final String FULL_CARD_NUMBER = "4859452612877065";
 
     /**
-     * Event body, one serialized {@code CardUpdated} version 1 event. The publisher validates
+     * Event body, one serialized {@code CardUpdated} version 2 event. The publisher validates
      * every payload against the document its envelope names, so a body the publisher would reject
      * could not prove anything about forwarding.
      */
     private static final String PAYLOAD = cardUpdated(ACCOUNT_KEY, EVENT_ID);
+
+    /**
+     * How long the publisher waits for a broker acknowledgement, matching
+     * {@code carddemo.outbox.relay.publish-timeout} of {@code src/main/resources/application.yml}.
+     */
+    private static final Duration PUBLISH_TIMEOUT = Duration.ofSeconds(30);
+
+    /**
+     * A bound short enough that a test can wait it out, used where the assertion is that the wait
+     * ends at all.
+     */
+    private static final Duration BRIEF_TIMEOUT = Duration.ofMillis(50);
 
     /** The template the publisher sends through. */
     private KafkaTemplateStub template;
@@ -95,7 +110,7 @@ class KafkaEventPublisherTest {
     @BeforeEach
     void setUp() {
         template = new KafkaTemplateStub();
-        publisher = new KafkaEventPublisher(template.template(), TOPIC);
+        publisher = new KafkaEventPublisher(template.template(), TOPIC, PUBLISH_TIMEOUT);
     }
 
     // Forwarding. Every assertion reads a captured argument.
@@ -264,7 +279,8 @@ class KafkaEventPublisherTest {
         KafkaException brokerFailure = new KafkaException("the broker is unreachable");
         template.fail(brokerFailure);
 
-        CompletionException thrown = assertThrows(CompletionException.class,
+        org.springframework.kafka.KafkaException thrown = assertThrows(
+                org.springframework.kafka.KafkaException.class,
                 () -> publisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
                 "a failed send must not return normally, or the outbox row would be marked "
                         + "published while the event never reached the broker");
@@ -278,11 +294,33 @@ class KafkaEventPublisherTest {
     void publishSwallowsNoFailureAndRetriesNothing() {
         template.fail(new KafkaException("the broker refused the record"));
 
-        assertThrows(CompletionException.class,
+        assertThrows(org.springframework.kafka.KafkaException.class,
                 () -> publisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
                 "the failure escapes the publisher");
 
         template.verifySentExactlyOnce();
+    }
+
+    @Test
+    void aBrokerThatNeverAnswersEndsTheWaitAtTheConfiguredBound() {
+        KafkaTemplateStub silent = new KafkaTemplateStub();
+        silent.neverAcknowledge();
+        KafkaEventPublisher bounded =
+                new KafkaEventPublisher(silent.template(), TOPIC, BRIEF_TIMEOUT);
+
+        org.springframework.kafka.KafkaException thrown = assertThrows(
+                org.springframework.kafka.KafkaException.class,
+                () -> bounded.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
+                "a send the broker never acknowledges ends the wait rather than holding the "
+                        + "relay sweep open for as long as the broker stays unreachable");
+
+        assertTrue(thrown.getMessage().contains(TOPIC),
+                "the thrown message names the topic that went unacknowledged");
+        assertTrue(thrown.getMessage().contains(BRIEF_TIMEOUT.toString()),
+                "the thrown message names the bound that lapsed");
+        assertFalse(thrown.getMessage().contains(FULL_CARD_NUMBER),
+                "the thrown message reads no field of the payload");
+        silent.verifySentExactlyOnce();
     }
 
     @Test
@@ -296,9 +334,10 @@ class KafkaEventPublisherTest {
             KafkaTemplateStub failing = new KafkaTemplateStub();
             failing.fail(cause);
             KafkaEventPublisher failingPublisher =
-                    new KafkaEventPublisher(failing.template(), TOPIC);
+                    new KafkaEventPublisher(failing.template(), TOPIC, PUBLISH_TIMEOUT);
 
-            CompletionException thrown = assertThrows(CompletionException.class,
+            org.springframework.kafka.KafkaException thrown = assertThrows(
+                    org.springframework.kafka.KafkaException.class,
                     () -> failingPublisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
                     "a failure of type " + cause.getClass().getSimpleName() + " escapes");
             assertSame(cause, thrown.getCause(),
@@ -405,6 +444,12 @@ class KafkaEventPublisherTest {
             acknowledge();
         }
 
+        /** Answers every send with a future that never completes. */
+        private void neverAcknowledge() {
+            when(template.send(anyString(), anyString(), anyString()))
+                    .thenAnswer(invocation -> new CompletableFuture<SendResult<String, String>>());
+        }
+
         private void fail(Throwable cause) {
             when(template.send(anyString(), anyString(), anyString()))
                     .thenAnswer(invocation -> CompletableFuture.failedFuture(cause));
@@ -461,9 +506,9 @@ class KafkaEventPublisherTest {
     }
 
     /**
-     * Builds one serialized {@code CardUpdated} version 1 event.
+     * Builds one serialized {@code CardUpdated} version 2 event.
      *
-     * <p>The envelope names the document {@code schemas/card-updated-v1.json}, and both
+     * <p>The envelope names the document {@code schemas/card-updated-v2.json}, and both
      * account identifiers hold {@code accountKey}, so the publisher's key check and its schema
      * check both pass. The card number is a masked form, so no test of this class holds a Primary
      * Account Number (PAN).</p>
@@ -474,10 +519,10 @@ class KafkaEventPublisherTest {
      */
     private static String cardUpdated(String accountKey, String eventId) {
         return "{\"eventId\":\"" + eventId + "\",\"eventType\":\"CardUpdated\","
-                + "\"schemaVersion\":1,\"occurredAt\":\"2022-06-10T19:27:53.412Z\","
+                + "\"schemaVersion\":2,\"occurredAt\":\"2022-06-10T19:27:53.412Z\","
                 + "\"aggregateId\":\"" + accountKey + "\","
                 + "\"maskedCardNumber\":\"************7065\",\"accountId\":\"" + accountKey
-                + "\",\"embossedName\":\"JOHN Q PUBLIC\",\"expirationDate\":\"2024-12-31\","
+                + "\",\"expirationDate\":\"2024-12-31\","
                 + "\"activeStatus\":\"Y\"}";
     }
 

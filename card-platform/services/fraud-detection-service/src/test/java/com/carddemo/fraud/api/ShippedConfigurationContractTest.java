@@ -1,7 +1,13 @@
 package com.carddemo.fraud.api;
 
+import com.carddemo.events.TransactionAuthorized;
+import com.carddemo.fraud.config.FraudProperties;
+import com.carddemo.fraud.domain.RiskRule;
+import com.carddemo.fraud.domain.RiskScoringService;
+import com.carddemo.fraud.repository.VelocityWindowRepository;
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -41,6 +47,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Contract tests over this service's shipped configuration: {@code src/main/resources/application.yml},
@@ -50,12 +59,14 @@ import static org.junit.jupiter.api.Assertions.assertNull;
  * once as nested maps for the key and value assertions.
  *
  * <p>Assertions cover present keys, absent keys, and the default every placeholder carries. Three
- * tests go further and assert the configuration Spring Boot binds from the same file, so a key the
- * file spells in a form Spring or the Kafka client does not accept fails rather than passing a text
- * comparison. Those three start a context holding one configuration-properties bean and nothing
- * else.
+ * tests go further and assert the configuration Spring Boot binds from the same file. A key the
+ * file spells in a form Spring or the Kafka client does not accept therefore fails, rather than
+ * passing a text comparison. Those three start a context holding one configuration-properties bean
+ * and nothing else.
  *
  * <p>No database connects, no broker is reached, and every file operation is a read.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @DisplayName("Shipped configuration of the fraud detection service")
 final class ShippedConfigurationContractTest {
@@ -83,17 +94,17 @@ final class ShippedConfigurationContractTest {
 
     /**
      * The broker credential placeholder, which carries no default either. This service
-     * authenticates to the broker as its own Simple Authentication and Security Layer identity, and
-     * the broker's authorizer admits it onto exactly the one topic and the one consumer group this
+     * authenticates to the broker as its own Simple Authentication and Security Layer identity.
+     * The broker's authorizer admits it onto exactly the one topic and the one consumer group this
      * file names.
      */
     private static final String BROKER_CREDENTIAL_PLACEHOLDER = "${KAFKA_SASL_PASSWORD}";
 
     /**
      * Every placeholder in the shipped configuration that carries no default, in the order the file
-     * declares them. Each one is a credential, and a credential is exactly what must not carry a
-     * default: a default password or password hash is a credential this repository would publish,
-     * and an unset variable stopping start-up is the intended outcome. The three hashes belong to the
+     * declares them. Each one is a credential, and a credential must not carry a default. A default
+     * password or password hash is a credential this repository would publish, and an unset
+     * variable stopping start-up is the intended outcome. The three hashes belong to the
      * identities {@code config/SecurityConfig} maps, and {@code card-platform/.env.example}
      * documents how to generate them.
      */
@@ -117,8 +128,14 @@ final class ShippedConfigurationContractTest {
     /** Consumer group the shipped placeholder defaults to. */
     private static final String DEFAULT_CONSUMER_GROUP = "fraud-detection";
 
-    /** Bootstrap server the shipped placeholder defaults to. */
-    private static final String DEFAULT_BOOTSTRAP_SERVERS = "kafka:9092";
+    /**
+     * Bootstrap server the shipped placeholder defaults to.
+     *
+     * <p>The internal listener docker-compose.yml publishes, which is the one context a shipped
+     * default can be correct in. A cluster overrides it to kafka:9092 and a run on the host to
+     * localhost:9092.
+     */
+    private static final String DEFAULT_BOOTSTRAP_SERVERS = "kafka:29092";
 
     /**
      * Serializer that writes one of the registered event records and refuses every other value.
@@ -157,9 +174,9 @@ final class ShippedConfigurationContractTest {
     /**
      * Resolved default form of the datasource connection string. Each service reaches one private
      * database and, inside it, one private schema, so PostgreSQL runs no query across two services.
-     * {@code sslmode=require} is part of the default rather than an override: a driver that would
-     * fall back to cleartext carries every account identifier, balance and assessment across the wire
-     * in the clear.
+     * {@code sslmode=require} is part of the default rather than an override. A driver that fell
+     * back to cleartext would carry every account identifier, balance and assessment across the
+     * wire in the clear.
      */
     private static final String DEFAULT_DATASOURCE_URL =
             "jdbc:postgresql://postgres:5432/carddemo_fraud?currentSchema=" + DEFAULT_SCHEMA
@@ -203,8 +220,9 @@ final class ShippedConfigurationContractTest {
     private static final List<String> REJECTED_DDL_AUTO_VALUES =
             List.of("update", "create", "create-drop", "none");
 
-    /** Connection pool keys absent from {@code spring.datasource}. */
-    private static final List<String> CONNECTION_POOL_KEYS = List.of("hikari", "tomcat", "dbcp2");
+    /** Alternative connection-pool implementations absent from {@code spring.datasource}. */
+    private static final List<String> ALTERNATIVE_CONNECTION_POOL_KEYS =
+            List.of("tomcat", "dbcp2");
 
     /** Log levels no more verbose than informational. */
     private static final List<String> NON_VERBOSE_LEVELS = List.of("OFF", "ERROR", "WARN", "INFO");
@@ -313,12 +331,16 @@ final class ShippedConfigurationContractTest {
     }
 
     @Test
-    @DisplayName("spring.kafka.admin.fail-fast is absent in every spelling")
-    void shippedYamlSetsNoKafkaAdminFailFast() {
+    @DisplayName("Kafka admin startup stays non-failing while readiness has a bounded timeout")
+    void kafkaAdminStartupStaysNonFailingWhileReadinessHasABoundedTimeout() {
         assertAll(
                 () -> assertEquals(List.of(), fragmentsPresent(FAIL_FAST_SPELLINGS),
                         () -> "fail-fast text present: " + fragmentsPresent(FAIL_FAST_SPELLINGS)),
-                () -> assertNull(valueAt("spring", "kafka", "admin"), "spring.kafka.admin is set"));
+                () -> assertNull(valueAt("spring", "kafka", "admin", "fail-fast"),
+                        "spring.kafka.admin.fail-fast is set"),
+                () -> assertEquals("3s",
+                        resolvedAt("spring", "kafka", "admin", "operation-timeout"),
+                        "spring.kafka.admin.operation-timeout"));
     }
 
     @Test
@@ -351,6 +373,28 @@ final class ShippedConfigurationContractTest {
     void migrationFolderShipsNoSeedMigration() {
         assertNull(getClass().getResource(SEED_MIGRATION),
                 () -> "seed migration present at " + SEED_MIGRATION);
+    }
+
+    @Test
+    @DisplayName("the bound shipped flag threshold clears 49 and flags 50 and 51")
+    void shippedFlagThresholdControlsTheRealScorer() {
+        KAFKA_RUNNER.run(context -> {
+            assertThat(context).hasNotFailed();
+            FraudProperties properties = context.getBean(FraudProperties.class);
+            assertThat(properties.fraud().risk().flagThreshold()).isEqualTo(50);
+
+            for (int score : List.of(49, 50, 51)) {
+                VelocityWindowRepository repository = mock(VelocityWindowRepository.class);
+                when(repository.addAuthorization(any(), any(), any(), any())).thenReturn(1);
+                RiskScoringService scorer = new RiskScoringService(
+                        List.of(fixedContribution(score)), repository, properties);
+
+                RiskScoringService.RiskAssessment assessment =
+                        scorer.assess(authorizedForThresholdTest());
+
+                assertEquals(score >= 50, assessment.flagged(), "score " + score);
+            }
+        });
     }
 
     @Test
@@ -434,7 +478,8 @@ final class ShippedConfigurationContractTest {
     @DisplayName("the Kafka placeholders resolve to their defaults")
     void kafkaDefaultsResolveWithNoEnvironmentVariableSet() {
         assertAll(
-                () -> assertEquals("kafka:9092", resolvedAt("spring", "kafka", "bootstrap-servers"),
+                () -> assertEquals(DEFAULT_BOOTSTRAP_SERVERS,
+                        resolvedAt("spring", "kafka", "bootstrap-servers"),
                         "spring.kafka.bootstrap-servers"),
                 () -> assertEquals("fraud-detection", resolvedAt("spring", "kafka", "consumer", "group-id"),
                         "spring.kafka.consumer.group-id"));
@@ -464,16 +509,23 @@ final class ShippedConfigurationContractTest {
     }
 
     @Test
-    @DisplayName("spring.datasource names the PostgreSQL driver and no connection pool")
-    void datasourceNamesTheDriverAndNoConnectionPool() {
-        List<String> poolKeys = CONNECTION_POOL_KEYS.stream()
+    @DisplayName("spring.datasource names PostgreSQL and bounds Hikari readiness waits")
+    void datasourceNamesPostgresqlAndBoundsHikariReadinessWaits() {
+        List<String> alternativePoolKeys = ALTERNATIVE_CONNECTION_POOL_KEYS.stream()
                 .filter(key -> valueAt("spring", "datasource", key) != null)
                 .toList();
         assertAll(
                 () -> assertEquals("org.postgresql.Driver",
                         textAt("spring", "datasource", "driver-class-name"),
                         "spring.datasource.driver-class-name"),
-                () -> assertEquals(List.of(), poolKeys, () -> "connection pool keys present: " + poolKeys));
+                () -> assertEquals("3000",
+                        resolvedAt("spring", "datasource", "hikari", "connection-timeout"),
+                        "spring.datasource.hikari.connection-timeout"),
+                () -> assertEquals("2000",
+                        resolvedAt("spring", "datasource", "hikari", "validation-timeout"),
+                        "spring.datasource.hikari.validation-timeout"),
+                () -> assertEquals(List.of(), alternativePoolKeys,
+                        () -> "alternative connection pool keys present: " + alternativePoolKeys));
     }
 
     @Test
@@ -579,8 +631,8 @@ final class ShippedConfigurationContractTest {
     /**
      * Asserts the configuration Spring Boot binds from the shipped file, rather than the characters
      * the file holds. Spring resolves every placeholder and binds each value to the type
-     * {@code KafkaProperties} declares, so a misspelled structured key binds nothing and a value
-     * outside an enumeration or a class that cannot be loaded fails the bind.
+     * {@code KafkaProperties} declares. A misspelled structured key therefore binds nothing, and a
+     * value outside an enumeration or a class that cannot be loaded fails the bind.
      *
      * <p>Four settings carry a guarantee this plan claims. Automatic commit is off and the
      * acknowledgement mode is manual and immediate, which is what makes the idempotency marker
@@ -995,6 +1047,29 @@ final class ShippedConfigurationContractTest {
         return level != null && !NON_VERBOSE_LEVELS.contains(level.toUpperCase(Locale.ROOT));
     }
 
+    /** Builds one rule that reports a fixed score under a published rule identifier. */
+    private static RiskRule fixedContribution(int score) {
+        return new RiskRule() {
+            @Override
+            public Contribution evaluate(TransactionAuthorized event) {
+                return Contribution.triggeredWith(score);
+            }
+
+            @Override
+            public String ruleId() {
+                return "VELOCITY";
+            }
+        };
+    }
+
+    /** Builds one valid event for the scorer boundary check. */
+    private static TransactionAuthorized authorizedForThresholdTest() {
+        return TransactionAuthorized.of("00000000007", "THRESHOLD-CASE01", "01", "0003",
+                "POS TERM", "Threshold boundary", new BigDecimal("10.00"), "800000000",
+                "Demo Merchant", "Demo City", "72112", "************0001",
+                "2bf90b0da1627234a5d993f0fcaab0f2a3640f8a033bf69969de2fb60b83fa8d", "2026-08-04 12:00:00.000000");
+    }
+
     /**
      * Returns the built property names the owning client does not declare, in encounter order. A
      * name carrying the Spring prefix belongs to the error-handling wrapper rather than to the
@@ -1019,7 +1094,7 @@ final class ShippedConfigurationContractTest {
      * auto-configuration uses, and declares no other bean.
      */
     @Configuration(proxyBeanMethods = false)
-    @EnableConfigurationProperties(KafkaProperties.class)
+    @EnableConfigurationProperties({KafkaProperties.class, FraudProperties.class})
     static class KafkaPropertiesBinding {
     }
 }

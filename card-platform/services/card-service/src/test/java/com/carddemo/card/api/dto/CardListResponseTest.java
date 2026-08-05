@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.cobol.PanMasker;
+import com.carddemo.cobol.PicClause;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
@@ -26,7 +28,7 @@ import org.junit.jupiter.api.Test;
  * only tools a run needs.
  *
  * <p>A page declares three components: the rows, a flag stating whether a further page exists, and
- * the cursor the next request passes back. The card list program projects one row per card at
+ * the opaque cursor the next request passes back. The card list program projects one row per card at
  * {@code app/cbl/COCRDLIC.cbl:L1165-L1171}. The row table holds seven rows at
  * {@code app/cbl/COCRDLIC.cbl:L250-L260}.
  *
@@ -41,9 +43,11 @@ import org.junit.jupiter.api.Test;
  * {@code app/cbl/COCRDLIC.cbl:L231}. The read loop captures it at L1194-L1195 and refreshes it at
  * L1212-L1214. The page-down path reads it as the browse key at
  * {@code app/cbl/COCRDLIC.cbl:L488-L489}. The next cursor of this response carries that same
- * position, as a card-number value the next request passes back, and the next page starts after it.
- * Several tests here hold that boundary: the cursor is text, it agrees with the next-page flag, and
- * no component names a page ordinal.
+ * position, as a card token the next request passes back, and the next page starts after it. The
+ * token stands in for the card number because a cursor leaves the service and returns, which AAP
+ * section 0.6.4 admits only a tokenized or masked form for. Several tests here hold that boundary:
+ * the cursor is text, it holds the shape of a card token, it agrees with the next-page flag, and no
+ * component names a page ordinal.
  *
  * <p>The locator of the derived next-page flag is {@code app/cbl/COCRDLIC.cbl:L1191-L1216}, not
  * L1284-L1287. Lines L1284-L1286 compute {@code WS-SCRN-COUNTER} as
@@ -60,6 +64,8 @@ import org.junit.jupiter.api.Test;
  * <p>{@link CardSummaryTest} pins the row shape and the masked card number. No test here asserts a
  * page size of seven, an HTTP status code or an endpoint path. No test here reads a
  * {@code DFHRESP} condition or a screen field from {@code app/cpy/CVCRD01Y.cpy}.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 final class CardListResponseTest {
 
@@ -77,14 +83,29 @@ final class CardListResponseTest {
             List.of(COMPONENT_CARDS, COMPONENT_NEXT_PAGE_EXISTS, COMPONENT_NEXT_CURSOR);
 
     /**
-     * The cursor a page that reports a further page carries: the card number of its last row, at
-     * the width of {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}. The value is a
-     * masked form, so no test in this class holds a full Primary Account Number (PAN).
+     * The cursor a page that reports a further page carries: the card token of its last row.
+     *
+     * <p>A card token holds {@value PanMasker#CARD_TOKEN_LENGTH} lower-case hexadecimal characters
+     * and never a card number, so the cursor of a page no longer carries the value
+     * {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} declares. The two fixtures
+     * below are shaped like a digest and derived from no card at all, which keeps the promise this
+     * class opens with: no test here holds a full Primary Account Number (PAN), masked or whole.
      */
-    private static final String NEXT_CURSOR = "************5746";
+    private static final String NEXT_CURSOR = "a".repeat(PanMasker.CARD_TOKEN_LENGTH);
 
     /** A second cursor, for the inequality assertion of two pages. */
-    private static final String OTHER_CURSOR = "************5747";
+    private static final String OTHER_CURSOR = "b".repeat(PanMasker.CARD_TOKEN_LENGTH);
+
+    /**
+     * A value at card-number width, for the rejection assertion.
+     *
+     * <p>It is built from one repeated digit rather than typed, so it holds the width
+     * {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} declares and holds no card
+     * number. A cursor of this shape is what the response refused to reject before the card token
+     * became the cursor.
+     */
+    private static final String CARD_NUMBER_SHAPED_CURSOR =
+            "0".repeat(PicClause.CARD_NUM_WIDTH);
 
     /**
      * The masked card number of record one of {@code app/data/ASCII/carddata.txt}: twelve mask
@@ -153,8 +174,8 @@ final class CardListResponseTest {
     /**
      * Lower-case name fragments that would name a page ordinal.
      *
-     * <p>The source browses forward and backward from a key and holds no page ordinal, so a
-     * component under any of these names would invent a capability the source does not have. The
+     * <p>The source browses forward and backward from a key and holds no page ordinal. A
+     * component under any of these names would invent a capability the source lacks. The
      * scan skips the row list, whose name legitimately carries the word {@code card}.
      */
     private static final List<String> PAGE_ORDINAL_FRAGMENTS = List.of(
@@ -270,9 +291,10 @@ final class CardListResponseTest {
     /**
      * Asserts the next cursor arrives as a {@link String} and holds no value on the final page.
      *
-     * <p>The cursor carries a card-number value, sixteen characters wide, so its type matches
-     * {@code WS-CA-LAST-CARD-NUM PIC X(16)} at {@code app/cbl/COCRDLIC.cbl:L231}. A page that ends
-     * the browse names no successor and carries no cursor.
+     * <p>The cursor carries a card token, so its type is text where the source keeps text in
+     * {@code WS-CA-LAST-CARD-NUM PIC X(16)} at {@code app/cbl/COCRDLIC.cbl:L231}. The width differs
+     * because the value differs: a digest, not the browse key itself. A page that ends the browse
+     * names no successor and carries no cursor.
      */
     @Test
     void pageTypesTheNextCursorAsANullableString() {
@@ -356,6 +378,45 @@ final class CardListResponseTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new CardListResponse(List.of(), true, "   "),
                 "a page carried a blank cursor, which names no row");
+        assertThrows(IllegalArgumentException.class,
+                () -> new CardListResponse(List.of(), true, CARD_NUMBER_SHAPED_CURSOR),
+                "a page carried a card number where a card token belongs, which is the "
+                        + "disclosure AAP section 0.6.4 forbids");
+        assertThrows(IllegalArgumentException.class,
+                () -> new CardListResponse(List.of(), true, NEXT_CURSOR.toUpperCase(Locale.ROOT)),
+                "a page carried upper-case hexadecimal, which is not the shape "
+                        + "ck_card_card_token_hex declares");
+    }
+
+    /**
+     * Asserts the cursor is a card token and that neither a card number nor its masked form
+     * reaches it.
+     *
+     * <p>The source keeps its browse key in working storage no terminal receives, so a card number
+     * there discloses nothing. This cursor leaves the service in a response and returns in the next
+     * request, which makes it published data, and AAP section 0.6.4 admits only a tokenized or
+     * masked form there. The masked form is rejected too, because twelve asterisks and four digits
+     * name every card sharing those digits and therefore name no single browse position.
+     *
+     * <p>Three shapes are checked: the token that is accepted, the card-number width that is not,
+     * and the masked width that is not. All three are sixteen characters or sixty-four, so width
+     * alone separates them and no assertion here depends on a real card number.
+     */
+    @Test
+    void theCursorIsACardTokenAndNeverACardNumber() {
+        CardListResponse page = new CardListResponse(List.of(), true, NEXT_CURSOR);
+
+        assertTrue(page.nextCursor().matches(PanMasker.CARD_TOKEN_PATTERN),
+                "The cursor must match PanMasker.CARD_TOKEN_PATTERN, the one declaration of the "
+                        + "card-token shape across this platform. Found width "
+                        + page.nextCursor().length() + ". " + BROWSE_KEY_LOCATOR);
+        assertNotEquals(PicClause.CARD_NUM_WIDTH, page.nextCursor().length(),
+                "A cursor at card-number width would be a card number, whatever it held.");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new CardListResponse(List.of(), true, FIXTURE_MASKED_CARD_NUMBER),
+                "a page carried a masked card number as its cursor, which names every card "
+                        + "sharing four digits and therefore names no browse position");
     }
 
     /**

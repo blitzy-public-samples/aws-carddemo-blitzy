@@ -6,6 +6,8 @@ import io.micrometer.core.instrument.Timer;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -13,7 +15,7 @@ import org.springframework.context.annotation.Configuration;
  * Registers the meters the notification service reports: one counter and one timer per consumed
  * event type, a failure counter, a rendered-alert counter and a skipped-duplicate counter.
  *
- * <p>ADDITIVE. No COBOL program declares a per-service configuration class. The meter names below
+ * <p>No COBOL program declares a per-service configuration class. The meter names below
  * carry the shape of the source counters and none of their logic.</p>
  *
  * <p>{@code app/cbl/CBTRN02C.cbl:L185-L186} declares {@code WS-TRANSACTION-COUNT} and
@@ -38,9 +40,14 @@ import org.springframework.context.annotation.Configuration;
  * caller invokes them statically. This module compiles at release 25 through the
  * {@code java.version} property in its own {@code pom.xml}, which the Spring Boot 4.1.0 parent
  * otherwise defaults to 17. Class-file major version 69 is the proof of that release.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
 public class ObservabilityConfig {
+
+    /** Tag key that names this service on every application and framework meter. */
+    public static final String SERVICE_TAG = "service";
 
     /**
      * Registers every meter against the injected registry, which Spring Boot auto-configuration
@@ -52,6 +59,16 @@ public class ObservabilityConfig {
     @Bean
     public NotificationMetrics notificationMetrics(MeterRegistry registry) {
         return new NotificationMetrics(registry);
+    }
+
+    /** Adds the service name to application, Java Virtual Machine, and web meters alike. */
+    @Bean
+    public MeterRegistryCustomizer<MeterRegistry> notificationCommonTags(
+            @Value("${spring.application.name:notification-service}") String applicationName) {
+        if (applicationName == null || applicationName.isBlank()) {
+            throw new IllegalStateException("spring.application.name must hold a value");
+        }
+        return registry -> registry.config().commonTags(SERVICE_TAG, applicationName);
     }
 
     /**
@@ -70,11 +87,14 @@ public class ObservabilityConfig {
      *
      * <p>The path that records against each meter:
      * {@code messaging/TransactionPostedConsumer.java} and
-     * {@code messaging/FraudFlaggedConsumer.java} increment
+     * {@code messaging/FraudAssessedConsumer.java}, plus
+     * {@code messaging/CustomerContextChangedConsumer.java}, increment
      * {@link NotificationMetrics#eventsConsumed(String)}, time
      * {@link NotificationMetrics#processingLatency(String)}, increment
      * {@link NotificationMetrics#duplicatesSkipped()} when the idempotency guard rejects a replay,
      * and increment {@link NotificationMetrics#failures(String)} on a fault;
+     * {@code config/KafkaConsumerConfig.java} increments
+     * {@link NotificationMetrics#deadLettered(String)} once for each record whose attempts ran out;
      * {@code domain/NotificationService.java} increments
      * {@link NotificationMetrics#notificationsRendered(String)} once per alert it renders through
      * {@link com.carddemo.notification.domain.PlainTextRenderer} or
@@ -86,16 +106,16 @@ public class ObservabilityConfig {
 
         /**
          * Tag values the {@code event.type} dimension carries, one per consumed event. This service
-         * reads three topics. {@code transaction.authorized} carries the authorization event, which
-         * makes this service the third independent reader of that event beside ledger posting and
-         * fraud detection. {@code transaction.posted} carries the new balance. The remaining two
-         * travel together on {@code fraud.assessed}, and the envelope {@code eventType} field
-         * separates them.
+         * reads three topics, which is exactly what its broker entries grant it.
+         * {@code transaction.posted} carries the new balance, two verdicts travel together on
+         * {@code fraud.assessed}, and {@code customer.context-changed} carries renderer context. It
+         * holds no entry on {@code transaction.authorized} and registers no series for it: a series
+         * that can only ever read zero states something about the topology that is not true.
          */
-        public static final String EVENT_TRANSACTION_AUTHORIZED = "TransactionAuthorized";
         public static final String EVENT_TRANSACTION_POSTED = "TransactionPosted";
         public static final String EVENT_FRAUD_FLAGGED = "FraudFlagged";
         public static final String EVENT_FRAUD_CLEARED = "FraudCleared";
+        public static final String EVENT_CUSTOMER_CONTEXT_CHANGED = "CustomerContextChanged";
 
         /**
          * Tag values the {@code failure.kind} dimension carries, one per processing fault. The
@@ -121,12 +141,15 @@ public class ObservabilityConfig {
         private final Map<String, Counter> eventsConsumed;
         private final Map<String, Timer> processingLatency;
         private final Map<String, Counter> failures;
+        private final Map<String, Counter> deadLettered;
         private final Map<String, Counter> notificationsRendered;
         private final Counter duplicatesSkipped;
 
         NotificationMetrics(MeterRegistry registry) {
-            List<String> eventTypes = List.of(EVENT_TRANSACTION_AUTHORIZED,
-                    EVENT_TRANSACTION_POSTED, EVENT_FRAUD_FLAGGED, EVENT_FRAUD_CLEARED, UNKNOWN);
+            List<String> eventTypes = List.of(EVENT_TRANSACTION_POSTED, EVENT_FRAUD_FLAGGED,
+                    EVENT_FRAUD_CLEARED, UNKNOWN);
+            List<String> failureKinds = List.of(FAILURE_SCHEMA_VALIDATION, FAILURE_DESERIALIZATION,
+                    FAILURE_PERSISTENCE, FAILURE_RENDERING, UNKNOWN);
 
             Map<String, Timer> timers = new LinkedHashMap<>();
             for (String eventType : eventTypes) {
@@ -140,9 +163,10 @@ public class ObservabilityConfig {
                     "Events this service consumed", EVENT_TYPE_TAG, eventTypes);
             this.processingLatency = Map.copyOf(timers);
             this.failures = counters(registry, "carddemo.notification.failures",
-                    "Processing faults", FAILURE_KIND_TAG,
-                    List.of(FAILURE_SCHEMA_VALIDATION, FAILURE_DESERIALIZATION,
-                            FAILURE_PERSISTENCE, FAILURE_RENDERING, UNKNOWN));
+                    "Failed delivery attempts, one per attempt", FAILURE_KIND_TAG, failureKinds);
+            this.deadLettered = counters(registry, "carddemo.notification.records.dead.lettered",
+                    "Records whose delivery attempts ran out, one per record", FAILURE_KIND_TAG,
+                    failureKinds);
             this.notificationsRendered = counters(registry,
                     "carddemo.notification.notifications.rendered", "Cardholder alerts rendered",
                     FORMAT_TAG, List.of(FORMAT_TEXT, FORMAT_HTML, UNKNOWN));
@@ -161,9 +185,28 @@ public class ObservabilityConfig {
             return resolve(this.processingLatency, eventType);
         }
 
-        /** Returns the failure counter for {@code failureKind}. */
+        /**
+         * Returns the counter of failed delivery attempts for {@code failureKind}.
+         *
+         * <p>The unit is one delivery attempt, not one record. A record taken three times before its
+         * attempts run out increments this counter three times, which is what makes a retry storm
+         * visible. {@link #deadLettered(String)} is the per-record counter, and the ratio between
+         * the two is the average attempt count.
+         */
         public Counter failures(String failureKind) {
             return resolve(this.failures, failureKind);
+        }
+
+        /**
+         * Returns the counter of records whose delivery attempts ran out, for {@code failureKind}.
+         *
+         * <p>The unit is one record. It is incremented once, by the dead-letter recoverer, at the
+         * moment the record leaves the retry cycle for good. Counting the terminal outcome on a
+         * series of its own is what separates "three attempts failed" from "one record was lost to
+         * the dead-letter topic".
+         */
+        public Counter deadLettered(String failureKind) {
+            return resolve(this.deadLettered, failureKind);
         }
 
         /** Returns the rendered-alert counter for {@code format}. */

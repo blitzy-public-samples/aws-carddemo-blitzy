@@ -47,8 +47,6 @@ import org.springframework.data.repository.ListCrudRepository;
  * <p>No card program reads this dataset. {@code app/cbl/COCRDSLC.cbl:L237} and
  * {@code app/cbl/COCRDUPC.cbl:L356} both read {@code *COPY CVACT03Y.}, commented out, and
  * {@code app/cbl/COCRDLIC.cbl} names {@code CVACT03Y} nowhere.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 public interface CardCrossReferenceRepository
         extends ListCrudRepository<CardCrossReferenceEntity, String> {

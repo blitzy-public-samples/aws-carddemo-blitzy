@@ -12,36 +12,24 @@ import org.springframework.stereotype.Component;
 /**
  * Writes the stream names this service resolved, and says where each one came from.
  *
- * <p>ADDITIVE IN FULL, like the rest of this module. The source carries no fraud program, no risk
- * score and no rules engine, so nothing here has a COBOL ancestor.
+ * <p>No Common Business Oriented Language (COBOL) ancestor: the source carries no fraud program,
+ * no risk score and no rules engine.
  *
- * <h2>The problem this solves</h2>
+ * <p>Which stream the consumer reads is decided by
+ * {@code ${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}}. The image carries a default, so a
+ * dropped, renamed or mistyped key in {@code card-platform/deploy/k8s/30-configmap.yaml} or
+ * {@code card-platform/docker-compose.yml} raises no error: the service subscribes to the built-in
+ * name, reports itself healthy, and scores nothing at all.
  *
- * <p>Which stream this consumer reads is decided by
- * {@code ${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}}. The image carries a default and
- * the platform supplies the real value, which is deliberate: a service has to start on a developer
- * machine with nothing set. It also means a dropped, renamed or mistyped key in
- * {@code card-platform/deploy/k8s/30-configmap.yaml} or {@code card-platform/docker-compose.yml}
- * produces no error at all — this service subscribes to the built-in name, reports itself healthy,
- * and scores nothing because nothing arrives. This module is the platform's demonstration that a new
- * consumer can be added without touching the authorization path, and a consumer listening to the
- * wrong stream demonstrates the opposite while looking correct.
+ * <p>Each name is therefore logged once as the context finishes starting: at INFO when the platform
+ * supplied the value, naming the variable it came from, and at WARN when it did not, naming the
+ * variable that is missing.
  *
- * <p>This class makes the choice visible instead of removing it. Each name is logged once as the
- * context finishes starting: at INFO when the platform supplied the value, naming the variable it
- * came from, and at WARN when it did not, naming the variable that is missing.
- *
- * <h2>What is reported, and what is not</h2>
- *
- * <p>Stream names only. The retry settings, the relay sweep and the risk thresholds arrive
- * separately, and a wrong value there changes a score or a retry; a wrong stream name costs every
- * event. Those values stay in the bound {@link FraudProperties} record, which fails start-up when
- * one of them is invalid.
+ * <p>Stream names only. The retry settings, the relay sweep and the risk thresholds stay in the
+ * bound {@link FraudProperties} record, which fails start-up when one of them is invalid.
  *
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else.
- *
- * <p>Decisions: {@code card-platform/docs/decision-log.md} (planned).
  */
 @Component
 public class StreamNameReport implements ApplicationListener<ApplicationReadyEvent> {
@@ -69,9 +57,8 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
     /**
      * The names this service resolved, in the order they are reported.
      *
-     * <p>Package-private and returned rather than logged so a test can assert the list without
-     * capturing log output. One entry per topic this module binds: an entry missing here would be a
-     * stream whose resolution is unreported, which is the defect this class exists to prevent.
+     * <p>Package-private and returned rather than logged, so a test can assert the list without
+     * capturing log output. One entry per topic this module binds.
      *
      * @return one entry per stream name, never empty
      */

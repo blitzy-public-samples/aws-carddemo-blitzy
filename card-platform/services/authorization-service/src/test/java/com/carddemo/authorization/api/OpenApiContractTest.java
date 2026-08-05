@@ -61,14 +61,15 @@ final class OpenApiContractTest {
     }
 
     /**
-     * Asserts the document describes the four status codes the endpoint answers with.
+     * Asserts the document describes the six status codes the endpoint answers with.
      *
      * <p>Both outcomes of a decision share {@code 200}, so there is no separate code for a decline.
+     * {@code 413} is the request body ceiling {@code config/RequestBodyCeilingFilter} applies.
      */
     @Test
-    void theDocumentDescribesTheFourStatusCodes() {
-        assertEquals(Set.of("200", "400", "422", "500"), responses().keySet(),
-                "an approval and a decline share 200, and the three failure codes follow");
+    void theDocumentDescribesTheSixStatusCodes() {
+        assertEquals(Set.of("200", "400", "413", "422", "500", "503"), responses().keySet(),
+                "an approval and a decline share 200, and the five failure codes follow");
     }
 
     /** Asserts the request schema declares one property per record component, and no other. */
@@ -79,14 +80,42 @@ final class OpenApiContractTest {
                 "the document describes exactly the components the request record declares");
     }
 
-    /** Asserts the request schema requires exactly the eleven components the record requires. */
+    /**
+     * Asserts the request schema requires the eleven components the source requires, plus the card
+     * number.
+     *
+     * <p>The card number is required because it is the only way a request names its subject.
+     * {@code app/cbl/COTRN02C.cbl:L206-L209} also accepts an account identifier and resolves a card
+     * from the alternate index, and that branch is not reproduced: the card it returns is whichever
+     * one the index holds first rather than one the caller presented.
+     */
     @Test
-    void theRequestSchemaRequiresTheElevenComponentsTheSourceRequires() {
-        assertEquals(new TreeSet<>(List.of("amount", "description", "merchantCity", "merchantId",
-                "merchantName", "merchantZip", "originTimestamp", "processingTimestamp",
-                "source", "transactionCategoryCode", "transactionTypeCode")),
+    void theRequestSchemaRequiresTheSourceFieldsAndTheCardNumber() {
+        assertEquals(new TreeSet<>(List.of("amount", "cardNumber", "description", "merchantCity",
+                "merchantId", "merchantName", "merchantZip", "originTimestamp",
+                "processingTimestamp", "source", "transactionCategoryCode", "transactionTypeCode")),
                 new TreeSet<>(requiredOf("AuthorizationRequest")),
-                "app/cbl/COTRN02C.cbl:L251-L320 rejects these eleven fields when empty");
+                "app/cbl/COTRN02C.cbl:L251-L320 rejects eleven fields when empty, and the card "
+                        + "number is the twelfth this service requires");
+    }
+
+    /**
+     * Asserts the two security-sensitive descriptions agree with the current decision path.
+     */
+    @Test
+    void theDocumentDescribesTheAccountCrossCheckAndTheUnresolvedCardEvent() {
+        String accountId = String.valueOf(
+                propertyOf("AuthorizationRequest", "accountId").get("description"));
+        assertTrue(accountId.contains("Optional account cross-check"),
+                "accountId is an optional cross-check, never a card lookup substitute");
+        assertTrue(accountId.contains("must equal the account"),
+                "the documented cross-check refuses a mismatched account");
+
+        String response = String.valueOf(schemaOf("AuthorizationResponse").get("description"));
+        assertTrue(response.contains("schema-version-2 TransactionDeclined"),
+                "an unresolved card publishes the transaction-keyed decline event");
+        assertFalse(response.contains("publishes no event"),
+                "the document must not describe the pre-S-11 audit gap");
     }
 
     /** Asserts the response schema declares one property per record component, and no other. */

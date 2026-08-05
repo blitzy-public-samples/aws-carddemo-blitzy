@@ -1,16 +1,25 @@
 package com.carddemo.account.outbox;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.junit.jupiter.params.provider.Arguments.arguments;
-
+import com.carddemo.account.config.AccountProperties;
+import com.carddemo.account.config.KafkaProducerConfig;
+import com.carddemo.account.config.ObservabilityConfig;
+import com.carddemo.account.entity.OutboxEventEntity;
+import com.carddemo.account.messaging.DeadLetterMetadata;
+import com.carddemo.account.messaging.EventPublisherPort;
+import com.carddemo.account.repository.OutboxEventRepository;
+import com.carddemo.events.DeadLetterEnvelope;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
+import java.util.UUID;
 import java.util.stream.Stream;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -18,8 +27,20 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.config.YamlPropertiesFactoryBean;
 import org.springframework.core.io.ClassPathResource;
-
-import com.carddemo.account.messaging.DeadLetterMetadata;
+import org.springframework.data.domain.Limit;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.junit.jupiter.params.provider.Arguments.arguments;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Shape and configuration tests for {@link DeadLetterMetadata}, read from a calling package.
@@ -44,9 +65,9 @@ import com.carddemo.account.messaging.DeadLetterMetadata;
  * <p>The header at {@code app/cpy/CSMSG02Y.cpy:L2} names the file {@code CABENDD.CPY}, and the
  * version stamp at L34 reads {@code 2022-07-19 23:15:58 CDT}.
  *
- * <p>The last test reads {@code application.yml} from the test classpath and holds the module's
- * configured topic surface: one published topic and no dead-letter topic. No test here starts an
- * application context, a database or a broker.
+ * <p>One test drives the real {@link OutboxRelay} recovery path with a raw nested payload and
+ * inspects the emitted dead-letter record. Another reads {@code application.yml} from the test
+ * classpath. No test here starts an application context, database or broker.
  */
 @DisplayName("DeadLetterMetadata seen from the outbox package, from ABEND-DATA at CSMSG02Y.cpy L21")
 class DeadLetterMetadataTest {
@@ -102,6 +123,11 @@ class DeadLetterMetadataTest {
     /** Name the published topic key resolves to with no environment override in place. */
     private static final String PUBLISHED_TOPIC_NAME = "account.state-changed";
 
+    /** Property and default of the customer-context event this service also publishes. */
+    private static final String CUSTOMER_CONTEXT_TOPIC_KEY =
+            TOPIC_KEY_PREFIX + "customer-context-changed";
+    private static final String CUSTOMER_CONTEXT_TOPIC_NAME = "customer.context-changed";
+
     /** Key naming the shared dead-letter topic every service routes to. */
     private static final String DEAD_LETTER_TOPIC_KEY = TOPIC_KEY_PREFIX + "dead-letter";
 
@@ -124,6 +150,10 @@ class DeadLetterMetadataTest {
 
     /** Character separating a placeholder's variable name from its default. */
     private static final char PLACEHOLDER_SEPARATOR = ':';
+
+    /** Time of the terminal publish attempt in the recoverer test. */
+    private static final Instant TERMINAL_ATTEMPT =
+            Instant.parse("2099-02-01T00:00:00Z");
 
     /**
      * Asserts that the record declares the four fields of {@code 01 ABEND-DATA} as {@code String}
@@ -412,6 +442,70 @@ class DeadLetterMetadataTest {
     }
 
     @Test
+    @DisplayName("the real outbox recoverer emits a raw dead-letter record with no sensitive value")
+    void theRealRecovererEmitsNoSensitiveValue() {
+        Map<String, String> sensitive = Map.of(
+                "cardNumber", "9999" + "452612877065",
+                "cardVerificationValue", "731",
+                "socialSecurityNumber", "999" + "000001",
+                "credential", "generated-secret-for-recoverer-test");
+        String failedPayload = """
+                {"customer":{"cardNumber":"%s","cardVerificationValue":"%s"},
+                 "identity":{"socialSecurityNumber":"%s"},
+                 "credential":"%s"}
+                """.formatted(
+                sensitive.get("cardNumber"), sensitive.get("cardVerificationValue"),
+                sensitive.get("socialSecurityNumber"), sensitive.get("credential"));
+        OutboxEventEntity row = rowAtNinthAttempt(failedPayload);
+        OutboxEventRepository repository = mock(OutboxEventRepository.class);
+        when(repository.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
+                eq(OutboxEventEntity.RelayState.CLAIMED), any(), any()))
+                .thenReturn(List.of());
+        when(repository.deletePublishedBefore(any())).thenReturn(0);
+        when(repository.claimDueRows(any(), eq(Limit.of(1)))).thenReturn(List.of(row));
+
+        AccountProperties properties = propertiesWithOneRowPerClaim();
+        ObjectMapper mapper = new KafkaProducerConfig(properties).accountEventObjectMapper();
+        CapturingRecovererPublisher publisher =
+                new CapturingRecovererPublisher(failedPayload);
+        OutboxRelay relay = new OutboxRelay(
+                repository, publisher, immediateTransactions(), properties, mapper,
+                new ObservabilityConfig().accountMeters(new SimpleMeterRegistry()),
+                Clock.fixed(TERMINAL_ATTEMPT, ZoneOffset.UTC), "recoverer-test");
+
+        relay.publishPendingEvents();
+
+        assertThat(row.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.ABANDONED);
+        assertThat(row.getAttemptCount()).isEqualTo(OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+        verify(repository).save(row);
+        assertThat(publisher.deadLetterTopic).isEqualTo(DEAD_LETTER_TOPIC_NAME);
+        assertThat(publisher.deadLetterPayload).isNotNull();
+
+        JsonNode rawRecord = mapper.readTree(publisher.deadLetterPayload);
+        assertThat(rawRecord.path("eventType").asString()).isEqualTo(DeadLetterEnvelope.EVENT_TYPE);
+        assertThat(rawRecord.path("failedEventId").asString())
+                .isEqualTo(row.getEventId().toString());
+        assertThat(rawRecord.path("failedEventType").asString()).isEqualTo(row.getEventType());
+        assertThat(rawRecord.path("attemptCount").asInt())
+                .isEqualTo(OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+        List<String> textValues = textValuesOf(rawRecord);
+        sensitive.forEach((label, value) -> {
+            assertThat(publisher.deadLetterPayload)
+                    .as("raw dead-letter record carries no %s property", label)
+                    .doesNotContain(label);
+            if (value.length() <= ABEND_CODE_WIDTH) {
+                assertThat(textValues)
+                        .as("no dead-letter field equals the short %s value", label)
+                        .doesNotContain(value);
+            } else {
+                assertThat(publisher.deadLetterPayload)
+                        .as("raw dead-letter record contains no %s", label)
+                        .doesNotContain(value);
+            }
+        });
+    }
+
+    @Test
     @DisplayName("Every member an outbox caller uses is public and reaches a different package")
     void everyMemberAnOutboxCallerUsesIsPublic() {
         assertThat(DeadLetterMetadata.class.getPackageName())
@@ -456,22 +550,22 @@ class DeadLetterMetadataTest {
 
     /**
      * Asserts the module's configured topic surface, read from {@code application.yml} on the test
-     * classpath. The module declares two topics: {@code account.state-changed}, which it publishes,
-     * and the shared dead-letter topic carrying a {@link DeadLetterMetadata} payload.
+     * classpath. The module declares two state-change destinations plus the shared dead-letter topic.
      *
      * <p>The published topic name arrives as a plain literal and the dead-letter name as a
      * placeholder holding a default. The module registers no listener, so it names no consumer
      * group. No application context, database or broker starts here.
      */
     @Test
-    @DisplayName("The configured topic surface holds one published topic and the dead-letter topic")
-    void theConfiguredTopicSurfaceHoldsOnePublishedTopicAndTheDeadLetterTopic() {
+    @DisplayName("The configured topic surface holds both published topics and the dead-letter topic")
+    void theConfiguredTopicSurfaceHoldsBothPublishedTopicsAndTheDeadLetterTopic() {
         Properties configuration = loadConfiguration();
 
         assertThat(configuration.stringPropertyNames())
-                .as("%s declares two topics under %s", CONFIGURATION_RESOURCE, TOPIC_KEY_PREFIX)
+                .as("%s declares three topics under %s", CONFIGURATION_RESOURCE, TOPIC_KEY_PREFIX)
                 .filteredOn(name -> name.startsWith(TOPIC_KEY_PREFIX))
-                .containsExactlyInAnyOrder(PUBLISHED_TOPIC_KEY, DEAD_LETTER_TOPIC_KEY);
+                .containsExactlyInAnyOrder(PUBLISHED_TOPIC_KEY, CUSTOMER_CONTEXT_TOPIC_KEY,
+                        DEAD_LETTER_TOPIC_KEY);
 
         String configured = configuration.getProperty(PUBLISHED_TOPIC_KEY);
         assertThat(configured)
@@ -481,6 +575,11 @@ class DeadLetterMetadataTest {
                 .as("%s resolves to the published topic name with no override in place",
                         PUBLISHED_TOPIC_KEY)
                 .isEqualTo(PUBLISHED_TOPIC_NAME);
+
+        assertThat(configuredDefault(configuration.getProperty(CUSTOMER_CONTEXT_TOPIC_KEY)))
+                .as("%s resolves to the customer-context topic name",
+                        CUSTOMER_CONTEXT_TOPIC_KEY)
+                .isEqualTo(CUSTOMER_CONTEXT_TOPIC_NAME);
 
         String configuredDeadLetter = configuration.getProperty(DEAD_LETTER_TOPIC_KEY);
         assertThat(configuredDeadLetter)
@@ -523,6 +622,62 @@ class DeadLetterMetadataTest {
         return configuration;
     }
 
+    /** Returns valid account properties with one row per claim. */
+    private static AccountProperties propertiesWithOneRowPerClaim() {
+        return new AccountProperties(
+                new AccountProperties.Api(65536L),
+                new AccountProperties.Kafka(
+                        new AccountProperties.Kafka.Topics(PUBLISHED_TOPIC_NAME,
+                                "customer.context-changed", DEAD_LETTER_TOPIC_NAME)),
+                new AccountProperties.Outbox(
+                        new AccountProperties.Outbox.Relay(
+                                500L, 1, "account-relay", java.time.Duration.ofSeconds(30L),
+                                30_000L, java.time.Duration.ofSeconds(10L)),
+                        168L),
+                new AccountProperties.ProcessedEvent(168L),
+                new AccountProperties.Retention(3_600_000L));
+    }
+
+    /** Builds one row whose next failed attempt reaches the terminal state. */
+    private static OutboxEventEntity rowAtNinthAttempt(String payload) {
+        OutboxEventEntity row = new OutboxEventEntity(
+                UUID.fromString("7c9e0a2b-8d1f-4a3c-b5e7-9a1c3e5f7b9d"),
+                "AccountStateChanged", payload, "00000000042",
+                TERMINAL_ATTEMPT.minusSeconds(20));
+        for (int attempt = 1; attempt < OutboxEventEntity.MAX_DELIVERY_ATTEMPTS; attempt++) {
+            Instant attemptedAt = TERMINAL_ATTEMPT.minusSeconds(20L - attempt);
+            row.claim("seed-relay", attemptedAt);
+            row.recordFailure("seeded failure", attemptedAt, attemptedAt);
+        }
+        return row;
+    }
+
+    /** Refuses the source topic and captures the raw dead-letter record. */
+    private static final class CapturingRecovererPublisher implements EventPublisherPort {
+
+        private final String failureText;
+        private String deadLetterTopic;
+        private String deadLetterPayload;
+
+        private CapturingRecovererPublisher(String failureText) {
+            this.failureText = failureText;
+        }
+
+        @Override
+        public java.util.concurrent.CompletionStage<Void> publish(String topic, String aggregateId,
+                String payload) {
+            if (PUBLISHED_TOPIC_NAME.equals(topic)) {
+                throw new IllegalStateException("publish refused for " + failureText);
+            }
+            if (!DEAD_LETTER_TOPIC_NAME.equals(topic)) {
+                throw new AssertionError("unexpected topic " + topic);
+            }
+            deadLetterTopic = topic;
+            deadLetterPayload = payload;
+            return java.util.concurrent.CompletableFuture.completedFuture(null);
+        }
+    }
+
     /**
      * Reads the default out of a configured value.
      *
@@ -553,6 +708,32 @@ class DeadLetterMetadataTest {
             run.append((char) ('a' + index % 26));
         }
         return run.toString();
+    }
+
+    /**
+     * Collects every textual leaf of one JSON tree.
+     *
+     * <p>A three-digit card verification value is too short for a raw substring assertion: the
+     * same three digits can occur by chance inside an event identifier or timestamp. Equality at
+     * the JSON-field boundary detects an emitted value without turning unrelated metadata into a
+     * flaky failure.
+     *
+     * @param node tree or subtree to inspect
+     * @return textual leaf values in traversal order
+     */
+    private static List<String> textValuesOf(JsonNode node) {
+        List<String> values = new ArrayList<>();
+        collectTextValues(node, values);
+        return List.copyOf(values);
+    }
+
+    /** Adds every textual leaf below {@code node} to {@code values}. */
+    private static void collectTextValues(JsonNode node, List<String> values) {
+        if (node.isString()) {
+            values.add(node.asString());
+            return;
+        }
+        node.forEach(child -> collectTextValues(child, values));
     }
 
     /**
@@ -590,4 +771,19 @@ class DeadLetterMetadataTest {
                     "01 ABEND-DATA declares no field named " + component);
         };
     }
+
+    /** Runs a transaction callback directly, so no transaction manager takes part. */
+    private static TransactionTemplate immediateTransactions() {
+        return new TransactionTemplate() {
+
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public <T> T execute(TransactionCallback<T> action) {
+                return action.doInTransaction(new SimpleTransactionStatus());
+            }
+        };
+    }
+
+
 }

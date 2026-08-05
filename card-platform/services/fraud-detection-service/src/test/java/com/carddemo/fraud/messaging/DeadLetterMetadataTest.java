@@ -1,5 +1,8 @@
 package com.carddemo.fraud.messaging;
 
+import com.carddemo.fraud.config.KafkaConsumerConfig;
+import com.carddemo.fraud.config.ObservabilityConfig;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -7,27 +10,47 @@ import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
-
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.header.Header;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-
+import org.mockito.ArgumentCaptor;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.kafka.support.KafkaHeaders;
+import org.springframework.kafka.support.SendResult;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Contract tests for {@link DeadLetterMetadata}, the four text values that travel with a message
  * routed to the dead-letter topic plus the record of which of them was shortened.
  *
- * <p>SOURCE-DERIVED SHAPE, ADDITIVE ROUTING. The four widths come from the Common Business
- * Oriented Language (COBOL) abend reporting record; dead-letter routing itself has no COBOL
- * ancestor. The record declares four {@link String} components capped at 4, 8, 50 and 72
+ * <p>The four widths come from the Common Business Oriented Language (COBOL) abend reporting
+ * record, and dead-letter routing itself has no COBOL ancestor. The record declares four
+ * {@link String} components capped at 4, 8, 50 and 72
  * characters, which total 134, and no fifth component.
  *
  * <p>The tests assert the component list and the four widths. A value over its maximum keeps its
@@ -363,6 +386,112 @@ final class DeadLetterMetadataTest {
                 "the culprit keeps the leading characters of the value supplied");
         assertNotEquals(overLength, metadata.culprit(),
                 "the culprit differs from the value supplied, so the record truncated it");
+    }
+
+    @Nested
+    @DisplayName("The real recoverer over a record carrying several sensitive forms")
+    class RealRecoverer {
+
+        private static final String SOURCE_TOPIC = "transaction.authorized";
+        private static final String DEAD_LETTER_TOPIC = "carddemo.dead-letter";
+
+        private static final String DEAD_LETTER_SUFFIX = ".DLT";
+        private static final String ACCOUNT_KEY = "00000000007";
+        private static final int SOURCE_PARTITION = 1;
+        private static final long SOURCE_OFFSET = 42L;
+        private static final Map<String, String> SENSITIVE_BY_LABEL = new LinkedHashMap<>();
+
+        static {
+            SENSITIVE_BY_LABEL.put("cardNumber", "9999" + "452612877065");
+            SENSITIVE_BY_LABEL.put("cardVerificationValue", "731");
+            SENSITIVE_BY_LABEL.put("socialSecurityNumber", "999" + "000001");
+            SENSITIVE_BY_LABEL.put("credential", "generated-secret-for-recoverer-test");
+        }
+
+        private static final String RAW_PAYLOAD = rawPayload();
+
+        @Test
+        @DisplayName("the recoverer sends a safe diagnostic record and no failing payload value")
+        void recovererSendsSafeEnvelopeWithoutSensitiveValues() {
+            ProducerRecord<String, byte[]> sent = recover(
+                    new IllegalStateException("processing failed for " + RAW_PAYLOAD));
+
+            assertEquals(SOURCE_TOPIC + DEAD_LETTER_SUFFIX, sent.topic(),
+                    "the per-source dead-letter topic, so one poison record is traceable to the "
+                            + "topic it arrived on");
+            assertEquals(SOURCE_TOPIC + "-" + SOURCE_PARTITION + "-" + SOURCE_OFFSET, sent.key(),
+                    "the broker coordinates of the failed record replace the producer-supplied key");
+            String record = new String(
+                    assertInstanceOf(byte[].class, sent.value(), "outgoing value"),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertEquals(DeadLetterMetadata.RECORD_LENGTH, record.length(),
+                    "the fixed-width diagnostic record the four-field abend layout defines");
+
+            String rendered = rendered(sent);
+            SENSITIVE_BY_LABEL.forEach((label, value) -> {
+                assertFalse(rendered.contains(label), "record carries label " + label);
+                assertFalse(rendered.contains(value), "record carries value under " + label);
+            });
+            assertFalse(rendered.contains(RAW_PAYLOAD), "record carries the failing payload");
+            assertNull(sent.headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_MESSAGE),
+                    "exception message header");
+            assertNull(sent.headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_STACKTRACE),
+                    "exception stack header");
+        }
+
+        @SuppressWarnings("unchecked")
+        private ProducerRecord<String, byte[]> recover(Exception failure) {
+            KafkaTemplate<String, byte[]> template = mock(KafkaTemplate.class);
+            when(template.send(any(ProducerRecord.class)))
+                    .thenAnswer(invocation -> CompletableFuture.completedFuture(
+                            sendResultFor(invocation.getArgument(0))));
+            KafkaConsumerConfig configuration = new KafkaConsumerConfig(
+                    "localhost:9092", SOURCE_TOPIC, "fraud-detection", DEAD_LETTER_TOPIC,
+                    DEAD_LETTER_SUFFIX, 1L, 0L);
+            DefaultErrorHandler handler = configuration.transactionAuthorizedErrorHandler(
+                    template, new ObservabilityConfig().fraudMeters(new SimpleMeterRegistry()));
+            ConsumerRecord<String, Object> failing = new ConsumerRecord<>(
+                    SOURCE_TOPIC, SOURCE_PARTITION, SOURCE_OFFSET, ACCOUNT_KEY, RAW_PAYLOAD);
+
+            handler.handleOne(failure, failing, mock(Consumer.class),
+                    mock(MessageListenerContainer.class));
+
+            ArgumentCaptor<ProducerRecord<String, byte[]>> sent =
+                    ArgumentCaptor.forClass(ProducerRecord.class);
+            verify(template).send(sent.capture());
+            return sent.getValue();
+        }
+
+        private static SendResult<String, byte[]> sendResultFor(
+                ProducerRecord<String, byte[]> record) {
+            return new SendResult<>(record, new RecordMetadata(
+                    new TopicPartition(record.topic(), 0), 0L, 0, 0L, 0, 0));
+        }
+
+        private static String rawPayload() {
+            StringBuilder payload = new StringBuilder("{");
+            for (Map.Entry<String, String> field : SENSITIVE_BY_LABEL.entrySet()) {
+                if (payload.length() > 1) {
+                    payload.append(',');
+                }
+                payload.append('"').append(field.getKey()).append("\":\"")
+                        .append(field.getValue()).append('"');
+            }
+            return payload.append('}').toString();
+        }
+
+        private static String rendered(ProducerRecord<String, byte[]> sent) {
+            StringBuilder text = new StringBuilder(sent.topic())
+                    .append(' ').append(sent.key())
+                    .append(' ').append(sent.value() == null ? "" : new String(sent.value(),
+                            java.nio.charset.StandardCharsets.UTF_8));
+            for (Header header : sent.headers()) {
+                text.append(' ').append(header.key()).append('=')
+                        .append(header.value() == null ? "" : new String(
+                                header.value(), java.nio.charset.StandardCharsets.UTF_8));
+            }
+            return text.toString();
+        }
     }
 
     private static List<String> componentValues(DeadLetterMetadata metadata) {

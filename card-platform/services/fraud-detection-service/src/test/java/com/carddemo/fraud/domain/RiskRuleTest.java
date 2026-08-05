@@ -27,9 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Contract tests for {@link RiskRule} and its nested {@link RiskRule.Contribution} record.
  *
- * <p>ADDITIVE IN FULL. The CardDemo Common Business Oriented Language (COBOL) source holds no risk
- * scoring and no rules engine, so this contract is net new; no COBOL ancestor. Coverage is recorded
- * in {@code card-platform/docs/traceability-matrix.md}.
+ * <p>The CardDemo Common Business Oriented Language (COBOL) source holds no risk scoring and no
+ * rules engine, so this contract is net new; no COBOL ancestor.
  *
  * <p>Every value is an inline literal. No test opens a file, a context or a connection, and none
  * calls a production rule class.

@@ -1,5 +1,7 @@
 package com.carddemo.account.config;
 
+import java.time.Duration;
+
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -12,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Binds the shipped {@code application.yml} into {@link AccountProperties} and reads the result back.
  *
- * <p>ADDITIVE. This class has no COBOL ancestor. Each test builds a context holding one properties
+ * <p>This class has no COBOL ancestor. Each test builds a context holding one properties
  * bean and no auto-configuration, so no database and no message broker has to run.
  *
  * <p>The first test is the reachability check: a key that no component reads binds to nothing, and
@@ -41,10 +43,15 @@ class AccountPropertiesTest {
             assertThat(context).hasNotFailed();
             AccountProperties properties = context.getBean(AccountProperties.class);
 
+            assertThat(properties.api().maxRequestBodyBytes()).isEqualTo(65536L);
             assertThat(properties.kafka().topics().accountStateChanged())
                     .isEqualTo("account.state-changed");
+            assertThat(properties.kafka().topics().customerContextChanged())
+                    .isEqualTo("customer.context-changed");
             assertThat(properties.outbox().relay().fixedDelayMs()).isEqualTo(500L);
             assertThat(properties.outbox().relay().batchSize()).isEqualTo(100);
+            assertThat(properties.outbox().relay().claimTimeout()).isEqualTo(Duration.ofMinutes(2L));
+            assertThat(properties.outbox().publishedRetentionHours()).isEqualTo(168L);
         });
     }
 
@@ -60,6 +67,17 @@ class AccountPropertiesTest {
     }
 
     @Test
+    @DisplayName("a request body ceiling of zero stops start-up")
+    void aNonPositiveRequestBodyCeilingStopsStartUp() {
+        shipped.withPropertyValues("carddemo.api.max-request-body-bytes=0")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("api.maxRequestBodyBytes");
+                });
+    }
+
+    @Test
     @DisplayName("a relay delay of zero stops start-up")
     void aNonPositiveRelayDelayStopsStartUp() {
         shipped.withPropertyValues("carddemo.outbox.relay.fixed-delay-ms=0")
@@ -67,6 +85,28 @@ class AccountPropertiesTest {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
                             .hasStackTraceContaining("outbox.relay.fixedDelayMs");
+                });
+    }
+
+    @Test
+    @DisplayName("a relay claim timeout of zero stops start-up")
+    void aNonPositiveClaimTimeoutStopsStartUp() {
+        shipped.withPropertyValues("carddemo.outbox.relay.claim-timeout=PT0S")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("outbox.relay.claim-timeout");
+                });
+    }
+
+    @Test
+    @DisplayName("a published-row retention horizon of zero stops start-up")
+    void aNonPositivePublishedRetentionStopsStartUp() {
+        shipped.withPropertyValues("carddemo.outbox.published-retention-hours=0")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("outbox.publishedRetentionHours");
                 });
     }
 

@@ -17,8 +17,8 @@ import java.util.regex.Pattern;
 /**
  * One row of the table {@code outbox_event} in the authorization service's private schema.
  *
- * <p>ADDITIVE. This table has no COBOL ancestor. No program, copybook or job in the CardDemo source
- * stores an event row.
+ * <p>This table has no COBOL ancestor. No program, copybook or job in the CardDemo source stores an
+ * event row.
  *
  * <p>The service writes one row in the same local database transaction as the authorization
  * decision that row describes. The relay reads unpublished rows in arrival order, publishes each
@@ -32,19 +32,16 @@ import java.util.regex.Pattern;
  * {@code app/cbl/CORPT00C.cbl:L517-L520}. Paragraph {@code WIRTE-JOBSUB-TDQ} writes a Customer
  * Information Control System (CICS) transient data queue, and a separate job picks the record up.
  *
- * <p>Flyway creates this table from {@code src/main/resources/db/migration/V1__schema.sql}.
- * Hibernate runs under {@code ddl-auto: validate}, so every mapping below matches that migration.
- * Six columns, and the migration declares no seventh.
+ * <p>Flyway creates this table from {@code src/main/resources/db/migration/V1__schema.sql}, which
+ * is authoritative for every column, index and constraint. Hibernate runs under
+ * {@code ddl-auto: validate}, so every mapping below matches that migration.
  *
- * <pre>
- * event_id     UUID                        NOT NULL, primary key
- * event_type   VARCHAR(50)                 NOT NULL
- * aggregate_id CHAR(11)                    NOT NULL
- * payload      TEXT                        NOT NULL
- * published    BOOLEAN                     NOT NULL DEFAULT FALSE
- * created_at   TIMESTAMP(6) WITH TIME ZONE NOT NULL
- * published_at TIMESTAMP(6) WITH TIME ZONE
- * </pre>
+ * <p>The mapped columns fall into three groups: the event itself ({@code event_id},
+ * {@code event_type}, {@code aggregate_id}, {@code payload}), its publication
+ * ({@code published}, {@code created_at}, {@code published_at}), and the relay's own bookkeeping
+ * ({@code relay_state}, {@code attempt_count}, {@code next_attempt_at}, {@code last_attempt_at},
+ * {@code last_error}, {@code claimed_by}, {@code claimed_at}). Three indexes serve the pending
+ * scan, the claim query and the published purge.
  *
  * <p>{@link #getPayload()} holds one event serialized as JavaScript Object Notation (JSON). That
  * document is flat: one object, one level deep, with the five envelope fields beside the payload
@@ -57,6 +54,8 @@ import java.util.regex.Pattern;
  *
  * <p>A new consumer subscribes to an existing topic with no change to this class and no change to
  * the producer.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
 @Table(name = "outbox_event",
@@ -77,28 +76,52 @@ public class OutboxEventEntity {
     public static final int EVENT_TYPE_MAX_LENGTH = 50;
 
     /**
-     * Length of every {@code aggregateId}, from {@code aggregate_id VARCHAR(11)} in
-     * {@code src/main/resources/db/migration/V1__schema.sql}. The width comes from
+     * Length of an account-keyed {@code aggregateId}, from
      * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}.
      */
     public static final int AGGREGATE_ID_LENGTH = 11;
 
     /**
+     * Length of a transaction-keyed {@code aggregateId}, from {@code TRAN-ID PIC X(16)} at
+     * {@code app/cpy/CVTRA05Y.cpy:L5}.
+     *
+     * <p>One contract uses this form. A decline whose card the cross-reference resolved no account
+     * for has no account identifier to key on: reject code {@code 0100} is assigned at
+     * {@code app/cbl/CBTRN02C.cbl:L385} inside the {@code INVALID KEY} branch of the cross-reference
+     * read at {@code :L383}, and the short-circuit at {@code :L376-L378} stops the account read from
+     * running. {@code schemas/transaction-declined-v2.json} declares no {@code accountId} and keys
+     * that event on its transaction identifier.
+     */
+    public static final int TRANSACTION_KEY_LENGTH = 16;
+
+    /**
      * Characters this row accepts in {@code payload}.
      *
      * <p>The column is {@code TEXT} and holds more, so this is a guard rather than a column width.
-     * The outbox sits on the write path of every request that produces an event, and a payload past
+     * The outbox sits on the write path of every request that produces an event. A payload past
      * this size means a caller has put something in an event that does not belong there.
      */
     public static final int PAYLOAD_MAX_LENGTH = 4000;
 
     /**
-     * Pattern every {@code aggregateId} matches: exactly eleven decimal digits, compiled once. The
-     * text below is the text every schema under
-     * {@code card-platform/libs/event-contracts/src/main/resources/schemas} constrains its own
-     * {@code aggregateId} with, so a leading zero survives the round trip.
+     * The two forms {@code aggregateId} may take, compiled once: eleven decimal digits for an
+     * account-keyed event, or sixteen printable characters for the one decline that resolved no
+     * account.
+     *
+     * <p>The text matches {@link EventEnvelope#AGGREGATE_KEY_PATTERN} and the CHECK constraint
+     * {@code ck_outbox_event_aggregate_id} in
+     * {@code src/main/resources/db/migration/V4__outbox_transaction_key.sql}, so the record, the
+     * envelope and the column agree on which keys exist. Neither form pads, so a leading zero
+     * survives the round trip: account fifty is stored as eleven characters ending in fifty.
      */
-    private static final Pattern AGGREGATE_ID_PATTERN = Pattern.compile("^[0-9]{11}$");
+    private static final Pattern AGGREGATE_KEY_PATTERN =
+            Pattern.compile(EventEnvelope.AGGREGATE_KEY_PATTERN);
+
+    /**
+     * Pattern a transaction-keyed {@code aggregateId} matches: sixteen printable characters, the form
+     * {@code schemas/transaction-declined-v2.json} constrains. Compiled once.
+     */
+    private static final Pattern TRANSACTION_KEY_PATTERN = Pattern.compile("^[!-~]{16}$");
 
     /** The event identifier the producer assigned, and the deduplication key for this event. */
     @Id
@@ -110,8 +133,8 @@ public class OutboxEventEntity {
     private String eventType;
 
     /** The account identifier, eleven digits, and the message key the relay publishes under. */
-    @Column(name = "aggregate_id", nullable = false, length = AGGREGATE_ID_LENGTH,
-            columnDefinition = "bpchar(11)")
+    @Column(name = "aggregate_id", nullable = false, length = TRANSACTION_KEY_LENGTH,
+            columnDefinition = "varchar(16)")
     private String aggregateId;
 
     /** One event, already serialized, flat and one level deep. */
@@ -192,17 +215,17 @@ public class OutboxEventEntity {
     }
 
     /**
-     * Checks the account identifier against {@link #AGGREGATE_ID_PATTERN} and returns it. The
-     * failure message names the field and omits the value.
+     * Checks the message key against {@link #AGGREGATE_KEY_PATTERN} and returns it. The failure
+     * message names the field and the two widths, and omits the value.
      *
      * @param value the argument to check
      * @return {@code value}
      */
     private static String requireAggregateId(String value) {
         Objects.requireNonNull(value, "aggregateId");
-        if (!AGGREGATE_ID_PATTERN.matcher(value).matches()) {
-            throw new IllegalArgumentException(
-                    "aggregateId is not " + AGGREGATE_ID_LENGTH + " decimal digits");
+        if (!AGGREGATE_KEY_PATTERN.matcher(value).matches()) {
+            throw new IllegalArgumentException("aggregateId is neither " + AGGREGATE_ID_LENGTH
+                    + " decimal digits nor " + TRANSACTION_KEY_LENGTH + " printable characters");
         }
         return value;
     }
@@ -245,8 +268,8 @@ public class OutboxEventEntity {
      * boolean would be refused by the database rather than quietly leave a published row looking
      * pending. The claim is released, because a published row needs none.
      *
-     * <p>A second call on an already published row is ignored, so a relay that publishes and then
-     * fails before its own transaction commits does not corrupt the row on the retry that follows.
+     * <p>A second call on an already published row is ignored. A relay that publishes and then
+     * fails before its own transaction commits therefore leaves the row intact for the retry.
      *
      * @param publishedAt when the publish succeeded
      * @throws NullPointerException  if {@code publishedAt} is null
@@ -325,16 +348,12 @@ public class OutboxEventEntity {
     }
 
     // ------------------------------------------------------------------------------------
-    // Relay state. ADDITIVE: the CardDemo source has no relay and therefore no lease. Its one
-    // asynchronous handoff, the transient data queue write at app/cbl/CORPT00C.cbl:L517, is
-    // picked up by a single scheduled job, so nothing there can claim a row twice or give up on
-    // one. The enum, the four constants, the seven columns and the three operations below are
-    // one concern and are kept together rather than scattered through the class.
-    //
-    // Two failures are what these columns exist to prevent. Without a claim, two relay instances
-    // read the same unpublished row and publish the same event twice, which a consumer then has
-    // to deduplicate. Without an attempt count and a next-attempt time, one undeliverable row is
-    // retried forever and every row behind it waits.
+    // Relay state. No COBOL ancestor: the source's one asynchronous handoff is the transient data
+    // queue write at app/cbl/CORPT00C.cbl:L517, which carries no lease. The enum, the four
+    // constants, the seven columns and the three operations below hold two invariants. A row is
+    // claimed by at most one relay instance, so one event is published once. A row carries an
+    // attempt count and a next-attempt time, so an undeliverable row is abandoned rather than
+    // retried forever ahead of the rows behind it.
     // ------------------------------------------------------------------------------------
 
     /**
@@ -363,17 +382,17 @@ public class OutboxEventEntity {
     /**
      * How many attempts a row takes before the relay abandons it.
      *
-     * <p>The ceiling lives here and not in a check constraint on purpose: abandoning a row is a
-     * decision the relay records, and a constraint would instead turn the attempt that crosses
-     * the ceiling into a failed statement.
+     * <p>The ceiling lives here and not in a check constraint. Abandoning a row is a decision
+     * the relay records, whereas a constraint would turn the attempt that crosses the ceiling
+     * into a failed statement.
      */
     public static final int MAX_DELIVERY_ATTEMPTS = 10;
 
     /**
      * Widest value {@code last_error} holds, from {@code last_error VARCHAR(500)} in
-     * {@code src/main/resources/db/migration/V1__schema.sql}. The column is bounded so that a
-     * stack trace cannot be stored in it by accident, and a longer reason is truncated rather
-     * than refused: losing the tail of a diagnostic is better than losing the row.
+     * {@code src/main/resources/db/migration/V1__schema.sql}. The bound keeps a stack trace out
+     * of the column by accident. A longer reason is truncated rather than refused, so the row
+     * survives and only the tail of the diagnostic is lost.
      */
     public static final int LAST_ERROR_MAX_LENGTH = 500;
 

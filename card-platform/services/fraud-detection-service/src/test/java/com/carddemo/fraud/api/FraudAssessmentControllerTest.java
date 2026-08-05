@@ -7,18 +7,23 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.carddemo.fraud.entity.FraudAssessmentEntity;
 import com.carddemo.fraud.repository.FraudAssessmentRepository;
+import jakarta.servlet.ServletException;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -29,10 +34,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.web.PageableHandlerMethodArgumentResolver;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
@@ -45,8 +50,6 @@ import tools.jackson.databind.ObjectMapper;
  *
  * <p>Each test drives the controller over Hypertext Transfer Protocol (HTTP) and reads the
  * JavaScript Object Notation (JSON) body. No database, no broker and no Spring context take part.
- *
- * <p>{@code card-platform/docs/traceability-matrix.md} records the mapping.
  */
 @DisplayName("Fraud assessment read routes")
 final class FraudAssessmentControllerTest {
@@ -148,14 +151,20 @@ final class FraudAssessmentControllerTest {
     /**
      * Stands the controller up over a stubbed repository before each test.
      *
-     * <p>The page resolver reads the page number and the page size the collection route declares.
+     * <p>No framework page resolver is registered, deliberately. The collection route declares
+     * {@code page} and {@code size} as request parameters of its own with stated bounds, so a value
+     * outside them answers 400 instead of being coerced or clamped. Registering a resolver here would
+     * hide that: it would answer 200 for every value a test could send.</p>
+     *
+     * <p>A validator is registered so the bounds on those parameters and the pattern on the account
+     * identifier are enforced, which is what turns an out-of-range value into a client error.</p>
      */
     @BeforeEach
     void standUpRoutes() {
         assessments = mock(FraudAssessmentRepository.class);
         mockMvc = MockMvcBuilders
                 .standaloneSetup(new FraudAssessmentController(assessments))
-                .setCustomArgumentResolvers(new PageableHandlerMethodArgumentResolver())
+                .setValidator(new LocalValidatorFactoryBean())
                 .build();
     }
 
@@ -197,10 +206,10 @@ final class FraudAssessmentControllerTest {
     }
 
     @Test
-    @DisplayName("a stored verdict of false answers false while the rule list names two rules")
-    void aStoredVerdictOfFalseAnswersFalseWhileTheRuleListNamesTwoRules() throws Exception {
-        FraudAssessmentEntity stored = assessmentRow(VERDICT_FALSE_TRANSACTION, ACCOUNT, SCORE,
-                List.of(VELOCITY, AMOUNT_ANOMALY), false);
+    @DisplayName("a below-threshold verdict answers false and retains its triggered rule")
+    void aBelowThresholdVerdictRetainsItsTriggeredRule() throws Exception {
+        FraudAssessmentEntity stored = assessmentRow(VERDICT_FALSE_TRANSACTION, ACCOUNT, 25,
+                List.of(MERCHANT_CATEGORY), false);
         when(assessments.findById(VERDICT_FALSE_TRANSACTION)).thenReturn(Optional.of(stored));
 
         Map<String, Object> body =
@@ -210,28 +219,22 @@ final class FraudAssessmentControllerTest {
 
         Boolean flagged = assertInstanceOf(Boolean.class, body.get("flagged"),
                 "the verdict answers as text or as a number");
-        assertFalse(flagged, "the verdict answers the state of the rule list");
-        assertEquals(List.of(VELOCITY, AMOUNT_ANOMALY), body.get("triggeredRules"),
+        assertFalse(flagged, "the below-threshold verdict changed");
+        assertEquals(List.of(MERCHANT_CATEGORY), body.get("triggeredRules"),
                 "the rule list differs from the stored list");
     }
 
     @Test
-    @DisplayName("a stored verdict of true answers true while the rule list is empty")
-    void aStoredVerdictOfTrueAnswersTrueWhileTheRuleListIsEmpty() throws Exception {
+    @DisplayName("a flagged stored row with no triggered rule is refused")
+    void aFlaggedStoredRowWithNoTriggeredRuleIsRefused() {
         FraudAssessmentEntity stored = assessmentRow(VERDICT_TRUE_TRANSACTION, ACCOUNT,
                 CLEARED_SCORE, List.of(), true);
         when(assessments.findById(VERDICT_TRUE_TRANSACTION)).thenReturn(Optional.of(stored));
 
-        Map<String, Object> body =
-                readObject(mockMvc.perform(get(ITEM_ROUTE, VERDICT_TRUE_TRANSACTION))
-                        .andExpect(status().isOk())
-                        .andReturn());
-
-        Boolean flagged = assertInstanceOf(Boolean.class, body.get("flagged"),
-                "the verdict answers as text or as a number");
-        assertTrue(flagged, "the verdict answers the state of the rule list");
-        assertEquals(List.of(), body.get("triggeredRules"),
-                "the rule list differs from the stored list");
+        ServletException refused = assertThrows(ServletException.class,
+                () -> mockMvc.perform(get(ITEM_ROUTE, VERDICT_TRUE_TRANSACTION)));
+        assertInstanceOf(IllegalArgumentException.class, refused.getCause(),
+                "the corrupt row reached the response");
     }
 
     @Test
@@ -251,19 +254,16 @@ final class FraudAssessmentControllerTest {
     }
 
     @Test
-    @DisplayName("the rule list keeps an identifier the row names twice")
-    void theRuleListKeepsAnIdentifierTheRowNamesTwice() throws Exception {
+    @DisplayName("a stored row naming one rule twice is refused")
+    void aStoredRowNamingOneRuleTwiceIsRefused() {
         FraudAssessmentEntity stored = assessmentRow(REPEATED_RULE_TRANSACTION, ACCOUNT, SCORE,
                 List.of(VELOCITY, VELOCITY), true);
         when(assessments.findById(REPEATED_RULE_TRANSACTION)).thenReturn(Optional.of(stored));
 
-        Map<String, Object> body =
-                readObject(mockMvc.perform(get(ITEM_ROUTE, REPEATED_RULE_TRANSACTION))
-                        .andExpect(status().isOk())
-                        .andReturn());
-
-        assertEquals(List.of(VELOCITY, VELOCITY), body.get("triggeredRules"),
-                "the repeated identifier is dropped from the rule list");
+        ServletException refused = assertThrows(ServletException.class,
+                () -> mockMvc.perform(get(ITEM_ROUTE, REPEATED_RULE_TRANSACTION)));
+        assertInstanceOf(IllegalArgumentException.class, refused.getCause(),
+                "the duplicate rule reached the response");
     }
 
     @Test
@@ -391,7 +391,7 @@ final class FraudAssessmentControllerTest {
     }
 
     @Test
-    @DisplayName("the collection route forwards page number one and page size three, unsorted")
+    @DisplayName("the collection route forwards the page number and page size it was given, unsorted")
     void theCollectionRouteForwardsPageNumberOneAndPageSizeThree() throws Exception {
         when(assessments.findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), any()))
                 .thenReturn(List.of());
@@ -422,6 +422,136 @@ final class FraudAssessmentControllerTest {
         Pageable forwarded = capturedPage();
         assertEquals(7, forwarded.getPageSize(), "the repository reads another page size");
         assertFalse(forwarded.getSort().isSorted(), "the forwarded page carries a sort order");
+    }
+
+    @Test
+    @DisplayName("naming no page and no size returns the first page at the declared default size")
+    void namingNoPageAndNoSizeReturnsTheFirstPageAtTheDefaultSize() throws Exception {
+        when(assessments.findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), any()))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT))
+                .andExpect(status().isOk());
+
+        Pageable forwarded = capturedPage();
+        assertEquals(FraudAssessmentController.FIRST_PAGE, forwarded.getPageNumber(),
+                "a caller naming no page receives another page");
+        assertEquals(FraudAssessmentController.DEFAULT_PAGE_SIZE, forwarded.getPageSize(),
+                "a caller naming no size receives another number of rows");
+    }
+
+    @Test
+    @DisplayName("a page size above the ceiling answers 400 rather than being clamped to it")
+    void aPageSizeAboveTheCeilingAnswersFourHundred() throws Exception {
+        int overCeiling = FraudAssessmentController.MAXIMUM_PAGE_SIZE + 1;
+
+        MvcResult result = mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("size", String.valueOf(overCeiling)))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        verifyNoInteractions(assessments);
+        assertNothingLeaks(result.getResponse().getContentAsString());
+    }
+
+    @Test
+    @DisplayName("a page size far above the ceiling answers 400 and returns no rows silently")
+    void aPageSizeFarAboveTheCeilingAnswersFourHundred() throws Exception {
+        mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("size", "5000"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(assessments);
+    }
+
+    @Test
+    @DisplayName("the ceiling itself is accepted and forwarded whole")
+    void theCeilingItselfIsAcceptedAndForwardedWhole() throws Exception {
+        when(assessments.findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), any()))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("size",
+                                String.valueOf(FraudAssessmentController.MAXIMUM_PAGE_SIZE)))
+                .andExpect(status().isOk());
+
+        assertEquals(FraudAssessmentController.MAXIMUM_PAGE_SIZE, capturedPage().getPageSize(),
+                "the ceiling was not forwarded whole");
+    }
+
+    @Test
+    @DisplayName("a page size of zero answers 400 rather than falling back to the default")
+    void aPageSizeOfZeroAnswersFourHundred() throws Exception {
+        mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("size", "0"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(assessments);
+    }
+
+    @Test
+    @DisplayName("a negative page number answers 400 rather than being read as the first page")
+    void aNegativePageNumberAnswersFourHundred() throws Exception {
+        mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("page", "-1"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(assessments);
+    }
+
+    @Test
+    @DisplayName("an unparsable page size answers 400 rather than falling back to the default")
+    void anUnparsablePageSizeAnswersFourHundred() throws Exception {
+        mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("size", "many"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(assessments);
+    }
+
+    @Test
+    @DisplayName("a sort order answers 400 rather than being accepted and ignored")
+    void aSortOrderAnswersFourHundred() throws Exception {
+        MvcResult result = mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("sort", "riskScore,asc"))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        verifyNoInteractions(assessments);
+        assertNothingLeaks(result.getResponse().getContentAsString());
+    }
+
+    @Test
+    @DisplayName("a sort order naming the fixed column is refused too, so no caller believes it chose")
+    void aSortOrderNamingTheFixedColumnIsRefusedToo() throws Exception {
+        mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("sort", "assessedAt,desc"))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(assessments);
+    }
+
+    @Test
+    @DisplayName("the route declares no framework page argument, so nothing is coerced silently")
+    void theRouteDeclaresNoFrameworkPageArgument() {
+        List<Class<?>> parameterTypes = Arrays.stream(FraudAssessmentController.class
+                        .getDeclaredMethods())
+                .filter(method -> "assessmentsOfAccount".equals(method.getName()))
+                .findFirst()
+                .map(method -> List.<Class<?>>of(method.getParameterTypes()))
+                .orElseThrow(() -> new AssertionError("the controller declares no collection route"));
+
+        assertEquals(List.of(String.class, int.class, int.class), parameterTypes,
+                "the collection route takes the account identifier and two bounded numbers; a"
+                        + " framework page argument would decide the page silently instead");
     }
 
     /**
