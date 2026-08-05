@@ -47,7 +47,7 @@ public interface CardXrefRepository extends JpaRepository<CardXref, String> {
      *  so ``CBACT04C`` ``1110-GET-XREF-DATA`` deterministically saw the lowest card number
      *  [app/cbl/CBACT04C.cbl:L34-39, L393-413]; an unordered ``findFirst`` tracked
      *  PostgreSQL heap order and could stamp a different card number on a financial record
-     *  for identical data and parameters (QA Issue 11).
+     *  for identical data and parameters.
      */
     Optional<CardXref> findFirstByXrefAcctIdOrderByXrefCardNumAsc(Long xrefAcctId);
 

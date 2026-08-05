@@ -17,11 +17,16 @@
  *     signed out and resolves the identity through ``GET /session``, so until
  *     ``isSessionResolved`` is true a deep link that carries a valid session cookie
  *     waits instead of being bounced to the sign-on screen.
+ * :note: The entry route and the catch-all resolve by ROLE rather than to a fixed
+ *     screen, re-expressing the ``COSGN00C`` sign-on transfer and the 3270's absence of
+ *     a not-found state. Both hops use ``replace``, so neither leaves a history entry.
  */
 import type { ReactElement } from 'react';
 import { Navigate, Outlet, Route, Routes } from 'react-router';
 import Layout from './components/Layout';
 import { useSession } from './hooks';
+import type { Role } from './types';
+import { CDEMO_USRTYP_ADMIN, CDEMO_USRTYP_USER } from './types';
 import SignonPage from './pages/SignonPage';
 import MainMenuPage from './pages/MainMenuPage';
 import AdminMenuPage from './pages/AdminMenuPage';
@@ -45,6 +50,12 @@ const SIGNON_ROUTE = '/signon';
 
 /** Route of the main menu (``COMEN01`` / ``CM00``). */
 const MAIN_MENU_ROUTE = '/menu';
+
+/** Route of the administrator menu (``COADM01`` / ``CA00``). */
+const ADMIN_MENU_ROUTE = '/admin';
+
+/** Entry route of the application, resolved by role rather than by a fixed screen. */
+const ENTRY_ROUTE = '/';
 
 /**
  * :purpose: Text announced while the server identity probe is still outstanding, so a
@@ -76,6 +87,36 @@ function ResolvingSession(): ReactElement {
       {RESOLVING_ANNOUNCEMENT}
     </p>
   );
+}
+
+/**
+ * :purpose: Resolve the screen a role starts on, re-expressing the ``COSGN00C`` sign-on
+ *     transfer: ``XCTL PROGRAM('COADM01C')`` for user type ``'A'`` and
+ *     ``XCTL PROGRAM('COMEN01C')`` otherwise, with the sign-on screen itself for a caller
+ *     the server reports as signed out.
+ * :param role: the session role (``CDEMO-USER-TYPE``), or ``null`` when signed out.
+ * :returns: The route of that role's first screen.
+ */
+function homeRouteForRole(role: Role | null): string {
+  if (role === CDEMO_USRTYP_ADMIN) {
+    return ADMIN_MENU_ROUTE;
+  }
+  return role === CDEMO_USRTYP_USER ? MAIN_MENU_ROUTE : SIGNON_ROUTE;
+}
+
+/**
+ * :purpose: Send the entry route to the screen the caller's role starts on, so a reload
+ *     or a bookmark of the application root lands where ``COSGN00C`` would have
+ *     transferred, instead of re-presenting the sign-on screen to a signed-on operator.
+ * :returns: A redirect to the role's first screen, or the waiting announcement while the
+ *     session is still being resolved.
+ */
+function HomeRedirect(): ReactElement {
+  const { role, isSessionResolved } = useSession();
+  if (!isSessionResolved) {
+    return <ResolvingSession />;
+  }
+  return <Navigate to={homeRouteForRole(role)} replace />;
 }
 
 /**
@@ -120,6 +161,9 @@ export default function App(): ReactElement {
   return (
     <Routes>
       <Route element={<AppFrame />}>
+        {/* The entry route names no mapset; it resolves by role (COSGN00C transfer). */}
+        <Route path={ENTRY_ROUTE} element={<HomeRedirect />} />
+
         {/* COSGN00 / CC00 — the only screen reachable without a session. */}
         <Route path={SIGNON_ROUTE} element={<SignonPage />} />
 
@@ -173,8 +217,11 @@ export default function App(): ReactElement {
           </Route>
         </Route>
 
-        {/* No mapset answers any other path; entry begins at the sign-on screen. */}
-        <Route path="*" element={<Navigate to={SIGNON_ROUTE} replace />} />
+        {/* No mapset answers any other path, and the 3270 had no not-found state: an
+            unrecognised transaction returned the operator to a menu. The catch-all
+            therefore re-enters at the role-resolved entry route. Both hops replace, so
+            no intermediate entry is left in history. */}
+        <Route path="*" element={<Navigate to={ENTRY_ROUTE} replace />} />
       </Route>
     </Routes>
   );

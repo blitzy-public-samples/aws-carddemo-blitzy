@@ -173,7 +173,7 @@ public class InterestItemProcessor
      * :param executionContext: the step execution context; on a restart it is the context
      *     Spring Batch persisted at the last successful chunk commit of the previous
      *     execution.
-     * :note: This is what makes the interest run restartable (QA Issue 10). With the
+     * :note: This is what makes the interest run restartable. With the
      *     counter starting at 0 on every execution, a run that had committed
      *     ``<PARM-DATE>000001..000005`` re-claimed ``000001`` when restarted and died on
      *     ``duplicate key value violates unique constraint "transactions_pkey"``, so a

@@ -108,6 +108,26 @@ class SessionContextAuthenticationFilterTest {
     }
 
     /**
+     * :purpose: A session carrying the administrator revocation marker no longer authorizes,
+     *     even though its context attribute would still resolve a role.
+     * :raises ServletException: if the filter raises a servlet error.
+     * :raises IOException: if the filter raises an I/O error.
+     */
+    @Test
+    @DisplayName("a revoked session no longer authorizes")
+    void revokedSessionStaysAnonymous() throws ServletException, IOException {
+        MockHttpServletRequest request = requestWithSessionContext("ADMIN001",
+                SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        request.getSession().setAttribute(
+                SessionPrincipalIndex.REVOKED_REASON_ATTRIBUTE, "USER_DELETED");
+        CapturingFilterChain chain = new CapturingFilterChain();
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        assertNull(chain.authentication, "a revoked session must not authorize");
+    }
+
+    /**
      * :purpose: A request with no session stays anonymous AND does not acquire one, so an
      *     unauthenticated caller cannot leak session state into Redis.
      * :raises ServletException: if the filter raises a servlet error.

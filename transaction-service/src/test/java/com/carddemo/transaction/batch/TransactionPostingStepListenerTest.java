@@ -34,9 +34,9 @@ import org.springframework.batch.core.step.StepExecution;
  * :purpose: Verify the end-of-step contract the posting job relies on: the reject
  *     count is published for the job listener to read back, and the empty-``DALYTRAN``
  *     verdict — legacy application result code 12 — is rendered here so the job and
- *     step rows an operator queries always agree (QA Issue 6), and only when the feed
+ *     step rows an operator queries always agree, and only when the feed
  *     itself holds no record rather than whenever an execution happens to read nothing
- *     (QA Issue 7).
+ *.
  * :output: JUnit 5 / AssertJ assertions over real Spring Batch ``StepExecution``
  *     objects; no Spring context, database or file is involved.
  */
@@ -92,7 +92,7 @@ class TransactionPostingStepListenerTest {
     /**
      * :purpose: A restart that resumes past the last consumed record reads nothing yet is
      *     a correct, complete run: the feed still holds its records, so the empty-feed
-     *     verdict must not fire (QA Issue 7).
+     *     verdict must not fire.
      */
     @Test
     @DisplayName("a fully consumed restart is not reported as an empty feed")

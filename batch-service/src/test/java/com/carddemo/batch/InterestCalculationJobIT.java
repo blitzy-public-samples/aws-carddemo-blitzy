@@ -39,21 +39,14 @@ import org.springframework.batch.core.job.parameters.JobParametersBuilder;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
 import org.springframework.batch.core.repository.JobRepository;
-import org.springframework.batch.core.step.StepExecution;
-import org.springframework.batch.infrastructure.item.ExecutionContext;
-import org.springframework.batch.infrastructure.item.support.SingleItemPeekableItemReader;
-import org.springframework.batch.test.MetaDataInstanceFactory;
-import org.springframework.batch.test.StepScopeTestUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
-import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.task.SyncTaskExecutor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.postgresql.PostgreSQLContainer;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -317,14 +310,6 @@ class InterestCalculationJobIT {
     }
 
     /**
-     * :purpose: Seed one account with all non-null fields populated and valid lifecycle dates.
-     * :param acctId: the 11-digit account id.
-     * :param groupId: the disclosure/pricing account group id (``ACCT-GROUP-ID``).
-     * :param currBal: the current balance (``ACCT-CURR-BAL``) as a scale-2 decimal string.
-     * :param cycCredit: the current-cycle credit (``ACCT-CURR-CYC-CREDIT``) as a decimal string.
-     * :param cycDebit: the current-cycle debit (``ACCT-CURR-CYC-DEBIT``) as a decimal string.
-     */
-    /**
      * :purpose: Seed the card-master row that backs a cross-reference. The interest run posts a
      *     transaction whose ``tran_card_num`` foreign-keys into ``cards``
      *     (``fk_transactions_card``, ``V8__transactions_card_fk.sql``), so a fixture carrying
@@ -342,6 +327,14 @@ class InterestCalculationJobIT {
                 cardNum, acctId, null, "Interest Holder", "2099-12-31", "Y", 0L);
     }
 
+    /**
+     * :purpose: Seed one account with all non-null fields populated and valid lifecycle dates.
+     * :param acctId: the 11-digit account id.
+     * :param groupId: the disclosure/pricing account group id (``ACCT-GROUP-ID``).
+     * :param currBal: the current balance (``ACCT-CURR-BAL``) as a scale-2 decimal string.
+     * :param cycCredit: the current-cycle credit (``ACCT-CURR-CYC-CREDIT``) as a decimal string.
+     * :param cycDebit: the current-cycle debit (``ACCT-CURR-CYC-DEBIT``) as a decimal string.
+     */
     private void seedAccount(long acctId, String groupId, String currBal, String cycCredit, String cycDebit) {
         Account account = new Account();
         account.setAcctId(acctId);

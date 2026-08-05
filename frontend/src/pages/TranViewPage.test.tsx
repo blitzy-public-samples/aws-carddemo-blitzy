@@ -9,7 +9,7 @@
  *     ``TRNIDIN`` X(16) search field, the two verbatim validation messages, and
  *     the ENTER / F3 function keys including the exit route.
  * :output: Assertions only; the module exports nothing.
- * :note: ``../api`` and ``../components/Layout`` are replaced through
+ * :note: ``../api`` is replaced through
  *     ``jest.unstable_mockModule`` — the mocking API of Jest's native-ESM
  *     runtime, as used by the sibling suites — so no axios request and no Vite
  *     ``import.meta`` evaluation occurs, and the screen chrome the page
@@ -21,12 +21,11 @@
  *     registered.
  */
 import { jest } from '@jest/globals';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
 import { CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { ComponentType } from 'react';
-import { PfKeyAction } from '../types';
 import type { Role, TranViewResponseDto } from '../types';
 
 /**
@@ -76,11 +75,11 @@ const signon = jest.fn();
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   getTransaction,
@@ -88,60 +87,11 @@ jest.unstable_mockModule('../api', () => ({
   ApiError,
 }));
 
-/**
- * :purpose: One entry of the line-24 function-key legend a page publishes.
- * :field action: the AID / PF-key the entry represents.
- * :field label: legend text rendered on the key.
- * :field onActivate: handler invoked when the key fires.
- * :field enabled: ``false`` disables the key.
- */
-interface CapturedPfKey {
-  action: PfKeyAction;
-  label: string;
-  onActivate: () => void;
-  enabled?: boolean;
-}
-
-/**
- * :purpose: The screen chrome a page publishes into the shared shell.
- * :field transactionId: 4-character CICS transaction id.
- * :field programName: legacy program name.
- * :field title01: first title line.
- * :field title02: second title line.
- * :field errorMessage: line-23 error text.
- * :field infoMessage: line-23 informational text.
- * :field pfKeys: line-24 function keys.
- */
-interface CapturedChrome {
-  transactionId?: string;
-  programName?: string;
-  title01?: string;
-  title02?: string;
-  errorMessage?: string;
-  infoMessage?: string;
-  pfKeys?: CapturedPfKey[];
-}
-
-/** Chrome most recently published by the screen under test. */
-let publishedChrome: CapturedChrome = {};
-
-/** Chrome handed back to the screen; it reads only ``setChrome``. */
-const EMPTY_CHROME: CapturedChrome = {};
-
-/**
- * :purpose: Record the chrome a page publishes. Declared once at module scope so
- *     its identity is stable across renders — the page lists it as a
- *     ``useEffect`` dependency.
- * :param next: the chrome being published.
- */
-function setChrome(next: CapturedChrome): void {
-  publishedChrome = next;
-}
-
-jest.unstable_mockModule('../components/Layout', () => ({
-  __esModule: true,
-  useScreenChrome: () => ({ chrome: EMPTY_CHROME, setChrome }),
-}));
+/** Verbatim ``COTRN01.bms`` line-24 legend captions, in mapset order. */
+const ENTER_KEY_LABEL = 'ENTER=Fetch';
+const BACK_KEY_LABEL = 'F3=Back';
+const CLEAR_KEY_LABEL = 'F4=Clear';
+const BROWSE_KEY_LABEL = 'F5=Browse Tran.';
 
 /** Route of the transaction list screen (``COTRN00`` / ``CT00``). */
 const TRAN_LIST_ROUTE = '/transactions';
@@ -204,28 +154,30 @@ const detailFields: ReadonlyArray<readonly [string, string]> = [
   ['Merchant Zip:', '98101'],
 ];
 
+/** The shared session harness, which seeds identity over ``GET /session``. */
+type SessionHarness = typeof import('../testing/sessionHarness');
+
 let TranViewPage: ComponentType;
-let __setSession: (user: string | null, role: Role | null) => void;
+let Layout: (typeof import('../components/Layout'))['default'];
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
-  const sessionStore = await import('../hooks/useSession');
-  __setSession = sessionStore.__setSession;
+  const harness = await import('../testing/sessionHarness');
+  seedSignedOnSession = harness.seedSignedOnSession;
+  seedSignedOutSession = harness.seedSignedOutSession;
   const pageModule = await import('./TranViewPage');
   TranViewPage = pageModule.default;
+  ({ default: Layout } = await import('../components/Layout'));
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   getTransaction.mockReset();
-  publishedChrome = {};
-  act(() => {
-    __setSession(USER_ID, USER_ROLE);
-  });
+  await seedSignedOnSession(USER_ID, USER_ROLE);
 });
 
-afterEach(() => {
-  act(() => {
-    __setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 /**
@@ -237,10 +189,15 @@ afterEach(() => {
 function renderTranViewPage(path: string): void {
   render(
     <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        <Route path={TRAN_LIST_ROUTE} element={<div data-testid="tran-list-screen" />} />
-        <Route path={TRAN_VIEW_ROUTE} element={<TranViewPage />} />
-      </Routes>
+      <Layout>
+        <Routes>
+          <Route
+            path={TRAN_LIST_ROUTE}
+            element={<div data-testid="tran-list-screen" />}
+          />
+          <Route path={TRAN_VIEW_ROUTE} element={<TranViewPage />} />
+        </Routes>
+      </Layout>
     </MemoryRouter>,
   );
 }
@@ -285,31 +242,38 @@ function typeSearchTranId(value: string): void {
 }
 
 /**
- * :purpose: Read a function key from the chrome the screen last published.
- * :param action: the AID / PF-key to look up.
- * :returns: the published legend entry.
+ * :purpose: The line-24 legend the shared shell renders from the chrome the screen
+ *     published, in publication order.
+ * :returns: one legend caption per rendered function key.
  */
-function findPfKey(action: PfKeyAction): CapturedPfKey {
-  const key = publishedChrome.pfKeys?.find((entry) => entry.action === action);
-  if (key === undefined) {
-    throw new Error(`TranViewPage published no ${action} function key`);
-  }
-  return key;
+function legendLabels(): (string | null)[] {
+  const toolbar = screen.getByRole('toolbar', { name: 'Function keys' });
+  return within(toolbar)
+    .getAllByRole('button')
+    .map((key) => key.textContent);
 }
 
 /**
- * :purpose: Activate a published function key and flush the resulting state
- *     updates, including any request the handler starts.
- * :param action: the AID / PF-key to activate.
+ * :purpose: Activate a function key through the line-24 legend button the shell
+ *     renders, and flush the state updates — including any request — the handler
+ *     starts.
+ * :param label: verbatim legend caption of the key.
  */
-async function activatePfKey(action: PfKeyAction): Promise<void> {
-  const key = findPfKey(action);
+async function activatePfKey(label: string): Promise<void> {
   await act(async () => {
-    key.onActivate();
+    fireEvent.click(screen.getByRole('button', { name: label }));
     // Awaited so this is an asynchronous act scope: the effects and the promise
     // callbacks the interaction queues are flushed before it returns.
     await Promise.resolve();
   });
+}
+
+/**
+ * :purpose: Read the line-23 error region the shared shell renders.
+ * :returns: the message text, or the empty string when line 23 carries none.
+ */
+function errorText(): string {
+  return screen.queryByRole('alert')?.textContent ?? '';
 }
 
 describe('TranViewPage — load by route parameter', () => {
@@ -357,11 +321,11 @@ describe('TranViewPage — load by route parameter', () => {
   it('publishes the CT01 / COTRN01C screen identity', async () => {
     await renderLoadedScreen();
 
-    expect(publishedChrome.transactionId).toBe('CT01');
-    expect(publishedChrome.programName).toBe('COTRN01C');
-    expect(publishedChrome.title01).toBe(CCDA_TITLE01);
-    expect(publishedChrome.title02).toBe(CCDA_TITLE02);
-    expect(publishedChrome.errorMessage).toBe('');
+    expect(screen.getByTestId('tran-id')).toHaveTextContent('CT01');
+    expect(screen.getByTestId('pgm-name')).toHaveTextContent('COTRN01C');
+    expect(screen.getByTestId('title01')).toHaveTextContent(CCDA_TITLE01);
+    expect(screen.getByTestId('title02')).toHaveTextContent(CCDA_TITLE02);
+    expect(errorText()).toBe('');
   });
 });
 
@@ -388,9 +352,9 @@ describe('TranViewPage — validation messages', () => {
     await renderLoadedScreen();
 
     typeSearchTranId('');
-    await activatePfKey(PfKeyAction.Enter);
+    await activatePfKey(ENTER_KEY_LABEL);
 
-    expect(publishedChrome.errorMessage).toBe('Tran ID can NOT be empty...');
+    expect(errorText()).toBe('Tran ID can NOT be empty...');
     expect(getTransaction).toHaveBeenCalledTimes(1);
   });
 
@@ -398,9 +362,9 @@ describe('TranViewPage — validation messages', () => {
     await renderLoadedScreen();
 
     typeSearchTranId('    ');
-    await activatePfKey(PfKeyAction.Enter);
+    await activatePfKey(ENTER_KEY_LABEL);
 
-    expect(publishedChrome.errorMessage).toBe('Tran ID can NOT be empty...');
+    expect(errorText()).toBe('Tran ID can NOT be empty...');
     expect(getTransaction).toHaveBeenCalledTimes(1);
   });
 
@@ -409,7 +373,7 @@ describe('TranViewPage — validation messages', () => {
     renderTranViewPage(`${TRAN_LIST_ROUTE}/${TRAN_ID}`);
 
     await waitFor(() => {
-      expect(publishedChrome.errorMessage).toBe('Transaction ID NOT found...');
+      expect(errorText()).toBe('Transaction ID NOT found...');
     });
     expect(getTransaction).toHaveBeenCalledWith(TRAN_ID);
     expect(detailField('Transaction ID:').textContent).toBe('');
@@ -424,7 +388,7 @@ describe('TranViewPage — validation messages', () => {
     renderTranViewPage(`${TRAN_LIST_ROUTE}/${TRAN_ID}`);
 
     await waitFor(() => {
-      expect(publishedChrome.errorMessage).toBe('Unable to lookup Transaction...');
+      expect(errorText()).toBe('Unable to lookup Transaction...');
     });
   });
 
@@ -433,7 +397,7 @@ describe('TranViewPage — validation messages', () => {
     renderTranViewPage(`${TRAN_LIST_ROUTE}/${TRAN_ID}`);
 
     await waitFor(() => {
-      expect(publishedChrome.errorMessage).toBe('Network Error');
+      expect(errorText()).toBe('Network Error');
     });
   });
 
@@ -441,15 +405,15 @@ describe('TranViewPage — validation messages', () => {
     await renderLoadedScreen();
 
     typeSearchTranId('');
-    await activatePfKey(PfKeyAction.Enter);
-    expect(publishedChrome.errorMessage).toBe('Tran ID can NOT be empty...');
+    await activatePfKey(ENTER_KEY_LABEL);
+    expect(errorText()).toBe('Tran ID can NOT be empty...');
 
     typeSearchTranId(OTHER_TRAN_ID);
-    await activatePfKey(PfKeyAction.Enter);
+    await activatePfKey(ENTER_KEY_LABEL);
 
     expect(getTransaction).toHaveBeenCalledTimes(2);
     expect(getTransaction).toHaveBeenLastCalledWith(OTHER_TRAN_ID);
-    expect(publishedChrome.errorMessage).toBe('');
+    expect(errorText()).toBe('');
   });
 });
 
@@ -459,28 +423,29 @@ describe('TranViewPage — function keys', () => {
 
     // COTRN01.bms line 24 reads
     // 'ENTER=Fetch  F3=Back  F4=Clear  F5=Browse Tran.'.
-    expect(publishedChrome.pfKeys).toHaveLength(4);
-    expect(findPfKey(PfKeyAction.Enter).label).toBe('ENTER=Fetch');
-    expect(findPfKey(PfKeyAction.PF3).label).toBe('F3=Back');
-    expect(findPfKey(PfKeyAction.PF4).label).toBe('F4=Clear');
-    expect(findPfKey(PfKeyAction.PF5).label).toBe('F5=Browse Tran.');
+    expect(legendLabels()).toEqual([
+      ENTER_KEY_LABEL,
+      BACK_KEY_LABEL,
+      CLEAR_KEY_LABEL,
+      BROWSE_KEY_LABEL,
+    ]);
   });
 
   it('looks up the entered id when ENTER is activated', async () => {
     await renderLoadedScreen();
 
     typeSearchTranId(OTHER_TRAN_ID);
-    await activatePfKey(PfKeyAction.Enter);
+    await activatePfKey(ENTER_KEY_LABEL);
 
     expect(getTransaction).toHaveBeenCalledTimes(2);
     expect(getTransaction).toHaveBeenLastCalledWith(OTHER_TRAN_ID);
-    expect(publishedChrome.errorMessage).toBe('');
+    expect(errorText()).toBe('');
   });
 
   it('returns to the transaction list when F3 is activated', async () => {
     await renderLoadedScreen();
 
-    await activatePfKey(PfKeyAction.PF3);
+    await activatePfKey(BACK_KEY_LABEL);
 
     expect(screen.getByTestId('tran-list-screen')).toBeInTheDocument();
     expect(screen.queryByLabelText('Enter Tran ID:')).not.toBeInTheDocument();

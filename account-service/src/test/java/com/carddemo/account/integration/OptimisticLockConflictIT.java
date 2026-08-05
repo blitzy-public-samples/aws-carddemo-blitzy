@@ -584,7 +584,7 @@ public class OptimisticLockConflictIT {
      */
     private MvcResult dispatchUpdate(AccountUpdateRequestDto request) {
         try {
-            return mockMvc.perform(put("/accounts/{id}", SEED_ACCT_ID)
+            return mockMvc.perform(put("/accounts/{id}", SEED_ACCT_ID).session(signedOnSession())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(request)))
                     .andReturn();

@@ -18,8 +18,6 @@ package com.carddemo.account.integration;
 import com.carddemo.account.repository.CustomerRepository;
 import com.carddemo.common.crypto.SeededPiiEncryptionMigrator;
 import com.carddemo.common.crypto.SeededPiiEncryptionMigrator.ProtectedColumn;
-import com.carddemo.common.crypto.PiiAtRestInitializer;
-import com.carddemo.common.crypto.PiiAtRestInitializer.PiiColumn;
 import com.carddemo.common.crypto.CryptoConverter;
 import com.carddemo.common.domain.Customer;
 import com.carddemo.common.exception.PiiEncryptionException;

@@ -58,7 +58,7 @@ spec:
         app.kubernetes.io/part-of: carddemo
         app.kubernetes.io/component: backend
     spec:
-      # Pod-level runtime hardening (MJ-10): run as a non-root user with a
+      # Pod-level runtime hardening: run as a non-root user with a
       # default seccomp profile and no auto-mounted ServiceAccount token
       # (these services never call the Kubernetes API).
       securityContext:
@@ -103,7 +103,7 @@ spec:
           # Produced by `docker compose build card-service` from card-service/Dockerfile
           # (docker-compose.yml carries a matching `image:` key with these exact
           # registry/name/tag defaults), so this reference resolves to an artifact the
-          # repository builds - no undocumented tag-and-push step (QA Issue 17).
+          # repository builds - no undocumented tag-and-push step.
           # Override the registry or tag for a private registry with
           # CARDDEMO_IMAGE_REGISTRY / CARDDEMO_IMAGE_TAG at build time.
           image: carddemo/card-service:1.0.0
@@ -113,7 +113,7 @@ spec:
               name: http
           # Inject every runtime setting from the shared ConfigMap and Secret;
           # never hard-code datasource/Redis values in this manifest.
-          # Container-level runtime hardening (MJ-10): drop every Linux
+          # Container-level runtime hardening: drop every Linux
           # capability, forbid privilege escalation, and run on a read-only
           # root filesystem (writable scratch is the mounted tmp emptyDir).
           securityContext:
@@ -128,11 +128,11 @@ spec:
           envFrom:
             - configMapRef:
                 name: carddemo-config
-            # Per-service least-privilege database role (CR-11): each service
+            # Per-service least-privilege database role: each service
             # authenticates with its own DB principal, not a shared owner.
             - secretRef:
                 name: carddemo-card-service-db
-            # Shared Redis AUTH secret for externalized Spring Session (CR-17).
+            # Shared Redis AUTH secret for externalized Spring Session.
             - secretRef:
                 name: carddemo-redis-secret
             # Shared AES-256-GCM key for at-rest PII field encryption
@@ -141,7 +141,7 @@ spec:
             - secretRef:
                 name: carddemo-pii-key
             # Shared credential of the least-privilege `monitoring` principal
-            # guarding /actuator/prometheus and /actuator/metrics (MJ-17). Must
+            # guarding /actuator/prometheus and /actuator/metrics. Must
             # match the password Prometheus presents, or every scrape gets 401.
             - secretRef:
                 name: carddemo-monitoring-secret
@@ -162,7 +162,7 @@ spec:
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 5
-            # Explicit timeout (QA Issue 3). The default timeoutSeconds is 1, so during any
+            # Explicit timeout. The default timeoutSeconds is 1, so during any
             # datastore blip the aggregate health check — which must wait for the bounded
             # 3s HikariCP / 2s Lettuce dependency timeouts — fails on every attempt and the
             # pod is killed after failureThreshold x periodSeconds. 4s bounds each attempt
@@ -188,7 +188,7 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
-      # Writable scratch for the read-only root filesystem (MJ-10). A Spring
+      # Writable scratch for the read-only root filesystem. A Spring
       # Boot fat-jar only needs a writable /tmp (Tomcat work dir, JVM temp).
       volumes:
         - name: tmp

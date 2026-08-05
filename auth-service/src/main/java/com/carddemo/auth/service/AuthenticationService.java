@@ -30,8 +30,6 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import java.util.Locale;
 import java.util.Optional;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -49,12 +47,6 @@ import org.springframework.web.server.ResponseStatusException;
  */
 @Service
 public class AuthenticationService {
-
-    /**
-     * :purpose: Logger for sign-on outcomes that need operator attention (an unusable stored
-     *     credential); never used to record credentials or entered passwords.
-     */
-    private static final Logger log = LoggerFactory.getLogger(AuthenticationService.class);
 
     /**
      * :purpose: Sign-on failure message for a user id with no matching

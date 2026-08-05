@@ -15,7 +15,7 @@
 # Why this matters: without any ignore file the root context measured about
 # 1.8 GB (host target/ output across ten modules, frontend/node_modules, the
 # .git history and a local Maven repository), and every backend build logged
-# "load .dockerignore … 2B" with 70-75 MB transferred (QA Issue 20). The image
+# "load .dockerignore … 2B" with 70-75 MB transferred. The image
 # CONTENTS were already correct - this is build time, cache hygiene and secret
 # hygiene, not a packaging defect.
 #

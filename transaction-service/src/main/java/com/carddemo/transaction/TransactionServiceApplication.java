@@ -52,7 +52,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  *     ``carddemo.batch.output-dir`` root and proves that root writable while the
  *     context refreshes. The reject writer previously opened a path relative to the
  *     process working directory, which is on the read-only container root
- *     filesystem (QA Issue 21).
+ *     filesystem.
  * :note: {@link JdbcBatchConfiguration} is imported so the posting job's executions
  *     are persisted in the ``BATCH_*`` metadata tables instead of the in-memory
  *     ``ResourcelessJobRepository`` that Spring Batch 6 makes the default.

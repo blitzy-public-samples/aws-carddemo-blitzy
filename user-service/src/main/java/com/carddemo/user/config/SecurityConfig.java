@@ -26,6 +26,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
@@ -60,7 +61,11 @@ import org.springframework.security.web.SecurityFilterChain;
  *     management endpoint requires ``ROLE_ADMIN``.
  * :note: This configuration also supplies the shared delegating password encoder
  *     ({@link PasswordEncoderFactory}) used to hash security-user credentials at
- *     rest, replacing the legacy plaintext comparison (finding MJ-18).
+ *     rest, replacing the legacy plaintext comparison.
+ * :note: Method security is enabled so the class-level
+ *     ``@PreAuthorize("hasRole('ADMIN')")`` on ``UserController`` is enforced as a second,
+ *     independent gate behind the filter chain and the gateway route rule. A request-less
+ *     denial it raises is audited by the ``SecurityAuditConfig`` event listener.
  */
 @Import({
         ManagementSecurityConfig.class,
@@ -69,6 +74,7 @@ import org.springframework.security.web.SecurityFilterChain;
 })
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class SecurityConfig {
 
     /**

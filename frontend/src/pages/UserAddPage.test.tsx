@@ -68,11 +68,11 @@ class ApiError extends Error {
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   addUser: addUserMock,
@@ -187,32 +187,31 @@ const DUPLICATE_ERROR_BODY: ApiErrorResponse = {
 
 type LayoutComponent = (typeof import('../components/Layout'))['default'];
 type UserAddPageComponent = (typeof import('./UserAddPage'))['default'];
-type SetSessionSeam = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let Layout: LayoutComponent;
 let UserAddPage: UserAddPageComponent;
-let __setSession: SetSessionSeam;
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported after the mock is registered so the screen, the hooks, and the
   // shared shell all bind to the mocked ``../api``.
   ({ default: Layout } = await import('../components/Layout'));
   ({ default: UserAddPage } = await import('./UserAddPage'));
-  ({ __setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   addUserMock.mockReset();
   signonMock.mockReset();
-  act(() => {
-    __setSession(ADMIN_USER_ID, ADMIN_ROLE);
-  });
+  await seedSignedOnSession(ADMIN_USER_ID, ADMIN_ROLE);
 });
 
-afterEach(() => {
-  act(() => {
-    __setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 /**
@@ -447,6 +446,42 @@ describe('UserAddPage — successful add (POST /users)', () => {
     expect(addUserMock).toHaveBeenCalledTimes(1);
     expect(addUserMock).toHaveBeenCalledWith(NEW_USER);
     expect(messageText('status')).toBe(MSG_USER_ADDED);
+  });
+});
+
+describe('UserAddPage — in-flight duplicate-add guard', () => {
+  it('closes every entry field while the add is in flight and posts once for repeated ENTER', async () => {
+    let acknowledge!: (value: UserDto) => void;
+    addUserMock.mockReturnValueOnce(
+      new Promise<UserDto>((resolve) => {
+        acknowledge = resolve;
+      }),
+    );
+    renderAddUserScreen();
+
+    fillEveryField();
+    await pressAidKey('Enter');
+
+    // ``ATTRB=ASKIP`` for the whole in-flight interval: no field, not even the
+    // password, can be retyped while the POST is outstanding.
+    for (const [label] of FIELD_WIDTHS) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
+
+    // A second ENTER, from the physical key and from the legend, must not add twice.
+    await pressAidKey('Enter');
+    await clickPfKey(PF_ENTER_LABEL);
+    expect(addUserMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      acknowledge(CREATED_USER);
+      // Awaited so this is an asynchronous act scope: the effects and the promise
+      // callbacks the interaction queues are flushed before it returns.
+      await Promise.resolve();
+    });
+
+    expect(addUserMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText(LABEL_USER_ID)).toBeEnabled();
   });
 });
 

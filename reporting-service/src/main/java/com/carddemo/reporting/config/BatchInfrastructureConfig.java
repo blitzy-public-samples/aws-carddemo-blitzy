@@ -46,7 +46,7 @@ public class BatchInfrastructureConfig extends DefaultBatchConfiguration {
 
     /**
      * :purpose: Table whose presence proves the metadata schema has already been
-     *     provisioned, either by the Flyway migration ``V1__batch_metadata.sql`` or by
+     *     provisioned, either by the Flyway migration ``V5__batch_metadata.sql`` or by
      *     another job-hosting service reaching the empty database first.
      */
     private static final String SENTINEL_TABLE = "batch_job_instance";

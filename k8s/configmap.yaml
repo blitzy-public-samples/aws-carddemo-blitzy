@@ -17,23 +17,23 @@ data:
   SPRING_DATA_REDIS_HOST: "redis"
   SPRING_DATA_REDIS_PORT: "6379"
   POSTGRES_DB: "carddemo"
-  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,metrics,prometheus"
+  # Kept identical to every service's application.yml so the Kubernetes deployment
+  # exposes no management endpoint the local and Compose runs do not.
+  MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,prometheus"
   MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
-  # Health detail is rendered only to an authenticated principal (MJ-16);
+  # Health detail is rendered only to an authenticated principal;
   # anonymous callers still receive the overall UP/DOWN status for probes.
   MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "when-authorized"
-  # Conservative default trace sampling for the backend services (MN-03). The
+  # Conservative default trace sampling for the backend services. The
   # api-gateway raises this to 1.0 via a Deployment-level env override so every
   # request entering the stack starts a sampled trace.
   MANAGEMENT_TRACING_SAMPLING_PROBABILITY: "0.1"
   # OTLP/HTTP span endpoint of the in-cluster tracing backend (AAP 0.7.5). Every
-  # service — gateway included — exports to this one collector so a request
-  # produces a single joined trace. The key is the canonical Spring Boot 4.1
-  # property name: the pre-4.0 'management.otlp.tracing.endpoint' was removed and
-  # is silently ignored, which is why the previously configured endpoint exported
-  # nothing. Resolves to the 'jaeger' ClusterIP Service (k8s/service-jaeger.yaml).
+  # service — gateway included — exports to this one collector so a request produces
+  # a single joined trace. Spelled with the canonical Spring Boot 4.1 property name
+  # and resolved to the 'jaeger' ClusterIP Service (k8s/service-jaeger.yaml).
   MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: "http://jaeger:4318/v1/traces"
-  # --- api-gateway downstream routes (CR-10) --------------------------------
+  # --- api-gateway downstream routes --------------------------------
   # In-cluster Service DNS URIs consumed by the Spring Cloud Gateway route
   # definitions (${AUTH_SERVICE_URI} ...). Every service resolves the others by
   # their Kubernetes Service name on the internal port 8080. Harmless for

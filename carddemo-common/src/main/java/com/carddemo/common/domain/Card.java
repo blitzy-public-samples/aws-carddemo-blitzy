@@ -81,9 +81,9 @@ public class Card {
     /**
      * Sensitive card verification value (CVV), 3 digits.
      *
-     * Stored encrypted at rest via {@link CryptoConverter}, never serialized to
-     * clients, and never included in {@link #toString()} or logs. The column is
-     * left nullable so the value can be cleared once authorization completes.
+     * Retained because ``CVACT02Y`` declares ``CARD-CVV-CD`` as part of the frozen
+     * 150-byte card record; encrypted at rest via {@link CryptoConverter}, never
+     * serialized to clients, and never included in {@link #toString()} or logs.
      */
     @Column(name = "card_cvv_cd", length = 512)
     @Convert(converter = CryptoConverter.class)

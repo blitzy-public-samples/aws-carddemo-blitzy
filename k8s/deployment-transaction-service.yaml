@@ -51,7 +51,7 @@ spec:
         app.kubernetes.io/part-of: carddemo
         app.kubernetes.io/component: backend
     spec:
-      # Pod-level runtime hardening (MJ-10): run as a non-root user with a
+      # Pod-level runtime hardening: run as a non-root user with a
       # default seccomp profile and no auto-mounted ServiceAccount token
       # (these services never call the Kubernetes API).
       securityContext:
@@ -96,7 +96,7 @@ spec:
           # Produced by `docker compose build transaction-service` from transaction-service/Dockerfile
           # (docker-compose.yml carries a matching `image:` key with these exact
           # registry/name/tag defaults), so this reference resolves to an artifact the
-          # repository builds - no undocumented tag-and-push step (QA Issue 17).
+          # repository builds - no undocumented tag-and-push step.
           # Override the registry or tag for a private registry with
           # CARDDEMO_IMAGE_REGISTRY / CARDDEMO_IMAGE_TAG at build time.
           image: carddemo/transaction-service:1.0.0
@@ -107,7 +107,7 @@ spec:
           # Inject non-secret runtime config and datasource credentials. Names
           # must match k8s/configmap.yaml (carddemo-config) and k8s/secret.yaml
           # (carddemo-transaction-service-db) exactly.
-          # Container-level runtime hardening (MJ-10): drop every Linux
+          # Container-level runtime hardening: drop every Linux
           # capability, forbid privilege escalation, and run on a read-only
           # root filesystem (writable scratch is the mounted tmp emptyDir).
           securityContext:
@@ -119,7 +119,7 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            # Writable batch working directory (QA Issue 21). The transaction-posting
+            # Writable batch working directory. The transaction-posting
             # job writes the DALYREJS reject file here; the read-only root filesystem
             # leaves nowhere else for it. An emptyDir is created by the kubelet with
             # the pod's fsGroup, so the non-root container owns it, and
@@ -137,11 +137,11 @@ spec:
           envFrom:
             - configMapRef:
                 name: carddemo-config
-            # Per-service least-privilege database role (CR-11): each service
+            # Per-service least-privilege database role: each service
             # authenticates with its own DB principal, not a shared owner.
             - secretRef:
                 name: carddemo-transaction-service-db
-            # Shared Redis AUTH secret for externalized Spring Session (CR-17).
+            # Shared Redis AUTH secret for externalized Spring Session.
             - secretRef:
                 name: carddemo-redis-secret
             # Shared AES-256-GCM key for at-rest PII field encryption
@@ -150,7 +150,7 @@ spec:
             - secretRef:
                 name: carddemo-pii-key
             # Shared credential of the least-privilege `monitoring` principal
-            # guarding /actuator/prometheus and /actuator/metrics (MJ-17). Must
+            # guarding /actuator/prometheus and /actuator/metrics. Must
             # match the password Prometheus presents, or every scrape gets 401.
             - secretRef:
                 name: carddemo-monitoring-secret
@@ -169,7 +169,7 @@ spec:
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 5
-            # Explicit timeout (QA Issue 3). The default timeoutSeconds is 1, so during any
+            # Explicit timeout. The default timeoutSeconds is 1, so during any
             # datastore blip the aggregate health check — which must wait for the bounded
             # 3s HikariCP / 2s Lettuce dependency timeouts — fails on every attempt and the
             # pod is killed after failureThreshold x periodSeconds. 4s bounds each attempt
@@ -193,13 +193,13 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
-      # Writable scratch for the read-only root filesystem (MJ-10). A Spring
+      # Writable scratch for the read-only root filesystem. A Spring
       # Boot fat-jar only needs a writable /tmp (Tomcat work dir, JVM temp).
       volumes:
         - name: tmp
           emptyDir: {}
         - name: batch-work
-          # Writable batch working directory for the read-only root filesystem
-          # (QA Issue 21). An emptyDir keeps the Deployment scalable; a durable
+          # Writable batch working directory for the read-only root filesystem.
+          # An emptyDir keeps the Deployment scalable; a durable
           # deployment substitutes a PersistentVolumeClaim here.
           emptyDir: {}

@@ -113,8 +113,10 @@ public class SessionPrincipalIndex {
     }
 
     /**
-     * :purpose: Remove a single session from a user's index (used on sign-out and on
-     *     session-id rotation).
+     * :purpose: Remove a single session from a user's index, so the index only ever lists
+     *     sessions that can still authorize. Invoked from the logout chain by
+     *     {@link SessionIndexLogoutHandler}, which keeps the revoked-session count reported by
+     *     {@link #revokeSessions(String, String)} truthful.
      * :param userId: the owning user id.
      * :param sessionId: the session id to forget.
      */

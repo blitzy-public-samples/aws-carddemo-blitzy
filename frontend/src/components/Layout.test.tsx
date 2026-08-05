@@ -39,7 +39,6 @@ jest.unstable_mockModule('../api', () => ({
   signon: jest.fn<(request: SignonRequestDto) => Promise<SignonResponseDto>>(),
   getSessionIdentity: getSessionIdentityMock,
   logout: jest.fn<() => Promise<void>>(),
-  clearLocalCredentials: jest.fn<() => void>(),
   registerSessionExpiryHandler: (handler: () => void) => {
     expireSession = handler;
     return () => {

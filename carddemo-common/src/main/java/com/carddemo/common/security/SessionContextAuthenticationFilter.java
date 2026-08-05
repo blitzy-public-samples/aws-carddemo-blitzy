@@ -26,7 +26,6 @@ import java.io.IOException;
 import java.util.List;
 import org.springframework.security.authentication.AuthenticationTrustResolver;
 import org.springframework.security.authentication.AuthenticationTrustResolverImpl;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -164,8 +163,8 @@ public class SessionContextAuthenticationFilter extends OncePerRequestFilter {
      *     it into an authenticated token.
      * :param request: the current HTTP request.
      * :returns: an authenticated {@link UsernamePasswordAuthenticationToken}, or
-     *     ``null`` when there is no session, no session context, no user id, or no
-     *     resolvable user type.
+     *     ``null`` when there is no session, no session context, no user id, no
+     *     resolvable user type, or the session was revoked while it was being read.
      */
     private Authentication restoreAuthentication(HttpServletRequest request) {
         HttpSession session = request.getSession(false);
@@ -184,10 +183,31 @@ public class SessionContextAuthenticationFilter extends OncePerRequestFilter {
         if (authority == null) {
             return null;
         }
+        if (isRevoked(session)) {
+            return null;
+        }
         return UsernamePasswordAuthenticationToken.authenticated(
                 userId.trim(),
                 null,
                 List.of(new SimpleGrantedAuthority(authority)));
+    }
+
+    /**
+     * :purpose: Re-read the session AFTER the context has been resolved and refuse it when
+     *     the context has since been stripped or the revocation marker has been written, so
+     *     a session revoked concurrently with this read cannot still authorize the request.
+     * :param session: the session the context was read from.
+     * :returns: ``true`` when the session no longer carries authority.
+     */
+    private boolean isRevoked(HttpSession session) {
+        try {
+            return session.getAttribute(SessionPrincipalIndex.REVOKED_REASON_ATTRIBUTE) != null
+                    || !(session.getAttribute(SessionContext.SESSION_ATTRIBUTE_NAME) instanceof SessionContext);
+        } catch (IllegalStateException ex) {
+            // The store entry was deleted between the two reads, which invalidates the
+            // handle: no session, therefore no authority.
+            return true;
+        }
     }
 
     /**

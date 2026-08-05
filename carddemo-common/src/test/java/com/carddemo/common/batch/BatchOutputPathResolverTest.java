@@ -31,9 +31,9 @@ import java.nio.file.Path;
 /**
  * :purpose: Verify the shared batch path resolver on both of the behaviours the
  *  CardDemo batch tier depends on: it materializes a usable, writable output root
- *  at construction (QA Issue 21, the defect that failed every statement run with
+ *  at construction (the failure mode that aborted every statement run with
  *  ``No such file or directory``), and it confines every resolved file to that
- *  root (QA MJ-08 / CWE-22).
+ *  root (CWE-22 containment).
  * :output: Assertions over {@link BatchOutputPathResolver#resolveOutput(String)}
  *  and {@link BatchOutputPathResolver#resolveInput(String)}.
  */
@@ -143,7 +143,7 @@ class BatchOutputPathResolverTest {
      * :purpose: A blank request names no file and is rejected. Before the launch
      *  surface supplied its defaults, six of the nine ``batch-service`` jobs passed
      *  no file parameter at all and reached exactly this guard, failing at step
-     *  start (QA Issue 14/21).
+     *  start.
      * :param tempDir: JUnit-managed directory standing in for the mounted batch root.
      */
     @Test

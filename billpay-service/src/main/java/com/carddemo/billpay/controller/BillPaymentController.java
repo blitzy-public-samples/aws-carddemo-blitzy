@@ -20,8 +20,8 @@ import com.carddemo.billpay.service.BillPaymentService;
 import com.carddemo.common.dto.BillPaymentRequestDto;
 import com.carddemo.common.dto.BillPaymentResponseDto;
 import com.carddemo.common.dto.SessionContext;
+import com.carddemo.common.dto.SessionContextSupport;
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -44,13 +44,6 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/billpay")
 public class BillPaymentController {
-
-    /**
-     * :purpose: ``HttpSession`` attribute key under which the externalized
-     *  {@link SessionContext} (COMMAREA replacement) is stored in Spring Session
-     *  (Redis); kept identical across services so they share one session attribute.
-     */
-    private static final String SESSION_CONTEXT_ATTRIBUTE = SessionContext.SESSION_ATTRIBUTE_NAME;
 
     /** :purpose: Bill-payment collaborator that owns all migrated ``COBIL00C`` behavior. */
     private final BillPaymentService billPaymentService;
@@ -94,38 +87,27 @@ public class BillPaymentController {
     }
 
     /**
-     * :purpose: Resolve the externalized session context from the request's
-     *  *already-established* HTTP session, returning an empty one when the caller has no
-     *  session or it carries none (pre-navigation or tests). ``getSession(false)`` is
-     *  deliberate (QA Issue 22): declaring an ``HttpSession`` controller parameter made
-     *  Spring's argument resolver call ``getSession()`` on every request, so each
-     *  anonymous call created and persisted a brand-new Spring Session entry in Redis
-     *  even though no pseudo-conversational state was ever carried into it.
+     * :purpose: Resolve the externalized pseudo-conversational session context for this request
+     *  through the ONE shared, fail-closed resolver, so every CardDemo controller answers a
+     *  missing or wrong-typed context identically instead of fabricating a blank identity.
      * :param httpRequest: the current servlet request.
-     * :returns: the existing {@link SessionContext}, or a new empty instance.
+     * :returns: the {@link SessionContext} the caller's session carries; never ``null``.
+     * :raises IllegalStateException: when the caller has no session or the session carries no
+     *  usable context. Every route here is gated by the shared filter chain, so a request
+     *  cannot legitimately arrive in that state.
      */
     private SessionContext resolveSessionContext(HttpServletRequest httpRequest) {
-        HttpSession session = httpRequest.getSession(false);
-        if (session == null) {
-            return new SessionContext();
-        }
-        Object attribute = session.getAttribute(SESSION_CONTEXT_ATTRIBUTE);
-        return attribute instanceof SessionContext context ? context : new SessionContext();
+        return SessionContextSupport.require(httpRequest);
     }
 
     /**
-     * :purpose: Flush the (possibly mutated) session context back to the caller's HTTP
-     *  session so the next stateless request sees the updated COMMAREA replacement. Only
-     *  an existing session is written to: a caller without one carries no
-     *  pseudo-conversational state to preserve, and creating a session for it would
-     *  reintroduce the Redis session churn of QA Issue 22.
+     * :purpose: Flush the (possibly mutated) session context back to the caller's EXISTING HTTP
+     *  session so the next stateless request sees the updated COMMAREA replacement. A caller
+     *  without a session carries no pseudo-conversational state, and none is created for it.
      * :param httpRequest: the current servlet request.
      * :param context: the session context to persist.
      */
     private void storeSessionContext(HttpServletRequest httpRequest, SessionContext context) {
-        HttpSession session = httpRequest.getSession(false);
-        if (session != null) {
-            session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, context);
-        }
+        SessionContextSupport.store(httpRequest, context);
     }
 }

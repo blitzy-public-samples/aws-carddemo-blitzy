@@ -83,9 +83,9 @@ public class BillPaymentIntegrationTest {
      * build configuration exists to avoid.
      */
 
-    /** Sequence backing ``TransactionRepository.getNextTransactionId()`` (native query). */
     /**
-     * :purpose: Idempotent guard for ``transaction_id_seq``. The sequence is created by the
+     * :purpose: Idempotent guard for ``transaction_id_seq``, the sequence backing
+     *  ``TransactionRepository.getNextTransactionId()``. The sequence is created by the
      *  transaction-service migration ``V4__create_transaction_id_sequence.sql``; the
      *  ``IF NOT EXISTS`` form keeps the fixture reset self-contained without redefining it.
      */

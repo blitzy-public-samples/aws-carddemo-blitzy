@@ -274,30 +274,23 @@ class BillPaymentControllerTest {
     }
 
     /**
-     * :purpose: Regression guard for QA Issue 22 (Redis session churn). A caller that
-     *  arrives without a session must leave without one: the endpoint takes
-     *  ``HttpServletRequest`` and reads the pseudo-conversational context through
-     *  ``getSession(false)``, so no Spring Session entry is created - and therefore none
-     *  is persisted to Redis - for an anonymous one-off call. Declaring an
-     *  ``HttpSession`` parameter instead made Spring's argument resolver call
-     *  ``getSession()`` unconditionally on every request.
+     * :purpose: Regression guard against session churn. A caller that arrives without a
+     *  session must leave without one: the shared resolver reads the pseudo-conversational
+     *  context through ``getSession(false)`` and refuses the request, so no Spring Session
+     *  entry is created - and therefore none is persisted to Redis - for an anonymous
+     *  one-off call, and no payment is attempted with an invented identity.
      */
     @Test
-    @DisplayName("QA Issue 22: POST /billpay creates no HTTP session for a sessionless caller")
+    @DisplayName("POST /billpay creates no HTTP session for a sessionless caller")
     void billPaymentCreatesNoSessionForSessionlessCaller() throws Exception {
-        BillPaymentResponseDto stubbed = new BillPaymentResponseDto(
-                "12345678901", new BigDecimal("0.00"), "0000000000000001", "ok");
-        when(billPaymentService.processBillPayment(any(BillPaymentRequestDto.class),
-                any(SessionContext.class)))
-                .thenReturn(stubbed);
-
         MvcResult result = mockMvc.perform(post("/billpay")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(
                                 new BillPaymentRequestDto("12345678901", "Y"))))
-                .andExpect(status().isOk())
+                .andExpect(status().isInternalServerError())
                 .andReturn();
 
         assertThat(result.getRequest().getSession(false)).isNull();
+        verifyNoInteractions(billPaymentService);
     }
 }

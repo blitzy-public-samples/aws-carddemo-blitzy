@@ -45,7 +45,7 @@ final class FinancialPrecisionTest {
      *     ``InterestCalculationService.computeMonthlyInterest``. Both sides are required: a
      *     specification asserted only against itself let the production method use
      *     ``HALF_UP`` while this test stayed green, and every non-terminating quotient was a
-     *     cent out (QA Issue 9).
+     *     cent out.
      */
     private static BigDecimal cobolMonthlyInterestSpecification(BigDecimal tranCatBal,
                                                                 BigDecimal disIntRate) {

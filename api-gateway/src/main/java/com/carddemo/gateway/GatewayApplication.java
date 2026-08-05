@@ -23,15 +23,10 @@ import com.carddemo.common.config.WebObservabilityConfig;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.boot.security.autoconfigure.UserDetailsServiceAutoConfiguration;
 import org.springframework.context.annotation.Import;
 
-import com.carddemo.common.config.CardDemoErrorController;
-import com.carddemo.common.config.ContainerErrorReportConfig;
-import com.carddemo.common.config.SecurityExceptionHandler;
 
 
-import com.carddemo.common.config.RedisCommandMetricsConfig;
 /**
  * :purpose: Executable entry point for the CardDemo API Gateway, a Spring Cloud
  *     Gateway Server WebMVC (servlet) edge router that also serves the

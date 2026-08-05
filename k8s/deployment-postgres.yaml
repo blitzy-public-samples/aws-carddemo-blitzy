@@ -17,7 +17,7 @@
 #           (POSTGRES_USER / POSTGRES_PASSWORD) comes from the
 #           ``carddemo-postgres-bootstrap`` Secret and POSTGRES_DB from the
 #           ``carddemo-config`` ConfigMap; a DB-init step uses the owner to
-#           provision the per-service least-privilege roles (CR-11). A single
+#           provision the per-service least-privilege roles. A single
 #           replica with the Recreate strategy keeps exactly one writer against
 #           the ReadWriteOnce volume. Rationale: docs/decision-log.md.
 # =============================================================================
@@ -63,7 +63,7 @@ spec:
         app.kubernetes.io/part-of: carddemo
         app.kubernetes.io/component: database
     spec:
-      # Datastore hardening (MJ-10). The postgres:18 image's server process
+      # Datastore hardening. The postgres:18 image's server process
       # runs as uid 999; running the pod as that non-root user with a matching
       # fsGroup lets it own the PVC without any elevated capability. A
       # read-only root filesystem is intentionally NOT set here — PostgreSQL
@@ -80,7 +80,7 @@ spec:
         - name: postgres
           image: postgres:18
           imagePullPolicy: IfNotPresent
-          # Connection budget (QA Issue 13). Each JPA service now holds a bounded
+          # Connection budget. Each JPA service now holds a bounded
           # HikariCP pool (steady state 15 connections in total, ceiling 68 for a
           # single replica of every service - see the spring.datasource.hikari block
           # in every service's application.yml), but the image default of
@@ -107,7 +107,7 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: POSTGRES_DB
-            # Bootstrap owner role (CR-11) — distinct from the per-service roles
+            # Bootstrap owner role — distinct from the per-service roles
             # that a DB-init step provisions using this owner.
             - name: POSTGRES_USER
               valueFrom:
@@ -124,7 +124,7 @@ spec:
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
             # Per-service role passwords consumed by the first-boot DB-init script
-            # below (QA Issue 17: the eight roles the service Secrets reference were
+            # below (the eight roles the service Secrets reference must be
             # never created). Each value is read from the SAME Secret the owning
             # service consumes, so a credential has exactly one source of truth.
             - name: CARDDEMO_AUTH_DB_PASSWORD
@@ -178,7 +178,7 @@ spec:
             - name: postgres-init
               mountPath: /docker-entrypoint-initdb.d
               readOnly: true
-          # Sized for the raised max_connections above (QA Issue 13): the shared
+          # Sized for the raised max_connections above: the shared
           # structures scale with max_connections and each established backend adds
           # a few MB of private memory, so the 68-connection ceiling of a
           # single-replica deployment needs more than the previous 512Mi ceiling

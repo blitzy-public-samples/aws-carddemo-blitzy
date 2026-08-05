@@ -19,7 +19,7 @@
 #           Storage is the in-memory default, so traces are transient
 #           observability data held on an ephemeral ``emptyDir`` rather than a
 #           PersistentVolumeClaim — a production deployment swaps in a durable
-#           backing store. Hardened like the other workloads (MJ-10): non-root,
+#           backing store. Hardened like the other workloads: non-root,
 #           RuntimeDefault seccomp, all capabilities dropped, read-only root
 #           filesystem with writable scratch mounted in.
 # =============================================================================

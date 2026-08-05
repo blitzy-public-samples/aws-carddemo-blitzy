@@ -10,24 +10,25 @@
  *     / ``F8=Forward`` legend with ``F3`` returning to ``/admin``
  *     (``COADM01C``), and the ``Search User ID:`` browse filter.
  * :output: Jest assertions only; the suite writes no artifact.
- * :note: ``../api`` and ``../components/Layout`` are replaced with
- *     ``jest.unstable_mockModule`` doubles, so no network call is issued and the
- *     chrome a screen publishes through ``useScreenChrome`` is captured for
- *     assertion. ``ApiError`` is passed through from the real ``../api`` so
- *     ``useApi`` classifies failures against the production type. The screen and
- *     the hook barrel are imported dynamically, after the doubles are
- *     registered, so both bind to them.
+ * :note: Only ``../api`` is replaced with a ``jest.unstable_mockModule`` double, so
+ *     no network call is issued; ``ApiError`` is passed through from the real
+ *     ``../api`` so ``useApi`` classifies failures against the production type. The
+ *     screen is mounted inside the REAL ``../components/Layout``, so the line-23
+ *     message region and the line-24 legend are asserted on the DOM the shell
+ *     renders rather than on a captured chrome object; ``react-router`` is real too,
+ *     so a transfer is asserted on the route it resolves to. The screen, the shell
+ *     and the hook barrel are imported dynamically, after the double is registered,
+ *     so all three bind to it.
  */
 
 import { jest } from '@jest/globals';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
 import { CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { ReactElement } from 'react';
 import { ApiError } from '../api';
-import { PfKeyAction } from '../types';
 import type {
   ApiErrorResponse,
   SignonRequestDto,
@@ -37,37 +38,11 @@ import type {
   UserListResponseDto,
 } from '../types';
 
-/** The user-event session returned by ``userEvent.setup``. */
-type UserEventSession = ReturnType<typeof userEvent.setup>;
-
-/**
- * :purpose: Shape of one entry of the line-24 legend a screen publishes, as
- *     captured from ``setChrome``.
- * :field action: the AID the entry represents.
- * :field label: the legend text (for example ``F3=Exit``).
- * :field onActivate: the handler the key or its button invokes.
- * :field enabled: ``false`` when the key renders inactive.
- */
-interface CapturedPFKey {
-  action: PfKeyAction;
-  label: string;
-  onActivate: () => void;
-  enabled?: boolean;
-}
-
-/**
- * :purpose: Shape of the screen chrome captured from ``setChrome``, covering the
- *     header fields, the line-23 message region, and the line-24 legend.
- */
-interface CapturedChrome {
-  transactionId?: string;
-  programName?: string;
-  title01?: string;
-  title02?: string;
-  errorMessage?: string;
-  infoMessage?: string;
-  pfKeys?: CapturedPFKey[];
-}
+/** Verbatim ``COUSR00.bms`` line-24 legend captions, in mapset order. */
+const PF_ENTER_LABEL = 'ENTER=Continue';
+const PF3_LABEL = 'F3=Back';
+const PF7_LABEL = 'F7=Backward';
+const PF8_LABEL = 'F8=Forward';
 
 /** Rows the mocked ``listUsers`` returns: more than one screen holds. */
 const MOCKED_USER_COUNT = 23;
@@ -101,19 +76,16 @@ const listUsersMock =
 const signonMock =
   jest.fn<(request: SignonRequestDto) => Promise<SignonResponseDto>>();
 
-/** Captures every chrome publication made through ``useScreenChrome``. */
-const setChromeMock = jest.fn<(next: CapturedChrome) => void>();
-
 /** Records the pathname and router state of every navigation the screen makes. */
 const navigationSpy = jest.fn<(pathname: string, state: unknown) => void>();
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   listUsers: listUsersMock,
@@ -121,23 +93,23 @@ jest.unstable_mockModule('../api', () => ({
   ApiError,
 }));
 
-jest.unstable_mockModule('../components/Layout', () => ({
-  __esModule: true,
-  useScreenChrome: () => ({ chrome: {}, setChrome: setChromeMock }),
-}));
-
 type UserListPageComponent = (typeof import('./UserListPage'))['default'];
-type SetSessionSeam = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 type UseSessionHook = (typeof import('../hooks'))['useSession'];
 
 let UserListPage: UserListPageComponent;
-let setSession: SetSessionSeam;
+let Layout: (typeof import('../components/Layout'))['default'];
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 let useSession: UseSessionHook;
 
 beforeAll(async () => {
   ({ default: UserListPage } = await import('./UserListPage'));
+  ({ default: Layout } = await import('../components/Layout'));
   ({ useSession } = await import('../hooks'));
-  ({ __setSession: setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
 /**
@@ -223,29 +195,31 @@ async function renderScreen(): Promise<void> {
   await act(async () => {
     render(
       <MemoryRouter initialEntries={['/users']}>
-        <Routes>
-          <Route
-            path="/users"
-            element={
-              <>
-                <SessionProbe />
-                <UserListPage />
-              </>
-            }
-          />
-          <Route
-            path="/users/update"
-            element={<RouteRecorder testId="update-user-screen" />}
-          />
-          <Route
-            path="/users/delete"
-            element={<RouteRecorder testId="delete-user-screen" />}
-          />
-          <Route
-            path="/admin"
-            element={<RouteRecorder testId="admin-menu-screen" />}
-          />
-        </Routes>
+        <Layout>
+          <Routes>
+            <Route
+              path="/users"
+              element={
+                <>
+                  <SessionProbe />
+                  <UserListPage />
+                </>
+              }
+            />
+            <Route
+              path="/users/update"
+              element={<RouteRecorder testId="update-user-screen" />}
+            />
+            <Route
+              path="/users/delete"
+              element={<RouteRecorder testId="delete-user-screen" />}
+            />
+            <Route
+              path="/admin"
+              element={<RouteRecorder testId="admin-menu-screen" />}
+            />
+          </Routes>
+        </Layout>
       </MemoryRouter>,
     );
     // Awaited so this is an asynchronous act scope: the effects and the promise
@@ -255,46 +229,57 @@ async function renderScreen(): Promise<void> {
 }
 
 /**
- * :purpose: Read the most recent chrome publication.
- * :returns: the last :class:`CapturedChrome` passed to ``setChrome``.
- * :raises Error: when the screen has published no chrome.
+ * :purpose: Read the line-23 error region the shared shell renders.
+ * :returns: the message text, or the empty string when line 23 carries none.
  */
-function latestChrome(): CapturedChrome {
-  const { calls } = setChromeMock.mock;
-  const lastCall = calls[calls.length - 1];
-  if (lastCall === undefined) {
-    throw new Error('the screen published no chrome');
-  }
-  return lastCall[0];
+function errorText(): string {
+  return screen.queryByRole('alert')?.textContent ?? '';
 }
 
 /**
- * :purpose: Read one entry of the most recently published line-24 legend.
- * :param action: the AID to look up.
- * :returns: the matching :class:`CapturedPFKey`.
- * :raises Error: when the legend carries no entry for ``action``.
+ * :purpose: Read the line-23 informational region the shared shell renders. The shell
+ *     also renders a visually hidden ``role="status"`` busy announcer, so the banner
+ *     is matched on its own class rather than on the role alone.
+ * :returns: the informational text, or the empty string when line 23 carries none.
  */
-function pfKey(action: PfKeyAction): CapturedPFKey {
-  const entry = (latestChrome().pfKeys ?? []).find(
-    (candidate) => candidate.action === action,
-  );
-  if (entry === undefined) {
-    throw new Error(`the legend carries no ${action} entry`);
-  }
-  return entry;
+function infoText(): string {
+  const banner = document.querySelector<HTMLElement>('.errorBanner[role="status"]');
+  return banner?.textContent ?? '';
 }
 
 /**
- * :purpose: Activate a published function key and settle the resulting state.
- * :param action: the AID to activate.
+ * :purpose: The line-24 legend the shared shell renders from the chrome the screen
+ *     published, in publication order.
+ * :returns: one legend caption per rendered function key.
+ */
+function legendLabels(): (string | null)[] {
+  const toolbar = screen.getByRole('toolbar', { name: 'Function keys' });
+  return within(toolbar)
+    .getAllByRole('button')
+    .map((key) => key.textContent);
+}
+
+/**
+ * :purpose: Locate a line-24 function key by its legend caption.
+ * :param label: the verbatim legend caption.
+ * :returns: the function-key button the shell renders.
+ */
+function pfKeyButton(label: string): HTMLElement {
+  return screen.getByRole('button', { name: label });
+}
+
+/**
+ * :purpose: Activate a function key through the legend button the shell renders and
+ *     settle the resulting state.
+ * :param label: the verbatim legend caption.
  * :returns: a promise that resolves once React has flushed the update.
  */
-async function activatePfKey(action: PfKeyAction): Promise<void> {
-  const entry = pfKey(action);
+async function activatePfKey(label: string): Promise<void> {
   await act(async () => {
-    entry.onActivate();
+    fireEvent.click(pfKeyButton(label));
     // Awaited so this is an asynchronous act scope: the effects and the promise
-    // callbacks the interaction queues are flushed before it returns.
+    // callbacks the interaction queues are flushed before it returns — including the
+    // chrome the screen republishes into the shell for the outcome.
     await Promise.resolve();
   });
 }
@@ -314,27 +299,29 @@ function displayedUserIds(): string[] {
 }
 
 /**
- * :purpose: Press the line-24 ENTER key and settle the submission. The shared shell
- *     is mocked down to its chrome context in this suite, so the AID is activated
- *     through the legend entry the screen published rather than through a rendered
- *     legend button.
- * :param _user: the user-event session driving the surrounding interaction.
+ * :purpose: Press the line-24 ENTER key the shared shell renders and settle the
+ *     submission.
  * :returns: a promise that resolves once the submission has settled.
  */
-async function pressEnter(_user: UserEventSession): Promise<void> {
-  await activatePfKey(PfKeyAction.Enter);
+async function pressEnter(): Promise<void> {
+  await activatePfKey(PF_ENTER_LABEL);
 }
 
 /**
  * :purpose: Type a ``Sel`` value against one row and press ENTER.
  * :param userId: the user id of the row to select.
  * :param value: the ``Sel`` character to type.
- * :returns: a promise that resolves once the submission has settled.
+ * :returns: a promise that resolves once the submission — and the chrome the screen
+ *     republishes into the shell for its outcome — has settled.
  */
 async function selectRowAndEnter(userId: string, value: string): Promise<void> {
-  const user = userEvent.setup();
-  await user.type(screen.getByLabelText(`Select user ${userId}`), value);
-  await pressEnter(user);
+  await act(async () => {
+    fireEvent.change(screen.getByLabelText(`Select user ${userId}`), {
+      target: { value },
+    });
+    await Promise.resolve();
+  });
+  await activatePfKey(PF_ENTER_LABEL);
 }
 
 /** Verbatim ``COUSR00C`` PF7 boundary message. */
@@ -373,21 +360,16 @@ function browse(request: UserListRequestDto): UserListResponseDto {
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   listUsersMock.mockReset();
   signonMock.mockReset();
-  setChromeMock.mockReset();
   navigationSpy.mockReset();
   listUsersMock.mockImplementation((request) => Promise.resolve(browse(request)));
-  act(() => {
-    setSession('ADMIN001', 'A');
-  });
+  await seedSignedOnSession('ADMIN001', 'A');
 });
 
-afterEach(() => {
-  act(() => {
-    setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 describe('UserListPage — COUSR00 screen contract', () => {
@@ -423,15 +405,14 @@ describe('UserListPage — COUSR00 screen contract', () => {
   it('publishes the CU00 / COUSR00C chrome with the List Users title', async () => {
     await renderScreen();
 
-    const chrome = latestChrome();
-    expect(chrome.transactionId).toBe('CU00');
-    expect(chrome.programName).toBe('COUSR00C');
-    expect(chrome.title01).toBe(CCDA_TITLE01);
-    expect(chrome.title02).toBe(CCDA_TITLE02);
+    expect(screen.getByTestId('tran-id')).toHaveTextContent('CU00');
+    expect(screen.getByTestId('pgm-name')).toHaveTextContent('COUSR00C');
+    expect(screen.getByTestId('title01')).toHaveTextContent(CCDA_TITLE01);
+    expect(screen.getByTestId('title02')).toHaveTextContent(CCDA_TITLE02);
     // The screen name lives in the body heading (BMS row 4), not in title02.
     expect(screen.getByRole('heading', { level: 2, name: 'List Users' })).toBeInTheDocument();
-    expect(chrome.errorMessage).toBe('');
-    expect(chrome.infoMessage).toBe('');
+    expect(errorText()).toBe('');
+    expect(infoText()).toBe('');
   });
 
   it('requests the first page of the unfiltered browse on entry', async () => {
@@ -511,11 +492,11 @@ describe('UserListPage — ten rows per page (USER-REC OCCURS 10 TIMES)', () => 
     expect(screen.queryAllByTestId('user-row')).toHaveLength(0);
     // Every AID reaches COUSR00C, which answers a boundary with its own message
     // rather than ignoring the key, so neither legend entry is ever withdrawn.
-    expect(pfKey(PfKeyAction.PF7).enabled).toBeUndefined();
-    expect(pfKey(PfKeyAction.PF8).enabled).toBeUndefined();
+    expect(pfKeyButton(PF7_LABEL)).toBeEnabled();
+    expect(pfKeyButton(PF8_LABEL)).toBeEnabled();
 
-    await activatePfKey(PfKeyAction.PF7);
-    expect(latestChrome().errorMessage).toBe(ALREADY_TOP_MESSAGE);
+    await activatePfKey(PF7_LABEL);
+    expect(errorText()).toBe(ALREADY_TOP_MESSAGE);
     expect(listUsersMock).toHaveBeenCalledTimes(1);
   });
 });
@@ -524,7 +505,7 @@ describe('UserListPage — PF7 / PF8 paging', () => {
   it('pages forward with F8 to rows 11 through 20', async () => {
     await renderScreen();
 
-    await activatePfKey(PfKeyAction.PF8);
+    await activatePfKey(PF8_LABEL);
 
     expect(screen.getAllByTestId('user-row')).toHaveLength(10);
     expect(displayedUserIds()).toEqual([
@@ -545,8 +526,8 @@ describe('UserListPage — PF7 / PF8 paging', () => {
   it('pages backward with F7 to the first ten rows', async () => {
     await renderScreen();
 
-    await activatePfKey(PfKeyAction.PF8);
-    await activatePfKey(PfKeyAction.PF7);
+    await activatePfKey(PF8_LABEL);
+    await activatePfKey(PF7_LABEL);
 
     expect(displayedUserIds()[0]).toBe('USER0001');
     expect(displayedUserIds()).toHaveLength(10);
@@ -556,30 +537,30 @@ describe('UserListPage — PF7 / PF8 paging', () => {
   it('answers F7 on page 1 with the top-of-page message and no browse', async () => {
     await renderScreen();
 
-    await activatePfKey(PfKeyAction.PF7);
+    await activatePfKey(PF7_LABEL);
 
-    expect(latestChrome().errorMessage).toBe(ALREADY_TOP_MESSAGE);
+    expect(errorText()).toBe(ALREADY_TOP_MESSAGE);
     expect(listUsersMock).toHaveBeenCalledTimes(1);
     expect(displayedUserIds()[0]).toBe('USER0001');
 
-    await activatePfKey(PfKeyAction.PF8);
+    await activatePfKey(PF8_LABEL);
 
     expect(displayedUserIds()[0]).toBe('USER0011');
-    expect(latestChrome().errorMessage).toBe('');
+    expect(errorText()).toBe('');
   });
 
   it('answers F8 on the last page, which holds the remaining three rows', async () => {
     await renderScreen();
 
-    await activatePfKey(PfKeyAction.PF8);
-    await activatePfKey(PfKeyAction.PF8);
+    await activatePfKey(PF8_LABEL);
+    await activatePfKey(PF8_LABEL);
 
     expect(displayedUserIds()).toEqual(['USER0021', 'USER0022', 'USER0023']);
     expect(screen.getByTestId('page-number')).toHaveTextContent('3');
 
-    await activatePfKey(PfKeyAction.PF8);
+    await activatePfKey(PF8_LABEL);
 
-    expect(latestChrome().errorMessage).toBe(ALREADY_BOTTOM_MESSAGE);
+    expect(errorText()).toBe(ALREADY_BOTTOM_MESSAGE);
     expect(displayedUserIds()).toEqual(['USER0021', 'USER0022', 'USER0023']);
     expect(listUsersMock).toHaveBeenCalledTimes(3);
   });
@@ -590,7 +571,7 @@ describe('UserListPage — PF7 / PF8 paging', () => {
     );
     await renderScreen();
 
-    await activatePfKey(PfKeyAction.PF8);
+    await activatePfKey(PF8_LABEL);
 
     expect(listUsersMock).toHaveBeenCalledTimes(2);
     // The forward browse names the AID and the last id it displayed, exactly as
@@ -608,8 +589,8 @@ describe('UserListPage — Sel column accepts only U and D', () => {
 
     await selectRowAndEnter('USER0003', 'X');
 
-    expect(latestChrome().errorMessage).toBe(INVALID_SELECTION_MESSAGE);
-    expect(latestChrome().errorMessage).toBe(
+    expect(errorText()).toBe(INVALID_SELECTION_MESSAGE);
+    expect(errorText()).toBe(
       'Invalid selection. Valid values are U and D',
     );
     expect(navigationSpy).not.toHaveBeenCalled();
@@ -621,17 +602,16 @@ describe('UserListPage — Sel column accepts only U and D', () => {
 
     await selectRowAndEnter('USER0007', '1');
 
-    expect(latestChrome().errorMessage).toBe(INVALID_SELECTION_MESSAGE);
+    expect(errorText()).toBe(INVALID_SELECTION_MESSAGE);
     expect(navigationSpy).not.toHaveBeenCalled();
   });
 
   it('publishes no message when no row is selected', async () => {
     await renderScreen();
-    const user = userEvent.setup();
 
-    await pressEnter(user);
+    await pressEnter();
 
-    expect(latestChrome().errorMessage).toBe('');
+    expect(errorText()).toBe('');
     expect(navigationSpy).not.toHaveBeenCalled();
   });
 });
@@ -681,7 +661,7 @@ describe('UserListPage — U and D row navigation', () => {
   it('carries the user id of a row selected on the second page', async () => {
     await renderScreen();
 
-    await activatePfKey(PfKeyAction.PF8);
+    await activatePfKey(PF8_LABEL);
     await selectRowAndEnter('USER0014', 'U');
 
     expect(navigationSpy).toHaveBeenCalledWith('/users/update', {
@@ -696,25 +676,23 @@ describe('UserListPage — function keys', () => {
 
     // COUSR00.bms line 24 reads
     // 'ENTER=Continue  F3=Back  F7=Backward  F8=Forward'.
-    expect(latestChrome().pfKeys).toHaveLength(4);
-    expect((latestChrome().pfKeys ?? []).map((entry) => entry.label)).toEqual([
-      'ENTER=Continue',
-      'F3=Back',
-      'F7=Backward',
-      'F8=Forward',
+    expect(legendLabels()).toEqual([
+      PF_ENTER_LABEL,
+      PF3_LABEL,
+      PF7_LABEL,
+      PF8_LABEL,
     ]);
-    expect(pfKey(PfKeyAction.PF3).label).toBe('F3=Back');
-    expect(pfKey(PfKeyAction.PF7).label).toBe('F7=Backward');
-    expect(pfKey(PfKeyAction.PF8).label).toBe('F8=Forward');
-    expect(typeof pfKey(PfKeyAction.PF3).onActivate).toBe('function');
-    expect(typeof pfKey(PfKeyAction.PF7).onActivate).toBe('function');
-    expect(typeof pfKey(PfKeyAction.PF8).onActivate).toBe('function');
+    // Every AID reaches COUSR00C, which answers a boundary with its own message, so
+    // no legend entry is ever withdrawn.
+    expect(pfKeyButton(PF3_LABEL)).toBeEnabled();
+    expect(pfKeyButton(PF7_LABEL)).toBeEnabled();
+    expect(pfKeyButton(PF8_LABEL)).toBeEnabled();
   });
 
   it('exits to the administrator menu on F3', async () => {
     await renderScreen();
 
-    await activatePfKey(PfKeyAction.PF3);
+    await activatePfKey(PF3_LABEL);
 
     expect(navigationSpy).toHaveBeenCalledWith('/admin', null);
     expect(screen.getByTestId('admin-menu-screen')).toBeInTheDocument();
@@ -724,11 +702,11 @@ describe('UserListPage — function keys', () => {
     await renderScreen();
 
     await selectRowAndEnter('USER0003', 'X');
-    expect(latestChrome().errorMessage).toBe(INVALID_SELECTION_MESSAGE);
+    expect(errorText()).toBe(INVALID_SELECTION_MESSAGE);
 
-    await activatePfKey(PfKeyAction.PF8);
+    await activatePfKey(PF8_LABEL);
 
-    expect(latestChrome().errorMessage).toBe('');
+    expect(errorText()).toBe('');
   });
 });
 
@@ -738,7 +716,7 @@ describe('UserListPage — Search User ID filter', () => {
     const user = userEvent.setup();
 
     await user.type(screen.getByLabelText('Search User ID:'), 'USER0005');
-    await pressEnter(user);
+    await pressEnter();
 
     expect(listUsersMock).toHaveBeenCalledTimes(2);
     expect(listUsersMock).toHaveBeenLastCalledWith({
@@ -751,11 +729,11 @@ describe('UserListPage — Search User ID filter', () => {
     await renderScreen();
     const user = userEvent.setup();
 
-    await activatePfKey(PfKeyAction.PF8);
+    await activatePfKey(PF8_LABEL);
     expect(screen.getByTestId('page-number')).toHaveTextContent('2');
 
     await user.type(screen.getByLabelText('Search User ID:'), 'USER0002');
-    await pressEnter(user);
+    await pressEnter();
 
     expect(screen.getByTestId('page-number')).toHaveTextContent('1');
     // The filter is the ``STARTBR`` key, so the restarted browse opens on it.
@@ -777,7 +755,7 @@ describe('UserListPage — failed browse', () => {
     );
     await renderScreen();
 
-    expect(latestChrome().errorMessage).toBe('User ID NOT found...');
+    expect(errorText()).toBe('User ID NOT found...');
     expect(screen.queryAllByTestId('user-row')).toHaveLength(0);
   });
 
@@ -785,7 +763,7 @@ describe('UserListPage — failed browse', () => {
     listUsersMock.mockRejectedValue(new ApiError(0, 'Network Error'));
     await renderScreen();
 
-    expect(latestChrome().errorMessage).toBe('Network Error');
+    expect(errorText()).toBe('Network Error');
   });
 });
 

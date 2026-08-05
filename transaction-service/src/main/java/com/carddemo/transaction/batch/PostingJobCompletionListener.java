@@ -77,7 +77,7 @@ public class PostingJobCompletionListener implements JobExecutionListener {
      *          rejected total is greater than zero. For a ``FAILED`` or ``STOPPED``
      *          run, one diagnostic line naming the outcome and NO tally, and the
      *          status and exit code Spring Batch assigned are left untouched.
-     * :note: A run that ends abnormally reports no tally (QA Issue 5).
+     * :note: A run that ends abnormally reports no tally.
      *          ``CBTRN02C`` reaches its ``DISPLAY 'TRANSACTIONS PROCESSED :'`` and
      *          ``DISPLAY 'TRANSACTIONS REJECTED  :'`` statements only on the normal
      *          end-of-file path; ``9999-ABEND-PROGRAM`` calls ``CEE3ABD`` and the
@@ -86,7 +86,7 @@ public class PostingJobCompletionListener implements JobExecutionListener {
      *          a figure that contradicted the committed work and had no legacy
      *          analogue.
      * :note: The empty-feed verdict belongs to the step, not to this listener
-     *          (QA Issues 6 and 7): the step knows both its own read count and
+     *          : the step knows both its own read count and
      *          whether the feed table is genuinely empty, and failing the step makes
      *          Spring Batch carry that status and exit code onto the job, so the
      *          job and step metadata an operator queries can never disagree.

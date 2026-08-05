@@ -30,7 +30,6 @@ import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.RecordNotFoundException;
 import jakarta.persistence.OptimisticLockException;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import org.slf4j.Logger;

@@ -13,8 +13,8 @@
  * :output: The default export ``apiClient`` (a configured ``AxiosInstance``), the
  *   named exports ``ApiError`` (the normalized error type carrying a safe
  *   ``correlationId`` support reference) and ``isApiError`` (its type-guard), and
- *   ``registerSessionExpiryHandler`` / ``clearLocalCredentials`` used by the
- *   session store to drop local authority exactly once per expiry.
+ *   ``registerSessionExpiryHandler`` used by the session store to drop local
+ *   authority exactly once per expiry.
  * :note: This module never reads the Vite build-time environment directly; the
  *   base URL is obtained only through ``getApiBaseUrl`` from ``./config``, so the
  *   module is evaluable under Jest (jsdom) without any Vite environment injection.
@@ -54,12 +54,6 @@ const OPTIMISTIC_LOCK_CONFLICT_MESSAGE =
  *   consumed by the backend MDC (``logback-spring.xml``) and the tracing bridge.
  */
 const CORRELATION_ID_HEADER = 'X-Correlation-Id';
-
-/**
- * :purpose: ``sessionStorage`` key holding the optional bearer token used by
- *   JWT-based deployments in place of the cookie session.
- */
-const JWT_STORAGE_KEY = 'carddemo.jwt';
 
 /**
  * :purpose: Client route of the sign-on screen; the redirect target when a
@@ -171,24 +165,6 @@ export function registerSessionExpiryHandler(handler: () => void): () => void {
 }
 
 /**
- * :purpose: Remove every locally held credential: the optional bearer token and the
- *   persisted session entry. Called by the session store on sign-out and by the
- *   centralized expiry handling below, so no code path can leave a stale token behind
- *   for the next request interceptor to attach.
- */
-export function clearLocalCredentials(): void {
-  if (typeof sessionStorage === 'undefined') {
-    return;
-  }
-  try {
-    sessionStorage.removeItem(JWT_STORAGE_KEY);
-  } catch {
-    // sessionStorage may be unavailable (private mode); clearing is best-effort and must
-    // never prevent the redirect that follows it.
-  }
-}
-
-/**
  * :purpose: Read a browser cookie value by name.
  * :param name: the cookie name.
  * :returns: the decoded cookie value, or ``undefined`` when absent or unavailable.
@@ -208,16 +184,15 @@ function readCookie(name: string): string | undefined {
 }
 
 /**
- * :purpose: Notify every registered handler that the session is no longer usable and
- *   remove the locally held credentials, then redirect to the sign-on screen. Runs at most
- *   once per rejected request and is skipped for a request that opted out.
+ * :purpose: Notify every registered handler that the session is no longer usable, then
+ *   redirect to the sign-on screen. Runs at most once per rejected request and is skipped
+ *   for a request that opted out.
  * :param config: the originating request config, consulted for the opt-out flag.
  */
 function handleSessionRejected(config: InternalAxiosRequestConfig | undefined): void {
   if (config?.skipAuthRedirect === true) {
     return;
   }
-  clearLocalCredentials();
   sessionExpiryHandlers.forEach((handler) => handler());
   if (
     typeof window !== 'undefined' &&
@@ -240,22 +215,15 @@ function generateCorrelationId(): string {
 }
 
 /**
- * :purpose: Request interceptor. Attaches the optional JWT bearer token (when
- *   present in ``sessionStorage`` and no ``Authorization`` header is already
- *   set) and guarantees an ``X-Correlation-Id`` header so tracing spans the
- *   SPA -> gateway -> services boundary. The cookie session is carried
- *   automatically by ``withCredentials`` and needs no code here.
+ * :purpose: Request interceptor. Guarantees an ``X-Correlation-Id`` header so tracing
+ *   spans the SPA -> gateway -> services boundary, and echoes the CSRF cookie on every
+ *   unsafe method. The session cookie is the only credential and is carried
+ *   automatically by ``withCredentials``, so no credential code belongs here.
  * :param config: the outgoing request configuration.
  * :returns: the (possibly header-augmented) request configuration.
  */
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig): InternalAxiosRequestConfig => {
-    if (typeof sessionStorage !== 'undefined') {
-      const token = sessionStorage.getItem(JWT_STORAGE_KEY);
-      if (token && !config.headers.Authorization) {
-        config.headers.Authorization = `Bearer ${token}`;
-      }
-    }
     if (!config.headers[CORRELATION_ID_HEADER]) {
       config.headers[CORRELATION_ID_HEADER] = generateCorrelationId();
     }

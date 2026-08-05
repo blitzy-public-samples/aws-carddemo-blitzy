@@ -45,7 +45,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  * :note: {@link BatchPathConfig} is imported from ``carddemo-common`` to supply
  *     the shared ``BatchOutputPathResolver``, which confines every file a job
  *     opens to the allowlisted ``carddemo.batch`` roots and proves the output
- *     root writable while the context refreshes (QA Issue 21).
+ *     root writable while the context refreshes.
  * :note: {@link JdbcBatchConfiguration} is imported so job and step executions are
  *     persisted in the ``BATCH_*`` metadata tables instead of the in-memory
  *     ``ResourcelessJobRepository`` that Spring Batch 6 makes the default; without

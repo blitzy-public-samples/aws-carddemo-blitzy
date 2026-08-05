@@ -17,6 +17,7 @@
 package com.carddemo.transaction.controller;
 
 import com.carddemo.common.dto.SessionContext;
+import com.carddemo.common.dto.SessionContextSupport;
 import com.carddemo.common.dto.TransactionAddRequestDto;
 import com.carddemo.common.dto.TransactionAddResponseDto;
 import com.carddemo.common.dto.TransactionListRequestDto;
@@ -35,7 +36,6 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 
 /**
@@ -51,12 +51,6 @@ import jakarta.validation.Valid;
 @RestController
 @RequestMapping("/transactions")
 public class TransactionController {
-
-    /**
-     * :purpose: ``HttpSession`` attribute key under which the externalized
-     *  pseudo-conversational {@link SessionContext} is stored and retrieved.
-     */
-    private static final String SESSION_CONTEXT_ATTR = SessionContext.SESSION_ATTRIBUTE_NAME;
 
     /** :purpose: Online transaction business-logic collaborator (list, view, add). */
     private final TransactionService transactionService;
@@ -92,6 +86,19 @@ public class TransactionController {
     }
 
     /**
+     * :purpose: Read the last transaction on file, backing the add screen's
+     *  ``F5=Copy Last Tran.`` action (``COTRN02C COPY-LAST-TRAN-DATA``). Declared before
+     *  the ``/{id}`` template so the literal segment wins the mapping.
+     * :returns: the view response DTO for the highest-keyed transaction (HTTP 200).
+     * :raises RecordNotFoundException: when no transaction exists, mapped to HTTP 404 by
+     *  the shared ``GlobalExceptionHandler``.
+     */
+    @GetMapping("/last")
+    public TransactionViewResponseDto viewLastTransaction() {
+        return transactionService.viewLastTransaction();
+    }
+
+    /**
      * :purpose: View a single transaction by its 16-character zero-padded id (CICS
      *  ``CT01`` / ``COTRN01C``). The empty/blank-id guard and the not-found lookup are
      *  business logic owned by the service; the raw path variable is passed straight
@@ -105,19 +112,6 @@ public class TransactionController {
      * :raises RecordNotFoundException: when no transaction exists for the id (mapped to
      *  HTTP 404 by the shared ``GlobalExceptionHandler``).
      */
-    /**
-     * :purpose: Read the last transaction on file, backing the add screen's
-     *  ``F5=Copy Last Tran.`` action (``COTRN02C COPY-LAST-TRAN-DATA``). Declared before
-     *  the ``/{id}`` template so the literal segment wins the mapping.
-     * :returns: the view response DTO for the highest-keyed transaction (HTTP 200).
-     * :raises RecordNotFoundException: when no transaction exists, mapped to HTTP 404 by
-     *  the shared ``GlobalExceptionHandler``.
-     */
-    @GetMapping("/last")
-    public TransactionViewResponseDto viewLastTransaction() {
-        return transactionService.viewLastTransaction();
-    }
-
     @GetMapping("/{id}")
     public TransactionViewResponseDto viewTransaction(@PathVariable("id") String id,
                                                       HttpServletRequest httpRequest) {
@@ -149,40 +143,28 @@ public class TransactionController {
     }
 
     /**
-     * :purpose: Resolve the externalized pseudo-conversational session context from the
-     *  request's *already-established* servlet session, returning a fresh instance when
-     *  the caller has no session or none is present (COMMAREA bridge, AAP section
-     *  0.6.3). ``getSession(false)`` never creates a session, so an anonymous call
-     *  persists no Spring Session entry.
+     * :purpose: Resolve the externalized pseudo-conversational session context for this request
+     *  through the ONE shared, fail-closed resolver, so every CardDemo controller answers a
+     *  missing or wrong-typed context identically instead of fabricating a blank identity.
      * :param httpRequest: the current servlet request.
-     * :returns: the stored {@link SessionContext}, or a new instance when the caller has
-     *  no session, or the attribute is absent or of an unexpected type.
+     * :returns: the {@link SessionContext} the caller's session carries; never ``null``.
+     * :raises IllegalStateException: when the caller has no session or the session carries no
+     *  usable context. Every route here is gated by the shared filter chain, so a request
+     *  cannot legitimately arrive in that state.
      */
     private SessionContext resolveSessionContext(HttpServletRequest httpRequest) {
-        HttpSession httpSession = httpRequest.getSession(false);
-        if (httpSession == null) {
-            return new SessionContext();
-        }
-        Object attribute = httpSession.getAttribute(SESSION_CONTEXT_ATTR);
-        if (attribute instanceof SessionContext sessionContext) {
-            return sessionContext;
-        }
-            throw new IllegalStateException(
-                    "No CardDemo session context on the authenticated session; sign on again");
+        return SessionContextSupport.require(httpRequest);
     }
 
     /**
-     * :purpose: Re-store the (possibly mutated) session context so any paging cursor,
-     *  last-map, or selected-id state the service updated is flushed to the session for
-     *  the next stateless request. Only an existing session is written to: a caller
-     *  without one carries no pseudo-conversational state to preserve.
+     * :purpose: Flush the (possibly mutated) session context back to the caller's EXISTING HTTP
+     *  session so any paging cursor, last-map or selected-id state the service updated is seen
+     *  by the next stateless request. A caller without a session carries no
+     *  pseudo-conversational state, and none is created for it.
      * :param httpRequest: the current servlet request.
      * :param sessionContext: the session context to persist.
      */
     private void storeSessionContext(HttpServletRequest httpRequest, SessionContext sessionContext) {
-        HttpSession httpSession = httpRequest.getSession(false);
-        if (httpSession != null) {
-            httpSession.setAttribute(SESSION_CONTEXT_ATTR, sessionContext);
-        }
+        SessionContextSupport.store(httpRequest, sessionContext);
     }
 }

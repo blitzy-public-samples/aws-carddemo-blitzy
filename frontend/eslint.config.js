@@ -97,9 +97,15 @@ export default tseslint.config(
     },
   },
 
-  // Test files run under Jest and legitimately reach for its globals.
+  // Test files run under Jest and legitimately reach for its globals; so do the
+  // shared harnesses under `src/testing`, which are loaded only by test files.
   {
-    files: ['**/*.test.{ts,tsx}', 'src/setupTests.ts', 'src/__mocks__/**'],
+    files: [
+      '**/*.test.{ts,tsx}',
+      'src/setupTests.ts',
+      'src/__mocks__/**',
+      'src/testing/**',
+    ],
     languageOptions: {
       globals: {
         ...globals.jest,

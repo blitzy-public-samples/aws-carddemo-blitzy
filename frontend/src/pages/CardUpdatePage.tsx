@@ -7,7 +7,7 @@
  *     transaction ``CCUP``, program ``app/cbl/COCRDUPC.cbl``). It reads the card
  *     addressed by the route, shows the protected account and card numbers, and
  *     lets the operator edit the embossed name, the active status and the expiry
- *     month / year, then validate them (ENTER) and rewrite the record (F5).
+ *     month / year, then validate them (ENTER) and rewrite the record.
  * :output: The rendered screen body. The header, the line-23 message and the
  *     line-24 function keys are published to the shared shell through
  *     :func:`useScreenChrome`, so this page renders none of them itself.

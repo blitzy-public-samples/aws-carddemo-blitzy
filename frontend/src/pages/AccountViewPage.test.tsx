@@ -7,8 +7,8 @@
  *     transaction ``CAVW``, program ``COACTVWC`` — as re-expressed by
  *     :func:`AccountViewPage`: the fetch driven by the ``/accounts/:accountId``
  *     route, the verbatim BMS captions and their column padding, the preserved
- *     ``acctExpiraionDate`` misspelling, the non-editable detail cells, the masked
- *     Social Security number, the ``Account number must be a non zero 11 digit
+ *     ``acctExpiraionDate`` misspelling, the non-editable detail cells, the three
+ *     masked regulated identifiers, the ``Account number must be a non zero 11 digit
  *     number`` filter edit, and the single ``F3=Exit`` function key.
  * :output: Jest assertions only; the suite writes no files and performs no I/O.
  * :note: ``../api`` is doubled with ``jest.unstable_mockModule``, and the modules
@@ -24,7 +24,6 @@
 
 import { jest } from '@jest/globals';
 import {
-  act,
   fireEvent,
   getDefaultNormalizer,
   render,
@@ -47,8 +46,26 @@ const ACCOUNT_NUMBER_ERROR = 'Account number must be a non zero 11 digit number'
 /** Line-23 message of ``COACTVWC`` ``DID-NOT-FIND-ACCT-IN-ACCTDAT``. */
 const ACCOUNT_NOT_FOUND_ERROR = 'Did not find this account in account master file';
 
-/** Masked rendering of the customer Social Security number: last four digits only. */
+/**
+ * The three regulated customer identifiers as the SERVICE stores them. They are
+ * declared so the suite can assert that none of them reaches the document: the
+ * account service masks all three in ``AccountMapper`` before the response leaves the
+ * boundary (AAP 0.6.7), so a raw value in the DOM would mean that mask was lost.
+ */
+const RAW_SSN = '123456789';
+const RAW_GOVT_ISSUED_ID = 'IL-DL-987654321';
+const RAW_EFT_ACCOUNT_ID = '0000000042';
+
+/**
+ * The masked renderings ``GET /accounts/{id}`` actually returns — ``PiiMasker.maskSsn``
+ * for the Social Security number and ``PiiMasker.maskIdentifier`` for the other two,
+ * each retaining only the trailing four characters. The fixture below carries these,
+ * not the raw values, so the assertions bind to the wire contract the service
+ * publishes.
+ */
 const MASKED_SSN = '***-**-6789';
+const MASKED_GOVT_ISSUED_ID = '***********4321';
+const MASKED_EFT_ACCOUNT_ID = '******0042';
 
 /**
  * Text-matcher normalizer that keeps a caption's BMS column padding intact, so an
@@ -96,11 +113,11 @@ class ApiError extends Error {
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   getAccount: getAccountMock,
@@ -137,10 +154,10 @@ const account: AccountViewResponseDto = {
   custAddrZip: '62704',
   custPhoneNum1: '(217)555-0100',
   custPhoneNum2: '(217)555-0199',
-  custSsn: '123456789',
-  custGovtIssuedId: 'IL-DL-987654321',
+  custSsn: MASKED_SSN,
+  custGovtIssuedId: MASKED_GOVT_ISSUED_ID,
   custDobYyyyMmDd: '1985-03-27',
-  custEftAccountId: '0000000042',
+  custEftAccountId: MASKED_EFT_ACCOUNT_ID,
   custPriCardHolderInd: 'Y',
   custFicoCreditScore: '750',
   version: 3,
@@ -220,11 +237,12 @@ const CUSTOMER_CAPTIONS: readonly string[] = [
 
 type AccountViewPageComponent = (typeof import('./AccountViewPage'))['default'];
 type LayoutComponent = (typeof import('../components/Layout'))['default'];
-type SetSession = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let AccountViewPage: AccountViewPageComponent;
 let Layout: LayoutComponent;
-let __setSession: SetSession;
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported after the mock is registered so the page, the shell, and the hooks
@@ -232,20 +250,20 @@ beforeAll(async () => {
   // with Testing Library.
   ({ default: AccountViewPage } = await import('./AccountViewPage'));
   ({ default: Layout } = await import('../components/Layout'));
-  ({ __setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   getAccountMock.mockReset();
   getAccountMock.mockResolvedValue(account);
   signonMock.mockReset();
-  __setSession('USER0001', 'U');
+  await seedSignedOnSession('USER0001', 'U');
 });
 
-afterEach(() => {
-  act(() => {
-    __setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 /**
@@ -453,14 +471,33 @@ describe('AccountViewPage — read-only detail fields', () => {
   });
 });
 
-describe('AccountViewPage — Social Security number masking', () => {
-  it('masks the Social Security number and never renders its digits', async () => {
+describe('AccountViewPage — regulated identifier masking', () => {
+  it('renders the masked Social Security number the service returns, retaining only its last four digits', async () => {
     await renderLoaded();
 
     const cell = screen.getByTestId('cust-ssn');
     expect(cell.textContent).toBe(MASKED_SSN);
     expect(cell.textContent).toContain('6789');
-    expect(document.body.textContent ?? '').not.toContain(account.custSsn);
+  });
+
+  it('renders the masked government-issued id and EFT account id the service returns', async () => {
+    await renderLoaded();
+
+    expect(screen.getByTestId('cust-govt-issued-id').textContent).toBe(
+      MASKED_GOVT_ISSUED_ID,
+    );
+    expect(screen.getByTestId('cust-eft-account-id').textContent).toBe(
+      MASKED_EFT_ACCOUNT_ID,
+    );
+  });
+
+  it('renders no raw regulated identifier anywhere in the document', async () => {
+    await renderLoaded();
+
+    const rendered = document.body.textContent ?? '';
+    expect(rendered).not.toContain(RAW_SSN);
+    expect(rendered).not.toContain(RAW_GOVT_ISSUED_ID);
+    expect(rendered).not.toContain(RAW_EFT_ACCOUNT_ID);
   });
 });
 

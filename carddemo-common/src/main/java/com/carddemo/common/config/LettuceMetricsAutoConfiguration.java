@@ -35,7 +35,7 @@ import org.springframework.context.annotation.Bean;
  *  Boot wires a Lettuce ``ClientResources`` with Lettuce's default *no-op*
  *  command-latency recorder, so ``lettuce_command_completion_seconds_*`` and
  *  ``lettuce_command_firstresponse_seconds_*`` were never produced and the three
- *  Redis panels could only ever read "No data" (QA Issue 14). This
+ *  Redis panels could only ever read "No data". This
  *  auto-configuration installs Lettuce's Micrometer recorder on that same
  *  ``ClientResources`` instead of replacing the bean, so every other Boot-managed
  *  Lettuce setting is preserved.

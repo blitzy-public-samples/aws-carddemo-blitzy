@@ -43,7 +43,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 
 /**
  * :purpose: Unit tests for :class:`RequestLoggingFilter`, the shared access log that closes the
- *     "no request logging at all" half of QA Issue 9. Asserts that one record is emitted per
+ *     request-logging contract. Asserts that one record is emitted per
  *     request, that the level reflects the outcome, that an escaping exception is reported while the
  *     correlation id is still in the MDC, and that probe endpoints are excluded.
  * :note: Uses a Logback ``ListAppender`` attached to the filter's own logger so the assertions read

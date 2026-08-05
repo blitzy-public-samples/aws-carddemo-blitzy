@@ -175,7 +175,7 @@ class RejectFileItemWriterTest {
          *     [app/jcl/POSTTRAN.jcl], so 430 is a BYTE count. Under the platform default
          *     UTF-8 a single accented character in a text field made the record 431+
          *     bytes and byte-shifted every field after it, so a byte-offset downstream
-         *     reader lost the reject reason code entirely (QA Issue 3). One character
+         *     reader lost the reject reason code entirely. One character
          *     maps to exactly one byte in the writer's ISO-8859-1 encoding.
          */
         @Test

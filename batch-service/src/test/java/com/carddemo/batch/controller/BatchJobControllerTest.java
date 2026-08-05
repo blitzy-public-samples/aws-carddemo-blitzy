@@ -42,7 +42,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * :purpose: Verify the HTTP launch surface that makes the nine batch-service jobs
- *  reachable at runtime (QA Issue 14 - before it existed, every ``launch*`` method
+ *  reachable at runtime (without it, every ``launch*`` method
  *  of {@link JobSchedulingConfig} was dead code and the Spring Batch dashboard
  *  panels could never show data). It asserts the discovery catalogue, that a bare
  *  submission with no request body launches through the JCL-derived default

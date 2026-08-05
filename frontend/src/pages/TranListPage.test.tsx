@@ -76,11 +76,11 @@ class ApiError extends Error {
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   listTransactions: listTransactionsMock,
@@ -144,11 +144,12 @@ const TEST_USER = 'USER0001';
 
 type TranListPageModule = typeof import('./TranListPage');
 type LayoutModule = typeof import('../components/Layout');
-type SessionStoreModule = typeof import('../hooks/useSession');
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let TranListPage: TranListPageModule['default'];
 let Layout: LayoutModule['default'];
-let setSession: SessionStoreModule['__setSession'];
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported after the mock is registered so the screen, the shell and the hooks
@@ -156,7 +157,9 @@ beforeAll(async () => {
   // Testing Library.
   ({ default: TranListPage } = await import('./TranListPage'));
   ({ default: Layout } = await import('../components/Layout'));
-  ({ __setSession: setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
 /**
@@ -386,20 +389,16 @@ function selectRow(rowIndex: number, flag: string): void {
   fireEvent.change(selectionFields()[rowIndex], { target: { value: flag } });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   listTransactionsMock.mockReset();
   signonMock.mockReset();
   listTransactionsMock.mockImplementation((request) => Promise.resolve(browse(request)));
   sessionStorage.clear();
-  act(() => {
-    setSession(TEST_USER, 'U');
-  });
+  await seedSignedOnSession(TEST_USER, 'U');
 });
 
-afterEach(() => {
-  act(() => {
-    setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
   sessionStorage.clear();
 });
 

@@ -81,29 +81,12 @@ public class SecurityConfig {
             // browser-facing surface. See docs/decision-log.md.
             .csrf(csrf -> csrf.disable())
             .authorizeHttpRequests(authorize -> authorize
-                // The container ERROR dispatch must not be re-authorized: doing so
-                // turned a genuine 400/405/415/500 into an empty 403 and hid the real
-                // failure from operators.
-                .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
-                // Permitted for every method, not just POST: only POST is mapped, so
-                // an unsupported method must reach the dispatcher and be answered with
-                // 405 (plus an Allow header) instead of being masked as an
-                // authorization failure.
-                // The sign-on endpoint is public for EVERY method, not POST alone:
-                // gating it on POST made a GET fail authorization before the
-                // dispatcher could answer 405, masking the real outcome as an
-                // empty 403.
-                // The internal error/async dispatches must reach the error handler.
-                // Without this, a framework failure (an unsupported method, an
-                // unreadable body, an unsupported content type) is forwarded to
-                // /error as an anonymous ERROR dispatch, denied here, and surfaces
-                // as an opaque bodyless 403 that hides the real status and message.
+                // The internal ERROR and ASYNC dispatches reach the error handler
+                // unauthorized, so a framework failure keeps its real status and body
+                // instead of surfacing as a bodyless 403.
                 .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC).permitAll()
-                // The sign-on resource is public as a PATH, not as a single method.
-                // Constraining the rule to POST makes Spring Security reject every
-                // other verb with an opaque 403 before the DispatcherServlet can
-                // report the supported methods; permitting the path lets the
-                // framework answer a non-POST verb with 405 and an Allow header.
+                // The sign-on resource is public as a PATH, not as a single method, so a
+                // non-POST verb is answered with 405 and an Allow header.
                 .requestMatchers("/auth/signon").permitAll()
                 .requestMatchers(
                     "/actuator/health",

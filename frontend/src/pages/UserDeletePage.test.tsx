@@ -17,7 +17,9 @@
  *     registered and share React with the statically imported Testing Library.
  *     The screen is rendered inside ``Layout``, which owns line 23 (message) and
  *     line 24 (key legend), under a ``MemoryRouter`` carrying an ``/admin`` probe
- *     route, with an authenticated administrator seeded through ``__setSession``.
+ *     route, with an authenticated administrator established through the shared
+ *     session harness, which publishes the identity over the production
+ *     ``GET /session`` probe rather than writing the store directly.
  */
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -145,11 +147,11 @@ const signonMock = jest.fn();
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   ApiError,
@@ -161,11 +163,12 @@ jest.unstable_mockModule('../api', () => ({
 /** Handles for the modules loaded once the ``../api`` mock is registered. */
 type UserDeletePageComponent = (typeof import('./UserDeletePage'))['default'];
 type LayoutComponent = (typeof import('../components/Layout'))['default'];
-type SetSession = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let UserDeletePage: UserDeletePageComponent;
 let Layout: LayoutComponent;
-let __setSession: SetSession;
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported after the mock is registered so the screen, the shell, and the
@@ -173,23 +176,21 @@ beforeAll(async () => {
   // React with Testing Library.
   ({ default: UserDeletePage } = await import('./UserDeletePage'));
   ({ default: Layout } = await import('../components/Layout'));
-  ({ __setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   getUserMock.mockReset();
   deleteUserMock.mockReset();
   getUserMock.mockResolvedValue(targetUser);
   deleteUserMock.mockResolvedValue(undefined);
-  act(() => {
-    __setSession(ADMIN_USER_ID, 'A');
-  });
+  await seedSignedOnSession(ADMIN_USER_ID, 'A');
 });
 
-afterEach(() => {
-  act(() => {
-    __setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 /**
@@ -415,6 +416,43 @@ describe('UserDeletePage — deliberate delete', () => {
     });
     expect(deleteUserMock).toHaveBeenCalledWith(targetUser.userId);
     expect(deleteUserMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the key field and both actions while the delete is in flight, deleting once', async () => {
+    let acknowledge!: () => void;
+    deleteUserMock.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        acknowledge = resolve;
+      }),
+    );
+    renderScreen({ pathname: DELETE_ROUTE, state: { userId: targetUser.userId } });
+    await waitForRecordDisplayed(targetUser);
+
+    fireEvent.click(screen.getByTestId('delete-button'));
+
+    // ``ATTRB=ASKIP`` for the whole in-flight interval: neither the key field nor
+    // either action is live while the DELETE is outstanding.
+    await waitFor(() => {
+      expect(screen.getByTestId('user-id')).toBeDisabled();
+    });
+    expect(screen.getByTestId('fetch-button')).toBeDisabled();
+    expect(screen.getByTestId('delete-button')).toBeDisabled();
+    expect(screen.getByRole('button', { name: PFKEY_LABEL_PF5 })).toBeDisabled();
+
+    // A second delete, from the button and from the physical F5, must not delete twice.
+    fireEvent.click(screen.getByTestId('delete-button'));
+    fireEvent.keyDown(document, { key: 'F5' });
+    expect(deleteUserMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      acknowledge();
+      // Awaited so this is an asynchronous act scope: the effects and the promise
+      // callbacks the interaction queues are flushed before it returns.
+      await Promise.resolve();
+    });
+
+    expect(deleteUserMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('user-id')).toBeEnabled();
   });
 
   it('refuses an empty user id on the delete action and issues no delete', async () => {

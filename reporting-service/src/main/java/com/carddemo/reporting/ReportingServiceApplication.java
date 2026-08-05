@@ -51,7 +51,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  *     the shared ``BatchOutputPathResolver``. The statement writer previously
  *     opened a path relative to the process working directory, which is inside
  *     the read-only container root, so every run failed with
- *     ``java.io.IOException: No such file or directory`` (QA Issue 21); the
+ *     ``java.io.IOException: No such file or directory``; the
  *     resolver confines the statement files to the configured, writable
  *     ``carddemo.batch.output-dir`` and proves that root writable at startup.
  * :note: {@link JdbcBatchConfiguration} is imported so the statement job's

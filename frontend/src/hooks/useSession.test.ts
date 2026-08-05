@@ -34,7 +34,6 @@ const signonMock =
   jest.fn<(request: SignonRequestDto) => Promise<SignonResponseDto>>();
 const getSessionIdentityMock = jest.fn<() => Promise<SessionIdentityDto>>();
 const logoutMock = jest.fn<() => Promise<void>>();
-const clearLocalCredentialsMock = jest.fn<() => void>();
 
 /**
  * Captures the expiry callback the hook registers, so a test can fire the centralized
@@ -47,7 +46,6 @@ jest.unstable_mockModule('../api', () => ({
   signon: signonMock,
   getSessionIdentity: getSessionIdentityMock,
   logout: logoutMock,
-  clearLocalCredentials: clearLocalCredentialsMock,
   registerSessionExpiryHandler: (handler: () => void) => {
     expiryHandler = handler;
     return () => {
@@ -116,7 +114,6 @@ beforeAll(async () => {
 beforeEach(() => {
   signonMock.mockReset();
   logoutMock.mockReset();
-  clearLocalCredentialsMock.mockReset();
   getSessionIdentityMock.mockReset();
   // The default server answer is "no usable session"; a test that wants an identity
   // overrides it.
@@ -334,24 +331,24 @@ describe('useSession — sign-in revokes a live session first', () => {
 });
 
 describe('useSession — signOut revokes the server session first', () => {
-  it('awaits POST /logout, then clears the local session and credentials', async () => {
+  it('awaits POST /logout, then clears the local session', async () => {
     const { result } = await signedIn('ADMIN001', 'A');
     expect(result.current.isAuthenticated).toBe(true);
 
-    const order: string[] = [];
+    // The local session must still be authoritative while the revocation is in flight,
+    // so a signed-out screen is never presented over a session cookie that is live.
+    let authenticatedDuringLogout: boolean | undefined;
     logoutMock.mockImplementation(() => {
-      order.push('logout');
+      authenticatedDuringLogout = result.current.isAuthenticated;
       return Promise.resolve();
-    });
-    clearLocalCredentialsMock.mockImplementation(() => {
-      order.push('clearCredentials');
     });
 
     await act(async () => {
       await result.current.signOut();
     });
 
-    expect(order).toEqual(['logout', 'clearCredentials']);
+    expect(logoutMock).toHaveBeenCalledTimes(1);
+    expect(authenticatedDuringLogout).toBe(true);
     expect(result.current.isAuthenticated).toBe(false);
     expect(result.current.user).toBeNull();
     expect(result.current.role).toBeNull();
@@ -374,7 +371,7 @@ describe('useSession — signOut revokes the server session first', () => {
     expect(caught).toBeInstanceOf(FakeApiError);
     // The server session is still live, so the UI must not claim to be signed out.
     expect(result.current.isAuthenticated).toBe(true);
-    expect(clearLocalCredentialsMock).not.toHaveBeenCalled();
+    expect(result.current.user).toBe('ADMIN001');
   });
 });
 
@@ -390,7 +387,7 @@ describe('useSession — centralized session expiry', () => {
 
     expect(result.current.isAuthenticated).toBe(false);
     expect(result.current.role).toBeNull();
-    expect(clearLocalCredentialsMock).toHaveBeenCalled();
+    expect(result.current.session).toBeNull();
   });
 });
 

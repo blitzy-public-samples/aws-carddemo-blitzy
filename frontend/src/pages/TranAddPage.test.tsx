@@ -73,11 +73,11 @@ const signonMock = jest.fn();
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   getLastTransaction: jest.fn(),
   __esModule: true,
@@ -88,16 +88,19 @@ jest.unstable_mockModule('../api', () => ({
 
 type LayoutComponent = (typeof import('../components/Layout'))['default'];
 type TranAddPageComponent = (typeof import('./TranAddPage'))['default'];
-type SetSession = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let Layout: LayoutComponent;
 let TranAddPage: TranAddPageComponent;
-let __setSession: SetSession;
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   ({ default: Layout } = await import('../components/Layout'));
   ({ default: TranAddPage } = await import('./TranAddPage'));
-  ({ __setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
 /** Route the add screen is mounted at. */
@@ -286,19 +289,15 @@ function expectInfoLine(message: string): void {
   expect(infoBanner()?.textContent).toBe(message);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   addTransactionMock.mockReset();
   addTransactionMock.mockResolvedValue(ADD_RESPONSE);
   signonMock.mockReset();
-  act(() => {
-    __setSession(SIGNED_ON_USER, 'U');
-  });
+  await seedSignedOnSession(SIGNED_ON_USER, 'U');
 });
 
-afterEach(() => {
-  act(() => {
-    __setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 /**
@@ -634,6 +633,48 @@ describe('TranAddPage — line-24 function keys', () => {
 
     expect(addTransactionMock).toHaveBeenCalledTimes(1);
     expect(addTransactionMock.mock.calls[0][0]).toStrictEqual(EXPECTED_REQUEST);
+  });
+});
+
+describe('TranAddPage — in-flight duplicate-add guard', () => {
+  it('closes every entry field while the add is in flight and posts once for repeated ENTER', async () => {
+    let acknowledge!: (value: TranAddResponseDto) => void;
+    addTransactionMock.mockReturnValueOnce(
+      new Promise<TranAddResponseDto>((resolve) => {
+        acknowledge = resolve;
+      }),
+    );
+    renderScreen();
+    fillEntry();
+    enterField(LABELS.confirm, 'Y');
+
+    act(() => {
+      pressEnter();
+    });
+
+    // ``ATTRB=ASKIP`` for the whole in-flight interval: the operator cannot retype a
+    // money-moving entry while the POST is outstanding.
+    for (const [label] of VALID_ENTRY) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
+    expect(screen.getByLabelText(LABELS.confirm)).toBeDisabled();
+
+    // A second ENTER, from the legend and from the physical key, must not post again.
+    act(() => {
+      pressEnter();
+      fireEvent.keyDown(document, { key: 'Enter' });
+    });
+    expect(addTransactionMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      acknowledge(ADD_RESPONSE);
+      // Awaited so this is an asynchronous act scope: the effects and the promise
+      // callbacks the interaction queues are flushed before it returns.
+      await Promise.resolve();
+    });
+
+    expect(addTransactionMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText(LABELS.acctId)).toBeEnabled();
   });
 });
 

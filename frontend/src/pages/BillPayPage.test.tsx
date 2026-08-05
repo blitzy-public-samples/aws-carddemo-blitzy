@@ -70,11 +70,11 @@ class MockApiError extends Error {
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   payBill: payBillMock,
@@ -93,8 +93,14 @@ let Layout: (typeof import('../components/Layout'))['default'];
 /** Normalized error constructor served by the mocked ``../api``. */
 let ApiError: (typeof import('../api'))['ApiError'];
 
-/** Session test seam used to seed the signed-on user. */
-let __setSession: (typeof import('../hooks/useSession'))['__setSession'];
+/** The shared session harness, which seeds identity over ``GET /session``. */
+type SessionHarness = typeof import('../testing/sessionHarness');
+
+/** Establishes the signed-on user this screen is exercised as. */
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+
+/** Returns the store to the server-confirmed signed-out state between tests. */
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported after the mock is registered so every consumer binds to the mocked
@@ -102,7 +108,9 @@ beforeAll(async () => {
   ({ default: BillPayPage } = await import('./BillPayPage'));
   ({ default: Layout } = await import('../components/Layout'));
   ({ ApiError } = await import('../api'));
-  ({ __setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
 /** ``COBIL00C`` L161 empty account-id message. */
@@ -247,17 +255,13 @@ function pfKey(caption: string): HTMLElement {
   return screen.getByRole('button', { name: caption });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   payBillMock.mockReset();
-  act(() => {
-    __setSession(SESSION_USER, 'U');
-  });
+  await seedSignedOnSession(SESSION_USER, 'U');
 });
 
-afterEach(() => {
-  act(() => {
-    __setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 /**
@@ -443,6 +447,45 @@ describe('BillPayPage — confirmation gate (COBIL00C CONFIRM Y/N)', () => {
         confirm: 'y',
       });
     });
+  });
+});
+
+describe('BillPayPage — in-flight duplicate-payment guard', () => {
+  it('closes both entry fields while the payment is in flight and posts once for repeated ENTER', async () => {
+    const user = userEvent.setup();
+    let acknowledge!: (value: BillPayResponseDto) => void;
+    payBillMock.mockReturnValueOnce(
+      new Promise<BillPayResponseDto>((resolve) => {
+        acknowledge = resolve;
+      }),
+    );
+    renderBillPayScreen();
+
+    await user.type(acctIdField(), ACCOUNT_ID);
+    await user.type(confirmField(), 'Y');
+    await user.click(pfKey('ENTER=Continue'));
+
+    // ``ATTRB=ASKIP`` for the whole in-flight interval: the operator cannot retype the
+    // account or the confirmation while the payment POST is outstanding.
+    expect(acctIdField()).toBeDisabled();
+    expect(confirmField()).toBeDisabled();
+
+    // A second ENTER, from the legend and from the physical key, must not pay twice.
+    act(() => {
+      fireEvent.click(pfKey('ENTER=Continue'));
+      fireEvent.keyDown(document, { key: 'Enter' });
+    });
+    expect(payBillMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      acknowledge(successResponse(PAYMENT_SUCCESSFUL_BANNER));
+      // Awaited so this is an asynchronous act scope: the effects and the promise
+      // callbacks the interaction queues are flushed before it returns.
+      await Promise.resolve();
+    });
+
+    expect(payBillMock).toHaveBeenCalledTimes(1);
+    expect(acctIdField()).toBeEnabled();
   });
 });
 

@@ -20,7 +20,7 @@
 // Jest's native-ESM runtime does not inject ``jest`` as a global (unlike
 // ``describe`` / ``it`` / ``expect``), so it is imported explicitly.
 import { jest } from '@jest/globals';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
 import { CCDA_TITLE02 } from '../types';
@@ -164,11 +164,11 @@ const getCardMock =
 // reached through the hook barrel and the shell).
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   getCard: getCardMock,
@@ -178,32 +178,31 @@ jest.unstable_mockModule('../api', () => ({
 
 type CardDetailPageComponent = (typeof import('./CardDetailPage'))['default'];
 type LayoutComponent = (typeof import('../components/Layout'))['default'];
-type SetSession = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let CardDetailPage: CardDetailPageComponent;
 let Layout: LayoutComponent;
-let __setSession: SetSession;
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported after the mock is registered so the page, the hooks, and the shell
   // all bind to the mocked ``../api``; no module reset, so React stays shared.
   ({ default: CardDetailPage } = await import('./CardDetailPage'));
   ({ default: Layout } = await import('../components/Layout'));
-  ({ __setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   getCardMock.mockReset();
   getCardMock.mockResolvedValue(cardDetail);
-  act(() => {
-    __setSession(SESSION_USER, 'U');
-  });
+  await seedSignedOnSession(SESSION_USER, 'U');
 });
 
-afterEach(() => {
-  act(() => {
-    __setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 /**

@@ -49,7 +49,7 @@ import org.springframework.core.task.support.ContextPropagatingTaskDecorator;
  *     {@link #launchTransactionPosting(String)}, which returns the submitted
  *     {@link JobExecution}.
  * :note: Before this configuration existed the job had NO launch surface in any
- *     deployable artefact (QA Issue 2): ``spring.batch.job.enabled`` is false, no
+ *     deployable artefact: ``spring.batch.job.enabled`` is false, no
  *     scheduler, runner or endpoint referenced the job, and batch-service's launch
  *     surface can only launch the jobs defined in its own context. The single most
  *     business-critical batch job of the migration was therefore reachable only from

@@ -124,7 +124,7 @@ class StatementGenerationJobIT {
                 () -> "classpath:org/springframework/batch/core/schema-postgresql.sql");
         // Point the shared BatchOutputPathResolver at this class's throwaway root so
         // the statement files land somewhere writable and the containment rule the
-        // resolver enforces is exercised end to end (QA Issue 21).
+        // resolver enforces is exercised end to end.
         registry.add("carddemo.batch.output-dir", BATCH_OUTPUT_ROOT::toString);
     }
 

@@ -339,19 +339,13 @@ class AccountControllerTest {
     @Test
     @DisplayName("GET /accounts/{id} refuses to fabricate a context when the session carries none")
     void viewAccount_withNoSessionContext_doesNotFabricateContext() throws Exception {
-        when(accountService.viewAccount(eq(VALID_ID_LONG), any(SessionContext.class)))
-                .thenReturn(stubViewResponse());
         MockHttpSession freshSession = new MockHttpSession();
 
+        // The shared resolver fails closed, so the request is refused through the shared
+        // error envelope and the service is never reached with an invented identity.
         mockMvc.perform(get("/accounts/{id}", VALID_ID).session(freshSession))
-                .andExpect(status().isOk());
+                .andExpect(status().isInternalServerError());
 
-        // A session carrying no COMMAREA yields an EMPTY context: no user id and no user
-        // type are invented, so nothing downstream can mistake the caller for a signed-on
-        // principal. The filter chain refuses such a request before the controller.
-        ArgumentCaptor<SessionContext> captor = ArgumentCaptor.forClass(SessionContext.class);
-        verify(accountService).viewAccount(eq(VALID_ID_LONG), captor.capture());
-        assertThat(captor.getValue().getUserId()).isNull();
-        assertThat(captor.getValue().getUserType()).isNull();
+        verifyNoInteractions(accountService);
     }
 }

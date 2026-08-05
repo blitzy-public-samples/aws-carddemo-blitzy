@@ -22,10 +22,10 @@ import com.carddemo.common.dto.CardListResponseDto;
 import com.carddemo.common.dto.CardUpdateRequestDto;
 import com.carddemo.common.dto.CardUpdateResponseDto;
 import com.carddemo.common.dto.SessionContext;
+import com.carddemo.common.dto.SessionContextSupport;
 import com.carddemo.common.exception.CardDemoException;
 
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpSession;
 import jakarta.validation.Valid;
 
 import org.springframework.web.bind.annotation.GetMapping;
@@ -55,14 +55,6 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/cards")
 public class CardController {
-
-    /**
-     * :purpose: ``HttpSession`` attribute key under which the pseudo-conversational
-     *  :java:type:`SessionContext` (the externalized COMMAREA replacement) is stored.
-     *  Shared verbatim across every CardDemo controller so the Spring Session (Redis)
-     *  context stays consistent as the client moves between services.
-     */
-    private static final String SESSION_CONTEXT_ATTRIBUTE = SessionContext.SESSION_ATTRIBUTE_NAME;
 
     /** :purpose: Card feature business-logic service to which every request delegates. */
     private final CardService cardService;
@@ -209,43 +201,27 @@ public class CardController {
     }
 
     /**
-     * :purpose: Resolve the externalized pseudo-conversational session context from the
-     *  request's *already-established* HTTP session under the shared attribute key,
-     *  returning an empty context when the caller has no session or the session carries
-     *  none. ``getSession(false)`` never creates a session, so an anonymous call persists
-     *  no Spring Session entry.
+     * :purpose: Resolve the externalized pseudo-conversational session context for this request
+     *  through the ONE shared, fail-closed resolver, so every CardDemo controller answers a
+     *  missing or wrong-typed context identically instead of fabricating a blank identity.
      * :param httpRequest: the current servlet request.
-     * :returns: the resolved :java:type:`SessionContext`, never ``null``.
+     * :returns: the {@link SessionContext} the caller's session carries; never ``null``.
+     * :raises IllegalStateException: when the caller has no session or the session carries no
+     *  usable context. Every route here is gated by the shared filter chain, so a request
+     *  cannot legitimately arrive in that state.
      */
     private SessionContext resolveSessionContext(HttpServletRequest httpRequest) {
-        HttpSession session = httpRequest.getSession(false);
-        if (session == null) {
-            return new SessionContext();
-        }
-        Object attribute = session.getAttribute(SESSION_CONTEXT_ATTRIBUTE);
-        if (attribute instanceof SessionContext ctx) {
-            return ctx;
-        }
-        // A session that carries no context is an invariant violation, not a recoverable
-        // state: fabricating a blank identity here would hand the request a context whose
-        // user type gates nothing. The SecurityFilterChain rejects such a request with 401
-        // before it reaches this controller.
-        throw new IllegalStateException(
-                "No CardDemo session context on the authenticated session; sign on again");
+        return SessionContextSupport.require(httpRequest);
     }
 
     /**
-     * :purpose: Flush the (possibly mutated) session context back to the caller's HTTP
-     *  session so the next stateless request sees the updated COMMAREA replacement. Only
-     *  an existing session is written to: a caller without one carries no
-     *  pseudo-conversational state to preserve.
+     * :purpose: Flush the (possibly mutated) session context back to the caller's EXISTING HTTP
+     *  session so the next stateless request sees the updated COMMAREA replacement. A caller
+     *  without a session carries no pseudo-conversational state, and none is created for it.
      * :param httpRequest: the current servlet request.
      * :param ctx: the session context to persist.
      */
     private void storeSessionContext(HttpServletRequest httpRequest, SessionContext ctx) {
-        HttpSession session = httpRequest.getSession(false);
-        if (session != null) {
-            session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, ctx);
-        }
+        SessionContextSupport.store(httpRequest, ctx);
     }
 }

@@ -20,7 +20,14 @@
  *     ``useScreenChrome`` — and inside ``MemoryRouter``, whose location it
  *     changes on row selection and on ``F3``.
  */
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  getDefaultNormalizer,
+  render,
+  screen,
+  within,
+} from '@testing-library/react';
 // The header title lines every screen publishes (``COTTL01Y``).
 import { CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { RenderResult } from '@testing-library/react';
@@ -84,11 +91,11 @@ const signonMock =
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   listCards: listCardsMock,
@@ -113,6 +120,38 @@ const SESSION_USER = 'USER0001';
 
 /** Router entry the card list screen is reached from. */
 const CARD_LIST_ROUTE = '/cards';
+
+/** Verbatim ``COCRDLI.bms`` line-4 heading (``POS=(4,31)``, ``LENGTH=17``). */
+const SCREEN_HEADING = 'List Credit Cards';
+
+/**
+ * Verbatim ``COCRDLI.bms`` line-6 caption of the ``ACCTSID`` browse filter
+ * (``POS=(6,22)``, ``LENGTH=19``), including the four spaces that align its colon
+ * with the card-number caption below it.
+ */
+const ACCOUNT_FILTER_CAPTION = 'Account Number    :';
+
+/** Verbatim ``COCRDLI.bms`` line-7 caption of the ``CARDSID`` browse filter. */
+const CARD_FILTER_CAPTION = 'Credit Card Number:';
+
+/**
+ * The four line-9 column headings in mapset order (``POS=(9,10)``, ``(9,21)``,
+ * ``(9,45)``, ``(9,66)``). The card-number heading keeps the leading space the
+ * mapset gives it; the trailing spaces that pad each caption to its declared 3270
+ * field length carry no meaning in a table cell and are not reproduced.
+ */
+const COLUMN_HEADINGS: readonly string[] = [
+  'Select',
+  'Account Number',
+  ' Card Number',
+  'Active',
+];
+
+/**
+ * Text-matcher normalizer that keeps a caption's BMS column padding intact, so an
+ * assertion fails when internal spacing changes.
+ */
+const EXACT_TEXT = getDefaultNormalizer({ trim: false, collapseWhitespace: false });
 
 /**
  * :purpose: Build the card number of one fixture row, keeping the 16-character
@@ -185,11 +224,12 @@ function cardListResponse(count: number): CardListResponseDto {
 
 type CardListPageComponent = (typeof import('./CardListPage'))['default'];
 type LayoutComponent = (typeof import('../components/Layout'))['default'];
-type SetSessionSeam = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let CardListPage: CardListPageComponent;
 let Layout: LayoutComponent;
-let __setSession: SetSessionSeam;
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported after the mock is registered so the page, the shell, and the hooks
@@ -197,23 +237,21 @@ beforeAll(async () => {
   // React instance already loaded by Testing Library.
   ({ default: CardListPage } = await import('./CardListPage'));
   ({ default: Layout } = await import('../components/Layout'));
-  ({ __setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   listCardsMock.mockReset();
   listCardsMock.mockImplementation((request) => Promise.resolve(browse(request)));
   signonMock.mockReset();
-  act(() => {
-    __setSession(SESSION_USER, 'U');
-  });
+  await seedSignedOnSession(SESSION_USER, 'U');
 });
 
-afterEach(() => {
+afterEach(async () => {
   // Return the shared session store to signed out so no state leaks across tests.
-  act(() => {
-    __setSession(null, null);
-  });
+  await seedSignedOutSession();
 });
 
 /**
@@ -613,6 +651,36 @@ describe('CardListPage — row action column', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('INVALID ACTION CODE');
     expect(screen.getByTestId('location').textContent).toBe(CARD_LIST_ROUTE);
     expect(listCardsMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CardListPage — verbatim COCRDLI body captions', () => {
+  it('renders the line-4 heading and the two line-6/7 prompts with their BMS column padding', async () => {
+    await renderCardListScreen();
+
+    // The frame publishes its own level-2 title line, so the screen heading is matched
+    // by name; its id is what names the screen region for assistive technology.
+    expect(
+      screen.getByRole('heading', { level: 2, name: SCREEN_HEADING }),
+    ).toHaveAttribute('id', 'card-list-heading');
+    // ``POS=(6,22) LENGTH=19`` and ``POS=(7,22) LENGTH=19``: the four spaces before the
+    // colon of the account prompt align both captions, so the padding is part of the
+    // contract and the normalizer is disabled to keep it.
+    expect(
+      screen.getByText(ACCOUNT_FILTER_CAPTION, { normalizer: EXACT_TEXT }),
+    ).toHaveAttribute('for', 'acctsid');
+    expect(
+      screen.getByText(CARD_FILTER_CAPTION, { normalizer: EXACT_TEXT }),
+    ).toHaveAttribute('for', 'cardsid');
+  });
+
+  it('renders the four line-9 column headings in mapset order', async () => {
+    await renderCardListScreen();
+
+    const headings = screen
+      .getAllByRole('columnheader')
+      .map((heading) => heading.textContent);
+    expect(headings).toEqual(COLUMN_HEADINGS);
   });
 });
 

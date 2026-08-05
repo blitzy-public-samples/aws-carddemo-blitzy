@@ -232,13 +232,28 @@ class TransactionControllerTest {
         return request;
     }
 
+    /**
+     * :purpose: Build the signed-on session every production request carries: the shared filter
+     *  chain rebuilds the principal from this very attribute, so a request that passes
+     *  authorization always has it and the shared resolver never sees a missing context.
+     * :returns: a ``MockHttpSession`` carrying a populated {@link SessionContext}.
+     */
+    private static MockHttpSession signedOnSession() {
+        SessionContext context = new SessionContext();
+        context.setUserId("USER0001");
+        context.setUserType(SessionContext.UserType.CDEMO_USRTYP_USER);
+        MockHttpSession session = new MockHttpSession();
+        session.setAttribute(SESSION_CONTEXT_ATTR, context);
+        return session;
+    }
+
     @Test
     @DisplayName("GET /transactions returns 200 and the service's page verbatim")
     void listReturns200AndThePage() throws Exception {
         when(transactionService.listTransactions(any(TransactionListRequestDto.class),
                 any(SessionContext.class))).thenReturn(listResponse());
 
-        mockMvc.perform(get("/transactions"))
+        mockMvc.perform(get("/transactions").session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.transactions", org.hamcrest.Matchers.hasSize(1)))
                 .andExpect(jsonPath("$.transactions[0].tranId").value(TRAN_ID))
@@ -254,7 +269,7 @@ class TransactionControllerTest {
         when(transactionService.listTransactions(any(TransactionListRequestDto.class),
                 any(SessionContext.class))).thenReturn(listResponse());
 
-        mockMvc.perform(get("/transactions")
+        mockMvc.perform(get("/transactions").session(signedOnSession())
                         .param("action", "PF8")
                         .param("tranIdFilter", "42")
                         .param("pageNumber", "3")
@@ -285,7 +300,7 @@ class TransactionControllerTest {
         when(transactionService.viewTransaction(eq(TRAN_ID), any(SessionContext.class)))
                 .thenReturn(viewResponse());
 
-        mockMvc.perform(get("/transactions/{id}", TRAN_ID))
+        mockMvc.perform(get("/transactions/{id}", TRAN_ID).session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.tranId").value(TRAN_ID))
                 .andExpect(jsonPath("$.tranCardNum").value("4111111111111111"))
@@ -302,7 +317,8 @@ class TransactionControllerTest {
         when(transactionService.viewTransaction(eq("42"), any(SessionContext.class)))
                 .thenReturn(viewResponse());
 
-        mockMvc.perform(get("/transactions/{id}", "42")).andExpect(status().isOk());
+        mockMvc.perform(get("/transactions/{id}", "42").session(signedOnSession()))
+                .andExpect(status().isOk());
 
         // The zero-padding and the blank-id guard are service-owned business logic.
         verify(transactionService).viewTransaction(eq("42"), any(SessionContext.class));
@@ -314,7 +330,7 @@ class TransactionControllerTest {
         when(transactionService.viewTransaction(any(), any(SessionContext.class)))
                 .thenThrow(new RecordNotFoundException("Transaction ID NOT found..."));
 
-        mockMvc.perform(get("/transactions/{id}", "999"))
+        mockMvc.perform(get("/transactions/{id}", "999").session(signedOnSession()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.message").value("Transaction ID NOT found..."));
     }
@@ -325,7 +341,7 @@ class TransactionControllerTest {
         when(transactionService.viewTransaction(any(), any(SessionContext.class)))
                 .thenThrow(new CardDemoException("Tran ID can NOT be empty..."));
 
-        mockMvc.perform(get("/transactions/{id}", " "))
+        mockMvc.perform(get("/transactions/{id}", " ").session(signedOnSession()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Tran ID can NOT be empty..."));
     }
@@ -338,7 +354,7 @@ class TransactionControllerTest {
                 .thenReturn(new TransactionAddResponseDto(TRAN_ID,
                         "Transaction added successfully.  Your Tran ID is " + TRAN_ID + "."));
 
-        mockMvc.perform(post("/transactions")
+        mockMvc.perform(post("/transactions").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(addRequest())))
                 .andExpect(status().isCreated())
@@ -354,7 +370,7 @@ class TransactionControllerTest {
                 any(SessionContext.class)))
                 .thenReturn(new TransactionAddResponseDto(TRAN_ID, "ok"));
 
-        mockMvc.perform(post("/transactions")
+        mockMvc.perform(post("/transactions").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(addRequest())))
                 .andExpect(status().isCreated());
@@ -377,7 +393,7 @@ class TransactionControllerTest {
                 any(SessionContext.class)))
                 .thenThrow(new CardDemoException("Confirm to add this transaction..."));
 
-        mockMvc.perform(post("/transactions")
+        mockMvc.perform(post("/transactions").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(addRequest())))
                 .andExpect(status().isBadRequest())
@@ -391,7 +407,7 @@ class TransactionControllerTest {
                 any(SessionContext.class)))
                 .thenThrow(new RecordNotFoundException("Account ID NOT found..."));
 
-        mockMvc.perform(post("/transactions")
+        mockMvc.perform(post("/transactions").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(addRequest())))
                 .andExpect(status().isNotFound())
@@ -404,7 +420,7 @@ class TransactionControllerTest {
         TransactionAddRequestDto request = addRequest();
         request.setTranTypeCd("TOO-LONG");
 
-        mockMvc.perform(post("/transactions")
+        mockMvc.perform(post("/transactions").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest());

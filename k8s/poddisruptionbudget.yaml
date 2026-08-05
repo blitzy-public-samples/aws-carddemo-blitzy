@@ -1,6 +1,6 @@
 ---
 # ===========================================================================
-# k8s/poddisruptionbudget.yaml — voluntary-disruption guards (MJ-10).
+# k8s/poddisruptionbudget.yaml — voluntary-disruption guards.
 # ---------------------------------------------------------------------------
 # One PodDisruptionBudget per stateless workload. `maxUnavailable: 1` is always
 # drain-safe (a single-replica pod may still be evicted for node maintenance)

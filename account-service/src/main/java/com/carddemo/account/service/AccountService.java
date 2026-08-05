@@ -248,11 +248,6 @@ public class AccountService {
         // read and the flush.
         assertVersionUnchanged(acctId, request, account);
 
-        // Step 3 -- COACTUPC 9300/9700-CHECK-CHANGE-IN-REC (L4131-4189): when the caller
-        // carries the display-time ACUP-OLD-* snapshot, compare the freshly re-read record
-        // against it field by field and abort on any difference rather than overwriting a
-        // concurrent edit. This is the read-snapshot-compare-rewrite window that a version
-        // column checked only inside the write transaction cannot cover (AAP 0.6.2).
         if (snapshotSupplied && hasDataChangedSinceSnapshot(request, account, customer)) {
             log.warn("Account update conflict for acctId={}: record changed since display", acctId);
             throw new OptimisticLockConflictException();
@@ -581,14 +576,6 @@ public class AccountService {
     }
 
     /**
-     * :purpose: Compare a submitted text value against the stored one, treating an absent
-     *  submitted value as "not compared" so a partial snapshot or a partial submission
-     *  never reports a spurious difference.
-     * :param submitted: the submitted or snapshotted value; ``null`` means "not compared".
-     * :param stored: the value currently held in the record.
-     * :returns: ``true`` when both are present and differ after trimming.
-     */
-    /**
      * :purpose: Compare a submitted regulated identifier (SSN, government-issued id, EFT
      *  account id) against the stored one, honouring the fact that the view and update
      *  responses only ever emit these three fields in masked form
@@ -616,6 +603,14 @@ public class AccountService {
         return !PiiMasker.isMaskOf(submitted, stored);
     }
 
+    /**
+     * :purpose: Compare a submitted text value against the stored one, treating an absent
+     *  submitted value as "not compared" so a partial snapshot or a partial submission
+     *  never reports a spurious difference.
+     * :param submitted: the submitted or snapshotted value; ``null`` means "not compared".
+     * :param stored: the value currently held in the record.
+     * :returns: ``true`` when both are present and differ after trimming.
+     */
     private boolean textChanged(String submitted, String stored) {
         if (submitted == null) {
             return false;

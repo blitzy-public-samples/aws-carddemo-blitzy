@@ -74,7 +74,7 @@ describe('PFKeyBar', () => {
     expect(onForward).toHaveBeenCalledTimes(1);
   });
 
-  it('ignores an unmapped key (F9)', () => {
+  it('ignores an unmapped key', () => {
     const onEnter = jest.fn();
     const keys: PFKeyDef[] = [
       { action: PfKeyAction.Enter, label: 'ENTER=Continue', onActivate: onEnter },

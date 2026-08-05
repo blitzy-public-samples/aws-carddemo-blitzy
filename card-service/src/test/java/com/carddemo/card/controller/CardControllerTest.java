@@ -18,7 +18,6 @@ package com.carddemo.card.controller;
 
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -379,6 +378,7 @@ class CardControllerTest {
                 .thenReturn(detailStub());
 
         mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD)
+                        .session(signedOnSession())
                         .param("accountId", String.valueOf(VALID_ACCT_ID)))
                 .andExpect(status().isOk());
 
@@ -395,6 +395,7 @@ class CardControllerTest {
                 .thenReturn(updateResponseStub());
 
         mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD)
+                        .session(signedOnSession())
                         .param("accountId", String.valueOf(VALID_ACCT_ID))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(updateRequest("Y"))))
@@ -456,40 +457,32 @@ class CardControllerTest {
     }
 
     /**
-     * :purpose: Regression guard for QA Issue 22 (Redis session churn). A caller that
-     *  arrives without a session must leave without one: every endpoint takes
-     *  ``HttpServletRequest`` and reads the pseudo-conversational context through
-     *  ``getSession(false)``, so no Spring Session entry is created - and therefore none
-     *  is persisted to Redis - for an anonymous one-off call. Declaring an
-     *  ``HttpSession`` parameter instead made Spring's argument resolver call
-     *  ``getSession()`` unconditionally on every request.
+     * :purpose: Regression guard against session churn. A caller that arrives without a
+     *  session must leave without one: the shared resolver reads the pseudo-conversational
+     *  context through ``getSession(false)`` and refuses the request, so no Spring Session
+     *  entry is created - and therefore none is persisted to Redis - for an anonymous
+     *  one-off call, and the service is never reached with an invented identity.
      */
     @Test
-    @DisplayName("QA Issue 22: no card endpoint creates an HTTP session for a sessionless caller")
+    @DisplayName("no card endpoint creates an HTTP session for a sessionless caller")
     void cardEndpointsCreateNoSessionForSessionlessCaller() throws Exception {
-        when(cardService.listCards(any(), any(), eq(1), any(SessionContext.class)))
-                .thenReturn(listStub(1));
-        when(cardService.getCardDetail(eq(VALID_CARD), isNull()))
-                .thenReturn(detailStub());
-        when(cardService.updateCard(eq(VALID_CARD), isNull(), any(CardUpdateRequestDto.class),
-                any(SessionContext.class)))
-                .thenReturn(updateResponseStub());
-
         MvcResult listResult = mockMvc.perform(get("/cards"))
-                .andExpect(status().isOk())
+                .andExpect(status().isInternalServerError())
                 .andReturn();
         assertThat(listResult.getRequest().getSession(false)).isNull();
 
         MvcResult detailResult = mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD))
-                .andExpect(status().isOk())
+                .andExpect(status().isInternalServerError())
                 .andReturn();
         assertThat(detailResult.getRequest().getSession(false)).isNull();
 
         MvcResult updateResult = mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(updateRequest("Y"))))
-                .andExpect(status().isOk())
+                .andExpect(status().isInternalServerError())
                 .andReturn();
         assertThat(updateResult.getRequest().getSession(false)).isNull();
+
+        verifyNoInteractions(cardService);
     }
 }

@@ -84,17 +84,6 @@ public final class PiiMasker {
     }
 
     /**
-     * :purpose: Report whether a submitted value is merely the MASK of the stored value
-     *     echoed back by the client, rather than a genuine new value. A view response
-     *     masks the regulated identifiers, so a screen that re-submits every field would
-     *     otherwise overwrite the real stored identifier with its own mask and destroy the
-     *     data. Both mask shapes this class produces are recognised.
-     * :param submitted: the value carried by the update request.
-     * :param stored: the value currently persisted for that field.
-     * :returns: ``true`` when the submitted value equals a mask of the stored value and is
-     *     not the stored value itself.
-     */
-    /**
      * :purpose: Report whether a value carries the mask character at all, so a caller can
      *     recognise an echoed mask WITHOUT holding the stored value to compare against. A
      *     regulated identifier is all digits (optionally grouped), so a mask character can
@@ -107,6 +96,17 @@ public final class PiiMasker {
         return value != null && value.indexOf(MASK_CHARACTER) >= 0;
     }
 
+    /**
+     * :purpose: Report whether a submitted value is merely the MASK of the stored value
+     *     echoed back by the client, rather than a genuine new value. A view response
+     *     masks the regulated identifiers, so a screen that re-submits every field would
+     *     otherwise overwrite the real stored identifier with its own mask and destroy the
+     *     data. Both mask shapes this class produces are recognised.
+     * :param submitted: the value carried by the update request.
+     * :param stored: the value currently persisted for that field.
+     * :returns: ``true`` when the submitted value equals a mask of the stored value and is
+     *     not the stored value itself.
+     */
     public static boolean isMaskOf(String submitted, String stored) {
         if (submitted == null || stored == null || stored.isEmpty()) {
             return false;

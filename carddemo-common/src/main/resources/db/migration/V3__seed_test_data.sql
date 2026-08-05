@@ -677,7 +677,7 @@ ON CONFLICT DO NOTHING;
 -- with the seeded cards (a feed record whose card is unknown is what the posting job
 -- rejects with code 100, and is therefore never part of the posted history).
 --
--- TRAN-ID DISJOINTNESS (QA Issue 1). The seeded history is an EARLIER cycle's posting
+-- TRAN-ID DISJOINTNESS. The seeded history is an EARLIER cycle's posting
 -- of the same merchant activity, so its ids must not be the ids the staged DALYTRAN
 -- feed still carries: CBTRN02C's 2900-WRITE-TRANSACTION-FILE moves DALYTRAN-ID into
 -- TRAN-ID and abends on a non-'00' WRITE, so seeding the history under the feed's own

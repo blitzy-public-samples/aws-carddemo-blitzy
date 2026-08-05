@@ -410,8 +410,9 @@ export default function CardListPage(): ReactElement {
             {pageRows.map((row, rowIndex) => (
               <tr data-testid="card-list-row" key={row.cardNum}>
                 <td>
-                  {/* BLITZY [A11Y]: single-character field per COCRDLI CRDSELn;
-                      smaller than the 24x24 target-size recommendation. */}
+                  {/* Single-character field per COCRDLI ``CRDSELn``; the shared
+                      stylesheet enlarges its hit area to the adopted 24x24 WCAG
+                      2.5.8 minimum. */}
                   <input
                     {...invalidValueProps(isRowActionInvalid(rowActions[row.cardNum]))}
                     aria-label={'Select card in row ' + String(rowIndex + 1)}

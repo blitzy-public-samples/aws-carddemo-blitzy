@@ -22,7 +22,7 @@
  *     inside ``Layout`` where those regions exist.
  */
 
-import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 // Jest's ESM runtime does not inject ``jest`` as a global (unlike describe/it/
 // expect), so it is imported explicitly.
 import { jest } from '@jest/globals';
@@ -147,11 +147,11 @@ class ApiError extends Error {
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   getCard: getCardMock,
@@ -162,11 +162,12 @@ jest.unstable_mockModule('../api', () => ({
 
 type CardUpdatePageComponent = (typeof import('./CardUpdatePage'))['default'];
 type LayoutComponent = (typeof import('../components/Layout'))['default'];
-type SetSession = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let CardUpdatePage: CardUpdatePageComponent;
 let Layout: LayoutComponent;
-let setSession: SetSession;
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported after the mock registration so every ``../api`` binding in the
@@ -174,24 +175,22 @@ beforeAll(async () => {
   // Testing Library.
   ({ default: CardUpdatePage } = await import('./CardUpdatePage'));
   ({ default: Layout } = await import('../components/Layout'));
-  ({ __setSession: setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   getCardMock.mockReset();
   updateCardMock.mockReset();
   signonMock.mockReset();
   getCardMock.mockResolvedValue(cardRecord);
   updateCardMock.mockResolvedValue(cardRecord);
-  act(() => {
-    setSession(SESSION_USER, 'U');
-  });
+  await seedSignedOnSession(SESSION_USER, 'U');
 });
 
-afterEach(() => {
-  act(() => {
-    setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 /**
@@ -539,6 +538,45 @@ describe('CardUpdatePage — confirmation prompt (PROMPT-FOR-CONFIRMATION)', () 
 
     expect(infoText()).toBe('Changes validated.Press F5 to save');
     expect(infoText()).not.toContain('validated. Press');
+  });
+});
+
+describe('CardUpdatePage — in-flight duplicate-rewrite guard', () => {
+  it('closes the entry fields while the rewrite is in flight and writes once for a repeated F5', async () => {
+    let acknowledge!: (value: CardUpdateResponseDto) => void;
+    updateCardMock.mockReturnValueOnce(
+      new Promise<CardUpdateResponseDto>((resolve) => {
+        acknowledge = resolve;
+      }),
+    );
+    await renderLoadedScreen();
+
+    typeInto('crdname', 'ANIYA VON UPDATED');
+    pressKey('ENTER=Process');
+    pressKey('F5=Save');
+
+    await waitFor(() => {
+      expect(updateCardMock).toHaveBeenCalledTimes(1);
+    });
+    // ``ATTRB=ASKIP`` for the whole in-flight interval: the record cannot be re-edited
+    // while the optimistic-locked PUT is outstanding.
+    expect(screen.getByTestId('crdname')).toBeDisabled();
+    expect(screen.getByTestId('crdstcd')).toBeDisabled();
+
+    // A second F5 must not re-issue the rewrite against a stale ``version``.
+    pressKey('F5=Save');
+    pressPhysicalKey('F5');
+    expect(updateCardMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      acknowledge(updatedRecord);
+      // Awaited so this is an asynchronous act scope: the effects and the promise
+      // callbacks the interaction queues are flushed before it returns.
+      await Promise.resolve();
+    });
+
+    expect(updateCardMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('crdname')).toBeEnabled();
   });
 });
 

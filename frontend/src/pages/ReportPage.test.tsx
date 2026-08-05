@@ -57,19 +57,12 @@ jest.unstable_mockModule('../api', () => {
   }
 
   return {
-
     // The session store and the REST hook this screen's module graph loads bind to
-
-    // these barrel exports as well. The identity probe is left unanswered so the
-
-    // seeded store (``__setSession``) stays the suite's only session authority.
-
-    getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
-
+    // these barrel exports as well. ``getSessionIdentity`` is the production
+    // ``GET /session`` probe the session harness drives; unanswered by this suite it
+    // reports no session, and the harness is the only thing that changes that.
+    getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
     logout: jest.fn(() => Promise.resolve(undefined)),
-
-    clearLocalCredentials: jest.fn(),
-
     registerSessionExpiryHandler: jest.fn(() => () => undefined),
     requestReport: jest.fn(),
     signon: jest.fn(),
@@ -81,7 +74,9 @@ jest.unstable_mockModule('../api', () => {
 const { requestReport, ApiError } = await import('../api');
 const { default: Layout } = await import('../components/Layout');
 const { default: ReportPage } = await import('./ReportPage');
-const { __setSession } = await import('../hooks/useSession');
+const { seedSignedOnSession, seedSignedOutSession } = await import(
+  '../testing/sessionHarness'
+);
 
 const requestReportMock = jest.mocked(requestReport);
 
@@ -262,18 +257,14 @@ function expectVerbatimCaption(caption: string): void {
   expect(screen.getByText(caption, { normalizer: (text) => text })).toBeInTheDocument();
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   requestReportMock.mockReset();
   requestReportMock.mockResolvedValue(LAUNCH_ACK);
-  act(() => {
-    __setSession(SIGNED_ON_USER, 'U');
-  });
+  await seedSignedOnSession(SIGNED_ON_USER, 'U');
 });
 
-afterEach(() => {
-  act(() => {
-    __setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 /**

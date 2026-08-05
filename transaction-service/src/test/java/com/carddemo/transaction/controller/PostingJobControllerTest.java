@@ -48,7 +48,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
  *     stream (``app/jcl/POSTTRAN.jcl`` + ``CBTRN02C``). Before it existed the job had no
  *     launch surface in any deployable artefact — no endpoint, scheduler or runner
  *     referenced it — so the most business-critical batch job of the migration was
- *     reachable only from tests (QA Issue 2).
+ *     reachable only from tests.
  * :output: Assertions that the job is listed, that a submission is dispatched to the
  *     launcher and acknowledged with ``202`` and a durable handle, that the business date
  *     is forwarded, that an unknown job name and a refused submission are reported as

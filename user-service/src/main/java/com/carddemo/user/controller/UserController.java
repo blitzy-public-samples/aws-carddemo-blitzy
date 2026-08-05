@@ -54,10 +54,6 @@ public class UserController {
     /** :purpose: Service collaborator holding all user-management business logic. */
     private final UserService userService;
 
-    /**
-     * :purpose: Construct the controller with its service collaborator via constructor injection.
-     * :param userService: the user-management service holding all business logic.
-     */
     /** :purpose: Legacy page-back action (``DFHPF7``), shared vocabulary with COTRN00C. */
     private static final String ACTION_PF7 = "PF7";
 
@@ -73,6 +69,10 @@ public class UserController {
     /** :purpose: Row-selection flag transferring to the update program (``COUSR02C``). */
     private static final String SELECTION_UPDATE = "U";
 
+    /**
+     * :purpose: Construct the controller with its service collaborator via constructor injection.
+     * :param userService: the user-management service holding all business logic.
+     */
     public UserController(UserService userService) {
         this.userService = userService;
     }

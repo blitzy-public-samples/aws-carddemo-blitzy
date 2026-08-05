@@ -216,7 +216,7 @@ CREATE TABLE IF NOT EXISTS transactions (
 -- -----------------------------------------------------------------------------
 -- Every field CBTRN02C dereferences while validating a feed record is NOT NULL, and
 -- the origination timestamp additionally carries at least its ten date characters
--- (QA Issue 8). DALYTRAN is a fixed-width 350-byte sequential data set: a record
+--. DALYTRAN is a fixed-width 350-byte sequential data set: a record
 -- physically cannot be missing DALYTRAN-AMT or hold a five-character
 -- DALYTRAN-ORIG-TS, so a staged row that does is not a DALYTRAN record at all.
 -- Leaving the columns nullable let such a row reach 1500-VALIDATE-TRAN, where it

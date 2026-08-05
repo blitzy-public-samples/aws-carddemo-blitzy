@@ -89,7 +89,7 @@
           Micrometer Tracing OTel bridge TOGETHER WITH the tracing/OTel
           auto-configuration and the OTLP span exporter. The bridge alone leaves
           no Tracer in the context, so no trace context is created and every
-          traceId/spanId stays empty (QA F28).
+          traceId/spanId stays empty.
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

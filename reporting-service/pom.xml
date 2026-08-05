@@ -99,7 +99,7 @@
           Micrometer Tracing OTel bridge TOGETHER WITH the tracing/OTel
           auto-configuration and the OTLP span exporter. The bridge alone leaves
           no Tracer in the context, so no trace context is created and every
-          traceId/spanId stays empty (QA F28).
+          traceId/spanId stays empty.
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -142,7 +142,7 @@
           Spring Boot 4 modularized auto-configuration: FlywayAutoConfiguration lives in the
           spring-boot-flyway module (it is NOT bundled with flyway-core). Without it, the shared
           carddemo-common migrations never run and Hibernate `validate` fails on the missing
-          business tables (QA Issue 1(a)). It is gated by `spring.flyway.enabled`.
+          business tables. It is gated by `spring.flyway.enabled`.
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

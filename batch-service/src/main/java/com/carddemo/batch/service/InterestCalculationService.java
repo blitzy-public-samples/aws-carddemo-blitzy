@@ -144,7 +144,7 @@ public class InterestCalculationService {
      *     and for a credit balance ``-0.41666… -> -0.41``. Rounding half up instead added a
      *     cent to every non-terminating quotient and that error propagated into
      *     ``accounts.acct_curr_bal`` through ``1050-UPDATE-ACCOUNT``, diverging financial
-     *     output in breach of AAP 0.6.1, 0.7.1 and 0.7.6 (QA Issue 9).
+     *     output in breach of AAP 0.6.1, 0.7.1 and 0.7.6.
      */
     public BigDecimal computeMonthlyInterest(BigDecimal categoryBalance, BigDecimal interestRate) {
         return categoryBalance
@@ -199,7 +199,7 @@ public class InterestCalculationService {
      *     card number. An unordered ``findFirst`` returned whichever row PostgreSQL
      *     happened to reach first, so the same data and the same parameters could stamp a
      *     DIFFERENT ``TRAN-CARD-NUM`` on the interest transaction from run to run
-     *     (QA Issue 11).
+     *.
      */
     public String resolveCardNumber(Long acctId) {
         return cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(acctId)
@@ -232,7 +232,7 @@ public class InterestCalculationService {
         transaction.setTranMerchantId(0L);
         // MOVE SPACES TO TRAN-MERCHANT-NAME / -CITY / -ZIP: a COBOL MOVE of SPACES fills the
         // whole fixed-width field, so the stored value is the field's width in blanks, not an
-        // empty string (QA Issue 12). The widths are the CVTRA05Y declarations X(50), X(50)
+        // empty string. The widths are the CVTRA05Y declarations X(50), X(50)
         // and X(10), which the column definitions match exactly.
         transaction.setTranMerchantName(TRAN_MERCHANT_NAME_SPACES);
         transaction.setTranMerchantCity(TRAN_MERCHANT_CITY_SPACES);

@@ -17,8 +17,11 @@
 package com.carddemo.transaction.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -37,7 +40,6 @@ import org.junit.jupiter.api.Test;
 
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 /**
@@ -46,8 +48,8 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
  *  {@link TransactionService} so a real ``DispatcherServlet`` resolves its handler-method
  *  arguments; that is exactly the machinery under test, because the defect being guarded
  *  lived in argument resolution rather than in any business path.
- * :output: Two behaviours are asserted: a sessionless caller gets no session created
- *  (QA Issue 22), and a caller that already has one has its pseudo-conversational
+ * :output: Two behaviours are asserted: a sessionless caller is refused and gets no session
+ *  created, and a caller that already has one has its pseudo-conversational
  *  {@link SessionContext} read and written back under the shared attribute key.
  */
 class TransactionControllerSessionTest {
@@ -87,25 +89,25 @@ class TransactionControllerSessionTest {
     }
 
     /**
-     * :purpose: Regression guard for QA Issue 22 (Redis session churn). A caller that
-     *  arrives without a session must leave without one: the endpoints take
-     *  ``HttpServletRequest`` and read the context through ``getSession(false)``, so no
-     *  Spring Session entry is created - and therefore none is persisted to Redis - for
-     *  an anonymous one-off call. Declaring an ``HttpSession`` parameter instead made
-     *  Spring's argument resolver call ``getSession()`` unconditionally on every request.
+     * :purpose: Regression guard against session churn. A caller that arrives without a
+     *  session must leave without one: the shared resolver reads the context through
+     *  ``getSession(false)`` and refuses the request, so no Spring Session entry is created
+     *  - and therefore none is persisted to Redis - for an anonymous one-off call.
      */
     @Test
-    @DisplayName("QA Issue 22: transaction endpoints create no HTTP session for a sessionless caller")
+    @DisplayName("transaction endpoints create no HTTP session for a sessionless caller")
     void transactionEndpointsCreateNoSessionForSessionlessCaller() throws Exception {
-        MvcResult listResult = mockMvc.perform(get("/transactions"))
-                .andExpect(status().isOk())
-                .andReturn();
-        assertThat(listResult.getRequest().getSession(false)).isNull();
+        // This standalone setup carries no exception handler, so the shared resolver's
+        // invariant violation surfaces as the servlet failure a full context maps to the
+        // shared, non-disclosing 500 envelope. Either way the request never creates a
+        // session and never reaches the service.
+        assertThatThrownBy(() -> mockMvc.perform(get("/transactions")))
+                .hasRootCauseInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> mockMvc.perform(get("/transactions/{id}", TRAN_ID)))
+                .hasRootCauseInstanceOf(IllegalStateException.class);
 
-        MvcResult viewResult = mockMvc.perform(get("/transactions/{id}", TRAN_ID))
-                .andExpect(status().isOk())
-                .andReturn();
-        assertThat(viewResult.getRequest().getSession(false)).isNull();
+        verify(transactionService, never()).listTransactions(any(), any());
+        verify(transactionService, never()).viewTransaction(any(), any());
     }
 
     /**

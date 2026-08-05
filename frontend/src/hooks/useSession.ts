@@ -30,7 +30,6 @@ import type {
 } from '../types';
 import { CDEMO_USRTYP_ADMIN, CDEMO_USRTYP_USER } from '../types';
 import {
-  clearLocalCredentials,
   getSessionIdentity,
   logout,
   registerSessionExpiryHandler,
@@ -196,9 +195,9 @@ async function signIn(
 
 /**
  * :purpose: Sign out. The SERVER-side session is revoked first through the
- *     CSRF-protected ``POST /logout``, and only then is the local session, the
- *     optional bearer token and every cached response cleared, so a signed-out
- *     screen is never presented over a session cookie that is still valid.
+ *     CSRF-protected ``POST /logout``, and only then is the local session cleared, so
+ *     a signed-out screen is never presented over a session cookie that is still
+ *     valid.
  * :returns: a promise that resolves once the session has been revoked and the
  *     local state cleared.
  * :raises ApiError: when the revocation call fails; the local session is left in
@@ -207,7 +206,6 @@ async function signIn(
  */
 async function signOut(): Promise<void> {
   await logout();
-  clearLocalCredentials();
   identityProbe = null;
   setState(SIGNED_OUT_STATE);
 }
@@ -218,7 +216,6 @@ async function signOut(): Promise<void> {
  *     ``403`` on any request).
  */
 function abandonSession(): void {
-  clearLocalCredentials();
   identityProbe = null;
   if (currentState !== SIGNED_OUT_STATE) {
     setState(SIGNED_OUT_STATE);
@@ -266,27 +263,6 @@ let identityProbe: Promise<void> | null = null;
 function probeIdentityOnce(): Promise<void> {
   identityProbe ??= refresh().then(() => undefined);
   return identityProbe;
-}
-
-/**
- * :purpose: Seed the module-level store directly with a user id and role, without
- *     a network round trip, so a test can place the SPA in an authenticated or
- *     signed-out state. Passing ``null`` for both arguments publishes the
- *     server-confirmed signed-out state, so a route guard answers rather than
- *     waiting on the identity probe.
- * :param user: the user id to publish (``CDEMO-USER-ID``), or ``null``.
- * :param role: the role to publish (``CDEMO-USER-TYPE`` — ``'A'`` / ``'U'``), or
- *     ``null``.
- * :note: Test seam only; never called by application code, and deliberately not
- *     re-exported by the hooks barrel. It notifies ``useSyncExternalStore``
- *     subscribers, so callers must wrap it in ``act``.
- */
-export function __setSession(user: string | null, role: Role | null): void {
-  if (user === null || role === null) {
-    setState(SIGNED_OUT_STATE);
-    return;
-  }
-  setState(stateFor(user, role));
 }
 
 /**

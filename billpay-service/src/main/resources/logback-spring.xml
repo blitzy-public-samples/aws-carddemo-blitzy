@@ -22,7 +22,7 @@
     <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="billpay-service"/>
 
     <!-- Structured JSON is the DEFAULT for every profile except the two that exist for humans
-         (QA Issue 12): gating JSON on an explicit "docker,k8s,prod" list meant an unrecognised or
+: gating JSON on an explicit "docker,k8s,prod" list meant an unrecognised or
          misspelt profile silently fell back to the plain-text pattern and structured logging was
          lost exactly where it was hardest to notice. Any profile other than 'default' (no profile
          set) and 'test' now logs JSON. -->
@@ -34,7 +34,7 @@
                 <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
             </encoder>
         </appender>
-        <!-- Async wrapper for deployed profiles (QA MN-03): decouples request
+        <!-- Async wrapper for deployed profiles: decouples request
              threads from console I/O so structured JSON logging does not inflate
              p95 latency or memory. neverBlock drops rather than blocks when the
              ring buffer saturates, protecting the sub-200ms p95 NFR; a 0

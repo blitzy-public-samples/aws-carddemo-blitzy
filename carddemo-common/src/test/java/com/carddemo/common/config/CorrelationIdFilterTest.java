@@ -43,7 +43,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
  *     id), the sanitize-then-echo contract, and MDC clearing after the request.
  * :note: These cases consolidate the coverage that previously lived in per-service copies of the
  *     filter (account-service and card-service each had their own class and test); the duplicates
- *     ignored ``traceparent`` entirely, which is the defect QA Issue 7 reported.
+ *     ignored ``traceparent`` entirely.
  * :note: Plain JUnit 5 with Spring servlet mocks; no Spring context is started.
  */
 @DisplayName("CorrelationIdFilter (shared)")

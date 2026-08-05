@@ -17,6 +17,7 @@
 package com.carddemo.user.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hamcrest.Matchers.hasSize;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -63,6 +64,11 @@ import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
@@ -155,6 +161,13 @@ class UserControllerTest {
     /** :purpose: Mocked user-management collaborator; the controller delegates every call to it. */
     @MockitoBean
     private UserService userService;
+
+    /** :purpose: The controller bean itself, used to prove method security independently of MVC. */
+    @Autowired
+    private UserController userController;
+
+    /** :purpose: A well-formed eight-character user id (``SEC-USR-ID PIC X(08)``). */
+    private static final String EXISTING_USER_ID = "USER0001";
 
     /**
      * :purpose: Build MockMvc from the slice web context with the Spring Security test
@@ -843,6 +856,49 @@ class UserControllerTest {
                 .andExpect(header().string("X-Content-Type-Options", "nosniff"))
                 .andExpect(header().string("X-Frame-Options", "DENY"))
                 .andExpect(header().string("X-XSS-Protection", "0"));
+    }
+
+    /**
+     * :purpose: The class-level ``@PreAuthorize("hasRole('ADMIN')")`` on the controller is a LIVE
+     *     control, not documentation: method security is enabled, so the advice denies a
+     *     non-administrator even when the call bypasses the filter chain and the gateway route
+     *     rule entirely. Invoking the injected bean directly is what proves the annotation is
+     *     enforced rather than merely present.
+     */
+    @Test
+    @DisplayName("@PreAuthorize denies a standard user invoking the controller bean directly")
+    void preAuthorizeDeniesAStandardUserOnADirectInvocation() {
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+                "USER0001", null, List.of(new SimpleGrantedAuthority("ROLE_USER"))));
+        SecurityContextHolder.setContext(context);
+        try {
+            assertThatThrownBy(() -> userController.getUser(EXISTING_USER_ID))
+                    .isInstanceOf(AccessDeniedException.class);
+            verifyNoInteractions(userService);
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    /**
+     * :purpose: The same live control admits an administrator, so enabling method security did
+     *     not close the route it is meant to gate.
+     */
+    @Test
+    @DisplayName("@PreAuthorize admits an administrator invoking the controller bean directly")
+    void preAuthorizeAdmitsAnAdministratorOnADirectInvocation() {
+        given(userService.getUser(EXISTING_USER_ID))
+                .willReturn(userResponse(EXISTING_USER_ID, "JOHN", "PUBLIC", "U"));
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+                "ADMIN001", null, List.of(new SimpleGrantedAuthority("ROLE_ADMIN"))));
+        SecurityContextHolder.setContext(context);
+        try {
+            assertThat(userController.getUser(EXISTING_USER_ID)).isNotNull();
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
     }
 
 }

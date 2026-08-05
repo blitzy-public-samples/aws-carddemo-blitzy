@@ -80,4 +80,17 @@ class GatewayApplicationTests {
         assertThat(applicationContext.getBeanNamesForType(
                 org.springframework.boot.web.servlet.FilterRegistrationBean.class)).isNotEmpty();
     }
+
+    /**
+     * :purpose: The principal-to-session index is present in the gateway context, which is what
+     *     lets the logout chain de-index the session it is signing out; without the bean the
+     *     de-index could not be wired and the index would keep listing dead sessions.
+     */
+    @Test
+    void publishesThePrincipalToSessionIndexForTheLogoutChain() {
+        Mockito.lenient().when(redisConnectionFactory.getConnection())
+                .thenReturn(Mockito.mock(RedisConnection.class));
+        assertThat(applicationContext.getBeanNamesForType(
+                com.carddemo.common.security.SessionPrincipalIndex.class)).hasSize(1);
+    }
 }

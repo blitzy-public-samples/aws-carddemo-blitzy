@@ -284,16 +284,6 @@ class JobSchedulingConfigIT {
     }
 
     /**
-     * :purpose: Submit a Monthly report through the production entry point and await
-     *   the returned future, asserting the *real* ``statementGenerationJob`` reached
-     *   ``COMPLETED``/``COMPLETED``, that the job instance and its parameters are the
-     *   ones the submission built, that the single chunk-oriented step read and wrote
-     *   exactly the one seeded card, and that both statement artifacts were produced
-     *   at the writers' default destination with the legacy line widths and the
-     *   scale-2 monetary figures of the seeded data.
-     * :raises Exception: propagated from the awaited future or the artifact reads.
-     */
-    /**
      * :purpose: Wait for an accepted run to finish. Submission is synchronous but the run
      *     itself executes on the launcher's task executor, so the live
      *     {@link JobExecution} the launcher returns is polled until the worker thread has
@@ -314,6 +304,16 @@ class JobSchedulingConfigIT {
         return execution;
     }
 
+    /**
+     * :purpose: Submit a Monthly report through the production entry point and await
+     *   the returned future, asserting the *real* ``statementGenerationJob`` reached
+     *   ``COMPLETED``/``COMPLETED``, that the job instance and its parameters are the
+     *   ones the submission built, that the single chunk-oriented step read and wrote
+     *   exactly the one seeded card, and that both statement artifacts were produced
+     *   at the writers' default destination with the legacy line widths and the
+     *   scale-2 monetary figures of the seeded data.
+     * :raises Exception: propagated from the awaited future or the artifact reads.
+     */
     @Test
     void submissionRunsTheRealStatementJobToCompletionAndProducesArtifacts() throws Exception {
         JobExecution execution = awaitCompletion(jobSchedulingConfig.launchStatementGeneration());

@@ -25,7 +25,7 @@ import com.carddemo.common.dto.SessionContext;
  * :note: The user type is published as the frozen one-character ``SEC-USR-TYPE`` wire code
  *        (``"A"`` / ``"U"``) via the shared {@link SessionContext.UserType} enum, so this response,
  *        the server-side {@code SessionContext}, and the React ``session.ts`` ``Role`` type all bind
- *        to a single JSON schema without field remapping (finding CR-05). The client derives the
+ *        to a single JSON schema without field remapping. The client derives the
  *        Spring Security authority (``ROLE_ADMIN`` / ``ROLE_USER``) from that code.
  */
 public class SignonResponseDto {

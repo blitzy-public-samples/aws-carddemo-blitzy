@@ -56,7 +56,7 @@ import java.util.Map;
  *  {@link JobSchedulingConfig} were unreachable at runtime: nothing in the service
  *  declared a controller or a scheduler, so no ``spring_batch_*`` metric labelled
  *  ``job="batch-service"`` was ever produced and the six batch panels of the
- *  Grafana dashboard could only read "No data" (QA Issue 14).
+ *  Grafana dashboard could only read "No data".
  * :note: Authorization is enforced at the API gateway, whose filter chain gates
  *  ``/batch/**`` to ``ROLE_USER`` or ``ROLE_ADMIN``, and this service's port is
  *  never published outside the private network. That matches both the legacy model

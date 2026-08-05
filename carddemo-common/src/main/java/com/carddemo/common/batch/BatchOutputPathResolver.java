@@ -44,7 +44,7 @@ import java.nio.file.Paths;
  *  canonicalized and (for the output root) proven writable once at construction,
  *  so a container whose batch directory is missing or read-only aborts startup
  *  with a precise message instead of failing every job mid-step with a bare
- *  ``java.io.IOException: No such file or directory`` (QA Issue 21).
+ *  ``java.io.IOException: No such file or directory``.
  * :note: This type lives in ``carddemo-common`` because BOTH batch-capable
  *  services need it - ``batch-service`` for its nine data-management jobs and
  *  ``reporting-service`` for the ``CBSTM03A`` statement writer - and a second

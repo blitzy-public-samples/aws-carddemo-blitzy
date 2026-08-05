@@ -2,10 +2,9 @@ package com.carddemo.gateway.controller;
 
 import com.carddemo.common.constant.MenuOptions;
 import com.carddemo.common.constant.Messages;
-import com.carddemo.common.dto.SessionAttributes;
 import com.carddemo.common.dto.SessionContext;
+import com.carddemo.common.dto.SessionContextSupport;
 import com.carddemo.common.exception.CardDemoException;
-import com.carddemo.common.security.SessionContextAuthenticationFilter;
 
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -13,7 +12,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpSession;
 
 import java.util.List;
 import java.util.Map;
@@ -58,16 +56,6 @@ public class MenuController {
 
     /** :purpose: Dispatch guard prefix; the COBOL checks ``PGMNAME(1:5) NOT = 'DUMMY'``. */
     private static final String DUMMY_PREFIX = "DUMMY";
-
-    /**
-     * :purpose: ``HttpSession`` attribute key under which the pseudo-conversational
-     *  :java:type:`SessionContext` is stored. Bound to the single frozen constant
-     *  :java:field:`SessionContext.SESSION_ATTRIBUTE_NAME` that ``auth-service``
-     *  writes on sign-on and every downstream controller reads, so the menu hop
-     *  updates the authenticated COMMAREA-equivalent context in place instead of
-     *  creating a second, anonymous one.
-     */
-    private static final String SESSION_CONTEXT_ATTR = SessionContext.SESSION_ATTRIBUTE_NAME;
 
     /** :purpose: Action-key value modeling COBOL ``DFHENTER`` (submit / select). */
     private static final String AID_ENTER = "ENTER";
@@ -343,25 +331,18 @@ public class MenuController {
     }
 
     /**
-     * Fetch the session-scoped :java:type:`SessionContext` established at sign-on.
+     * Fetch the session-scoped :java:type:`SessionContext` established at sign-on, through the
+     * ONE shared, fail-closed resolver every CardDemo controller uses.
      *
-     * :param session: the servlet HTTP session.
-     * :returns: the authenticated session context carried by the session.
-     * :raises IllegalStateException: when the session carries no context. Every menu
-     *  endpoint is role-gated, so the request cannot reach this point without a
-     *  signed-on session; fabricating an empty context here would silently drop the
+     * :param httpRequest: the current servlet request.
+     * :returns: the authenticated session context carried by the session; never ``null``.
+     * :raises IllegalStateException: when the caller has no session or the session carries no
+     *  context. Every menu endpoint is role-gated, so the request cannot reach this point
+     *  without a signed-on session; fabricating an empty context here would silently drop the
      *  signed-on identity (and its ``CDEMO-USER-TYPE``) at the menu hop.
      */
     private SessionContext resolveSessionContext(HttpServletRequest httpRequest) {
-        HttpSession session = httpRequest.getSession(false);
-        if (session == null) {
-            return new SessionContext();
-        }
-        Object attr = session.getAttribute(SESSION_CONTEXT_ATTR);
-        if (attr instanceof SessionContext ctx) {
-            return ctx;
-        }
-        return new SessionContext();
+        return SessionContextSupport.require(httpRequest);
     }
 
     /**
@@ -371,10 +352,7 @@ public class MenuController {
      * :param ctx: the context to publish for the next interaction.
      */
     private void storeSessionContext(HttpServletRequest httpRequest, SessionContext ctx) {
-        HttpSession session = httpRequest.getSession(false);
-        if (session != null) {
-            session.setAttribute(SESSION_CONTEXT_ATTR, ctx);
-        }
+        SessionContextSupport.store(httpRequest, ctx);
     }
 
     /**

@@ -32,7 +32,7 @@ spring:
   batch:
     job:
       enabled: false
-  # The service now uses the JDBC job repository (QA F23) so runs are auditable.
+  # The service now uses the JDBC job repository so runs are auditable.
   # The throwaway container ships no schema, so the framework's own PostgreSQL
   # BATCH_* metadata DDL is applied at startup; production uses the equivalent
   # batch-service Flyway migration that owns these tables.

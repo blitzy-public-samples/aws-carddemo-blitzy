@@ -188,10 +188,10 @@ class PostingJobCompletionListenerTest {
             listener.afterJob(execution);
 
             // Reading nothing is not by itself an empty feed: a restart that has already
-            // consumed every record legitimately reads zero rows (QA Issue 7). Only the
+            // consumed every record legitimately reads zero rows. Only the
             // step knows both its read count and whether the feed table holds records, so
             // it renders the verdict and Spring Batch carries the failed status onto the
-            // job - which also keeps the job and step rows consistent (QA Issue 6).
+            // job - which also keeps the job and step rows consistent.
             assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
             assertThat(execution.getExitStatus().getExitCode())
                     .isEqualTo(ExitStatus.COMPLETED.getExitCode());
@@ -255,7 +255,7 @@ class PostingJobCompletionListenerTest {
             // end-of-file path; 9999-ABEND-PROGRAM calls CEE3ABD and no tally is ever
             // printed. Emitting one anyway printed PROCESSED :0 / REJECTED :0 for a run
             // that had committed records - a figure with no legacy analogue that
-            // contradicted the committed work (QA Issue 5).
+            // contradicted the committed work.
             assertThat(loggedLines()).noneMatch(line -> line.startsWith("TRANSACTIONS PROCESSED"));
             assertThat(loggedLines()).noneMatch(line -> line.startsWith("TRANSACTIONS REJECTED"));
             assertThat(loggedLines()).anyMatch(line -> line.contains("ended FAILED"));

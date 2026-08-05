@@ -110,14 +110,17 @@ class CardServiceTest {
     private static final String MSG_DETAIL_NOT_FOUND =
             "Did not find cards for this search condition";
 
-    /** :purpose: ``COCRDUPC`` L184 embossed-name edit message. */
-    /** ``COCRDUPC`` ``WS-PROMPT-FOR-NAME`` literal for an absent embossed name. */
+    /**
+     * :purpose: ``COCRDUPC`` L184 embossed-name edit message -- the
+     *  ``WS-PROMPT-FOR-NAME`` literal for an absent embossed name.
+     */
     private static final String MSG_NAME_NOT_PROVIDED = "Card name not provided";
 
-    /** ``COACTUPC``/``COCRDUPC`` concurrent-change literal surfaced as HTTP 409. */
+    /** :purpose: ``COACTUPC``/``COCRDUPC`` concurrent-change literal surfaced as HTTP 409. */
     private static final String MSG_DATA_WAS_CHANGED =
             "Record changed by some one else. Please review";
 
+    /** :purpose: ``COCRDUPC`` embossed-name character-set edit message. */
     private static final String MSG_NAME_ALPHA =
             "Card name can only contain alphabets and spaces";
 

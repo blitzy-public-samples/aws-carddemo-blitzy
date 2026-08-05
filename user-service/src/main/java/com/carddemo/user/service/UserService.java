@@ -175,9 +175,6 @@ public class UserService {
      * :param reason: short machine-readable reason recorded in the audit trail.
      */
     private void revokeSessions(String userId, String reason) {
-        if (sessionPrincipalIndex == null) {
-            return;
-        }
         sessionPrincipalIndex.revokeSessions(userId, reason);
     }
 

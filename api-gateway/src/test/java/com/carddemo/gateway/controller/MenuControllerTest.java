@@ -16,6 +16,7 @@
 package com.carddemo.gateway.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -584,7 +585,8 @@ class MenuControllerTest {
         // CookieCsrfTokenRepository carries SameSite as a servlet cookie ATTRIBUTE, which
         // the real container renders but MockHttpServletResponse renders only for its own
         // MockCookie type. The wire format is re-verified against a running gateway.
-        jakarta.servlet.http.Cookie cookie = mockMvc.perform(get("/menu"))
+        jakarta.servlet.http.Cookie cookie = mockMvc.perform(
+                        get("/menu").sessionAttr(SESSION_ATTR, userContext()))
                 .andExpect(status().isOk())
                 .andReturn()
                 .getResponse()
@@ -626,11 +628,11 @@ class MenuControllerTest {
     }
 
     // -----------------------------------------------------------------
-    // QA Issue 22 - no Redis session churn from anonymous or one-off calls
+    // No Spring Session entry from anonymous or one-off calls
     // -----------------------------------------------------------------
 
     /**
-     * :purpose: Regression guard for QA Issue 22. Spring Security's default
+     * :purpose: Regression guard against session churn. Spring Security's default
      *           HttpSessionRequestCache calls request.getSession() while saving a denied
      *           request, so every anonymous call minted a brand-new Spring Session entry
      *           in Redis. The chain now installs a NullRequestCache (the gateway has no
@@ -638,7 +640,7 @@ class MenuControllerTest {
      *           could never be replayed), and no session must be created.
      */
     @Test
-    @DisplayName("QA Issue 22: a denied anonymous request persists no session state")
+    @DisplayName("a denied anonymous request persists no session state")
     void deniedAnonymousRequestCreatesNoSession() throws Exception {
         MvcResult result = mockMvc.perform(get("/menu"))
                 .andExpect(status().isUnauthorized())
@@ -660,13 +662,12 @@ class MenuControllerTest {
     }
 
     /**
-     * :purpose: Regression guard for QA Issue 22. A caller that reaches a menu endpoint
-     *           without a session must leave without one: every endpoint takes
-     *           HttpServletRequest and reads the pseudo-conversational context through
-     *           getSession(false), so no Spring Session entry is created - and therefore
-     *           none is persisted to Redis - for a one-off call. Declaring an HttpSession
-     *           parameter instead made Spring's argument resolver call getSession()
-     *           unconditionally on every request.
+     * :purpose: Regression guard against session churn. A caller that reaches a menu endpoint
+     *           without a session must leave without one: the shared resolver reads the
+     *           pseudo-conversational context through getSession(false) and refuses the
+     *           request, so no Spring Session entry is created - and therefore none is
+     *           persisted to Redis - for a one-off call, and the menu never answers with a
+     *           fabricated identity.
      * :note:    Deliberately exercised through a standalone MockMvc over the controller
      *           alone rather than through the slice's security-filtered MockMvc. The
      *           @WithMockUser/springSecurity() harness persists its own SecurityContext
@@ -678,33 +679,22 @@ class MenuControllerTest {
      *           deniedAnonymousRequestCreatesNoSession above.
      */
     @Test
-    @DisplayName("QA Issue 22: menu endpoints create no HTTP session for a sessionless caller")
+    @DisplayName("menu endpoints create no HTTP session for a sessionless caller")
     void menuEndpointsCreateNoSessionForSessionlessCaller() throws Exception {
         MockMvc plainMockMvc = MockMvcBuilders.standaloneSetup(new MenuController()).build();
 
-        MvcResult mainMenu = plainMockMvc.perform(get("/menu"))
-                .andExpect(status().isOk())
-                .andReturn();
-        assertThat(mainMenu.getRequest().getSession(false)).isNull();
-
-        MvcResult adminMenu = plainMockMvc.perform(get("/admin/menu"))
-                .andExpect(status().isOk())
-                .andReturn();
-        assertThat(adminMenu.getRequest().getSession(false)).isNull();
-
-        MvcResult mainSelect = plainMockMvc.perform(post("/menu/select")
+        assertThatThrownBy(() -> plainMockMvc.perform(get("/menu")))
+                .hasRootCauseInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> plainMockMvc.perform(get("/admin/menu")))
+                .hasRootCauseInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> plainMockMvc.perform(post("/menu/select")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body("1", "ENTER")))
-                .andExpect(status().isOk())
-                .andReturn();
-        assertThat(mainSelect.getRequest().getSession(false)).isNull();
-
-        MvcResult adminSelect = plainMockMvc.perform(post("/admin/menu/select")
+                        .content(body("1", "ENTER"))))
+                .hasRootCauseInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> plainMockMvc.perform(post("/admin/menu/select")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body("1", "ENTER")))
-                .andExpect(status().isOk())
-                .andReturn();
-        assertThat(adminSelect.getRequest().getSession(false)).isNull();
+                        .content(body("1", "ENTER"))))
+                .hasRootCauseInstanceOf(IllegalStateException.class);
     }
 
     /**

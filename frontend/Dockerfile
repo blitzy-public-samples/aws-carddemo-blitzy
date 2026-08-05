@@ -45,7 +45,7 @@ ENV VITE_SYS_ID=$VITE_SYS_ID
 RUN npm run build
 
 # --- Stage 2: serve the static bundle with nginx -----------------------------
-# Pinned to an explicit version (QA Issue 19): `alpine` is a floating tag that
+# Pinned to an explicit version: `alpine` is a floating tag that
 # moves with every nginx release, so two builds of the same commit could ship
 # different servers.
 FROM nginx:1.29-alpine

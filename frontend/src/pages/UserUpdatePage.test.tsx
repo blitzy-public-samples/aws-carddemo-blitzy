@@ -87,11 +87,11 @@ const signonMock =
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   ApiError,
@@ -171,35 +171,34 @@ const PF12_LABEL = 'F12=Cancel';
 
 type UserUpdatePageComponent = (typeof import('./UserUpdatePage'))['default'];
 type LayoutComponent = (typeof import('../components/Layout'))['default'];
-type SetSessionFn = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let UserUpdatePage: UserUpdatePageComponent;
 let Layout: LayoutComponent;
-let setSession: SetSessionFn;
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported after the mock is registered so every consumer of ``../api`` binds
   // to the mocked barrel; no registry reset, so React stays a single instance.
   ({ default: UserUpdatePage } = await import('./UserUpdatePage'));
   ({ default: Layout } = await import('../components/Layout'));
-  ({ __setSession: setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   getUserMock.mockReset();
   updateUserMock.mockReset();
   signonMock.mockReset();
   getUserMock.mockResolvedValue({ ...STORED_USER });
   updateUserMock.mockResolvedValue({ ...STORED_USER });
-  act(() => {
-    setSession(ADMIN_USER_ID, 'A');
-  });
+  await seedSignedOnSession(ADMIN_USER_ID, 'A');
 });
 
-afterEach(() => {
-  act(() => {
-    setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
   if (typeof sessionStorage !== 'undefined') {
     sessionStorage.clear();
   }
@@ -518,6 +517,57 @@ describe('UserUpdatePage — save', () => {
     };
     expect(updateUserMock).toHaveBeenCalledWith(TARGET_USER_ID, expectedRequest);
     expect(updateUserMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('UserUpdatePage — in-flight duplicate-update guard', () => {
+  it('closes every entry field while the update is in flight and writes once for a repeated F5', async () => {
+    const user = userEvent.setup();
+    let acknowledge!: (value: UserDto) => void;
+    updateUserMock.mockReturnValueOnce(
+      new Promise<UserDto>((resolve) => {
+        acknowledge = resolve;
+      }),
+    );
+    await renderFetchedScreen();
+
+    await user.clear(field(LABEL_FIRST_NAME));
+    await user.type(field(LABEL_FIRST_NAME), EDITED_FIRST_NAME);
+    // ``COUSR02C`` rejects a blank password, so the edit carries one.
+    await user.type(field(LABEL_PASSWORD), ENTERED_PASSWORD);
+    await user.click(pfKey(PF5_LABEL));
+
+    await waitFor(() => {
+      expect(updateUserMock).toHaveBeenCalledTimes(1);
+    });
+    // ``ATTRB=ASKIP`` for the whole in-flight interval: no field, not even the
+    // password, can be retyped while the PUT is outstanding.
+    for (const label of [
+      LABEL_USER_ID,
+      LABEL_FIRST_NAME,
+      LABEL_LAST_NAME,
+      LABEL_PASSWORD,
+      LABEL_USER_TYPE,
+    ]) {
+      expect(field(label)).toBeDisabled();
+    }
+
+    // A second F5, from the legend and from the physical key, must not write twice.
+    act(() => {
+      fireEvent.click(pfKey(PF5_LABEL));
+      fireEvent.keyDown(document, { key: 'F5' });
+    });
+    expect(updateUserMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      acknowledge({ ...STORED_USER, firstName: EDITED_FIRST_NAME });
+      // Awaited so this is an asynchronous act scope: the effects and the promise
+      // callbacks the interaction queues are flushed before it returns.
+      await Promise.resolve();
+    });
+
+    expect(updateUserMock).toHaveBeenCalledTimes(1);
+    expect(field(LABEL_FIRST_NAME)).toBeEnabled();
   });
 });
 

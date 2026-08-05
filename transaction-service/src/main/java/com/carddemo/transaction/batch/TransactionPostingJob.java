@@ -234,10 +234,10 @@ public class TransactionPostingJob {
      *     {@link PostingJobCompletionListener#EMPTY_FEED_EXIT_CODE} (return code
      *     12) and Spring Batch carries that status and exit code onto the job.
      * :note: The verdict lives here, not on the job listener, so the job and step
-     *     rows an operator queries always agree (QA Issue 6): failing the job while
+     *     rows an operator queries always agree: failing the job while
      *     its only step stayed ``COMPLETED`` left ``BATCH_JOB_EXECUTION`` and
      *     ``BATCH_STEP_EXECUTION`` contradicting each other.
-     * :note: Reading nothing is not by itself an empty feed (QA Issue 7). A
+     * :note: Reading nothing is not by itself an empty feed. A
      *     restarted execution that resumes past the last consumed record legitimately
      *     reads zero rows, and reporting that as a missing feed dispatched an
      *     operator after a non-existent incident. The staged record count is

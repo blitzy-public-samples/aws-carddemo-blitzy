@@ -119,7 +119,7 @@ class DailyTransactionRowMapperTest {
 
     /**
      * :purpose: A staged row missing a field the posting checks dereference is reported
-     *     as an actionable feed fault naming the record and the column (QA Issue 8),
+     *     as an actionable feed fault naming the record and the column,
      *     instead of aborting the step later with a raw ``NullPointerException``. A
      *     fixed-width 350-byte ``DALYTRAN`` record can never be missing one, so such a
      *     row is a staging fault, not a business rejection.

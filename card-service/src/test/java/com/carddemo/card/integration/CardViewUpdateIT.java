@@ -34,9 +34,6 @@ import com.carddemo.common.testsupport.MigratedSchemaContainer;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.sql.Statement;
 
 
 import org.junit.jupiter.api.AfterEach;

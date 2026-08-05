@@ -26,7 +26,7 @@ package com.carddemo.common.batch;
  *  is no longer a byte count and every downstream reader that parses by offset breaks.
  * :output: Text in which one character is guaranteed to encode to exactly one byte in
  *  ISO-8859-1, the encoding all fixed-width CardDemo writers pin.
- * :note: Two distinct effects are corrected here (QA Issue 3). Under UTF-8 an accented
+ * :note: Two distinct effects are corrected here. Under UTF-8 an accented
  *  character occupies two bytes, so a record grew past its declared length and every
  *  field after it was byte-shifted. Pinning ISO-8859-1 fixes that but not the converse:
  *  a code point outside Latin-1 is unmappable, and a SUPPLEMENTARY code point such as an

@@ -63,10 +63,10 @@ public class ObservabilityConfig {
      * :purpose: Carry the correlation id of the submitting thread onto the worker thread of
      *           every task run through a Spring-managed executor, so ``@Async`` methods and
      *           asynchronously launched batch jobs log under the same correlation id as the
-     *           request that triggered them. Declared here as the single
-     *           {@link org.springframework.core.task.TaskDecorator} bean so Spring Boot's task
-     *           executor builder applies it to the auto-configured ``applicationTaskExecutor``
-     *           without any per-service wiring.
+     *           request that triggered them. Spring Boot's task-executor builder composites
+     *           every {@link org.springframework.core.task.TaskDecorator} bean, so this
+     *           decorator and {@link #contextPropagatingTaskDecorator()} both apply to the
+     *           auto-configured ``applicationTaskExecutor`` without per-service wiring.
      * :returns: the shared correlation-id propagating task decorator.
      */
     @Bean
@@ -130,7 +130,7 @@ public class ObservabilityConfig {
      * :purpose: Carry the ambient observation/trace scope (and every other registered
      *           ``ThreadLocalAccessor`` context, including the correlation id) across thread
      *           boundaries, so work handed to an executor keeps the trace of the request that
-     *           submitted it. Spring Boot applies a single ``TaskDecorator`` bean to the
+     *           submitted it. It is composited with {@link #correlationIdTaskDecorator()} onto the
      *           auto-configured application task executor, which is what backs ``@Async`` — this is
      *           how the asynchronous report launch in reporting-service stays attached to its
      *           caller's trace instead of starting an orphan with no ``traceId``/``spanId``.

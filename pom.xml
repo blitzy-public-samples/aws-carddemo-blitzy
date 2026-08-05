@@ -44,6 +44,12 @@
         -->
         <postgresql.version>42.7.13</postgresql.version>
         <tomcat.version>11.0.24</tomcat.version>
+        <!--
+          OWASP dependency-check scanner, pinned because it is NOT managed by the
+          Spring Boot BOM. Consumed only by the non-default `dependency-scan` profile
+          declared below, so this property is inert in an ordinary build.
+        -->
+        <dependency-check-maven.version>13.0.0</dependency-check-maven.version>
     </properties>
 
     <modules>
@@ -81,27 +87,20 @@
 
                 <!--
                   A deterministic, NON-PRODUCTION AES-256 key is supplied to every forked test JVM
-                  (unit and integration) so the carddemo-common PII key validation, which now runs
-                  EAGERLY at context startup for any service that declares a DataSource, is
-                  satisfiable in tests. Production and deployed environments MUST still supply the
-                  real key through the CARDDEMO_PII_KEY environment variable (docker-compose.yml and
-                  k8s/secret.yaml do); a service started without it fails fast rather than reporting
-                  UP and then failing every request that touches an encrypted column. The value
-                  below is an obviously-fake fixture ("carddemo-test-pii-key-32bytes!!!") used only
-                  by the test phases - see docs/decision-log.md. Plugin versions are inherited from
-                  the Spring Boot parent BOM.
-                  A deterministic, NON-PRODUCTION AES-256 key is supplied to every forked
-                  test JVM so the carddemo-common CryptoConverter can initialize and
-                  round-trip the encrypted PII columns (customer SSN, government-issued id,
-                  EFT account id, card CVV) wherever a test boots a context that reads
-                  them. CryptoConverter and the startup PII-encryption pass both fail fast
-                  when no key is configured, so a production deployment MUST still provide
-                  the real key through the CARDDEMO_PII_KEY environment variable (see
-                  docs/decision-log.md). This value is an obviously-fake, test-only fixture
-                  and is never used outside the test phases. Declared here for surefire AND
-                  failsafe so unit tests and Testcontainers integration tests behave
-                  identically; a module that declares its own systemPropertyVariables must
-                  repeat it. Plugin versions are inherited from the Spring Boot parent.
+                  (unit and integration) so the carddemo-common CryptoConverter can initialize and
+                  round-trip the encrypted PII columns (customer SSN, government-issued id, EFT
+                  account id, card CVV) wherever a test boots a context that reads them.
+                  CryptoConverter and the eager startup PII-key validation both fail fast when no
+                  key is configured, so a production or deployed environment MUST still supply the
+                  real key through the CARDDEMO_PII_KEY environment variable (docker-compose.yml
+                  and k8s/secret.yaml do); a service started without it fails fast rather than
+                  reporting UP and then failing every request that touches an encrypted column.
+                  The value below is an obviously-fake, test-only fixture
+                  ("carddemo-test-pii-key-32bytes!!!") never used outside the test phases.
+                  Declared for surefire AND failsafe so unit tests and Testcontainers integration
+                  tests behave identically; a module that declares its own
+                  systemPropertyVariables must repeat it. Plugin versions are inherited from the
+                  Spring Boot parent BOM.
                 -->
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -144,5 +143,66 @@
             </plugin>
         </plugins>
     </build>
+
+    <!--
+      Dependency-vulnerability scanning gate. Declared as a NON-DEFAULT profile so the
+      ordinary build (`mvn clean install`, `mvn test`, `mvn verify`) resolves nothing
+      extra and continues to work from the local repository with no network: an
+      inactive profile contributes no plugin to the effective model, so Maven never
+      attempts to download the scanner. Activate it explicitly:
+
+          mvn -B -P dependency-scan verify
+
+      The scan needs network access and an NVD API key. Supply the key as
+      -Dnvd.api.key=... or through the NVD_API_KEY environment variable; without one
+      the NVD feed download is heavily rate-limited rather than unavailable. The first
+      run populates the local CVE datafeed and is slow; subsequent runs reuse it.
+
+      Threshold: the build fails on any dependency carrying a CVE scored 7.0 or higher
+      (CVSS v3 HIGH and CRITICAL). Reports land in each module's target directory in
+      HTML for a human and JSON for a pipeline.
+    -->
+    <profiles>
+        <profile>
+            <id>dependency-scan</id>
+            <properties>
+                <!-- Overridable on the command line; empty is a valid (rate-limited) value. -->
+                <nvd.api.key>${env.NVD_API_KEY}</nvd.api.key>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.owasp</groupId>
+                        <artifactId>dependency-check-maven</artifactId>
+                        <version>${dependency-check-maven.version}</version>
+                        <configuration>
+                            <nvdApiKey>${nvd.api.key}</nvdApiKey>
+                            <failBuildOnCVSS>7</failBuildOnCVSS>
+                            <formats>
+                                <format>HTML</format>
+                                <format>JSON</format>
+                            </formats>
+                            <!--
+                              Test-only and provided-scope artifacts never ship in a service
+                              image, so a CVE in Testcontainers or in the servlet API stubs is
+                              not a deployed exposure and must not fail the gate.
+                            -->
+                            <skipTestScope>true</skipTestScope>
+                            <skipProvidedScope>true</skipProvidedScope>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>scan-dependencies</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>

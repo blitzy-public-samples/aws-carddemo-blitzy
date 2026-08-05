@@ -96,7 +96,7 @@ public class RejectFileItemWriter implements ItemStreamWriter<PostingItem> {
      *     the delegate can open the file, and rejecting absolute paths, ``..``
      *     traversal and symlink escapes (CWE-22).
      * :note: The name is resolved through the shared batch root rather than opened
-     *     directly (QA Issue 21). ``FileSystemResource`` used to resolve the bare
+     *     directly. ``FileSystemResource`` used to resolve the bare
      *     default against the PROCESS WORKING DIRECTORY - ``/app`` inside the
      *     container, on the read-only root filesystem - so the very first rejected
      *     transaction would have failed the posting step with

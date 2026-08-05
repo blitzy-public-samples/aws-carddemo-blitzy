@@ -32,7 +32,7 @@ import org.junit.jupiter.api.Test;
  *     bytes (``DALYREJS`` ``LRECL=430``, ``FD-STMTFILE-REC PIC X(80)``,
  *     ``HTML-FIXED-LN PIC X(100)``, ``FD-REPTFILE-REC PIC X(133)``), so a character count
  *     that diverges from the byte count breaks every offset-based downstream reader
- *     (QA Issue 3).
+ *.
  * :output: JUnit 5 / AssertJ assertions over the byte length of the encoded result.
  */
 @DisplayName("FixedWidthText")

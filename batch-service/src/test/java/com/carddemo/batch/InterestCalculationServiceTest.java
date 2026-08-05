@@ -179,7 +179,7 @@ class InterestCalculationServiceTest {
      * :purpose: A raw result of exactly 0.005 is TRUNCATED to 0.00. The COBOL ``COMPUTE``
      *     carries no ``ROUNDED`` phrase, so the excess digits are dropped as the quotient is
      *     stored into ``WS-MONTHLY-INT PIC S9(09)V99``; rounding half up added a cent that
-     *     propagated into the account balance (QA Issue 9, docs/decision-log.md).
+     *     propagated into the account balance.
      */
     @Test
     @DisplayName("computeMonthlyInterest: 0.005 truncates to 0.00, never 0.01")
@@ -382,7 +382,7 @@ class InterestCalculationServiceTest {
      * :purpose: A present cross-reference yields its 16-character card number via the
      *     ``xref_acct_id`` secondary index, read in ascending ``XREF-CARD-NUM`` order so an
      *     account holding several cards always stamps the same card number on its interest
-     *     transaction, as the VSAM alternate-index read did (QA Issue 11).
+     *     transaction, as the VSAM alternate-index read did.
      */
     @Test
     @DisplayName("resolveCardNumber: found -> returns the lowest card number of the account")
@@ -439,7 +439,7 @@ class InterestCalculationServiceTest {
         assertThat(tx.getTranAmt()).isEqualByComparingTo("10.00");
         assertThat(tx.getTranMerchantId()).isEqualTo(0L);
         // MOVE SPACES fills the whole fixed-width field, so the stored value is the field's
-        // width in blanks rather than an empty string (QA Issue 12): CVTRA05Y declares
+        // width in blanks rather than an empty string: CVTRA05Y declares
         // TRAN-MERCHANT-NAME X(50), TRAN-MERCHANT-CITY X(50) and TRAN-MERCHANT-ZIP X(10).
         assertThat(tx.getTranMerchantName()).isEqualTo(" ".repeat(50));
         assertThat(tx.getTranMerchantCity()).isEqualTo(" ".repeat(50));

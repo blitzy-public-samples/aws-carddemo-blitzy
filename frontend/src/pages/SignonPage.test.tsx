@@ -26,7 +26,7 @@
  *     shared ``Layout`` (the provider that renders that chrome) within a
  *     ``MemoryRouter`` whose sibling routes act as navigation probes.
  */
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 // ``CCDA-MSG-THANK-YOU`` verbatim, the one line PF3 leaves on the erased screen.
 import { CCDA_MSG_THANK_YOU } from '../types';
 import type { RenderResult } from '@testing-library/react';
@@ -84,7 +84,6 @@ jest.unstable_mockModule('../api', () => ({
   // is none, which is the state the sign-on screen is always reached in.
   getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   getAppId: jest.fn(() => 'CICS'),
   getSysId: jest.fn(() => 'CDMO'),
@@ -103,8 +102,14 @@ let Layout: (typeof import('../components/Layout'))['default'];
 /** The client-normalized error type the page narrows failures against. */
 let ApiError: (typeof import('../api'))['ApiError'];
 
-/** Session store seam used to place the SPA in a signed-in or signed-out state. */
-let __setSession: (typeof import('../hooks/useSession'))['__setSession'];
+/** The shared session harness, which seeds identity over ``GET /session``. */
+type SessionHarness = typeof import('../testing/sessionHarness');
+
+/** Establishes a signed-on session so the screen's exit path can be exercised. */
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+
+/** Places the SPA in the server-confirmed signed-out state the screen is reached in. */
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported after the mock registration so the page, the chrome provider and the
@@ -112,7 +117,9 @@ beforeAll(async () => {
   ({ default: Layout } = await import('../components/Layout'));
   ({ default: SignonPage } = await import('./SignonPage'));
   ({ ApiError } = await import('../api'));
-  ({ __setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
 /** Verbatim BMS ``POS=(17,16)`` instructional prompt of mapset ``COSGN00``. */
@@ -338,12 +345,10 @@ function renderCalls(calls: readonly unknown[][]): string {
   return calls.map((call) => call.map((arg) => String(arg)).join(' ')).join('\n');
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   signonMock.mockReset();
   sessionStorage.clear();
-  act(() => {
-    __setSession(null, null);
-  });
+  await seedSignedOutSession();
 });
 
 afterEach(() => {
@@ -771,9 +776,7 @@ describe('SignonPage — PF-key wiring', () => {
   });
 
   it('signs an established session out on exit', async () => {
-    act(() => {
-      __setSession(ADMIN_USER_ID, CDEMO_USRTYP_ADMIN);
-    });
+    await seedSignedOnSession(ADMIN_USER_ID, CDEMO_USRTYP_ADMIN);
     const view = renderSignonPage();
     expect(authenticatedFlag(view)).toBe('true');
 

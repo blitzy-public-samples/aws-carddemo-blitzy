@@ -20,6 +20,9 @@ import com.carddemo.common.security.SecurityAuditConfig;
 import com.carddemo.common.security.ManagementSecurityConfig;
 import com.carddemo.common.security.RateLimitFilter;
 import com.carddemo.common.security.SecurityHardening;
+import com.carddemo.common.security.SessionIndexLogoutHandler;
+import com.carddemo.common.security.SessionPrincipalIndex;
+import com.carddemo.common.security.SessionRegistryConfig;
 import jakarta.servlet.DispatcherType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -58,7 +61,8 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  */
 @Import({
         ManagementSecurityConfig.class,
-        SecurityAuditConfig.class
+        SecurityAuditConfig.class,
+        SessionRegistryConfig.class
 })
 @Configuration
 @EnableWebSecurity
@@ -95,6 +99,8 @@ public class SecurityConfig {
      * :param cookieSecure: whether cookies are marked ``Secure``; bound to the same
      *     ``server.servlet.session.cookie.secure`` switch as the session cookie so the
      *     CSRF cookie can never be laxer than the credential it protects.
+     * :param sessionPrincipalIndex: principal-to-session index the logout chain de-indexes,
+     *     so the index lists only sessions that can still authorize.
      * :returns: the built ``SecurityFilterChain``.
      * :throws: Exception propagated by the ``HttpSecurity`` builder.
      */
@@ -103,7 +109,8 @@ public class SecurityConfig {
             HttpSecurity http,
             @Value("${carddemo.rate-limit.gateway-requests-per-minute:600}") int requestsPerMinute,
             @Value("${carddemo.rate-limit.signon-requests-per-minute:60}") int signonRequestsPerMinute,
-            @Value("${server.servlet.session.cookie.secure:true}") boolean cookieSecure)
+            @Value("${server.servlet.session.cookie.secure:true}") boolean cookieSecure,
+            SessionPrincipalIndex sessionPrincipalIndex)
             throws Exception {
         CookieCsrfTokenRepository csrfTokenRepository = CookieCsrfTokenRepository.withHttpOnlyFalse();
         csrfTokenRepository.setCookieName(CSRF_COOKIE_NAME);
@@ -152,6 +159,9 @@ public class SecurityConfig {
                     WebAsyncManagerIntegrationFilter.class)
             .logout(logout -> logout
                 .logoutUrl("/logout")
+                // De-index the session before it is invalidated, so a later administrator
+                // revocation acts on live sessions only and reports a truthful count.
+                .addLogoutHandler(new SessionIndexLogoutHandler(sessionPrincipalIndex))
                 .clearAuthentication(true)
                 .invalidateHttpSession(true)
                 .deleteCookies(CSRF_COOKIE_NAME)

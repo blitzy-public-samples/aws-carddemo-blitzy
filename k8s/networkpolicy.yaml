@@ -2,7 +2,7 @@
 # ===========================================================================
 # k8s/networkpolicy.yaml — least-privilege pod-to-pod network segmentation.
 # ---------------------------------------------------------------------------
-# Runtime hardening (MJ-10). A namespace-wide default-deny for ingress is
+# Runtime hardening. A namespace-wide default-deny for ingress is
 # combined with explicit allow rules that model the ONLY legitimate traffic
 # flows in the CardDemo topology:
 #

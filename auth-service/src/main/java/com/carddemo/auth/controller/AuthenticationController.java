@@ -118,13 +118,6 @@ public class AuthenticationController {
      * :purpose: Resolve the DISTRIBUTED-TRACE id of the current request from the ``traceId`` MDC
      *     entry published by Micrometer Tracing.
      * :returns: the current trace id, or ``null`` when the request was not traced.
-     * :note: Returns ``null`` rather than falling back to the correlation id; the envelope
-     *     carries the two ids in their own ``traceId`` and ``correlationId`` fields.
-     */
-    /**
-     * :purpose: Resolve the DISTRIBUTED-TRACE id of the current request from the ``traceId`` MDC
-     *     entry published by Micrometer Tracing.
-     * :returns: the current trace id, or ``null`` when the request was not traced.
      * :note: Deliberately no fallback to the correlation id: the envelope reports the two ids in
      *     their own fields (``traceId`` and ``correlationId``) so each value resolves where it
      *     actually exists - the trace backend and the log stream respectively.

@@ -10,22 +10,20 @@
  *     ``PROCESS-ENTER-KEY`` message in the line-23 region, and the line-24
  *     legend carries ``ENTER=Continue`` and ``F3=Exit``.
  * :output: Jest assertions only; no artifacts are produced.
- * :note: ``../api`` and ``react-router`` are replaced through
- *     ``jest.unstable_mockModule``: ``getAdminMenu`` is served from a fixture,
- *     the real ``ApiError`` class is passed through, and ``useNavigate`` yields a
- *     spy. The page and the shell are imported after those registrations. The
- *     page is mounted inside :func:`Layout`, which renders the line-23 message
- *     region and the line-24 legend from the chrome the page publishes.
- *     Rationale is recorded in ``docs/decision-log.md``.
+ * :note: Only ``../api`` is replaced, through ``jest.unstable_mockModule``:
+ *     ``getAdminMenu`` is served from a fixture and the real ``ApiError`` class is
+ *     passed through. ``react-router`` is the real module, so every transfer is
+ *     asserted on the resolved router location rather than on a ``useNavigate`` spy,
+ *     and the page is mounted inside the real :func:`Layout`, which renders the
+ *     line-23 message region and the line-24 legend from the chrome the page
+ *     publishes. Rationale is recorded in ``docs/decision-log.md``.
  */
-import { render, screen, act, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 // Jest's ESM runtime does not inject ``jest`` as a global (unlike describe/it/
 // expect), so it is imported explicitly.
 import { jest } from '@jest/globals';
-// Bound statically, so these resolve to the real module before the mock below is
-// registered; the mock then re-exports them with only ``useNavigate`` replaced, so
-// the router context the shell reads is the one ``MemoryRouter`` provides.
-import { MemoryRouter as ActualMemoryRouter, useLocation } from 'react-router';
+import { MemoryRouter, useLocation } from 'react-router';
+import type { ReactElement } from 'react';
 import { ApiError } from '../api';
 import type {
   MenuOption,
@@ -133,9 +131,6 @@ const REJECTED_OPTIONS: [string, string][] = [
   ['a blank option', ''],
 ];
 
-/** Spy standing in for the ``useNavigate`` result the page dispatches through. */
-const navigateMock = jest.fn<(to: string) => void>();
-
 /** Mocked ``GET /admin/menu`` call the page loads its option slots from. */
 const getAdminMenuMock = jest.fn<() => Promise<MenuResponseDto>>();
 
@@ -172,11 +167,11 @@ function refused(message: string): MenuSelectionResponseDto {
 // ``useSession`` imports.
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   selectAdminMenuOption: selectAdminMenuOptionMock,
   __esModule: true,
@@ -185,22 +180,14 @@ jest.unstable_mockModule('../api', () => ({
   signon: jest.fn(),
 }));
 
-jest.unstable_mockModule('react-router', () => ({
-  __esModule: true,
-  MemoryRouter: ActualMemoryRouter,
-  useLocation,
-  useNavigate: () => navigateMock,
-}));
-
 type AdminMenuPageComponent = (typeof import('./AdminMenuPage'))['default'];
 type LayoutComponent = (typeof import('../components/Layout'))['default'];
-type MemoryRouterComponent = (typeof import('react-router'))['MemoryRouter'];
-type SetSessionSeam = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let AdminMenuPage: AdminMenuPageComponent;
 let Layout: LayoutComponent;
-let MemoryRouter: MemoryRouterComponent;
-let setSession: SetSessionSeam;
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 /**
  * :purpose: Build the option row text the page renders for one served option
@@ -214,6 +201,16 @@ function optionLabel(option: MenuOption): string {
 }
 
 /**
+ * :purpose: Publish the router location so a transfer the screen performs becomes
+ *     observable in the DOM, without replacing ``useNavigate``.
+ * :returns: the span carrying the active pathname.
+ */
+function LocationProbe(): ReactElement {
+  const location = useLocation();
+  return <span data-testid="location">{location.pathname}</span>;
+}
+
+/**
  * :purpose: Mount the admin menu inside the routed shared screen shell, which
  *     renders the line-23 message region and the line-24 legend from the chrome
  *     the page publishes.
@@ -224,8 +221,17 @@ function mountAdminMenu(): void {
       <Layout>
         <AdminMenuPage />
       </Layout>
+      <LocationProbe />
     </MemoryRouter>,
   );
+}
+
+/**
+ * :purpose: Read the resolved router pathname the screen last transferred to.
+ * :returns: the active pathname.
+ */
+function currentPath(): string {
+  return screen.getByTestId('location').textContent ?? '';
 }
 
 /**
@@ -266,24 +272,20 @@ beforeAll(async () => {
   // binds to the mocks and shares React with Testing Library.
   ({ default: AdminMenuPage } = await import('./AdminMenuPage'));
   ({ default: Layout } = await import('../components/Layout'));
-  ({ MemoryRouter } = await import('react-router'));
-  ({ __setSession: setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
-beforeEach(() => {
-  navigateMock.mockReset();
+beforeEach(async () => {
   getAdminMenuMock.mockReset();
   getAdminMenuMock.mockResolvedValue(ADMIN_MENU_RESPONSE);
   selectAdminMenuOptionMock.mockReset();
-  act(() => {
-    setSession(ADMIN_USER_ID, ADMIN_ROLE);
-  });
+  await seedSignedOnSession(ADMIN_USER_ID, ADMIN_ROLE);
 });
 
-afterEach(() => {
-  act(() => {
-    setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 describe('AdminMenuPage', () => {
@@ -345,13 +347,12 @@ describe('AdminMenuPage', () => {
       pressEnterKey();
 
       await waitFor(() => {
-        expect(navigateMock).toHaveBeenCalledTimes(1);
+        expect(currentPath()).toBe(route);
       });
       expect(selectAdminMenuOptionMock).toHaveBeenCalledWith({
         option: String(option),
         aid: 'ENTER',
       });
-      expect(navigateMock).toHaveBeenCalledWith(route);
     },
   );
 
@@ -363,9 +364,8 @@ describe('AdminMenuPage', () => {
     fireEvent.keyDown(optionField(), { key: 'Enter' });
 
     await waitFor(() => {
-      expect(navigateMock).toHaveBeenCalledTimes(1);
+      expect(currentPath()).toBe('/users');
     });
-    expect(navigateMock).toHaveBeenCalledWith('/users');
   });
 
   it.each(REJECTED_OPTIONS)(
@@ -379,7 +379,7 @@ describe('AdminMenuPage', () => {
 
       const banner = await screen.findByRole('alert');
       expect(banner.textContent).toBe(INVALID_OPTION_MESSAGE);
-      expect(navigateMock).not.toHaveBeenCalled();
+      expect(currentPath()).toBe(ADMIN_MENU_ROUTE);
     },
   );
 
@@ -398,9 +398,8 @@ describe('AdminMenuPage', () => {
     fireEvent.click(screen.getByRole('button', { name: EXIT_KEY_LABEL }));
 
     await waitFor(() => {
-      expect(navigateMock).toHaveBeenCalledTimes(1);
+      expect(currentPath()).toBe(SIGNON_ROUTE);
     });
-    expect(navigateMock).toHaveBeenCalledWith(SIGNON_ROUTE);
   });
 
   it('returns to the sign-on screen on the physical F3 key', async () => {
@@ -409,8 +408,7 @@ describe('AdminMenuPage', () => {
     fireEvent.keyDown(document, { key: 'F3' });
 
     await waitFor(() => {
-      expect(navigateMock).toHaveBeenCalledTimes(1);
+      expect(currentPath()).toBe(SIGNON_ROUTE);
     });
-    expect(navigateMock).toHaveBeenCalledWith(SIGNON_ROUTE);
   });
 });

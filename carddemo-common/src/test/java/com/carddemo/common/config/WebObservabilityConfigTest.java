@@ -105,11 +105,6 @@ class WebObservabilityConfigTest {
     }
 
     /**
-     * :purpose: Outside a servlet application the ``@ConditionalOnWebApplication`` gate
-     *   keeps the servlet filter out of the context entirely, so a non-servlet module can
-     *   import the class without pulling in servlet infrastructure.
-     */
-    /**
      * :purpose: Select the correlation-id registration by bean name, since the
      *   configuration also contributes the request-logging registration.
      * :param context: the running application context.
@@ -120,6 +115,11 @@ class WebObservabilityConfigTest {
         return context.getBean(CORRELATION_REGISTRATION, FilterRegistrationBean.class);
     }
 
+    /**
+     * :purpose: Outside a servlet application the ``@ConditionalOnWebApplication`` gate
+     *   keeps the servlet filter out of the context entirely, so a non-servlet module can
+     *   import the class without pulling in servlet infrastructure.
+     */
     @Test
     @DisplayName("contributes nothing outside a servlet application")
     void contributesNothingOutsideServletApplication() {

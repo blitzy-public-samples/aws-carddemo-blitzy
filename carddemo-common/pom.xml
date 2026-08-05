@@ -79,7 +79,7 @@
           three are deliberately NON-optional so every service that depends on
           carddemo-common inherits a WORKING tracing stack: an optional dependency is
           not transitive, which is why the bridge alone previously had to be repeated in
-          each service POM and still produced no spans at all (QA Issue 6).
+          each service POM and still produced no spans at all.
             1. spring-boot-micrometer-tracing-opentelemetry - the Spring Boot 4
                MODULARIZED auto-configuration for Micrometer Tracing over the
                OpenTelemetry bridge. In Boot 4 this no longer ships inside
@@ -125,7 +125,7 @@
         </dependency>
 
         <!-- Jackson 3 databind for the strict, allowlisted Spring Session Redis JSON
-             serializer (SessionRedisConfig, QA CR-17). spring-data-redis marks its
+             serializer (SessionRedisConfig). spring-data-redis marks its
              Jackson dependency optional, so it is declared here for compilation; the
              web/json starters provide it on every service's runtime classpath. -->
         <dependency>

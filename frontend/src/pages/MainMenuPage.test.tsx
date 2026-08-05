@@ -17,7 +17,7 @@
 // Jest's ESM runtime does not inject ``jest`` as a global (unlike describe/it/
 // expect), so it is imported explicitly.
 import { jest } from '@jest/globals';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
@@ -98,11 +98,11 @@ const signonMock = jest.fn();
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   selectMenuOption: selectMenuOptionMock,
   __esModule: true,
@@ -201,11 +201,12 @@ function menuResponse(options: MenuOption[] = MAIN_MENU_OPTIONS): MenuResponseDt
 
 type MainMenuPageComponent = (typeof import('./MainMenuPage'))['default'];
 type LayoutComponent = (typeof import('../components/Layout'))['default'];
-type SetSessionSeam = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let MainMenuPage: MainMenuPageComponent;
 let Layout: LayoutComponent;
-let __setSession: SetSessionSeam;
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported after the mock is registered so the screen, the shell and the hook
@@ -213,22 +214,20 @@ beforeAll(async () => {
   // React instance Testing Library already loaded.
   ({ default: MainMenuPage } = await import('./MainMenuPage'));
   ({ default: Layout } = await import('../components/Layout'));
-  ({ __setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
-beforeEach(() => {
+beforeEach(async () => {
   getMainMenuMock.mockReset();
   selectMenuOptionMock.mockReset();
   getMainMenuMock.mockResolvedValue(menuResponse());
-  act(() => {
-    __setSession(USER_ID, CDEMO_USRTYP_USER);
-  });
+  await seedSignedOnSession(USER_ID, CDEMO_USRTYP_USER);
 });
 
-afterEach(() => {
-  act(() => {
-    __setSession(null, null);
-  });
+afterEach(async () => {
+  await seedSignedOutSession();
 });
 
 /**

@@ -33,7 +33,7 @@ import org.springframework.context.annotation.Configuration;
  *  writable while the bean is constructed, i.e. during context refresh, so a
  *  container that was started without a writable batch directory fails fast with
  *  a precise message instead of accepting a job launch and then failing the step
- *  with ``java.io.IOException: No such file or directory`` (QA Issue 21).
+ *  with ``java.io.IOException: No such file or directory``.
  * :note: When a property is blank the resolver falls back to
  *  ``<java.io.tmpdir>/carddemo-batch/{output,input}``, which keeps the jobs
  *  runnable on a workstation and inside a container whose only writable mount is

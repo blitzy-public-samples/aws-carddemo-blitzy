@@ -21,7 +21,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 
-import java.security.SecureRandom;
 import java.util.Base64;
 
 import org.junit.jupiter.api.AfterEach;

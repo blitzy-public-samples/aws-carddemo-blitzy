@@ -12,7 +12,7 @@
 #   docker compose config       # render/validate the effective configuration
 #   docker compose down -v      # stop and remove containers + named volumes
 #
-# SECURITY MODEL (QA CR-08, CR-11, CR-17, MJ-10):
+# SECURITY MODEL:
 #   * No credential is hard-coded. Every secret is read from the environment as
 #     ${VAR:?...}, so `docker compose` fails fast if .env is missing a value —
 #     there is deliberately no insecure built-in default.
@@ -73,7 +73,7 @@ x-schema-dependencies: &schema-dependencies
 # Shared definition for every runnable Spring Boot service. Each backend block
 # merges this anchor and then supplies only its own build context (and, for the
 # services that must wait for the schema, its own depends_on). Services do
-# NOT publish host ports (CR-08): traffic flows through the api-gateway. All
+# NOT publish host ports: traffic flows through the api-gateway. All
 # services listen on 8080 internally.
 # ---------------------------------------------------------------------------
 x-backend-service: &backend-service
@@ -89,76 +89,53 @@ x-backend-service: &backend-service
     # Force a consistent internal port.
     SERVER_PORT: "8080"
     # Datasource points at the postgres service by its compose DNS name.
-    # Credentials are externalized (CR-11); no in-file default.
+    # Credentials are externalized; no in-file default.
     #
     # Only the URL is shared. Each DB-owning service overrides
     # SPRING_DATASOURCE_USERNAME / _PASSWORD with the per-service login role that
     # db/init/01-create-service-roles.sh provisions, mirroring the one-Secret-per-
-    # service model of k8s/secret.yaml (QA Issue 17: those eight roles were
+    # service model of k8s/secret.yaml (those eight roles must be
     # referenced by the manifests but nothing created them, and compose ran every
     # service as the bootstrap owner). The bootstrap owner is used by the postgres
     # container only.
     SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
     # Spring Session state store (externalized COMMAREA equivalent). Redis
-    # requires authentication (CR-17); the same secret is presented here.
+    # requires authentication; the same secret is presented here.
     SPRING_DATA_REDIS_HOST: redis
     SPRING_DATA_REDIS_PORT: "6379"
     SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     # Actuator health details are only rendered to authenticated principals
-    # (MJ-16); anonymous callers still receive the overall UP/DOWN status.
+    #; anonymous callers still receive the overall UP/DOWN status.
     MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: when-authorized
     # Sample every request in this local stack so each log line carries a
     # traceId/spanId and a flow can be followed across service boundaries. The
     # application default stays at the production-safe 10% (see each service's
     # application.yml); only this environment raises it.
-    # AES-256-GCM key for at-rest encryption of sensitive customer/card
+    # AES-256-GCM key for at-rest encryption of the sensitive customer/card
     # attributes (SSN, government id, EFT account id, CVV) via carddemo-common's
-    # CryptoConverter. carddemo-common validates the key EAGERLY during context
-    # startup for every service that declares a DataSource (Base64 + 32-byte
-    # length), so a missing, blank or malformed key aborts startup with a clear
-    # message; previously the key was resolved lazily per conversion, which let a
-    # service report UP and then fail every PII-touching request with HTTP 500.
-    # Externalized like every other secret (CR-11): no in-file default, so
-    # `docker compose` also fails fast at render time if .env omits it.
+    # CryptoConverter. It is validated eagerly during context startup (Base64 +
+    # 32-byte length), and carries no in-file default so `docker compose` fails
+    # fast at render time when .env omits it.
     CARDDEMO_PII_KEY: ${CARDDEMO_PII_KEY:?set CARDDEMO_PII_KEY in .env}
-    # OTLP/HTTP span endpoint of the local tracing backend (AAP 0.7.5). Without a
-    # reachable collector every span the services record is dropped, so distributed
-    # tracing cannot be verified in the local environment at all - the in-file default
-    # points at the container's OWN loopback, which is never a collector. Pointing it at
-    # the compose-DNS name makes the whole gateway -> downstream trace land in Jaeger.
-  # Liveness/readiness via the Spring Boot Actuator health endpoint.
-  #
-  # The probe uses bash's /dev/tcp pseudo-device rather than an HTTP client. Note
-  # that this is NOT because the base image lacks one: eclipse-temurin:21-jre is
-  # Ubuntu-based and does ship both curl (8.18.0) and wget (1.25.0), as well as
-  # bash. The /dev/tcp form is chosen because it asserts on the RESPONSE BODY -
-  # `grep -q UP` fails a 200 response whose aggregate status is DOWN, which a bare
-  # `curl -f` would pass - and because it adds no dependency on tooling that a
-  # future base-image change could drop (MJ-01).
     # Credential of the least-privilege `monitoring` principal that guards
-    # /actuator/prometheus and /actuator/metrics on every service (MJ-17). It is
+    # /actuator/prometheus and /actuator/metrics on every service. It is
     # the SAME secret Prometheus mounts as its basic_auth password_file below,
     # so the scrape authenticates; without it each service would seed the
     # principal with a random credential and every scrape target would return
-    # 401. Externalized like every other secret (CR-11): no in-file default.
+    # 401. Externalized like every other secret: no in-file default.
     MONITORING_PASSWORD: ${MONITORING_PASSWORD:?set MONITORING_PASSWORD in .env}
-    # Statement/report output destination read by reporting-service only. The root
-    # filesystem is read-only and /tmp is the sole writable mount, so the default
-    # points there; a report request whose destination cannot be written is refused
-    # with the legacy CORPT00C message rather than reported as a success (F22).
-    CARDDEMO_REPORTING_OUTPUT_DIR: ${CARDDEMO_REPORTING_OUTPUT_DIR:-/tmp/carddemo-reporting/output}
     # Distributed tracing (AAP 0.7.5). Spans are exported over OTLP/HTTP to the
     # jaeger collector on the private network; the application default targets
     # each container's own loopback, where nothing listens, so the endpoint MUST
-    # be supplied here for tracing to be verifiable locally (F28). The local
+    # be supplied here for tracing to be verifiable locally. The local
     # environment samples every request so a trace can be asserted end to end;
     # production overrides the probability from the environment.
     MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: ${MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
     MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:-1.0}
-  # Liveness/readiness via the Spring Boot Actuator health endpoint. The base
-  # image (eclipse-temurin:21-jre) ships neither curl nor wget, so the probe
-  # uses bash's /dev/tcp pseudo-device to issue a minimal HTTP request and
-  # asserts the payload reports UP (MJ-01).
+  # Liveness/readiness via the Spring Boot Actuator health endpoint. The probe issues
+  # the request through bash's /dev/tcp pseudo-device so it can assert on the RESPONSE
+  # BODY - `grep -q UP` fails a 200 whose aggregate status is DOWN, which a bare
+  # `curl -f` would pass - and so it depends on no HTTP client the base image may drop.
   healthcheck:
     test:
       - CMD-SHELL
@@ -170,7 +147,7 @@ x-backend-service: &backend-service
     timeout: 5s
     retries: 5
     start_period: 60s
-  # Runtime hardening (MJ-10). The read-only root filesystem forces all writable
+  # Runtime hardening. The read-only root filesystem forces all writable
   # state onto the tmpfs mount; a Spring Boot fat-jar only needs /tmp.
   security_opt:
     - no-new-privileges:true
@@ -207,7 +184,7 @@ services:
       CARDDEMO_BILLPAY_DB_PASSWORD: ${CARDDEMO_BILLPAY_DB_PASSWORD:?set CARDDEMO_BILLPAY_DB_PASSWORD in .env}
       CARDDEMO_REPORTING_DB_PASSWORD: ${CARDDEMO_REPORTING_DB_PASSWORD:?set CARDDEMO_REPORTING_DB_PASSWORD in .env}
       CARDDEMO_BATCH_DB_PASSWORD: ${CARDDEMO_BATCH_DB_PASSWORD:?set CARDDEMO_BATCH_DB_PASSWORD in .env}
-    # Connection budget (QA Issue 13). The eight JPA services each hold a bounded
+    # Connection budget. The eight JPA services each hold a bounded
     # HikariCP pool now (steady state 15 connections in total, absolute ceiling 68 -
     # see the spring.datasource.hikari block in every service's application.yml), but
     # the image default of max_connections=100 still leaves no operational headroom:
@@ -221,7 +198,7 @@ services:
       - postgres
       - -c
       - max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
-    # No host port (CR-11): only containers on carddemo-net reach the database.
+    # No host port: only containers on carddemo-net reach the database.
     #
     # The postgres:18+ official image stores its cluster in a
     # major-version-specific subdirectory so `pg_upgrade --link` works across
@@ -234,7 +211,7 @@ services:
     #
     # db/init is projected read-only onto the image's first-boot hook directory so
     # 01-create-service-roles.sh provisions the eight per-service login roles the
-    # deployment descriptors reference (QA Issue 17). The image runs it exactly once,
+    # deployment descriptors reference. The image runs it exactly once,
     # on initialisation of an empty data directory, as POSTGRES_USER.
     volumes:
       - pgdata:/var/lib/postgresql
@@ -261,13 +238,13 @@ services:
     environment:
       # Consumed by both the server (--requirepass) and the healthcheck. The
       # $$ escaping keeps the literal out of the rendered config; the value is
-      # expanded inside the container from its own environment (CR-17).
+      # expanded inside the container from its own environment.
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     command:
       - sh
       - -c
       - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
-    # No host port (CR-11): Redis is reachable only on carddemo-net.
+    # No host port: Redis is reachable only on carddemo-net.
     volumes:
       - redisdata:/data
     healthcheck:
@@ -288,7 +265,7 @@ services:
   # Backend microservices (built from each module's Dockerfile on
   # eclipse-temurin:21-jre). carddemo-common is a shared library and is
   # intentionally NOT run as a container — it is built into these services.
-  # None of these publish a host port (CR-08); all traffic is routed through
+  # None of these publish a host port; all traffic is routed through
   # the api-gateway on the private network.
   # =========================================================================
 
@@ -297,16 +274,16 @@ services:
     build:
       context: ./api-gateway
     # Tag the built image exactly as k8s/deployment-api-gateway.yaml references it, so
-    # `docker compose build` produces the artifact the manifests apply against
-    # (QA Issue 17). Registry and tag are overridable for a private registry or a
+    # `docker compose build` produces the artifact the manifests apply against.
+    # Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/api-gateway:${CARDDEMO_IMAGE_TAG:-1.0.0}
     # The gateway is the single public entrypoint for the backend.
     ports:
       - "8080:8080"
-    # The gateway owns NO database (CR-11) — its environment intentionally omits
+    # The gateway owns NO database — its environment intentionally omits
     # every SPRING_DATASOURCE_* variable and instead injects the downstream
-    # service routes as compose-DNS URIs on the internal 8080 port (CR-10).
+    # service routes as compose-DNS URIs on the internal 8080 port.
     # A service-level `environment` mapping REPLACES the anchor's mapping rather
     # than merging into it, so every shared variable the gateway still needs must
     # be repeated here.
@@ -324,7 +301,7 @@ services:
       # sampling probability must be repeated here; without it the gateway samples at the
       # committed 0.1 default and the entry span of most requests is never recorded.
       MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:-1.0}
-      # Same telemetry scrape credential as every other service (MJ-17): the
+      # Same telemetry scrape credential as every other service: the
       # gateway also publishes /actuator/prometheus and must not leave it open.
       MONITORING_PASSWORD: ${MONITORING_PASSWORD:?set MONITORING_PASSWORD in .env}
       # Full sampling in this local stack (see the x-backend-service anchor).
@@ -342,8 +319,8 @@ services:
     build:
       context: ./auth-service
     # Tag the built image exactly as k8s/deployment-auth-service.yaml references it, so
-    # `docker compose build` produces the artifact the manifests apply against
-    # (QA Issue 17). Registry and tag are overridable for a private registry or a
+    # `docker compose build` produces the artifact the manifests apply against.
+    # Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/auth-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
     # Waits for the shared schema: this service does not migrate, it validates
@@ -355,7 +332,7 @@ services:
       # environment must be re-merged explicitly before adding keys.
       <<: *backend-environment
       # Per-service login role provisioned by db/init/01-create-service-roles.sh,
-      # matching the carddemo-auth-service-db Secret in k8s/secret.yaml (QA Issue 17).
+      # matching the carddemo-auth-service-db Secret in k8s/secret.yaml.
       SPRING_DATASOURCE_USERNAME: carddemo_auth
       SPRING_DATASOURCE_PASSWORD: ${CARDDEMO_AUTH_DB_PASSWORD:?set CARDDEMO_AUTH_DB_PASSWORD in .env}
   user-service:
@@ -363,8 +340,8 @@ services:
     build:
       context: ./user-service
     # Tag the built image exactly as k8s/deployment-user-service.yaml references it, so
-    # `docker compose build` produces the artifact the manifests apply against
-    # (QA Issue 17). Registry and tag are overridable for a private registry or a
+    # `docker compose build` produces the artifact the manifests apply against.
+    # Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/user-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
     # Waits for the shared schema: this service does not migrate, it validates
@@ -376,7 +353,7 @@ services:
       # environment must be re-merged explicitly before adding keys.
       <<: *backend-environment
       # Per-service login role provisioned by db/init/01-create-service-roles.sh,
-      # matching the carddemo-user-service-db Secret in k8s/secret.yaml (QA Issue 17).
+      # matching the carddemo-user-service-db Secret in k8s/secret.yaml.
       SPRING_DATASOURCE_USERNAME: carddemo_user
       SPRING_DATASOURCE_PASSWORD: ${CARDDEMO_USER_DB_PASSWORD:?set CARDDEMO_USER_DB_PASSWORD in .env}
   account-service:
@@ -384,8 +361,8 @@ services:
     build:
       context: ./account-service
     # Tag the built image exactly as k8s/deployment-account-service.yaml references it, so
-    # `docker compose build` produces the artifact the manifests apply against
-    # (QA Issue 17). Registry and tag are overridable for a private registry or a
+    # `docker compose build` produces the artifact the manifests apply against.
+    # Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/account-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
     # Waits for the shared schema: this service does not migrate, it validates
@@ -397,7 +374,7 @@ services:
       # environment must be re-merged explicitly before adding keys.
       <<: *backend-environment
       # Per-service login role provisioned by db/init/01-create-service-roles.sh,
-      # matching the carddemo-account-service-db Secret in k8s/secret.yaml (QA Issue 17).
+      # matching the carddemo-account-service-db Secret in k8s/secret.yaml.
       SPRING_DATASOURCE_USERNAME: carddemo_account
       SPRING_DATASOURCE_PASSWORD: ${CARDDEMO_ACCOUNT_DB_PASSWORD:?set CARDDEMO_ACCOUNT_DB_PASSWORD in .env}
   card-service:
@@ -405,8 +382,8 @@ services:
     build:
       context: ./card-service
     # Tag the built image exactly as k8s/deployment-card-service.yaml references it, so
-    # `docker compose build` produces the artifact the manifests apply against
-    # (QA Issue 17). Registry and tag are overridable for a private registry or a
+    # `docker compose build` produces the artifact the manifests apply against.
+    # Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/card-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
     # Waits for the shared schema: this service does not migrate, it validates
@@ -418,7 +395,7 @@ services:
       # environment must be re-merged explicitly before adding keys.
       <<: *backend-environment
       # Per-service login role provisioned by db/init/01-create-service-roles.sh,
-      # matching the carddemo-card-service-db Secret in k8s/secret.yaml (QA Issue 17).
+      # matching the carddemo-card-service-db Secret in k8s/secret.yaml.
       SPRING_DATASOURCE_USERNAME: carddemo_card
       SPRING_DATASOURCE_PASSWORD: ${CARDDEMO_CARD_DB_PASSWORD:?set CARDDEMO_CARD_DB_PASSWORD in .env}
   transaction-service:
@@ -427,11 +404,11 @@ services:
       # Shallow merge: repeat the shared environment explicitly (see the anchor).
       <<: *backend-environment
       # Per-service login role provisioned by db/init/01-create-service-roles.sh,
-      # matching the carddemo-transaction-service-db Secret in k8s/secret.yaml (QA Issue 17).
+      # matching the carddemo-transaction-service-db Secret in k8s/secret.yaml.
       SPRING_DATASOURCE_USERNAME: carddemo_transaction
       SPRING_DATASOURCE_PASSWORD: ${CARDDEMO_TRANSACTION_DB_PASSWORD:?set CARDDEMO_TRANSACTION_DB_PASSWORD in .env}
       # Writable root for the DALYREJS reject file the transaction-posting job
-      # (POSTTRAN / CBTRN02C) writes (QA Issue 21). Without it the reject writer
+      # (POSTTRAN / CBTRN02C) writes. Without it the reject writer
       # resolved a bare file name against the working directory /app, which is on
       # the read-only root filesystem.
       CARDDEMO_BATCH_OUTPUT_DIR: /var/carddemo/batch/output
@@ -442,8 +419,8 @@ services:
     build:
       context: ./transaction-service
     # Tag the built image exactly as k8s/deployment-transaction-service.yaml references it, so
-    # `docker compose build` produces the artifact the manifests apply against
-    # (QA Issue 17). Registry and tag are overridable for a private registry or a
+    # `docker compose build` produces the artifact the manifests apply against.
+    # Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/transaction-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
     # Waits for the shared schema: this service does not migrate, it validates
@@ -455,8 +432,8 @@ services:
     build:
       context: ./billpay-service
     # Tag the built image exactly as k8s/deployment-billpay-service.yaml references it, so
-    # `docker compose build` produces the artifact the manifests apply against
-    # (QA Issue 17). Registry and tag are overridable for a private registry or a
+    # `docker compose build` produces the artifact the manifests apply against.
+    # Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/billpay-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
     # Waits for the shared schema: this service does not migrate, it validates
@@ -468,7 +445,7 @@ services:
       # environment must be re-merged explicitly before adding keys.
       <<: *backend-environment
       # Per-service login role provisioned by db/init/01-create-service-roles.sh,
-      # matching the carddemo-billpay-service-db Secret in k8s/secret.yaml (QA Issue 17).
+      # matching the carddemo-billpay-service-db Secret in k8s/secret.yaml.
       SPRING_DATASOURCE_USERNAME: carddemo_billpay
       SPRING_DATASOURCE_PASSWORD: ${CARDDEMO_BILLPAY_DB_PASSWORD:?set CARDDEMO_BILLPAY_DB_PASSWORD in .env}
   reporting-service:
@@ -480,8 +457,8 @@ services:
       context: .
       dockerfile: reporting-service/Dockerfile
     # Tag the built image exactly as k8s/deployment-reporting-service.yaml references it, so
-    # `docker compose build` produces the artifact the manifests apply against
-    # (QA Issue 17). Registry and tag are overridable for a private registry or a
+    # `docker compose build` produces the artifact the manifests apply against.
+    # Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/reporting-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
     environment:
@@ -490,21 +467,14 @@ services:
       # anchor's map rather than adding to it.
       <<: *backend-environment
       # Per-service login role provisioned by db/init/01-create-service-roles.sh,
-      # matching the carddemo-reporting-service-db Secret in k8s/secret.yaml (QA Issue 17).
+      # matching the carddemo-reporting-service-db Secret in k8s/secret.yaml.
       SPRING_DATASOURCE_USERNAME: carddemo_reporting
       SPRING_DATASOURCE_PASSWORD: ${CARDDEMO_REPORTING_DB_PASSWORD:?set CARDDEMO_REPORTING_DB_PASSWORD in .env}
-      # Writable statement-output root (QA Issue 21). The CBSTM03A statement
-      # writer previously opened a path relative to the working directory (/app),
-      # which is on the read-only root filesystem, so every submitted report
-      # failed the step with "No such file or directory". Pointing it at the
-      # dedicated tmpfs below gives the job a writable directory that satisfies
-      # read_only: true and the non-root user, and carddemo-common's
-      # BatchOutputPathResolver proves it writable at startup.
+      # Writable statement-output root on the dedicated tmpfs below, so the CBSTM03A
+      # writer has a directory that satisfies read_only: true and the non-root user.
+      # carddemo-common's BatchOutputPathResolver proves it writable at startup.
       CARDDEMO_BATCH_OUTPUT_DIR: /var/carddemo/batch/output
       CARDDEMO_BATCH_INPUT_DIR: /var/carddemo/batch/input
-      # Same writable root for StatementOutputResolver, which resolves the CBSTM03A
-      # 80-column text and 100-column HTML statement documents.
-      CARDDEMO_REPORTING_OUTPUT_DIR: /var/carddemo/batch/output
     tmpfs:
       - /tmp
       - /var/carddemo/batch
@@ -517,18 +487,18 @@ services:
     build:
       context: ./batch-service
     # Tag the built image exactly as k8s/deployment-batch-service.yaml references it, so
-    # `docker compose build` produces the artifact the manifests apply against
-    # (QA Issue 17). Registry and tag are overridable for a private registry or a
+    # `docker compose build` produces the artifact the manifests apply against.
+    # Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/batch-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
     environment:
       # Shallow merge: repeat the shared environment explicitly (see above).
       <<: *backend-environment
       # Per-service login role provisioned by db/init/01-create-service-roles.sh,
-      # matching the carddemo-batch-service-db Secret in k8s/secret.yaml (QA Issue 17).
+      # matching the carddemo-batch-service-db Secret in k8s/secret.yaml.
       SPRING_DATASOURCE_USERNAME: carddemo_batch
       SPRING_DATASOURCE_PASSWORD: ${CARDDEMO_BATCH_DB_PASSWORD:?set CARDDEMO_BATCH_DB_PASSWORD in .env}
-      # Writable report/dump root for the nine data-management jobs (QA Issue 21).
+      # Writable report/dump root for the nine data-management jobs.
       CARDDEMO_BATCH_OUTPUT_DIR: /var/carddemo/batch/output
       # Read-only feed root. The daily-transaction validation job (CBTRN01C)
       # reads a fixed-width sequential feed; the repository's own legacy fixture
@@ -545,7 +515,7 @@ services:
   # =========================================================================
   # Frontend (React 19 SPA served by nginx). The bundle talks to the backend
   # through a SAME-ORIGIN path (/api), which nginx reverse-proxies to the
-  # api-gateway on the private network (CR-10). No absolute gateway URL is
+  # api-gateway on the private network. No absolute gateway URL is
   # baked into the bundle, so no host port of the gateway is assumed.
   # =========================================================================
 
@@ -568,8 +538,8 @@ services:
         # 8-character APPLID field exactly.
         VITE_APP_ID: CARDDEMO
     # Tag the built image exactly as k8s/deployment-frontend.yaml references it, so
-    # `docker compose build` produces the artifact the manifests apply against
-    # (QA Issue 17). Registry and tag are overridable for a private registry or a
+    # `docker compose build` produces the artifact the manifests apply against.
+    # Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/frontend:${CARDDEMO_IMAGE_TAG:-1.0.0}
     environment:
@@ -579,7 +549,7 @@ services:
       - "3000:80"
     depends_on:
       - api-gateway
-    # nginx needs a few writable paths; everything else is read-only (MJ-10).
+    # nginx needs a few writable paths; everything else is read-only.
     security_opt:
       - no-new-privileges:true
     read_only: true
@@ -596,7 +566,7 @@ services:
   # /actuator/prometheus endpoint; Jaeger receives the OTLP spans every service
   # exports; Grafana is auto-provisioned (datasources + dashboard) from inline
   # configs and the dashboard template under observability/. All three UIs bind to
-  # the host loopback only (CR-08/CR-11), so they are never exposed on a routable
+  # the host loopback only, so they are never exposed on a routable
   # interface.
   # =========================================================================
 
@@ -626,7 +596,7 @@ services:
     restart: unless-stopped
 
   prometheus:
-    # Pinned to an explicit version (QA Issue 19). An untagged reference resolves
+    # Pinned to an explicit version. An untagged reference resolves
     # to :latest, so two `docker compose pull` runs weeks apart can start different
     # Prometheus majors against the same scrape config and dashboards; 3.13.2 is
     # the version this stack was verified against.
@@ -651,14 +621,9 @@ services:
         uid: "65534"
         gid: "65534"
         mode: 0440
-    # No credential is projected into this container (QA Issue 15). The scrape
-    # config previously declared an HTTP basic-authentication block naming a
-    # "monitoring" principal that was never seeded anywhere, so the credential and
-    # this projection were inert: every scrape succeeded regardless of what was
-    # presented. The control that actually protects the monitoring path is network
-    # isolation - no service publishes its management port, and the scrape stays on
-    # the private carddemo-net bridge. See the header of
-    # observability/prometheus.yml and docs/decision-log.md.
+    # Network isolation is the second control over the monitoring path: no service
+    # publishes its management port and the scrape stays on the private carddemo-net
+    # bridge, while the projected credential above authenticates every scrape.
     ports:
       - "127.0.0.1:9090:9090"
     security_opt:
@@ -668,13 +633,13 @@ services:
     restart: unless-stopped
 
   grafana:
-    # Pinned to an explicit version (QA Issue 19). The provisioned dashboard is
+    # Pinned to an explicit version. The provisioned dashboard is
     # validated against this release - notably its handling of the saved `refresh`
     # interval and the table legend - so a floating :latest could change rendering
     # behaviour without any repository change.
     image: grafana/grafana:13.1.1
     environment:
-      # Admin credentials are externalized (CR-11); no admin/admin default.
+      # Admin credentials are externalized; no admin/admin default.
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?set GRAFANA_ADMIN_USER in .env}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -711,10 +676,9 @@ volumes:
 # ---------------------------------------------------------------------------
 # Inline config content. The Grafana entries wire the Prometheus and Jaeger
 # datasources and the dashboard provider on first boot. Keeping this inline avoids
-# adding provisioning files to the repository. No secret is projected here: the
-# former monitoring_password entry backed an HTTP basic-authentication block in
-# observability/prometheus.yml that was never enforced by any service, and both
-# were removed (QA Issue 15).
+# adding provisioning files to the repository. The one secret here,
+# monitoring_password, carries no committed value: it is interpolated from the
+# environment (.env) and projected read-only into the Prometheus container.
 # ---------------------------------------------------------------------------
 configs:
   # Credential of the least-privilege `monitoring` principal that every service's

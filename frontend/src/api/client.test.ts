@@ -24,9 +24,6 @@ const CSRF_HEADER_NAME = 'X-XSRF-TOKEN';
 /** Correlation-id header propagated on every request. */
 const CORRELATION_ID_HEADER = 'X-Correlation-Id';
 
-/** Storage key holding the locally cached bearer token. */
-const JWT_STORAGE_KEY = 'carddemo.jwt';
-
 /** Route an expired session is sent back to. */
 const SIGNON_ROUTE = '/signon';
 
@@ -42,7 +39,6 @@ interface ClientModule {
   ApiError: new (...args: never[]) => Error;
   isApiError: (err: unknown) => boolean;
   registerSessionExpiryHandler: (handler: () => void) => () => void;
-  clearLocalCredentials: () => void;
 }
 
 let client: ClientModule;
@@ -70,8 +66,8 @@ let respond: (config: InternalAxiosRequestConfig) => Promise<unknown>;
  * property is non-configurable with a getter, and `location.assign` is a
  * non-writable, non-configurable own method. The attempted redirect is therefore not
  * observable here and is covered by the browser runs instead. What IS observable, and
- * is what these tests assert, is the security-critical half of the contract: the
- * locally held credentials are dropped and every registered handler is notified.
+ * is what these tests assert, is the security-critical half of the contract: every
+ * registered handler is notified exactly once so no stale role keeps driving the UI.
  * `history.pushState` does control the reported path, so the suite parks on the
  * sign-on route where the module skips the navigation altogether.
  */
@@ -83,7 +79,6 @@ beforeEach(async () => {
   jest.resetModules();
   seen = [];
   document.cookie = `${CSRF_COOKIE_NAME}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
-  sessionStorage.clear();
 
   setPath(SIGNON_ROUTE);
 
@@ -184,33 +179,28 @@ describe('api client request interceptor', () => {
 });
 
 describe('api client session expiry', () => {
-  it('clears local credentials, notifies handlers and redirects on 401', async () => {
-    sessionStorage.setItem(JWT_STORAGE_KEY, 'stale-token');
+  it('notifies handlers exactly once and redirects on 401', async () => {
     const onExpired = jest.fn();
     client.registerSessionExpiryHandler(onExpired);
     respond = failWith(401, { message: 'Unauthorized' });
 
     await expect(client.default.get('/users')).rejects.toThrow();
 
-    expect(sessionStorage.getItem(JWT_STORAGE_KEY)).toBeNull();
     expect(onExpired).toHaveBeenCalledTimes(1);
   });
 
   it('treats 403 the same as 401 — the server will not act on this session', async () => {
-    sessionStorage.setItem(JWT_STORAGE_KEY, 'stale-token');
     const onExpired = jest.fn();
     client.registerSessionExpiryHandler(onExpired);
     respond = failWith(403, { message: 'Forbidden' });
 
     await expect(client.default.get('/accounts/1')).rejects.toThrow();
 
-    expect(sessionStorage.getItem(JWT_STORAGE_KEY)).toBeNull();
     expect(onExpired).toHaveBeenCalledTimes(1);
   });
 
   it('honours skipAuthRedirect so sign-on, the probe and logout report their own outcome', async () => {
     const onExpired = jest.fn();
-    // No token is held: the opt-out must leave whatever state exists untouched.
     client.registerSessionExpiryHandler(onExpired);
     respond = failWith(401, { message: 'Unauthorized' });
 
@@ -219,7 +209,6 @@ describe('api client session expiry', () => {
     ).rejects.toThrow();
 
     expect(onExpired).not.toHaveBeenCalled();
-    expect(sessionStorage.getItem(JWT_STORAGE_KEY)).toBeNull();
   });
 
   it('unregisters a session-expiry handler through its returned disposer', async () => {
@@ -234,14 +223,12 @@ describe('api client session expiry', () => {
   });
 
   it('leaves the session alone for a status that is not 401 or 403', async () => {
-    sessionStorage.setItem(JWT_STORAGE_KEY, 'live-token');
     const onExpired = jest.fn();
     client.registerSessionExpiryHandler(onExpired);
     respond = failWith(400, { message: 'User ID already exist...' });
 
     await expect(client.default.post('/users', {})).rejects.toThrow();
 
-    expect(sessionStorage.getItem(JWT_STORAGE_KEY)).toBe('live-token');
     expect(onExpired).not.toHaveBeenCalled();
   });
 });
@@ -304,15 +291,10 @@ describe('api client error normalization', () => {
   });
 });
 
-describe('clearLocalCredentials', () => {
-  it('removes the cached token and tolerates being called when none is held', () => {
-    sessionStorage.setItem(JWT_STORAGE_KEY, 'token');
+describe('credential channels', () => {
+  it('sends no Authorization header: the session cookie is the only credential', async () => {
+    await client.default.get('/users');
 
-    client.clearLocalCredentials();
-    expect(sessionStorage.getItem(JWT_STORAGE_KEY)).toBeNull();
-
-    expect(() => {
-      client.clearLocalCredentials();
-    }).not.toThrow();
+    expect(header(0, 'Authorization')).toBeUndefined();
   });
 });

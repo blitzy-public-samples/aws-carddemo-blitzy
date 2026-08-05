@@ -32,16 +32,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.OptimisticLockingFailureException;
-import org.slf4j.MDC;
-import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
-import org.springframework.web.HttpMediaTypeNotSupportedException;
-import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -106,12 +102,6 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     /** :purpose: Caller-facing message for an internal fault; the detail stays in the log. */
     private static final String MSG_UNEXPECTED = "An unexpected error occurred";
-
-    /**
-     * :purpose: MDC key under which Micrometer Tracing publishes the current distributed-trace id;
-     *     the same key the structured log encoder renders.
-     */
-    private static final String TRACE_ID_MDC_KEY = "traceId";
 
     /**
      * :purpose: Assemble a populated {@link ErrorResponse} body for a handled failure.
@@ -222,12 +212,6 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * :purpose: Map an uncategorized base {@link CardDemoException} (or any subtype without a more specific handler) to HTTP 400.
-     * :param ex: the domain exception carrying the detail message.
-     * :param request: the current web request.
-     * :returns: a ``400 Bad Request`` {@link ResponseEntity} wrapping the error body.
-     */
-    /**
      * :purpose: Translate a failure to encrypt or decrypt a protected customer or card
      *  attribute into a controlled server-side error carrying the standard envelope and
      *  the frozen non-disclosing message, instead of letting an ORM-wrapped
@@ -243,11 +227,17 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
         // The cause carries the cryptographic detail; it is logged, never returned.
         log.error("Protected-data conversion failed at {}", loggedPath(request), ex);
-        log.error("Protected-data conversion failed at {}", extractPath(request), ex);
         return ResponseEntity.status(status)
                 .body(buildBody(status, PiiEncryptionException.MESSAGE, request));
     }
 
+    /**
+     * :purpose: Map an uncategorized base {@link CardDemoException} (or any subtype without a
+     *     more specific handler) to HTTP 400.
+     * :param ex: the domain exception carrying the detail message.
+     * :param request: the current web request.
+     * :returns: a ``400 Bad Request`` {@link ResponseEntity} wrapping the error body.
+     */
     @ExceptionHandler(CardDemoException.class)
     public ResponseEntity<ErrorResponse> handleCardDemoException(CardDemoException ex, WebRequest request) {
         HttpStatus status = HttpStatus.BAD_REQUEST;
@@ -524,7 +514,6 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                                                                        WebRequest request) {
         HttpStatus status = HttpStatus.CONFLICT;
         log.warn("Optimistic-locking failure at {}: {}", loggedPath(request), loggedMessage(ex.getMessage()));
-        log.warn("Optimistic-locking failure at {}: {}", extractPath(request), ex.getMessage());
         return ResponseEntity.status(status)
                 .body(buildBody(status, OptimisticLockConflictException.MESSAGE, request));
     }
@@ -537,11 +526,8 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      * :param request: the current web request.
      * :returns: a ``500 Internal Server Error`` {@link ResponseEntity} whose body carries the
      *     correlation and trace ids of the failing request and a generic, non-sensitive message.
-     * :note: This closes the last gap of QA Issue 9. An unmapped ``JpaSystemException`` (raised, for
-     *     example, when an attribute converter cannot read a stored value) produced a body with no
-     *     correlation id and an ERROR line emitted by the container AFTER the correlation filter had
-     *     cleared the MDC, so a 500 could not be tied back to its request. It is logged at ERROR
-     *     WITH the stack trace because, unlike the business outcomes above, it is never expected.
+     * :note: Logged at ERROR with the stack trace because, unlike the business outcomes above, an
+     *     infrastructure failure is never expected.
      * :note: ``DataAccessException`` (spring-tx) is referenced rather than ``JpaSystemException``
      *     (spring-orm) on purpose: this advice is also imported by the api-gateway, which has no
      *     spring-orm on its classpath. ``JpaSystemException`` is a ``DataAccessException``, so it is

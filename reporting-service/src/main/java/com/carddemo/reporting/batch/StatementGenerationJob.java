@@ -262,7 +262,7 @@ public class StatementGenerationJob {
      *  ``..`` traversal and symlink escapes (CWE-22), and creating the directory
      *  so the flat-file writers can open their files.
      * :returns: the configured statement item writer.
-     * :note: The names are deliberately bare file names now (QA Issue 21). They
+     * :note: The names are deliberately bare file names now. They
      *  were previously the relative paths ``output/statements.txt`` and
      *  ``output/statements.html``, which ``FileSystemResource`` resolved against
      *  the process working directory - ``/app`` inside the container, on the

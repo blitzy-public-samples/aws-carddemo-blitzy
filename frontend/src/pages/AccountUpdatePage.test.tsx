@@ -17,6 +17,11 @@
  *     message line and function keys into the shared ``Layout`` shell through
  *     ``useScreenChrome``, so every render wraps the page in ``Layout``; per-field
  *     highlighting stays page-local and is asserted on the inputs themselves.
+ * :note: A ``401`` is asserted here only on what this SCREEN owns — the message it
+ *     surfaces and the record it does not display. The ``401`` -> ``/signon``
+ *     transition belongs to the api client's response interceptor and the session
+ *     store, neither of which is in this suite's path, and it is asserted where both
+ *     are real: ``api/client.test.ts`` and ``AppComposition.test.tsx``.
  */
 
 import { jest } from '@jest/globals';
@@ -101,11 +106,11 @@ class ApiError extends Error {
 
 jest.unstable_mockModule('../api', () => ({
   // The session store and the REST hook this screen's module graph loads bind to
-  // these barrel exports as well. The identity probe is left unanswered so the
-  // seeded store (``__setSession``) stays the suite's only session authority.
-  getSessionIdentity: jest.fn(() => new Promise<never>(() => undefined)),
+  // these barrel exports as well. ``getSessionIdentity`` is the production
+  // ``GET /session`` probe the session harness drives; unanswered by this suite it
+  // reports no session, and the harness is the only thing that changes that.
+  getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  clearLocalCredentials: jest.fn(),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
   __esModule: true,
   getAccount: getAccountMock,
@@ -120,11 +125,12 @@ jest.unstable_mockModule('../api', () => ({
 
 type AccountUpdatePageComponent = (typeof import('./AccountUpdatePage'))['default'];
 type LayoutComponent = (typeof import('../components/Layout'))['default'];
-type SetSession = (typeof import('../hooks/useSession'))['__setSession'];
+type SessionHarness = typeof import('../testing/sessionHarness');
 
 let AccountUpdatePage: AccountUpdatePageComponent;
 let Layout: LayoutComponent;
-let setSession: SetSession;
+let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
+let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
 beforeAll(async () => {
   // Imported here — not statically — so the page, ``useApi`` and ``useSession``
@@ -132,7 +138,9 @@ beforeAll(async () => {
   // React instance used by the statically imported Testing Library.
   ({ default: AccountUpdatePage } = await import('./AccountUpdatePage'));
   ({ default: Layout } = await import('../components/Layout'));
-  ({ __setSession: setSession } = await import('../hooks/useSession'));
+  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+    '../testing/sessionHarness'
+  ));
 });
 
 /* ------------------------------------------------------------------ */
@@ -195,9 +203,7 @@ const COMMITTED_ACCOUNT: AccountUpdateResponseDto = {
  * :param accountId: the routed account key; defaults to the fixture account.
  */
 async function renderScreen(accountId: string = ACCOUNT_ID): Promise<void> {
-  act(() => {
-    setSession(SESSION_USER, 'U');
-  });
+  await seedSignedOnSession(SESSION_USER, 'U');
   await act(async () => {
     render(
       <MemoryRouter initialEntries={[`/accounts/${accountId}/update`]}>
@@ -212,7 +218,6 @@ async function renderScreen(accountId: string = ACCOUNT_ID): Promise<void> {
           />
           <Route path="/accounts/:accountId" element={<div data-testid="view-route" />} />
           <Route path="/menu" element={<div data-testid="menu-route" />} />
-          <Route path="/signon" element={<div data-testid="signon-route" />} />
         </Routes>
       </MemoryRouter>,
     );
@@ -340,11 +345,9 @@ beforeEach(() => {
   updateAccountMock.mockResolvedValue(COMMITTED_ACCOUNT);
 });
 
-afterEach(() => {
+afterEach(async () => {
   // Return the shared session store to signed-out so no state leaks across tests.
-  act(() => {
-    setSession(null, null);
-  });
+  await seedSignedOutSession();
 });
 
 /* ------------------------------------------------------------------ */
@@ -778,19 +781,54 @@ describe('AccountUpdatePage — committed update', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* In-flight duplicate-save guard                                     */
+/* ------------------------------------------------------------------ */
+
+describe('AccountUpdatePage — in-flight duplicate-save guard', () => {
+  it('closes the entry fields while the save is in flight and writes once for a repeated F5', async () => {
+    let acknowledge!: (value: AccountUpdateResponseDto) => void;
+    updateAccountMock.mockReturnValueOnce(
+      new Promise<AccountUpdateResponseDto>((resolve) => {
+        acknowledge = resolve;
+      }),
+    );
+    await renderScreen();
+    const user = userEvent.setup();
+
+    await commit(user);
+
+    // ``ATTRB=ASKIP`` for the whole in-flight interval: the record cannot be re-edited
+    // while the optimistic-locked PUT is outstanding.
+    expect(fieldInput('acctCreditLimit')).toBeDisabled();
+    expect(fieldInput('acctActiveStatus')).toBeDisabled();
+
+    // A second F5 must not re-issue the write against a stale ``version``.
+    await user.keyboard('{F5}');
+    expect(updateAccountMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      acknowledge(COMMITTED_ACCOUNT);
+      // Awaited so this is an asynchronous act scope: the effects and the promise
+      // callbacks the interaction queues are flushed before it returns.
+      await Promise.resolve();
+    });
+
+    expect(updateAccountMock).toHaveBeenCalledTimes(1);
+    expect(fieldInput('acctCreditLimit')).toBeEnabled();
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /* Unauthorized (HTTP 401)                                            */
 /* ------------------------------------------------------------------ */
 
 describe('AccountUpdatePage — unauthorized', () => {
-  it('surfaces a 401 read failure on the message line without redirecting', async () => {
+  it('surfaces a 401 read failure on the message line and displays no record', async () => {
     getAccountMock.mockRejectedValue(new ApiError(401, 'Unauthorized'));
     await renderScreen();
 
     const banner = await screen.findByRole('alert');
     expect(banner).toHaveTextContent('Unauthorized');
-    // The 401 -> /signon redirect belongs to the api client's response
-    // interceptor, which the mocked module bypasses; the page never navigates.
-    expect(screen.queryByTestId('signon-route')).toBeNull();
     expect(fieldInput('acctActiveStatus')).toHaveValue('');
   });
 
@@ -804,7 +842,7 @@ describe('AccountUpdatePage — unauthorized', () => {
     const banner = await screen.findByRole('alert');
     expect(banner.textContent).toBe('Unauthorized');
     expect(banner.textContent).not.toBe(OPTIMISTIC_LOCK_MESSAGE);
-    expect(screen.queryByTestId('signon-route')).toBeNull();
+    expect(updateAccountMock).toHaveBeenCalledTimes(1);
   });
 });
 
