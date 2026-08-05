@@ -1,8 +1,9 @@
 package com.carddemo.ledger.messaging;
 
-import com.carddemo.events.DeadLetterEnvelope;
 import com.carddemo.ledger.config.KafkaConsumerConfig;
+import com.carddemo.ledger.config.ObservabilityConfig;
 import com.carddemo.ledger.config.LedgerProperties;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatchers;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.MessageListenerContainer;
@@ -26,7 +28,6 @@ import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.kafka.support.serializer.DeserializationException;
 
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -406,9 +407,6 @@ class DeadLetterMetadataTest {
         private static final String SOURCE_DEAD_LETTER_TOPIC = SOURCE_TOPIC + ".DLT";
         private static final String ACCOUNT_KEY = "00000000007";
 
-        /** The standing aggregate identifier a sanitized envelope uses. */
-        private static final String UNRESOLVED_ACCOUNT_KEY = "00000000000";
-
         /** The partition, the offset and the one delivery attempt the record carries. */
         private static final int SOURCE_PARTITION = 2;
         private static final long SOURCE_OFFSET = 4321L;
@@ -505,13 +503,14 @@ class DeadLetterMetadataTest {
         private ProducerRecord<String, Object> recover(String recordKey, Object recordValue,
                 Exception failure) {
             @SuppressWarnings("unchecked")
-            KafkaTemplate<String, Object> template = mock(KafkaTemplate.class);
-            when(template.send(any(ProducerRecord.class)))
+            KafkaTemplate<String, byte[]> template = mock(KafkaTemplate.class);
+            when(template.send(ArgumentMatchers.<ProducerRecord<String, byte[]>>any()))
                     .thenAnswer(invocation -> CompletableFuture.completedFuture(
                             sendResultFor(invocation.getArgument(0))));
 
-            DefaultErrorHandler handler =
-                    new KafkaConsumerConfig().ledgerConsumerErrorHandler(template, properties());
+            DefaultErrorHandler handler = new KafkaConsumerConfig().ledgerConsumerErrorHandler(
+                    template, properties(),
+                    new ObservabilityConfig().ledgerMeters(new SimpleMeterRegistry()));
             ConsumerRecord<String, Object> failing = new ConsumerRecord<>(SOURCE_TOPIC,
                     SOURCE_PARTITION, SOURCE_OFFSET, recordKey, recordValue);
 
@@ -519,24 +518,47 @@ class DeadLetterMetadataTest {
                     mock(MessageListenerContainer.class));
 
             @SuppressWarnings("unchecked")
-            ArgumentCaptor<ProducerRecord<String, Object>> sent =
+            ArgumentCaptor<ProducerRecord<String, byte[]>> sent =
                     ArgumentCaptor.forClass(ProducerRecord.class);
             verify(template).send(sent.capture());
-            return sent.getValue();
+
+            ProducerRecord<String, byte[]> published = sent.getValue();
+            ProducerRecord<String, Object> asObject = new ProducerRecord<>(published.topic(),
+                    published.partition(), published.key(), (Object) published.value(),
+                    published.headers());
+            return asObject;
         }
 
         /** Answers the send with a result over the record the caller passed. */
-        private static SendResult<String, Object> sendResultFor(
-                ProducerRecord<String, Object> out) {
+        private static SendResult<String, byte[]> sendResultFor(
+                ProducerRecord<String, byte[]> out) {
             return new SendResult<>(out, new RecordMetadata(
                     new TopicPartition(out.topic(), 0), 0L, 0, 0L, 0, 0));
+        }
+
+        /**
+         * Reads the outgoing value as the text it holds.
+         *
+         * <p>The recoverer hands over the rendered diagnostic as bytes, because the value serializer
+         * of its template writes bytes. Reading them back as text is what lets every assertion below
+         * search the outgoing record for a value that must not be in it.
+         *
+         * @param sent the record the recoverer published
+         * @return the value decoded as text
+         */
+        private static String valueText(ProducerRecord<String, Object> sent) {
+            assertTrue(sent.value() instanceof byte[],
+                    "the outgoing value is " + sent.value().getClass().getName()
+                            + ", and the byte-serializing template writes bytes");
+            return new String((byte[]) sent.value(),
+                    java.nio.charset.StandardCharsets.UTF_8);
         }
 
         /** Renders one outgoing record as text: topic, key, value and every header. */
         private static String rendered(ProducerRecord<String, Object> sent) {
             StringBuilder text = new StringBuilder(sent.topic())
                     .append(' ').append(sent.key())
-                    .append(' ').append(sent.value());
+                    .append(' ').append(valueText(sent));
             for (Header header : sent.headers()) {
                 text.append(' ').append(header.key()).append('=')
                         .append(header.value() == null ? "" : new String(header.value(),
@@ -553,9 +575,9 @@ class DeadLetterMetadataTest {
 
             assertEquals(SOURCE_DEAD_LETTER_TOPIC, sent.topic(),
                     "the spent record did not reach its source-specific dead-letter topic");
-            assertTrue(sent.value() instanceof DeadLetterEnvelope,
-                    "the outgoing value is " + sent.value().getClass().getName()
-                            + ", so the failing payload itself travelled on");
+            assertEquals(DeadLetterMetadata.RECORD_LENGTH, valueText(sent).length(),
+                    "the outgoing value is the four fixed-width fields of 01 ABEND-DATA and "
+                            + "nothing else, so the failing payload cannot have travelled on");
             assertEquals(SOURCE_TOPIC + "-" + SOURCE_PARTITION + "-" + SOURCE_OFFSET, sent.key(),
                     "broker coordinates identify the refused delivery without trusting its key");
 
@@ -568,17 +590,17 @@ class DeadLetterMetadataTest {
             ProducerRecord<String, Object> sent = recover(ACCOUNT_KEY, RAW_PAYLOAD,
                     new IllegalStateException("balance " + AMOUNT + " card " + CARD_NUMBER));
 
-            DeadLetterEnvelope envelope = (DeadLetterEnvelope) sent.value();
-            assertEquals(SOURCE_TOPIC, envelope.sourceTopic(),
-                    "the envelope names the topic the failing record arrived on");
-            assertEquals(SOURCE_PARTITION, envelope.sourcePartition(),
-                    "the envelope names the partition the failing record arrived on");
-            assertEquals(SOURCE_OFFSET, envelope.sourceOffset(),
-                    "the envelope names the offset the failing record arrived on");
-            assertEquals(UNRESOLVED_ACCOUNT_KEY, envelope.envelope().aggregateId(),
-                    "the sanitized envelope does not trust an account-shaped producer key");
-            assertEquals(IllegalStateException.class.getSimpleName(), envelope.reason(),
-                    "the schema-validated envelope carries the bounded failure class");
+            String diagnostic = valueText(sent);
+            assertEquals(SOURCE_DEAD_LETTER_TOPIC, sent.topic(),
+                    "the destination names the stream the failing record arrived on");
+            assertEquals(SOURCE_TOPIC + "-" + SOURCE_PARTITION + "-" + SOURCE_OFFSET, sent.key(),
+                    "the key names the partition and offset the failing record arrived on");
+            assertTrue(diagnostic.contains(IllegalStateException.class.getSimpleName()),
+                    "the diagnostic carries the bounded failure class");
+            assertFalse(diagnostic.contains(AMOUNT),
+                    "the failure text named an amount, and the diagnostic must not repeat it");
+            assertFalse(diagnostic.contains(CARD_NUMBER),
+                    "the failure text named a card number, and the diagnostic must not repeat it");
 
             assertNull(sent.headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_MESSAGE),
                     "the exception message header travelled, and a message can carry a value");

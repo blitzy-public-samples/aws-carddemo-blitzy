@@ -390,19 +390,24 @@ paths:
 
         The read keys on the card number alone.
         app/cbl/COCRDSLC.cbl:L740 moves it into the read key and the account move
-        above it at app/cbl/COCRDSLC.cbl:L739 is commented out, so the account is
-        edited and then unused. Nothing here compares the account of the row
-        against the account the caller supplied: that comparison would refuse a
-        request the source answers.
+        above it at app/cbl/COCRDSLC.cbl:L739 is commented out, so the source edits
+        the account and then keys on the card. The key is reproduced and the
+        account is compared after the read: a row belonging to another account is
+        answered as an absent row, with the same status and the same text. The
+        source needed no such comparison because a 3270 signon granted every
+        signed-on user every card; here the account is a caller-supplied key.
 
 
         Ownership is decided by the handler rather than by the chain, because the
         identifier sits in the body and a chain that read the body would consume
         the stream the handler needs. The predicate is the one
         config/SecurityConfig declares, so the whole of the access control is
-        still stated in that one file. A caller that does not own the card reads
-        403 with the same text an absent row returns, so the two answers differ in
-        status alone and neither discloses which cards this service holds.
+        still stated in that one file. It names the authority by the card token
+        derived from the full number, so one entitlement admits one card and not
+        every card ending in the same four digits. A caller that does not own the
+        card reads 403 with the same text an absent row returns, so the two answers
+        differ in status alone and neither discloses which cards this service
+        holds.
       requestBody:
         required: true
         description: The account identifier and the full card number.
@@ -448,7 +453,7 @@ paths:
         '403':
           description: >-
             Either the chain refused the role, or the handler found the caller
-            holds no SCOPE_CARD_ authority for the masked form of the card it
+            holds no SCOPE_CARD_ authority for the card token of the card it
             named. The second case carries
             "Did not find cards for this search condition", the same text as a
             404, so a refusal discloses nothing about which cards are stored.
@@ -459,9 +464,11 @@ paths:
 
         '404':
           description: >-
-            The table holds no card carrying that number. The text is
+            The table holds no card carrying that number, or the row it holds
+            belongs to another account. The text is
             "Did not find cards for this search condition", the one
-            app/cbl/COCRDSLC.cbl:L760 sets.
+            app/cbl/COCRDSLC.cbl:L760 sets, and the two cases are
+            indistinguishable to a caller by design.
           content:
             application/json:
               schema:

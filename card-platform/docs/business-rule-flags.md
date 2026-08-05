@@ -12,6 +12,10 @@ The default handling is to reproduce the source behaviour and flag it. Parity is
 correctness improvement is a separate decision a human owner must make. Where an item is instead
 corrected, the entry says so and states why the correction changes no outcome.
 
+One place answers differently from the source on purpose, and it is recorded apart from the register in
+[Departures this platform makes from the source](#departures-this-platform-makes-from-the-source),
+because it is a decision about this platform rather than a finding about the source.
+
 Each item marked **DECISION OWED** needs a human answer. Each item marked **CLOSED** needed no answer
 beyond the handling stated.
 
@@ -23,6 +27,7 @@ beyond the handling stated.
 - [Copybook and configuration inconsistencies](#copybook-and-configuration-inconsistencies)
 - [Identity, roles and validation](#identity-roles-and-validation)
 - [Fixture and data inconsistencies](#fixture-and-data-inconsistencies)
+- [Departures this platform makes from the source](#departures-this-platform-makes-from-the-source)
 - [Measurement discrepancies against the specification](#measurement-discrepancies-against-the-specification)
 - [One resolved naming defect](#one-resolved-naming-defect)
 
@@ -266,6 +271,10 @@ any non-normal file status. A replayed feed therefore hits a duplicate key and a
 Handling: every consumer claims its event identifier with one statement before it acts, in the same
 transaction as its side effects. Idempotency is an addition and is declared as one.
 
+Nine listeners now share that guarantee across four services, and notification's marker table carries
+the consumed topic beside the identifier, because one event identifier must remain claimable once per
+consumer group rather than once per service.
+
 ### 18. Transaction identifier generation is a race in both channels — CLOSED
 
 `app/cbl/COTRN02C.cbl:L444-L451` and `app/cbl/COBIL00C.cbl:L212-L219` both browse the transaction
@@ -420,6 +429,48 @@ until every transaction declines.
 
 Handling: `POST /accounts/{accountId}/cycle-close` reproduces those two statements and nothing else.
 Line `L352`, which adds the accrued interest, is not reproduced.
+
+One consequence is worth stating because it is not obvious from the source. The source held one
+`ACCTDAT` record, so zeroing the accumulators there was the whole of the reset. This platform holds
+that state in three places: the account service owns it, and both the authorization service and the
+ledger keep a replica. The close therefore publishes `AccountStateChanged`, and each replica applies
+the zeroed values under its own consumer group. A replica that stopped being fed would keep reading
+grown accumulators, which is why authorization refuses traffic once its replica passes
+`carddemo.replica.max-staleness` rather than deciding against numbers it knows to be old.
+
+<br/>
+
+## Departures this platform makes from the source
+
+The 32 entries above record source behaviour. This section records the opposite case: a place where
+this platform deliberately answers differently from the source. It is separate from the register
+because it is not a defect in the source, and it is here rather than only in
+[decision-log.md](decision-log.md) because a reader checking parity will look for it here.
+
+### D1. Card detail refuses a row that belongs to another account — CORRECTED, NOT REPRODUCED
+
+`app/cbl/COCRDSLC.cbl` reads a card by its number alone. Paragraph `9100-GETCARD-BYACCTCARD` moves
+the card number into the record key at `:L740`, and the statement above it, which would have moved the
+account identifier into the same key, is commented out at `:L739`. A signed-on user who typed any
+account identifier beside a real card number was therefore shown that card.
+
+The card service refuses that request with the same absent-row answer the source gives when its own
+`NOTFND` limb fires, whose text is `Did not find cards for this search condition`. The refusal is a
+departure, and reproducing the source here was rejected for one reason: the gap is not a source rule
+at all. The source reached this program only through the 3270 signon at `app/cbl/COSGN00C.cbl`, which
+granted every signed-on user every card, so it had no per-card authorization for the omission to
+weaken. This platform does have one — the card detail route is authorized against the caller's own
+derived card token — and a route that authorizes the card and then ignores the account it was asked
+about lets one authority read a row it was never granted.
+
+Transformation rule T7 asks for a source defect to be reproduced and flagged. This is instead a gap in
+the target's own additive authorization layer, which T7 does not cover, so it is closed rather than
+reproduced.
+
+**What a human owner should know:** a client that sends a real card number beside the wrong account
+identifier now receives an absent-row answer where the source returned the card. No fixture request
+does this: each of the 50 cards in `app/data/ASCII/carddata.txt` names one account, and the shipped
+demonstration always sends the pair from the same row.
 
 <br/>
 

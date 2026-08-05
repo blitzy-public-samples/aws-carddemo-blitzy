@@ -50,8 +50,8 @@ class OutboxRelayClaimTest {
                 .thenReturn(List.of());
 
         OutboxRelay relay = new OutboxRelay(rows, mock(EventPublisherPort.class),
-                mock(Counter.class), mock(Counter.class), timers, TOPIC, immediateTransactions(),
-                properties());
+                mock(Counter.class), mock(Counter.class), mock(Counter.class),
+                mock(Counter.class), timers, TOPIC, immediateTransactions(), properties());
 
         relay.publishPendingEvents();
 
@@ -105,7 +105,7 @@ class OutboxRelayClaimTest {
     private static CardProperties properties() {
         return new CardProperties(
                 new CardProperties.Api(65536L),
-                new CardProperties.Kafka(new CardProperties.Kafka.Topics(TOPIC)),
+                new CardProperties.Kafka(new CardProperties.Kafka.Topics(TOPIC, "carddemo.dead-letter")),
                 new CardProperties.Outbox(new CardProperties.Outbox.Relay(
                         500L, BATCH_SIZE, "card-relay", Duration.ofMinutes(2L)), 168L),
                 new CardProperties.ProcessedEvent(168L),

@@ -34,13 +34,13 @@ final class AuthorizationDecisionEntityTest {
     /** The account the approval below names, eleven digits with leading zeros. */
     private static final String ACCOUNT_ID = "00000000077";
 
-    /** The identifier every row below is keyed on. */
-
     /**
      * The authenticated request identity every row records, at the width
      * {@code SEC-USR-ID PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L18} declares.
      */
     private static final String ACTOR = "OPERATR1";
+
+    /** The identifier every row below is keyed on. */
     private static final String TRANSACTION_ID = "0000000000683580";
 
     /** The card of fixture record one, from {@code app/data/ASCII/dailytran.txt}. */

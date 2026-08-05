@@ -6,8 +6,10 @@
 -- Four tables follow: one read model taken from a COBOL (Common Business Oriented
 -- Language) copybook, then three additive tables.
 
--- statement_transaction holds the account-keyed read model. Thirteen columns come from
--- TRNX-RECORD at app/cpy/COSTM01.CPY:L20-L36, and account_id supplies the unique scope.
+-- statement_transaction holds the card-keyed read model. Thirteen columns come from
+-- TRNX-RECORD at app/cpy/COSTM01.CPY:L20-L36, and card_token supplies the key prefix.
+-- The table carries no account column: the source read model is keyed by card, and an
+-- alert is addressed to a cardholder rather than to an account.
 -- Record width 350 comes from the RECORDSIZE(350 350) parameter at
 -- app/jcl/CREASTMT.JCL:L32, a Job Control Language (JCL) member.
 -- The composite primary key comes from the KEYS(32 0) parameter at
@@ -26,13 +28,15 @@
 -- card-platform/libs/cobol-compat derives the token instead, one value per card, and the
 -- masked form travels beside it as display data that keys nothing.
 CREATE TABLE statement_transaction (
-    -- Card token: the hexadecimal rendering of a SHA-256 digest over a labelled card
-    -- number, 64 lower-case characters. It stands in for TRNX-CARD-NUM PIC X(16) at
-    -- app/cpy/COSTM01.CPY:L22, which carried a full PAN in the source, and
-    -- app/cpy/CVTRA05Y.cpy:L15 places that field at byte 263, the offset the sort step
-    -- reads at app/jcl/CREASTMT.JCL:L53.
-    -- The derivation is keyless and one-way: no row here, and no response built from one,
-    -- carries a value a reader could turn back into a card number.
+    -- Card token: the hexadecimal rendering of an HmacSHA256 code over a labelled,
+    -- versioned card number, 64 lower-case characters. It stands in for
+    -- TRNX-CARD-NUM PIC X(16) at app/cpy/COSTM01.CPY:L22, which carried a full PAN in the
+    -- source, and app/cpy/CVTRA05Y.cpy:L15 places that field at byte 263, the offset the
+    -- sort step reads at app/jcl/CREASTMT.JCL:L53.
+    -- The derivation is one-way and keyed under a deployment-supplied key, so no row here,
+    -- and no response built from one, carries a value a reader could turn back into a card
+    -- number, and no reader holding a token can recompute it over the sixteen-digit
+    -- card-number space without that key.
     card_token           CHAR(64)      NOT NULL,
     transaction_id       CHAR(16)      NOT NULL,  -- TRNX-ID PIC X(16)
     -- Masked card number: twelve asterisks then the last four digits, sixteen characters

@@ -17,8 +17,9 @@
 # a route keyed on that value would answer with their merged history. The token that
 # PanMasker.cardToken derives names one card, and it is the key
 # src/main/resources/db/migration/V1__schema.sql stores, so the route key and the row key
-# are the same value. The derivation is keyless and one-way, so the token discloses no
-# card number.
+# are the same value. The derivation is one-way and keyed under a deployment-supplied key,
+# so the token discloses no card number and a reader holding one cannot recompute it over
+# the sixteen-digit card-number space.
 #
 # Authentication is required and the response is scoped to the cards the caller owns. The
 # ownership rule in config/SecurityConfig compares the token in the path against the
@@ -106,8 +107,9 @@ paths:
             stands in for TRNX-CARD-NUM PIC X(16) at app/cpy/COSTM01.CPY:L22,
             whose value was a full card number. Column card_token CHAR(64) in
             src/main/resources/db/migration/V1__schema.sql holds the same value.
-            The derivation is keyless and one-way, so this value discloses no
-            card number.
+            The derivation is one-way and keyed under a deployment-supplied
+            key, so this value discloses no card number and a reader holding one
+            cannot recompute it over the card-number space.
           schema:
             type: string
             minLength: 64

@@ -5,12 +5,12 @@ import com.carddemo.events.EventEnvelope;
 /**
  * Customer projection the account service returns for one customer record.
  *
- * <p>DEMO SURFACE, NO AUTHENTICATION. Every component below is personal data, and no module of this
- * platform declares Spring Security, OAuth or JSON Web Token support. Any caller that reaches the
- * port reaches this projection. The demo stack binds each published port to the loopback address and
- * seeds only the synthetic rows of {@code app/data/ASCII/custdata.txt}, so no real customer appears
- * in it. Do not expose the port, and do not load real customer data. Authentication and
- * authorization are separate work.
+ * <p>Spring Security protects this route. {@code config/SecurityConfig} authenticates every caller
+ * of {@code GET /customers/{customerId}} over HTTP Basic and admits a {@code USER} or an
+ * {@code ADMIN} identity whose scope names the requested customer; a route named by no rule is
+ * denied. Every component below is personal data, so the demo stack binds each published port to the
+ * loopback address and seeds only the synthetic rows of {@code app/data/ASCII/custdata.txt}. Do not
+ * expose the port, and do not load real customer data.
  *
  * <p>Sixteen components carry sixteen of the eighteen fields that {@code 01 CUSTOMER-RECORD}
  * declares at {@code app/cpy/CVCUS01Y.cpy:L5-L22}. Component order follows the order the account

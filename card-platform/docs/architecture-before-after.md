@@ -167,6 +167,7 @@ graph TB
 
     subgraph LEDGER["ledger-posting-service"]
         LCON["ledger-posting group"]
+        LACON["ledger-account-state group"]
         LDB[("carddemo_ledger<br/>ledger_service schema")]
         LRELAY["Outbox relay"]
     end
@@ -178,6 +179,7 @@ graph TB
     end
 
     subgraph NOTIFY["notification-service"]
+        NACON["notification-authorized group"]
         NPCON["notification-posted group"]
         NFCON["notification-fraud group"]
         NCCON["notification-customer group"]
@@ -205,6 +207,7 @@ graph TB
 
     TA ==> LCON
     TA ==> FCON
+    TA ==> NACON
     LCON --> LDB
     LDB --> LRELAY
     LRELAY ==> TP
@@ -214,6 +217,7 @@ graph TB
     TP ==> NPCON
     FA ==> NFCON
     CC ==> NCCON
+    NACON --> NDB
     NPCON --> NDB
     NFCON --> NDB
     NCCON --> NDB
@@ -229,43 +233,53 @@ graph TB
     CRELAY ==> CU
     AS ==> ACON
     ACON --> ADB
+    AS ==> LACON
+    LACON --> LDB
     CU ==> CCON
     CCON --> ADB
 
     LCON -.-> DLQ
+    LACON -.-> DLQ
     FCON -.-> DLQ
+    NACON -.-> DLQ
     NPCON -.-> DLQ
     NFCON -.-> DLQ
     NCCON -.-> DLQ
     ACON -.-> DLQ
     CCON -.-> DLQ
+    ARELAY -.-> DLQ
+    LRELAY -.-> DLQ
+    ACRELAY -.-> DLQ
+    CRELAY -.-> DLQ
 ```
 
 **Legend**
 
 - A plain arrow is a synchronous in-process or REST step.
 - A thick arrow is asynchronous Kafka publication or consumption.
-- A dotted arrow is terminal dead-letter routing after consumer failure.
-- A hexagon is a Kafka topic. Seven topics carry business events. Source-specific dead-letter topics and one shared fallback carry terminal failures.
+- A dotted arrow is terminal dead-letter routing, taken either by a spent consumer record or by an abandoned outbox row.
+- A hexagon is a Kafka topic. Seven topics carry business events. Five source-specific dead-letter topics and one shared fallback carry terminal failures.
 - A cylinder is a private PostgreSQL database and service schema.
+- Three thick arrows leave `transaction.authorized`, one per independent consumer group. That fan-out is the point of the target state.
 - The three downstream consumers have no direct edge between them. The Maven module graph enforces that absence.
 - `transaction.declined` has no demo consumer. `card.updated` refreshes authorization's local cross-reference observation without changing the source-equivalent decision rules.
+- `account.state-changed` feeds two independent replicas, authorization's credit snapshot and the ledger's balance projection, each under its own group.
 
 ### Topic and consumer-group inventory
 
 | Topic | Event types | Producer | Consumer groups |
 | --- | --- | --- | --- |
-| `transaction.authorized` | `TransactionAuthorized` | authorization-service | `ledger-posting`, `fraud-detection` |
-| `transaction.declined` | `TransactionDeclined` versions 1 and 2 | authorization-service and ledger reject path | None in the demo |
+| `transaction.authorized` | `TransactionAuthorized` | authorization-service | `ledger-posting`, `fraud-detection`, `notification-authorized` |
+| `transaction.declined` | `TransactionDeclined` versions 1 and 2 | authorization-service and the ledger feed-validation reject path | None in the demo |
 | `transaction.posted` | `TransactionPosted` versions 1 and 2 | ledger-posting-service | `notification-posted` |
 | `fraud.assessed` | `FraudFlagged`, `FraudCleared` | fraud-detection-service | `notification-fraud` |
-| `account.state-changed` | `AccountStateChanged` | account-service | `authorization-account-state` |
+| `account.state-changed` | `AccountStateChanged` | account-service | `authorization-account-state`, `ledger-account-state` |
 | `customer.context-changed` | `CustomerContextChanged` | account-service | `notification-customer` |
 | `card.updated` | `CardUpdated` versions 1 and 2 | card-service | `authorization-card-updated` |
-| `<source>.DLT` | `DeadLetterEnvelope` | Every listener error handler | Human inspection and replay tooling |
-| `carddemo.dead-letter` | `DeadLetterEnvelope` | Error handlers without source metadata | Human inspection and replay tooling |
+| `<source>.DLT` | 134-character fixed-width abend diagnostic | Ledger, fraud, and notification listener error handlers | Human inspection and replay tooling |
+| `carddemo.dead-letter` | `DeadLetterEnvelope` | Authorization listener error handlers, the four outbox relays on abandonment, and any handler with no resolvable source topic | Human inspection and replay tooling |
 
-Seven consumer groups serve four listening services. Authorization needs two groups for its replicas, and notification needs three groups for its independent inputs.
+Nine consumer groups serve four listening services. Authorization needs two groups for its replicas, ledger needs one for the authorization stream and one for its balance replica, fraud needs one, and notification needs four for its independent inputs.
 
 The account identifier is the Kafka key whenever the account is known. Reason-0100 declines use the sanctioned 16-character transaction key because no account was resolved.
 

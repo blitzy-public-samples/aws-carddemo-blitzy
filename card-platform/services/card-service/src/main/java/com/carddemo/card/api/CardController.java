@@ -268,17 +268,30 @@ public class CardController {
      *
      * <p>The read keys on the card number alone.
      * {@code app/cbl/COCRDSLC.cbl:L740} moves the card number into the read key and the account move
-     * above it at {@code app/cbl/COCRDSLC.cbl:L739} is commented out, so the account is edited and
-     * then unused. Nothing here compares the account of the row against the account the caller
-     * supplied: that comparison would refuse a request the source answers.
+     * above it at {@code app/cbl/COCRDSLC.cbl:L739} is commented out, so the source edits the account
+     * and then keys on the card. This method keeps that key and compares the account afterwards:
+     * a row whose stored account differs from the account the caller supplied is answered as an
+     * absent row, with the same status and the same text.
+     *
+     * <p>That comparison is a deliberate departure from the disabled line, and its reason is the
+     * authorization layer the target adds and the source has none of. The source reached this
+     * program only through a 3270 signon that granted every signed-on user every card, so an
+     * unchecked account changed nothing there. Here the account is a caller-supplied key, and
+     * leaving it unchecked lets a caller entitled to one card read it under any account identifier
+     * it likes. The paragraph the source names {@code 9100-GETCARD-BYACCTCARD} and the message it
+     * sets, {@code Did not find cards for this search condition}, both describe the combination read
+     * the commented-out line was meant to perform. The register of flagged rules carries the
+     * departure with these citations.
      *
      * <p>Ownership is decided here rather than in the filter chain, because the identifier sits in
      * the body and a chain that read the body would consume the stream this method needs. The
-     * predicate is {@link SecurityConfig#cardOwnership()}, and a caller that holds no matching scope
-     * reads {@code 403} whether or not the row exists, so a refusal discloses nothing about which
-     * cards are stored. The refusal carries the same text as an absent row, so the two answers differ
-     * in status alone: a client learns whether asking for an entitlement could help and learns
-     * nothing about which cards this service holds.
+     * predicate is {@link SecurityConfig#cardOwnership()}, which names the authority by the card
+     * token derived from the full number, so an entitlement admits one card and not every card
+     * ending in the same four digits. A caller that holds no matching scope reads {@code 403}
+     * whether or not the row exists, so a refusal discloses nothing about which cards are stored.
+     * The refusal carries the same text as an absent row, so the two answers differ in status alone:
+     * a client learns whether asking for an entitlement could help and learns nothing about which
+     * cards this service holds.
      *
      * <p>No {@code @Valid} sits on this body, for the reason the update route gives. The source tests
      * each field for absence before it tests its character class, and it applies one rule across both
@@ -288,7 +301,8 @@ public class CardController {
      *
      * @param request the account identifier and the full card number
      * @return {@code 200} with the card, {@code 422} when an edit refuses a value, {@code 403} when
-     *         the caller does not own the card, and {@code 404} when the table holds no such row
+     *         the caller does not own the card, and {@code 404} when the table holds no such row or
+     *         holds one belonging to another account
      */
     @PostMapping(path = DETAIL_PATH, consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
@@ -300,22 +314,21 @@ public class CardController {
         }
 
         String cardNumber = request.cardNumber();
-        String masked = PanMasker.maskCardNumber(cardNumber);
-        if (!cardOwnership.ownsCard(masked)) {
+        if (!cardOwnership.ownsCard(cardNumber)) {
             log.info("A card read named a card the caller does not own");
             return failure(HttpStatus.FORBIDDEN,
                     CardValidationMessages.DID_NOT_FIND_ACCTCARD_COMBO, DETAIL_ROUTE);
         }
 
         Optional<CardEntity> card = cardQueries.findByCardNumber(cardNumber);
-        if (card.isEmpty()) {
-            log.info("A card read named no stored card");
+        if (card.isEmpty() || !namesTheSameAccount(card.get(), request.accountId())) {
+            log.info("A card read named no stored card of that account");
             return failure(HttpStatus.NOT_FOUND,
                     CardValidationMessages.DID_NOT_FIND_ACCTCARD_COMBO, DETAIL_ROUTE);
         }
 
         log.info("A card read answered one card");
-        return ResponseEntity.ok(detailOf(card.get(), masked));
+        return ResponseEntity.ok(detailOf(card.get(), PanMasker.maskCardNumber(cardNumber)));
     }
 
     /**
@@ -418,6 +431,30 @@ public class CardController {
             return CardValidationMessages.CARD_FILTER_NOT_NUMERIC;
         }
         return null;
+    }
+
+    /**
+     * Reports whether one stored card belongs to the account the caller named.
+     *
+     * <p>Both values are the eleven digits {@code CARD-ACCT-ID PIC 9(11)} at
+     * {@code app/cpy/CVACT02Y.cpy:L6} declares, and the stored one arrives from a
+     * {@code CHAR(11)} column, so it can carry padding a caller's value does not. Both are stripped
+     * before the comparison and neither is widened: a caller's value of another width has already
+     * been refused by {@link #firstSearchFailure(CardDetailRequest)}.
+     *
+     * <p>The stored account is the authoritative one. The caller's is a request field, and the whole
+     * point of the comparison is that a request field cannot decide which row a caller reaches.
+     *
+     * @param card             the row the read found
+     * @param suppliedAccountId the account identifier the caller sent
+     * @return {@code true} when the two name one account
+     */
+    private static boolean namesTheSameAccount(CardEntity card, String suppliedAccountId) {
+        String stored = card.getAccountId();
+        if (stored == null || suppliedAccountId == null) {
+            return false;
+        }
+        return stored.strip().equals(suppliedAccountId.strip());
     }
 
     /**

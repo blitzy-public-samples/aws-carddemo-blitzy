@@ -13,10 +13,17 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Supplies the one bean the ledger posting service records its measurements through.
  *
- * <p>{@link LedgerMeters} holds nine meters under five names, covering the three families a
+ * <p>{@link LedgerMeters} holds eleven meters under six names, covering the three families a
  * demonstration shows: events consumed, processing latency, and failure count. Spring Boot supplies
  * the {@link MeterRegistry}, and every meter registers at start-up, so a scrape taken before the
  * first message lists each series at zero.
+ *
+ * <p>Two names measure failure and they count different things on purpose.
+ * {@code carddemo.ledger.failures} counts one ATTEMPT, tagged by the stage that failed, which is what
+ * makes a retry storm visible. {@code carddemo.ledger.dead.letters} counts one consumed RECORD whose
+ * deliveries are spent, tagged by what became of the diagnostic naming it. Without the second name a
+ * message retried to exhaustion and one still in flight read the same, which is the distinction an
+ * operator needs first. The two have different denominators, so neither double counts the other.
  *
  * <p>Two counter names follow the source's own counters. {@code WS-TRANSACTION-COUNT} and
  * {@code WS-REJECT-COUNT} at {@code app/cbl/CBTRN02C.cbl:L185-L186} are printed to the job log at
@@ -27,7 +34,10 @@ import org.springframework.context.annotation.Configuration;
  * <p>A reject is expected traffic and never a fault. It is counted under
  * {@code carddemo.ledger.transactions.processed} with {@code outcome=rejected} and never on
  * {@code carddemo.ledger.failures}, because the source answered a rejected record with return code
- * 4 and no abend.
+ * 4 and no abend. {@code domain/RejectRecorder} is what raises it, because that class is what writes
+ * a reject. An authorized event reaching this service carries a decision the authorization service
+ * already published, so this service refuses nothing and a transaction it cannot post raises
+ * {@code carddemo.ledger.failures} under {@link LedgerMeters#POST_STAGE} instead.
  *
  * <p>These meters replace three source mechanisms, shape only and no logic: the job-log
  * {@code DISPLAY} statements above, the file-status formatter at
@@ -73,8 +83,10 @@ public class ObservabilityConfig {
      * calls {@link #recordEventConsumed()}, {@link #recordProcessingLatency(Duration)},
      * {@link #recordDuplicateSkipped()}, {@link #recordTransactionPosted()},
      * {@link #recordTransactionRejected()}, {@link #recordDeserializeFailure()} and
-     * {@link #recordProcessFailure()}; {@code outbox/OutboxRelay.java} calls
-     * {@link #recordPublishFailure()}.
+     * {@link #recordProcessFailure()}; {@code config/KafkaConsumerConfig.java} calls
+     * {@link #recordDeadLetterPublished()} or {@link #recordDeadLetterFailure()} once a delivery has
+     * been given up on; and {@code outbox/OutboxRelay.java} calls {@link #recordPublishFailure()} and
+     * {@link #recordAbandonedRow()}.
      */
     public static final class LedgerMeters {
 
@@ -89,6 +101,12 @@ public class ObservabilityConfig {
 
         /** Stage tag value of an outbox row abandoned after its attempts ran out. */
         public static final String ABANDON_STAGE = "abandon";
+
+        /** Outcome tag value of a consumed record whose diagnostic the broker acknowledged. */
+        public static final String DEAD_LETTER_PUBLISHED = "published";
+
+        /** Outcome tag value of a consumed record whose diagnostic the broker refused. */
+        public static final String DEAD_LETTER_FAILED = "failed";
 
         /** Events read from the two topics this service subscribes to. */
         private final Counter eventsConsumed;
@@ -117,8 +135,14 @@ public class ObservabilityConfig {
         /** Records the broker refused with no retry left, so the row was abandoned. */
         private final Counter abandonedFailures;
 
+        /** Consumed records given up on whose diagnostic the broker acknowledged. */
+        private final Counter deadLettersPublished;
+
+        /** Consumed records given up on whose diagnostic the broker refused. */
+        private final Counter deadLettersFailed;
+
         /**
-         * Registers all nine meters against {@code registry}.
+         * Registers all eleven meters against {@code registry}.
          *
          * @param registry the meter registry every series is published through
          * @throws NullPointerException when {@code registry} is {@code null}
@@ -127,7 +151,7 @@ public class ObservabilityConfig {
             Objects.requireNonNull(registry, "registry");
             this.eventsConsumed = Counter.builder("carddemo.ledger.events.consumed")
                     .description("Events read from topics transaction.authorized and"
-                            + " transaction.declined")
+                            + " account.state-changed")
                     .register(registry);
             this.transactionsPosted = Counter.builder("carddemo.ledger.transactions.processed")
                     .tag("outcome", "posted")
@@ -161,6 +185,16 @@ public class ObservabilityConfig {
             this.abandonedFailures = Counter.builder("carddemo.ledger.failures")
                     .tag("stage", "abandon")
                     .description("Processing faults, tagged by the stage that failed")
+                    .register(registry);
+            this.deadLettersPublished = Counter.builder("carddemo.ledger.dead.letters")
+                    .tag("outcome", DEAD_LETTER_PUBLISHED)
+                    .description("Consumed records given up on, by what became of the diagnostic"
+                            + " naming them")
+                    .register(registry);
+            this.deadLettersFailed = Counter.builder("carddemo.ledger.dead.letters")
+                    .tag("outcome", DEAD_LETTER_FAILED)
+                    .description("Consumed records given up on, by what became of the diagnostic"
+                            + " naming them")
                     .register(registry);
         }
 
@@ -209,7 +243,6 @@ public class ObservabilityConfig {
             publishFailures.increment();
         }
 
-        /** Counts one outbox row abandoned after its attempts ran out. */
         /**
          * Counts one failure under the named stage.
          *
@@ -232,8 +265,51 @@ public class ObservabilityConfig {
             }
         }
 
+        /**
+         * Counts one outbox row this service will not attempt again.
+         *
+         * <p>The unit is one row and not one attempt. {@code outbox/OutboxRelay} counts every failed
+         * attempt under {@link #PUBLISH_STAGE} and reaches this method only when the row crosses
+         * {@code OutboxEventEntity.MAX_DELIVERY_ATTEMPTS}, so a row at the ceiling raises both series
+         * once and neither series double counts the other.
+         *
+         * <p>{@link #recordFailure(String)} reaches the same series for a caller holding the stage as
+         * a value. This is the named form, for a caller that knows the stage at the call site.
+         *
+         * <p>The source answer to a write it cannot complete is {@code 9999-ABEND-PROGRAM} at
+         * {@code app/cbl/CBTRN02C.cbl:L707-L711}, which terminates the address space. A non-zero value
+         * on this series is the target signal for the same condition, and the service keeps running.
+         */
         public void recordAbandonedRow() {
             abandonedFailures.increment();
+        }
+
+        /**
+         * Counts one consumed record this service will not deliver again, whose diagnostic the broker
+         * acknowledged.
+         *
+         * <p>The unit is one record and not one attempt, which is the difference from every stage of
+         * {@code carddemo.ledger.failures}. The container calls a recoverer only once the backoff is
+         * spent, so this is the one moment a delivery can be counted as permanently given up on. A
+         * poison message previously appeared only as a rising per-attempt count with nothing marking
+         * the point at which it was abandoned.
+         *
+         * <p>This series concerns a CONSUMED record and {@link #ABANDON_STAGE} concerns an OUTBOX row.
+         * The two never describe the same thing, so neither double counts the other.
+         */
+        public void recordDeadLetterPublished() {
+            deadLettersPublished.increment();
+        }
+
+        /**
+         * Counts one consumed record this service will not deliver again, whose diagnostic the broker
+         * refused.
+         *
+         * <p>Expected to stay at zero. A reading here means the record is spent and nothing names it
+         * on any topic, which no per-attempt series reports.
+         */
+        public void recordDeadLetterFailure() {
+            deadLettersFailed.increment();
         }
     }
 

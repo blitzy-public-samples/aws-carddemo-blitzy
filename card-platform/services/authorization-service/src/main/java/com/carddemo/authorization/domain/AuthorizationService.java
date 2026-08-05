@@ -2,6 +2,7 @@ package com.carddemo.authorization.domain;
 
 import com.carddemo.authorization.api.AuthorizationRequest;
 import com.carddemo.authorization.config.AuthorizationProperties;
+import com.carddemo.authorization.entity.CardCrossReferenceEntity;
 import com.carddemo.authorization.entity.AuthorizationDecisionEntity;
 import com.carddemo.authorization.entity.UnresolvedCardAttemptEntity;
 import com.carddemo.authorization.outbox.OutboxWriter;
@@ -428,16 +429,26 @@ public class AuthorizationService {
      * {@link StaleReplicaException} rather than declining: see that class for why it cannot be a
      * fifth reject reason.
      *
-     * <p>Two checks run before the chain. The card number must have arrived, because a card number is
-     * the only way a request names its subject. The capture moment must sit inside the window
+     * <p>Two checks run before the chain. The request must have named its subject, by card number or
+     * by account identifier, and an account-only request resolves its card through the cross-reference
+     * before the chain runs. The capture moment must sit inside the window
      * {@link OriginTimestampWindow} holds, because reject reason {@code 0103} compares that value
      * against the account expiry and a caller who backdates it authorizes against an expired account.
      * Either refusal is an {@link IllegalArgumentException}, which {@code api/GlobalExceptionHandler}
      * answers {@code 422} to, and neither consumes an identifier from the sequence.
      *
-     * <p>After the cross-reference rule resolves an account, an optional caller-supplied account
-     * identifier must agree with it. The card remains the lookup key; the account is only a
-     * cross-check and can never select a card.
+     * <p>After the cross-reference rule resolves an account, a caller-supplied account identifier
+     * must agree with it. Where the caller supplied both identifiers the card remains the lookup key
+     * and the account is a cross-check only; where the caller supplied the account alone the two
+     * agree by construction, because the card was read from the row that account keys.
+     *
+     * <p>Two refusals precede any of that, and they are the two limbs
+     * {@code app/cbl/COTRN02C.cbl:L195-L230} ends on.
+     * {@link #resolveCardNumber(AuthorizationRequest)} raises
+     * {@value AuthorizationRequest#ACCOUNT_ID_NOT_FOUND_MESSAGE} where an account resolved no card,
+     * and this method raises {@value AuthorizationRequest#IDENTIFIER_REQUIRED_MESSAGE} where no
+     * usable identifier arrived at all. Neither allocates an identifier, writes an event or records
+     * a decision.
      *
      * @param request the validated request body
      * @param actor   the request identity the decision row records
@@ -652,24 +663,56 @@ public class AuthorizationService {
      * Reads the card number this call authorizes against, at the width the cross-reference key
      * holds.
      *
-     * <p>A request names its subject by card number, and this method reads that field alone.
-     * {@code app/cbl/COTRN02C.cbl:L206-L209} also accepts an account identifier and resolves a card
-     * from the alternate index; that branch is not reproduced, because the card it returns is
-     * whichever one the index holds first rather than one the caller presented. The record the
-     * decision reproduces carries a card number and no account identifier at all
-     * ({@code app/cpy/CVTRA06Y.cpy:L4-L18}), and
-     * {@link AuthorizationRequest#isCardNumberSupplied()} is what refuses a request without one.
+     * <p>{@code VALIDATE-INPUT-KEY-FIELDS} at {@code app/cbl/COTRN02C.cbl:L195-L230} accepts either
+     * identifier, and both of its branches are reproduced here. A request carrying a card number
+     * uses it, which is the card branch at {@code :L210-L223}. A request carrying an account
+     * identifier alone reads the cross-reference by that identifier and takes the card number the
+     * row carries, which is {@code PERFORM READ-CXACAIX-FILE} at {@code :L208} followed by
+     * {@code MOVE XREF-CARD-NUM TO CARDNINI} at {@code :L209}. The alternate index that read uses is
+     * defined at {@code app/jcl/XREFFILE.jcl:L72-L77} over the account identifier at offset 25, and
+     * {@link CardCrossReferenceRepository#findFirstByAccountIdOrderByCardNumberAsc} is the target
+     * form of it: a keyed read of one row, taken in ascending card-number order so one account
+     * always resolves the same card.
      *
-     * <p>The value returns unmasked and already sixteen characters wide. A shorter value is
-     * rejected by {@link AuthorizationRequest#CARD_NUMBER_PATTERN}; widening it would name a
-     * different card and could authorize against another cardholder's account.
+     * <p>An account that holds no cross-reference row resolves no card, and this method raises
+     * {@value AuthorizationRequest#ACCOUNT_ID_NOT_FOUND_MESSAGE} where the read missed rather than
+     * returning {@code null}. That is the source shape: the {@code NOTFND} limb of that same read
+     * answers with the identical text at {@code app/cbl/COTRN02C.cbl:L591-L592} and re-sends the
+     * screen, so nothing is captured. It is not decline reason {@code 0100}, which belongs to a
+     * request that did name a card number, because a request naming no card has no card number to
+     * record, mask or tokenize on the declined event.
+     *
+     * <p>A {@code null} answer therefore means one thing only: no usable identifier arrived. Either
+     * the caller named neither field, which is the {@code WHEN OTHER} limb at
+     * {@code app/cbl/COTRN02C.cbl:L224-L229}, or the field it named is narrower than the key it
+     * would be. {@link AuthorizationRequest#isIdentifierSupplied()} refuses the first case at the
+     * interface and {@link AuthorizationRequest#CARD_NUMBER_PATTERN} refuses the second, and the
+     * caller of this method raises {@value AuthorizationRequest#IDENTIFIER_REQUIRED_MESSAGE} for
+     * either, so a caller reaching the domain directly is refused on the same terms.
+     *
+     * <p>The value returns unmasked and already sixteen characters wide, whichever branch supplied
+     * it. A shorter value is rejected by {@link AuthorizationRequest#CARD_NUMBER_PATTERN} on the
+     * card branch and cannot arise on the account branch, where the width is the column's own;
+     * widening it would name a different card and could authorize against another cardholder's
+     * account.
      *
      * @param request the validated request body
      * @return the full sixteen-character Primary Account Number (PAN), or {@code null} when the
-     *         request names none
+     *         account the request named resolves no card
      */
     private String resolveCardNumber(AuthorizationRequest request) {
-        return request.canonicalCardNumber();
+        if (request.isCardNumberSupplied()) {
+            return request.canonicalCardNumber();
+        }
+
+        String accountId = request.canonicalAccountId();
+        if (accountId == null) {
+            return null;
+        }
+        return cardCrossReferences.findFirstByAccountIdOrderByCardNumberAsc(accountId)
+                .map(CardCrossReferenceEntity::getCardNumber)
+                .orElseThrow(() -> new IllegalArgumentException(
+                        AuthorizationRequest.ACCOUNT_ID_NOT_FOUND_MESSAGE));
     }
 
     /**

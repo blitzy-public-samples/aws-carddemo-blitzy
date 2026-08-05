@@ -15,9 +15,17 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Supplies the one bean the account service records its measurements through.
  *
- * <p>{@link AccountMeters} holds nine series in four groups: events consumed, processing latency,
+ * <p>{@link AccountMeters} holds twelve series in four groups: events consumed, processing latency,
  * throughput, and failure count. Every name opens with {@code carddemo.account.}, which is the
  * namespace the fraud detection and notification services use.
+ *
+ * <p>The outbox relay reports four of them, and they answer four different questions. A failed
+ * attempt against a row is {@code publish.failed} and says a retry is coming. A row given up on is
+ * {@code outbox.abandoned} and says one account state change will never be published. A diagnostic
+ * the broker acknowledged is {@code dead.letters.published} and says that lost event is recorded
+ * somewhere. A diagnostic the broker refused is {@code dead.letters.failed} and says it is not
+ * recorded anywhere yet. Summing them into one failure count would hide the third and fourth
+ * behind the first, which is the distinction an operator most needs.
  *
  * <p>The events-consumed counter stays at zero. The account service publishes on a state change and
  * consumes no event, and the counter is registered so every service exposes the same four metric
@@ -77,7 +85,7 @@ public class ObservabilityConfig {
      * caller injects {@code AccountMeters} and calls the method that matches the work it just did.
      *
      * <p>No COBOL program declares a meter. The two counters below track the two totals
-     * the batch posting program printed, and the five remaining meters have no source ancestor.
+     * the batch posting program printed, and the eight remaining meters have no source ancestor.
      *
      * <p>Adding a measurement means adding one meter field and one record method here.
      *
@@ -89,10 +97,15 @@ public class ObservabilityConfig {
      * {@code domain/BillingCycleService.java} calls
      * {@link AccountMeters#recordCycleClosed()} or
      * {@link AccountMeters#recordCycleCloseFailure()}; and {@code outbox/OutboxRelay.java} calls
-     * {@link AccountMeters#recordOutboxPublished(long)} and
-     * {@link AccountMeters#recordPublishFailure()}. The events-consumed counter has no caller and
-     * takes none. Every meter registers at start-up, so each one is scrapable before its caller
-     * records against it.</p>
+     * {@link AccountMeters#recordOutboxPublished(long)},
+     * {@link AccountMeters#recordPublishFailure()},
+     * {@link AccountMeters#recordOutboxAbandoned()},
+     * {@link AccountMeters#recordDeadLetterPublished()} and
+     * {@link AccountMeters#recordDeadLetterFailure()}. The relay is the sole caller of those five
+     * and records them once its transaction has committed, so no publisher, repository or template
+     * increments a meter behind it. The events-consumed counter has no caller and takes none. Every
+     * meter registers at start-up, so each one is scrapable before its caller records against
+     * it.</p>
      */
     public static final class AccountMeters {
 
@@ -133,11 +146,37 @@ public class ObservabilityConfig {
         private final Counter outboxPublished;
 
         /**
-         * Outbox publish attempts that failed. The source answer to a failed write is
+         * Outbox publish attempts that failed, counted once per attempt against one row.
+         * {@code outbox/OutboxRelay} is the only writer: it sees a refused publish, an event type it
+         * has no topic for, an expired sweep deadline and a claim recovered from a dead instance,
+         * and the publisher sees only the first of those. The source answer to a failed write is
          * {@code 9999-ABEND-PROGRAM} at {@code app/cbl/CBTRN02C.cbl:L707-L711}, four lines that
          * display one message, move 999 into an abend code, and call {@code CEE3ABD}.
          */
         private final Counter publishFailed;
+
+        /**
+         * Outbox rows this service gave up on, after
+         * {@link com.carddemo.account.entity.OutboxEventEntity#MAX_DELIVERY_ATTEMPTS} attempts. One
+         * increment is one account state change that will not be published, which is why it is
+         * counted apart from the attempts that preceded it.
+         */
+        private final Counter outboxAbandoned;
+
+        /**
+         * Terminal diagnostics the broker acknowledged. Each one names an abandoned row on the
+         * dead-letter topic, so an operator can reach the event without its payload leaving this
+         * service.
+         */
+        private final Counter deadLettersPublished;
+
+        /**
+         * Terminal diagnostic attempts the broker refused. The row keeps its durable obligation and
+         * a later sweep offers the diagnostic again, so this counter rising while
+         * {@link #deadLettersPublished} stays flat is the one signal that an abandoned event is
+         * recorded nowhere yet.
+         */
+        private final Counter deadLettersFailed;
 
         /** Transaction rollbacks or commit failures, keyed by the bounded operation name. */
         private final Map<String, Counter> transactionFailures;
@@ -170,6 +209,16 @@ public class ObservabilityConfig {
                     .register(registry);
             this.publishFailed = Counter.builder("carddemo.account.publish.failed")
                     .description("Outbox publish attempts that failed")
+                    .register(registry);
+            this.outboxAbandoned = Counter.builder("carddemo.account.outbox.abandoned")
+                    .description("Outbox rows given up on after exhausting their attempts")
+                    .register(registry);
+            this.deadLettersPublished = Counter
+                    .builder("carddemo.account.dead.letters.published")
+                    .description("Terminal diagnostics the broker acknowledged")
+                    .register(registry);
+            this.deadLettersFailed = Counter.builder("carddemo.account.dead.letters.failed")
+                    .description("Terminal diagnostic attempts the broker refused")
                     .register(registry);
             Map<String, Counter> failures = new LinkedHashMap<>();
             for (String operation : java.util.List.of(UPDATE_OPERATION, CYCLE_CLOSE_OPERATION)) {
@@ -245,6 +294,27 @@ public class ObservabilityConfig {
          */
         public void recordPublishFailure() {
             publishFailed.increment();
+        }
+
+        /**
+         * Counts one outbox row this service gave up on.
+         */
+        public void recordOutboxAbandoned() {
+            outboxAbandoned.increment();
+        }
+
+        /**
+         * Counts one terminal diagnostic the broker acknowledged.
+         */
+        public void recordDeadLetterPublished() {
+            deadLettersPublished.increment();
+        }
+
+        /**
+         * Counts one terminal diagnostic attempt the broker refused.
+         */
+        public void recordDeadLetterFailure() {
+            deadLettersFailed.increment();
         }
     }
 }

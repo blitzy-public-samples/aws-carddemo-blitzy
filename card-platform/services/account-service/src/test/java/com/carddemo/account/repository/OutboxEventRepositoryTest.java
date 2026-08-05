@@ -63,6 +63,12 @@ class OutboxEventRepositoryTest extends AbstractAccountPostgresTest {
     /** The one derived finder of the interface, named once for the reflection tests below. */
     private static final String PENDING_FINDER = "findByPublishedFalseOrderByCreatedAtAscEventIdAsc";
 
+    /** The derived finder that reads the abandoned rows still owing a terminal diagnostic. */
+    private static final String DEAD_LETTER_FINDER = "findByDeadLetterStateOrderByLastAttemptAtAsc";
+
+    /** Instant an acknowledged diagnostic records, distinct from every other instant here. */
+    private static final Instant ACKNOWLEDGED_AT = Instant.parse("2024-05-01T00:00:00Z");
+
     /** The one event type this module writes, within {@link OutboxEventEntity#EVENT_TYPE_MAX_LENGTH}. */
     private static final String EVENT_TYPE = "AccountStateChanged";
 
@@ -125,8 +131,8 @@ class OutboxEventRepositoryTest extends AbstractAccountPostgresTest {
     }
 
     @Test
-    @DisplayName("The interface declares exactly the five methods named here")
-    void declaredMethodInventoryHoldsFiveNames() {
+    @DisplayName("The interface declares exactly the six methods named here")
+    void declaredMethodInventoryHoldsSixNames() {
         List<String> declared = Arrays.stream(OutboxEventRepository.class.getDeclaredMethods())
                 .filter(method -> !method.isSynthetic())
                 .map(Method::getName)
@@ -137,8 +143,52 @@ class OutboxEventRepositoryTest extends AbstractAccountPostgresTest {
                 "claimDueRows",
                 "deletePublishedBefore",
                 "existsByRelayState",
+                DEAD_LETTER_FINDER,
                 PENDING_FINDER,
                 "findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc");
+    }
+
+    @Test
+    @DisplayName("The owed-diagnostic finder reads the abandoned rows a dead letter still names")
+    @Transactional
+    void theOwedDiagnosticFinderReadsAbandonedRowsOnly() {
+        OutboxEventEntity abandoned = abandonedRow("d1", CLAIM_NOW);
+        OutboxEventEntity waiting = pendingRow("d2", CLAIM_NOW);
+        outboxEvents.saveAll(List.of(abandoned, waiting));
+        flushAndDetach();
+
+        List<OutboxEventEntity> owed = outboxEvents.findByDeadLetterStateOrderByLastAttemptAtAsc(
+                OutboxEventEntity.DeadLetterState.REQUIRED, Limit.of(10));
+
+        assertThat(owed).extracting(OutboxEventEntity::getEventId)
+                .as("the query answers with the abandoned row owing a diagnostic and no other")
+                .contains(abandoned.getEventId())
+                .doesNotContain(waiting.getEventId());
+        assertThat(owed).allMatch(OutboxEventEntity::owesDeadLetter);
+    }
+
+    @Test
+    @DisplayName("An acknowledged diagnostic leaves the owed set")
+    @Transactional
+    void anAcknowledgedDiagnosticLeavesTheOwedSet() {
+        OutboxEventEntity row = abandonedRow("d3", CLAIM_NOW);
+        outboxEvents.save(row);
+        flushAndDetach();
+
+        OutboxEventEntity stored = outboxEvents.findById(row.getEventId()).orElseThrow();
+        stored.markDeadLetterPublished(ACKNOWLEDGED_AT);
+        outboxEvents.save(stored);
+        flushAndDetach();
+
+        assertThat(outboxEvents.findByDeadLetterStateOrderByLastAttemptAtAsc(
+                OutboxEventEntity.DeadLetterState.REQUIRED, Limit.of(10)))
+                .extracting(OutboxEventEntity::getEventId)
+                .as("an acknowledged diagnostic is never offered again")
+                .doesNotContain(row.getEventId());
+        assertThat(outboxEvents.findById(row.getEventId()).orElseThrow()
+                .getDeadLetterPublishedAt())
+                .as("the acknowledgement instant reaches the column")
+                .isEqualTo(ACKNOWLEDGED_AT);
     }
 
     @Test
@@ -531,6 +581,25 @@ class OutboxEventRepositoryTest extends AbstractAccountPostgresTest {
     private OutboxEventEntity pendingRow(String idSuffix, Instant createdAt, String accountId) {
         return new OutboxEventEntity(UUID.fromString(EVENT_ID_STEM + idSuffix), EVENT_TYPE, PAYLOAD,
                 accountId, createdAt);
+    }
+
+    /**
+     * Builds one abandoned row that owes a terminal diagnostic.
+     *
+     * <p>The row reaches that state the way the relay reaches it, by recording
+     * {@link OutboxEventEntity#MAX_DELIVERY_ATTEMPTS} failures. Setting the columns directly would
+     * pass the check constraints while proving nothing about how a real row gets there.
+     *
+     * @param idSuffix  two hexadecimal digits completing {@link #EVENT_ID_STEM}
+     * @param createdAt the instant the row records as its creation
+     * @return an abandoned row whose dead-letter state is REQUIRED
+     */
+    private OutboxEventEntity abandonedRow(String idSuffix, Instant createdAt) {
+        OutboxEventEntity row = pendingRow(idSuffix, createdAt);
+        for (int attempt = 0; attempt < OutboxEventEntity.MAX_DELIVERY_ATTEMPTS; attempt++) {
+            row.recordFailure("IllegalStateException", createdAt, createdAt);
+        }
+        return row;
     }
 
     /**

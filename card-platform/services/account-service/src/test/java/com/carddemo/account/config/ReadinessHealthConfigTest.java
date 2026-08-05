@@ -70,20 +70,52 @@ class ReadinessHealthConfigTest {
                 .containsEntry("reason", IllegalStateException.class.getSimpleName());
     }
 
+    /**
+     * Asserts readiness reports up for a service that registers no listener.
+     *
+     * <p>This service consumes nothing, so its registry holds no container and there is nothing that
+     * could be failing to run. That is now a consequence of the rule rather than a literal zero written
+     * into the configuration: readiness compares the containers that registered against the containers
+     * that are running, and an empty set satisfies it.
+     *
+     * <p>The property that this service declares no listener is held at build time by
+     * {@code equivalence-tests} {@code ProjectionBootstrapContractTest}, which enumerates every
+     * listener of every service. A listener added here without being declared there fails that suite,
+     * which is a firmer guard than a health probe because it runs before anything is deployed.
+     */
     @Test
-    @DisplayName("requires the account service to have no Kafka listener")
-    void requiresTheAccountServiceToHaveNoKafkaListener() {
+    @DisplayName("reports ready while registering no Kafka listener")
+    void reportsReadyWhileRegisteringNoKafkaListener() {
         ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
-        HealthIndicator indicator = config.listenersHealthIndicator(provider);
-
-        assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
-
         KafkaListenerEndpointRegistry registry = mock(KafkaListenerEndpointRegistry.class);
-        MessageListenerContainer unexpected = mock(MessageListenerContainer.class);
-        when(unexpected.isRunning()).thenReturn(true);
-        when(registry.getListenerContainers()).thenReturn(List.of(unexpected));
+        when(registry.getListenerContainers()).thenReturn(List.of());
         when(provider.getIfAvailable()).thenReturn(registry);
-        assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+
+        Health health = config.listenersHealthIndicator(provider).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getDetails())
+                .containsEntry("registered", 0)
+                .containsEntry("running", 0L);
+    }
+
+    /**
+     * Asserts an absent registry holds readiness down rather than reading as an empty one.
+     *
+     * <p>The two are different states and were previously indistinguishable. The registry bean is
+     * registered by the Kafka auto-configuration whether or not any listener exists, so an absent one
+     * means the context has not finished refreshing, and a poll arriving then has learned nothing.
+     */
+    @Test
+    @DisplayName("an absent registry holds readiness down")
+    void anAbsentRegistryHoldsReadinessDown() {
+        ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
+        when(provider.getIfAvailable()).thenReturn(null);
+
+        Health health = config.listenersHealthIndicator(provider).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails()).containsEntry("reason", "missing-listener-registry");
     }
 
     @Test

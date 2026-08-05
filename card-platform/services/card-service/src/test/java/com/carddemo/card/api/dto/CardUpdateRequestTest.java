@@ -1072,13 +1072,6 @@ final class CardUpdateRequestTest {
     }
 
     /**
-     * Asserts no component name of the record mentions a subject, under any of its tokens.
-     *
-     * @param subject plain-language name of the subject, printed on failure
-     * @param locator the source locator to print on failure
-     * @param tokens folded tokens that would appear in a component name for that subject
-     */
-    /**
      * Returns the component names whose folded form contains any of the tokens supplied, in
      * declaration order. The inverse of {@link #assertNoComponentNameMentions}: a test that expects
      * exactly one match names it here rather than asserting an absence.
@@ -1095,6 +1088,13 @@ final class CardUpdateRequestTest {
                 .toList();
     }
 
+    /**
+     * Asserts no component name of the record mentions a subject, under any of its tokens.
+     *
+     * @param subject plain-language name of the subject, printed on failure
+     * @param locator the source locator to print on failure
+     * @param tokens folded tokens that would appear in a component name for that subject
+     */
     private static void assertNoComponentNameMentions(String subject, String locator,
             String... tokens) {
         for (String componentName : componentNames()) {

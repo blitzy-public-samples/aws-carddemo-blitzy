@@ -96,10 +96,11 @@ final class NotificationHistoryControllerTest {
     private static NotificationProperties properties() {
         return new NotificationProperties(
                 new NotificationProperties.Kafka(
-                        new NotificationProperties.Kafka.Groups("posted", "fraud", "customer"),
-                        new NotificationProperties.Kafka.Topics("transaction.posted",
-                                "fraud.assessed", "customer.context-changed",
-                                "carddemo.dead-letter", ".DLT")),
+                        new NotificationProperties.Kafka.Groups("authorized", "posted", "fraud",
+                                "customer"),
+                        new NotificationProperties.Kafka.Topics("transaction.authorized",
+                                "transaction.posted", "fraud.assessed",
+                                "customer.context-changed", "carddemo.dead-letter", ".DLT")),
                 new NotificationProperties.Consumer(
                         new NotificationProperties.Consumer.Retry(3, 1000L)),
                 new NotificationProperties.ProcessedEvent(168),

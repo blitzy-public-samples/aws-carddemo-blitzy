@@ -253,17 +253,23 @@ public class OutboxRelay {
 
         List<OutboxEventEntity> due = outboxEvents.claimDueRows(now, Limit.of(batchSize));
         if (due.isEmpty() && failed == 0) {
-            return new TickResult(0, 0);
+            return new TickResult(0, 0, 0, 0);
         }
 
         int published = 0;
+        int deadLettersPublished = 0;
+        int deadLettersFailed = 0;
         for (OutboxEventEntity row : due) {
             row.claim(instanceId, now);
             Class<?> recordType = recordTypesByEventType.get(row.getEventType());
             if (recordType == null) {
                 failed++;
-                routeToDeadLetter(row, DeadLetterMetadata.of(ABEND_CODE, CULPRIT,
-                        UNKNOWN_TYPE_REASON, UNKNOWN_TYPE_MESSAGE), deadline);
+                if (routeToDeadLetter(row, DeadLetterMetadata.of(ABEND_CODE, CULPRIT,
+                        UNKNOWN_TYPE_REASON, UNKNOWN_TYPE_MESSAGE), deadline)) {
+                    deadLettersPublished++;
+                } else {
+                    deadLettersFailed++;
+                }
                 continue;
             }
             try {
@@ -271,15 +277,18 @@ public class OutboxRelay {
                 published++;
             } catch (RuntimeException failure) {
                 failed++;
-                if (onFailedRow(row, failure, now, deadline)) {
+                Terminal terminal = onFailedRow(row, failure, now, deadline);
+                deadLettersPublished += terminal.published();
+                deadLettersFailed += terminal.failed();
+                if (terminal.rowIsClosed()) {
                     continue;
                 }
                 log.info("Outbox relay published {} rows this tick and failed {}", published, failed);
-                return new TickResult(published, failed);
+                return new TickResult(published, failed, deadLettersPublished, deadLettersFailed);
             }
         }
         log.info("Outbox relay published {} rows this tick and failed {}", published, failed);
-        return new TickResult(published, failed);
+        return new TickResult(published, failed, deadLettersPublished, deadLettersFailed);
     }
 
     /**
@@ -330,10 +339,19 @@ public class OutboxRelay {
     /**
      * What one tick did, carried out of the transaction so it can be counted after the commit.
      *
-     * @param published rows the broker accepted and this tick marked
-     * @param failed    rows this tick could not publish, whether dead-lettered or left for a retry
+     * <p>{@code failed} counts ATTEMPTS and the two terminal components count RECORDS, which is why
+     * they are separate components rather than one total. A row that will be attempted again appears
+     * in {@code failed} alone; a row this relay can never publish appears in {@code failed} once and
+     * in exactly one of the two terminal components. Nothing is counted twice, and a reader can tell a
+     * retry from a permanent loss without opening a log.
+     *
+     * @param published            rows the broker accepted and this tick marked
+     * @param failed               publish attempts this tick could not complete
+     * @param deadLettersPublished rows this relay gave up on whose diagnostic the broker acknowledged
+     * @param deadLettersFailed    rows this relay gave up on whose diagnostic the broker refused
      */
-    private record TickResult(int published, int failed) {
+    private record TickResult(int published, int failed, int deadLettersPublished,
+            int deadLettersFailed) {
 
         /**
          * Records this result against {@code meters}.
@@ -343,6 +361,12 @@ public class OutboxRelay {
         void record(FraudMeters meters) {
             for (int failure = 0; failure < failed; failure++) {
                 meters.recordPublishFailure();
+            }
+            for (int named = 0; named < deadLettersPublished; named++) {
+                meters.recordDeadLetterPublished();
+            }
+            for (int refused = 0; refused < deadLettersFailed; refused++) {
+                meters.recordDeadLetterFailure();
             }
         }
     }
@@ -383,15 +407,17 @@ public class OutboxRelay {
      * @param failure the failure the send raised
      * @param now      the moment this tick started
      * @param deadline the pass deadline on the monotonic clock
-     * @return true when the failure was permanent and the row is closed, so the tick may carry on
+     * @return what this failure did to the terminal counts, and whether the row is closed so the
+     *         tick may carry on
      */
-    private boolean onFailedRow(OutboxEventEntity row, RuntimeException failure, Instant now,
+    private Terminal onFailedRow(OutboxEventEntity row, RuntimeException failure, Instant now,
             long deadline) {
         Throwable cause = rootCause(failure);
         if (isPermanent(failure)) {
-            routeToDeadLetter(row, DeadLetterMetadata.fromFailure(ABEND_CODE, cause,
-                    CONTRACT_REASON, CONTRACT_MESSAGE), deadline);
-            return true;
+            return routeToDeadLetter(row, DeadLetterMetadata.fromFailure(ABEND_CODE, cause,
+                    CONTRACT_REASON, CONTRACT_MESSAGE), deadline)
+                    ? Terminal.DEAD_LETTER_PUBLISHED
+                    : Terminal.DEAD_LETTER_FAILED;
         }
         String failureClass = cause.getClass().getSimpleName();
         row.recordFailure(failureClass, now, now.plus(backoffAfter(row.getAttemptCount())));
@@ -400,7 +426,30 @@ public class OutboxRelay {
         log.warn("An outbox row of type {} stays unpublished after {}, becomes due again after a "
                         + "backoff, and the tick stops there. Attempt {} of {}.", row.getEventType(),
                 failureClass, row.getAttemptCount(), OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
-        return false;
+        return Terminal.RETRY;
+    }
+
+    /**
+     * What one permanent failure did to the terminal counts, and whether the row is closed.
+     *
+     * <p>A closed row takes no further attempt, so the tick may move to the row behind it. A row left
+     * for a retry stops the tick, because publishing a later assessment of one account while an
+     * earlier one waits is the reordering the message key exists to prevent.
+     *
+     * @param published   1 when a diagnostic reached the broker, otherwise 0
+     * @param failed      1 when a diagnostic was refused, otherwise 0
+     * @param rowIsClosed whether the row takes no further attempt
+     */
+    private record Terminal(int published, int failed, boolean rowIsClosed) {
+
+        /** The row stays open and becomes due again after a backoff. */
+        private static final Terminal RETRY = new Terminal(0, 0, false);
+
+        /** The row is closed and its diagnostic reached the broker. */
+        private static final Terminal DEAD_LETTER_PUBLISHED = new Terminal(1, 0, true);
+
+        /** The row is closed to this tick and its diagnostic was refused. */
+        private static final Terminal DEAD_LETTER_FAILED = new Terminal(0, 1, true);
     }
 
     /**

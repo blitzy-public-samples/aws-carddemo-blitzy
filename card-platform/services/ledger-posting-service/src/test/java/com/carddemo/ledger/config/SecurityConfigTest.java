@@ -1,5 +1,6 @@
 package com.carddemo.ledger.config;
 
+import com.carddemo.cobol.PanMasker;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -57,15 +58,30 @@ class SecurityConfigTest {
     /** Account identifier the stub caller does not own. */
     private static final String OTHER_ACCOUNT = "00000000002";
 
-    /** Masked card the stub caller owns, from record 1 of app/data/ASCII/cardxref.txt. */
-    private static final String OWNED_CARD = "************5740";
+    /** Card number the stub caller owns, record 1 of app/data/ASCII/cardxref.txt. */
+    private static final String OWNED_CARD_NUMBER = "0500024453765740";
+
+    /** Card number the stub caller does not own, record 3 of the same fixture. */
+    private static final String OTHER_CARD_NUMBER = "0923877193247330";
 
     /**
-     * Sixteen digits shaped like a card number, whose visible tail is the tail {@link #OWNED_CARD}
-     * shows. Its four leading digits are {@code 9999}, and no card of
-     * {@code app/data/ASCII/carddata.txt} begins with them.
+     * A card number sharing the last four digits of {@link #OWNED_CARD_NUMBER} and no other digit.
+     *
+     * <p>Constructed rather than seeded. The fifty cards of {@code app/data/ASCII/carddata.txt} end
+     * in fifty different groups of four, so the fixture cannot show what a masked authority admits.
      */
-    private static final String FULL_CARD_NUMBER = "9999" + "024453765740";
+    private static final String COLLIDING_CARD_NUMBER = "9999999999995740";
+
+    /**
+     * Card token the stub caller owns, derived rather than typed.
+     *
+     * <p>A literal would go stale the moment the card-token key turned over, and the constant would
+     * then claim to be a token of that card while naming a value nothing derives. The literal that
+     * pins the shipped key lives in one place, {@code equivalence-tests CardTokenKeyContractTest},
+     * and this constant only has to be the token the granted authority and the checked route agree
+     * on.
+     */
+    private static final String OWNED_CARD = PanMasker.cardToken(OWNED_CARD_NUMBER);
 
     /** An encoded password, which is the only form a configured identity carries. */
     private static final String ENCODED_PASSWORD =
@@ -217,23 +233,34 @@ class SecurityConfigTest {
         }
 
         @Test
-        @DisplayName("a card is owned by its masked form, never by a card number")
-        void cardOwnershipUsesTheMaskedForm() {
+        @DisplayName("a card is owned by its derived token, never by a masked form or a number")
+        void cardOwnershipUsesTheDerivedToken() {
             AuthorizationManager<RequestAuthorizationContext> rule =
-                    SecurityConfig.ownsPathVariable(SecurityConfig.CARD_SCOPE, "maskedCardNumber");
+                    SecurityConfig.ownsPathVariable(SecurityConfig.CARD_SCOPE, "cardToken");
             assertAll(
                     () -> assertTrue(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("maskedCardNumber", OWNED_CARD)).isGranted(),
-                            "the identity carries SCOPE_CARD_" + OWNED_CARD),
+                                    pathContext("cardToken", OWNED_CARD)).isGranted(),
+                            "the identity carries the token authority of its own card"),
                     () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("maskedCardNumber", "************9999"))
+                                    pathContext("cardToken",
+                                            PanMasker.cardToken(OTHER_CARD_NUMBER)))
                                     .isGranted(),
-                            "another card sharing no last four digits is refused"),
+                            "the token of another card is refused"),
                     () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("maskedCardNumber", FULL_CARD_NUMBER))
+                                    pathContext("cardToken",
+                                            PanMasker.cardToken(COLLIDING_CARD_NUMBER)))
                                     .isGranted(),
-                            "a full card number matches no scope, so a caller cannot substitute "
-                                    + "one for the masked form the route declares"));
+                            "a card sharing the last four digits is a different token, so the "
+                                    + "authority admits one card and not a group of them"),
+                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
+                                    pathContext("cardToken",
+                                            PanMasker.maskCardNumber(OWNED_CARD_NUMBER)))
+                                    .isGranted(),
+                            "a masked card number matches no scope, so a caller cannot substitute "
+                                    + "the weaker form for the token the route declares"),
+                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
+                                    pathContext("cardToken", OWNED_CARD_NUMBER)).isGranted(),
+                            "a full card number matches no scope either"));
         }
 
         @Test

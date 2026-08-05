@@ -7,6 +7,8 @@ import com.carddemo.events.TransactionPosted;
 import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.carddemo.notification.config.ObservabilityConfig;
 import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
+import com.carddemo.notification.domain.CardholderContextReader;
+import com.carddemo.notification.entity.CardholderContextEntity;
 import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.entity.StatementTransactionEntity;
 import com.carddemo.notification.repository.CardholderContextRepository;
@@ -144,13 +146,15 @@ final class TransactionPostedConsumerTest {
         processedEvents = mock(ProcessedEventRepository.class);
         when(processedEvents.claimEvent(any(), any(), any())).thenReturn(CLAIM_TAKEN);
         cardholderContexts = mock(CardholderContextRepository.class);
-        when(cardholderContexts.findById(any())).thenReturn(Optional.empty());
+        when(cardholderContexts.findById(any()))
+                .thenReturn(Optional.of(seededContext(ACCOUNT_ID)));
         notificationService = mock(NotificationService.class);
         acknowledgment = mock(Acknowledgment.class);
         NotificationMetrics metrics =
                 new ObservabilityConfig().notificationMetrics(new SimpleMeterRegistry());
         consumer = new TransactionPostedConsumer(statementTransactions, processedEvents,
-                cardholderContexts, notificationService, transactionRunner(), metrics);
+                new CardholderContextReader(cardholderContexts), notificationService,
+                transactionRunner(), metrics);
     }
 
     @Test
@@ -242,9 +246,12 @@ final class TransactionPostedConsumerTest {
 
         consumer.onTransactionPosted(event, acknowledgment, TOPIC, ACCOUNT_ID);
 
+        // The cardholder fields are the ones the projection holds, and not blank fields. A missing
+        // projection row is reported as a fault now, so this argument is the seeded row rather than
+        // the empty rendering an unseeded projection used to produce.
         verify(notificationService).renderPostedTransactionAlert(CARD_TOKEN, MASKED_CARD,
-                TRANSACTION_ID, ACCOUNT_ID, NEW_BALANCE, NotificationService.CardholderDetails
-                        .blank(), RenderedFormat.PLAIN_TEXT);
+                TRANSACTION_ID, ACCOUNT_ID, NEW_BALANCE, expectedCardholderDetails(),
+                RenderedFormat.PLAIN_TEXT);
         verify(processedEvents).claimEvent(eq(event.eventId()), any(), eq(TOPIC));
         verify(acknowledgment).acknowledge();
     }
@@ -333,5 +340,31 @@ final class TransactionPostedConsumerTest {
         PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
         when(manager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
         return new TransactionTemplate(manager);
+    }
+
+    /**
+     * One populated cardholder projection row, as {@code db/migration/V2__seed.sql} loads it.
+     *
+     * <p>Stubbing a present row is the realistic state. The projection is seeded for every account of
+     * the customer fixture, and a missing row is now reported as a fault rather than rendered as
+     * blank fields, so a test that left it empty would be asserting against a failure path.
+     *
+     * @param accountId the account the row is keyed by
+     * @return the row, with every field carrying a value
+     */
+    private static CardholderContextEntity seededContext(String accountId) {
+        return new CardholderContextEntity(accountId, "Immanuel", "Madeline", "Kessler",
+                "618 Deshaun Route", "Apt. 802", "Altenwerthshire", "NC", "USA", "12546", "274",
+                java.time.Instant.EPOCH, java.time.Instant.EPOCH);
+    }
+
+    /**
+     * The ten cardholder fields {@link #seededContext(String)} maps onto.
+     *
+     * @return the fields an alert reports for the seeded account
+     */
+    private static NotificationService.CardholderDetails expectedCardholderDetails() {
+        return new NotificationService.CardholderDetails("Immanuel", "Madeline", "Kessler",
+                "618 Deshaun Route", "Apt. 802", "Altenwerthshire", "NC", "USA", "12546", "274");
     }
 }

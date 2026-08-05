@@ -23,6 +23,8 @@ class ObservabilityConfigTest {
             ObservabilityConfig.METRIC_CARD_EVENTS_PUBLISHED,
             ObservabilityConfig.METRIC_CARD_FAILURES,
             ObservabilityConfig.METRIC_CARD_XREF_DIVERGENCE,
+            ObservabilityConfig.METRIC_CARD_OUTBOX_ABANDONED,
+            ObservabilityConfig.METRIC_CARD_DEAD_LETTERS_FAILED,
             ObservabilityConfig.METRIC_CARD_UPDATE_LATENCY,
             ObservabilityConfig.METRIC_CARD_PUBLISH_LATENCY);
 
@@ -59,6 +61,9 @@ class ObservabilityConfigTest {
             Counter conflicts = context.getBean("cardUpdateConflictCounter", Counter.class);
             Counter divergence =
                     context.getBean("cardCrossReferenceDivergenceCounter", Counter.class);
+            Counter abandoned = context.getBean("cardOutboxAbandonedCounter", Counter.class);
+            Counter deadLettersFailed =
+                    context.getBean("cardDeadLettersFailedCounter", Counter.class);
             CardLatencyTimers timers = context.getBean(CardLatencyTimers.class);
 
             published.increment();
@@ -66,6 +71,8 @@ class ObservabilityConfigTest {
             updates.increment();
             conflicts.increment();
             divergence.increment();
+            abandoned.increment();
+            deadLettersFailed.increment();
             timers.cardUpdate().record(Duration.ofMillis(8L));
             timers.eventPublish().record(Duration.ofMillis(12L));
 
@@ -77,6 +84,8 @@ class ObservabilityConfigTest {
             assertThat(updates.count()).isEqualTo(1.0D);
             assertThat(conflicts.count()).isEqualTo(1.0D);
             assertThat(divergence.count()).isEqualTo(1.0D);
+            assertThat(abandoned.count()).isEqualTo(1.0D);
+            assertThat(deadLettersFailed.count()).isEqualTo(1.0D);
             assertThat(timers.cardUpdate().count()).isEqualTo(1L);
             assertThat(timers.eventPublish().count()).isEqualTo(1L);
         });

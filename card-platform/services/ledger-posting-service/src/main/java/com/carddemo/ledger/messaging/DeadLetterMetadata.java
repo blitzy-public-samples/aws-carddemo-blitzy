@@ -77,6 +77,15 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
      */
     public static final char SUBSTITUTE_CHARACTER = '.';
 
+    /**
+     * Width of the rendered record, the sum of the four declared widths.
+     *
+     * <p>{@code 01 ABEND-DATA} at {@code app/cpy/CSMSG02Y.cpy:L21-L29} declares four fixed-width
+     * fields and no separators, so the rendered form is their widths added together.
+     */
+    public static final int RECORD_LENGTH =
+            ABEND_CODE_MAX_LENGTH + CULPRIT_MAX_LENGTH + REASON_MAX_LENGTH + MESSAGE_MAX_LENGTH;
+
     /** Lowest code point kept unchanged, the space. */
     private static final int FIRST_PRINTABLE_ASCII = 0x20;
 
@@ -161,6 +170,30 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
             kept.append(printable ? (char) codePoint : SUBSTITUTE_CHARACTER);
         }
         return kept.toString();
+    }
+
+    /**
+     * Renders the four components in copybook order, padded to their declared widths.
+     *
+     * <p>This is the form a terminal consumer failure travels in. The value is bytes on the wire
+     * rather than an event, which is what lets the dead-letter destination stay the dead-letter topic
+     * of the stream the record arrived on: every governed event type is bound to one topic, so an
+     * event-shaped value could only ever be addressed to that one topic. The envelope form below is
+     * the other case, an outbox row this service gave up on, and it is bound to the shared
+     * dead-letter topic.
+     *
+     * @return one printable ASCII record of exactly {@value #RECORD_LENGTH} characters
+     */
+    public String toFixedWidthRecord() {
+        return fixedWidth(abendCode, ABEND_CODE_MAX_LENGTH)
+                + fixedWidth(culprit, CULPRIT_MAX_LENGTH)
+                + fixedWidth(reason, REASON_MAX_LENGTH)
+                + fixedWidth(message, MESSAGE_MAX_LENGTH);
+    }
+
+    /** Pads one already-sanitized component with spaces to its declared width. */
+    private static String fixedWidth(String value, int width) {
+        return value + " ".repeat(width - value.length());
     }
 
     /**

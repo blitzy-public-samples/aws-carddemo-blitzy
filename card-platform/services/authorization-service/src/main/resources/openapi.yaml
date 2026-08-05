@@ -71,6 +71,23 @@ paths:
                   cardNumber: '4859452612877065'
                   originTimestamp: '2026-08-05 00:00:00.000000'
                   processingTimestamp: '2026-08-05-00.00.00.000000'
+              byAccountId:
+                summary: >-
+                  The same purchase presenting an account identifier instead, which resolves its card
+                  from the cross-reference before the decision runs.
+                value:
+                  transactionTypeCode: '01'
+                  transactionCategoryCode: '0001'
+                  source: POS TERM
+                  description: Purchase at Abshire-Lowe
+                  amount: '+00000504.77'
+                  merchantId: '800000000'
+                  merchantName: Abshire-Lowe
+                  merchantCity: North Enoshaven
+                  merchantZip: '72112'
+                  accountId: '00000000001'
+                  originTimestamp: '2026-08-05 00:00:00.000000'
+                  processingTimestamp: '2026-08-05-00.00.00.000000'
               byCardNumberShortForm:
                 summary: >-
                   The same purchase presenting a shorter card number, which is widened with leading
@@ -219,13 +236,19 @@ components:
         LOW-VALUES.
 
 
-        cardNumber is required and accountId is not accepted in its place.
-        app/cbl/COTRN02C.cbl:L206-L209 also takes an account identifier and resolves a card from the
-        alternate index, and that branch is not reproduced: the card it returns is whichever one the
-        index holds first rather than one the caller presented, so a caller naming an account would
-        authorize a card the caller never held. A missing card number reports
-        "Account or Card Number must be entered...", the WHEN OTHER text of
-        app/cbl/COTRN02C.cbl:L226.
+        A caller names its subject by cardNumber or by accountId, and at least one of the two must
+        arrive. VALIDATE-INPUT-KEY-FIELDS at app/cbl/COTRN02C.cbl:L195-L230 admits either, and both
+        of its branches are reproduced. The account branch at :L196-L209 reads the cross-reference by
+        account identifier through the alternate index at app/jcl/XREFFILE.jcl:L72-L77 and takes the
+        card number the row carries. The card branch at :L210-L223 reads it by card number and takes
+        the account identifier.
+
+
+        A request carrying neither reports "Account or Card Number must be entered...", the WHEN
+        OTHER text of app/cbl/COTRN02C.cbl:L226, as 422. An accountId that resolves no card reports
+        "Account ID NOT found...", the NOTFND text of app/cbl/COTRN02C.cbl:L591-L592, also as 422.
+        The second is an input refusal and not a decline carrying 0100: a request naming no card has
+        no card number to record, mask or tokenize on a declined event.
 
 
         transactionId is not accepted either. This service allocates every identifier from the
@@ -241,7 +264,6 @@ components:
         - merchantName
         - merchantCity
         - merchantZip
-        - cardNumber
         - originTimestamp
         - processingTimestamp
       properties:
@@ -323,10 +345,9 @@ components:
           type: string
           pattern: '^[0-9]{1,16}$'
           description: >-
-            Card number, from DALYTRAN-CARD-NUM PIC X(16) at app/cpy/CVTRA06Y.cpy:L15. Required, and
-            the only way a request names its subject. A shorter value is widened with leading zeros
-            to sixteen digits, which app/cbl/COTRN02C.cbl:L218-L221 does with one MOVE into a
-            PIC 9(16) field.
+            Card number, from DALYTRAN-CARD-NUM PIC X(16) at app/cpy/CVTRA06Y.cpy:L15. Supply this or
+            accountId. A shorter value is widened with leading zeros to sixteen digits, which
+            app/cbl/COTRN02C.cbl:L218-L221 does with one MOVE into a PIC 9(16) field.
 
 
             The cross-reference lookup runs on all sixteen characters. Only the published event
@@ -355,10 +376,18 @@ components:
           type: [string, 'null']
           pattern: '^[0-9]{1,11}$'
           description: >-
-            Optional account cross-check, from XREF-ACCT-ID PIC 9(11) at
-            app/cpy/CVACT03Y.cpy:L7. Never a substitute for cardNumber. When supplied beside the
-            card number, it is widened to eleven digits and must equal the account the
-            cross-reference resolves; a mismatch is refused.
+            Account identifier, from XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7, widened to
+            eleven digits. It carries either of two roles depending on what else the request holds.
+
+
+            Supplied alone, it names the subject: the cross-reference is read by this identifier and
+            the card number the row carries decides the request, which is app/cbl/COTRN02C.cbl:L208
+            followed by the MOVE at :L209. The row is taken in ascending card-number order, so one
+            account always resolves the same card.
+
+
+            Supplied beside cardNumber, it is a cross-check only: the card remains the lookup key and
+            this value must equal the account the cross-reference resolves, or the request is refused.
           examples: ['00000000077', '7']
 
     AuthorizationResponse:

@@ -44,6 +44,7 @@ class CardPropertiesTest {
 
             assertThat(properties.api().maxRequestBodyBytes()).isEqualTo(65536L);
             assertThat(properties.kafka().topics().cardUpdated()).isEqualTo("card.updated");
+            assertThat(properties.kafka().topics().deadLetter()).isEqualTo("carddemo.dead-letter");
             assertThat(properties.outbox().relay().fixedDelayMs()).isEqualTo(500L);
             assertThat(properties.outbox().relay().batchSize()).isEqualTo(100);
             assertThat(properties.outbox().publishedRetentionHours()).isEqualTo(168L);
@@ -60,6 +61,17 @@ class CardPropertiesTest {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
                             .hasStackTraceContaining("kafka.topics.cardUpdated");
+                });
+    }
+
+    @Test
+    @DisplayName("a blank dead-letter topic name stops start-up")
+    void aBlankDeadLetterTopicNameStopsStartUp() {
+        shipped.withPropertyValues("carddemo.kafka.topics.dead-letter=")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("kafka.topics.deadLetter");
                 });
     }
 

@@ -41,12 +41,6 @@ import org.junit.jupiter.api.Test;
 class AccountProjectionCoverageTest {
 
     /**
-     * Every value the projection holds, as the column name and the event component supplying it.
-     *
-     * <p>The projection carries five columns. The account identifier is its identity, and the other
-     * four are what the credit-limit and expiry rules test.
-     */
-    /**
      * The columns that record when this replica was last refreshed, rather than what it holds.
      *
      * <p>with no COBOL ancestor: the source reads the account dataset directly at
@@ -57,6 +51,12 @@ class AccountProjectionCoverageTest {
     private static final Set<String> FRESHNESS_COLUMNS =
             Set.of("source_event_id", "source_occurred_at", "observed_at");
 
+    /**
+     * Every value the projection holds, as the column name and the event component supplying it.
+     *
+     * <p>The projection carries five columns. The account identifier is its identity, and the other
+     * four are what the credit-limit and expiry rules test.
+     */
     private static final List<Coverage> COVERAGE = List.of(
             new Coverage("account_id", "accountId", String.class),
             new Coverage("credit_limit", "creditLimit", BigDecimal.class),

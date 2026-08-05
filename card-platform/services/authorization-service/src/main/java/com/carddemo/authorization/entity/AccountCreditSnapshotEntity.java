@@ -138,7 +138,8 @@ public class AccountCreditSnapshotEntity {
 
     /**
      * The state-change event that last wrote this row, or null for a row loaded by
-     * {@code V2__seed.sql}. Null in every current row, because no consumer writes this table.
+     * {@code V2__seed.sql} that no event has superseded yet.
+     * {@code messaging/AccountStateChangedConsumer} sets it on every apply.
      *
      * <p>A check constraint in {@code src/main/resources/db/migration/V1__schema.sql} ties this
      * column to {@link #getSourceOccurredAt()}: a row carries both halves of its provenance or

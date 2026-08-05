@@ -382,11 +382,21 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: GROUP_LEDGER_POSTING
+            - name: GROUP_LEDGER_ACCOUNT
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_LEDGER_ACCOUNT
             - name: GROUP_FRAUD_DETECTION
               valueFrom:
                 configMapKeyRef:
                   name: carddemo-config
                   key: GROUP_FRAUD_DETECTION
+            - name: GROUP_NOTIFICATION_AUTHORIZED
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_NOTIFICATION_AUTHORIZED
             - name: GROUP_NOTIFICATION_POSTED
               valueFrom:
                 configMapKeyRef:
@@ -550,6 +560,7 @@ spec:
                              "${TOPIC_CUSTOMER_CONTEXT_CHANGED}" \
                              "${TOPIC_CARD_UPDATED}" \
                              "${TOPIC_TRANSACTION_AUTHORIZED}${TOPIC_DEAD_LETTER_SUFFIX}" \
+                             "${TOPIC_ACCOUNT_STATE_CHANGED}${TOPIC_DEAD_LETTER_SUFFIX}" \
                              "${TOPIC_TRANSACTION_POSTED}${TOPIC_DEAD_LETTER_SUFFIX}" \
                              "${TOPIC_FRAUD_ASSESSED}${TOPIC_DEAD_LETTER_SUFFIX}" \
                              "${TOPIC_CUSTOMER_CONTEXT_CHANGED}${TOPIC_DEAD_LETTER_SUFFIX}" \
@@ -602,10 +613,18 @@ spec:
                   "${TOPIC_DEAD_LETTER}" || return 1
 
                 # Ledger posting: consumes the authorization event under its own group,
-                # publishes the posted or rejected outcome, and routes what it cannot
-                # process to the source topic's dead-letter topic.
+                # consumes the account state-change stream under a second group of its own to
+                # keep account_balance_projection current, publishes the posted or rejected
+                # outcome, and routes what it cannot process to the source topic's dead-letter
+                # topic. Without the second consumer entry an account opened after deployment
+                # never gets a projection row, and a closed billing cycle never zeroes the two
+                # accumulators here.
                 grant_consumer "${LEDGER_KAFKA_USER}" "${TOPIC_TRANSACTION_AUTHORIZED}" \
                   "${GROUP_LEDGER_POSTING}" || return 1
+                grant_consumer "${LEDGER_KAFKA_USER}" "${TOPIC_ACCOUNT_STATE_CHANGED}" \
+                  "${GROUP_LEDGER_ACCOUNT}" || return 1
+                grant_producer "${LEDGER_KAFKA_USER}" \
+                  "${TOPIC_ACCOUNT_STATE_CHANGED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
                 grant_producer "${LEDGER_KAFKA_USER}" \
                   "${TOPIC_TRANSACTION_POSTED}" || return 1
                 grant_producer "${LEDGER_KAFKA_USER}" \
@@ -625,17 +644,24 @@ spec:
                   "${TOPIC_TRANSACTION_AUTHORIZED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
                 grant_producer "${FRAUD_KAFKA_USER}" "${TOPIC_DEAD_LETTER}" || return 1
 
-                # Notification: three listeners, three groups of its own, and one dead-letter
+                # Notification: four listeners, four groups of its own, and one dead-letter
                 # topic per source. It publishes no business event of its own. Its shipped
-                # configuration names transaction.posted, fraud.assessed and
-                # customer.context-changed, so it holds no entry on transaction.authorized:
-                # an entry the configuration does not need is an entry a compromise can use.
+                # configuration names transaction.authorized, transaction.posted,
+                # fraud.assessed and customer.context-changed, and it holds exactly those
+                # four entries: an entry the configuration does not need is an entry a
+                # compromise can use. The entry on transaction.authorized makes this the
+                # third service reading the authorization event directly, beside the ledger
+                # and the fraud detector, each under a group of its own.
+                grant_consumer "${NOTIFICATION_KAFKA_USER}" "${TOPIC_TRANSACTION_AUTHORIZED}" \
+                  "${GROUP_NOTIFICATION_AUTHORIZED}" || return 1
                 grant_consumer "${NOTIFICATION_KAFKA_USER}" "${TOPIC_TRANSACTION_POSTED}" \
                   "${GROUP_NOTIFICATION_POSTED}" || return 1
                 grant_consumer "${NOTIFICATION_KAFKA_USER}" "${TOPIC_FRAUD_ASSESSED}" \
                   "${GROUP_NOTIFICATION_FRAUD}" || return 1
                 grant_consumer "${NOTIFICATION_KAFKA_USER}" "${TOPIC_CUSTOMER_CONTEXT_CHANGED}" \
                   "${GROUP_NOTIFICATION_CUSTOMER}" || return 1
+                grant_producer "${NOTIFICATION_KAFKA_USER}" \
+                  "${TOPIC_TRANSACTION_AUTHORIZED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
                 grant_producer "${NOTIFICATION_KAFKA_USER}" \
                   "${TOPIC_TRANSACTION_POSTED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
                 grant_producer "${NOTIFICATION_KAFKA_USER}" \
@@ -645,12 +671,17 @@ spec:
                 grant_producer "${NOTIFICATION_KAFKA_USER}" "${TOPIC_DEAD_LETTER}" || return 1
 
                 # Account and card: each publishes its own state-change event when a state
-                # change occurs, and consumes nothing.
+                # change occurs, and consumes nothing. Each also holds one entry on the
+                # shared dead-letter topic, because an outbox relay that exhausts its
+                # attempts on a row names that row there and nowhere else. Neither holds a
+                # consumer entry on it: they write a diagnostic and never read one.
                 grant_producer "${ACCOUNT_KAFKA_USER}" \
                   "${TOPIC_ACCOUNT_STATE_CHANGED}" || return 1
                 grant_producer "${ACCOUNT_KAFKA_USER}" \
                   "${TOPIC_CUSTOMER_CONTEXT_CHANGED}" || return 1
+                grant_producer "${ACCOUNT_KAFKA_USER}" "${TOPIC_DEAD_LETTER}" || return 1
                 grant_producer "${CARD_KAFKA_USER}" "${TOPIC_CARD_UPDATED}" || return 1
+                grant_producer "${CARD_KAFKA_USER}" "${TOPIC_DEAD_LETTER}" || return 1
               }
 
               # The marker the readiness probe reads is written last, after every topic

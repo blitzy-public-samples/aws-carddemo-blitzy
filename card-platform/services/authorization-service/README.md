@@ -15,7 +15,7 @@
 
 ## Purpose
 
-`authorization-service` owns `POST /authorizations` and the authorization decision. It resolves a card or account, applies four source rules, and writes exactly one outcome event per call. It consumes account state changes to maintain its private credit projection. It calls no other service during a decision.
+`authorization-service` owns `POST /authorizations` and the authorization decision. It resolves a card or account, applies four source rules, and writes exactly one outcome event per call. It consumes account state changes and card updates to keep its two private replicas current. It calls no other service during a decision.
 
 <br/>
 
@@ -44,6 +44,8 @@ The [traceability matrix](../../docs/traceability-matrix.md) records the synthes
 
 Both business outcomes return 200. A body that cannot be read returns 400, invalid request values return 422, and infrastructure faults return 500.
 
+A request may name the card number, the account identifier, or both, which is what `app/cbl/COTRN02C.cbl:L196-L209` accepts. An account-only request resolves to its card through the cross-reference. A request carrying both must agree, and one carrying neither is refused with the source's own message.
+
 The full contract is [OpenAPI](src/main/resources/openapi.yaml). Business traffic uses host port 8081; management traffic uses host port 9081.
 
 <br/>
@@ -54,12 +56,18 @@ The full contract is [OpenAPI](src/main/resources/openapi.yaml). Business traffi
 | :--- | :--- | :--- | :--- |
 | Produces | `TransactionAuthorized` | `transaction.authorized` | — |
 | Produces | `TransactionDeclined` versions 1 and 2 | `transaction.declined` | — |
-| Consumes | `AccountStateChanged` | `account.state-changed` | `authorization` |
-| Failure route | `DeadLetterEnvelope` | `carddemo.dead-letter` | — |
+| Consumes | `AccountStateChanged` | `account.state-changed` | `authorization-account-state` |
+| Consumes | `CardUpdated` | `card.updated` | `authorization-card-updated` |
+| Listener failure route | `DeadLetterEnvelope` | `carddemo.dead-letter` | — |
+| Relay abandonment route | `DeadLetterEnvelope` | `carddemo.dead-letter` | — |
 
 An unresolved card uses the 16-character transaction identifier as its Kafka key. Every resolved outcome uses the 11-digit account identifier.
 
 The decision and outbox row commit in one local transaction. The relay publishes only after that commit.
+
+Three services consume `TransactionAuthorized` — ledger, fraud, and notification — each under its own group. This service knows none of them. It publishes one event per call and returns.
+
+A record this service can never apply reaches the dead-letter topic after bounded retries, and nothing the record carried travels with it. The diagnostic is a governed envelope with the four fields of `01 ABEND-DATA` at `app/cpy/CSMSG02Y.cpy:L21-L29`, the message key is the record's own topic, partition, and offset, and only an allowlist of headers survives. The reason is specific: a replica record can hold a credit limit or a pair of cycle balances, and a dead-letter topic has a different audience from the stream it came from.
 
 <br/>
 
@@ -203,6 +211,8 @@ Follow-up work remains in [Suggested Next Tasks](../../docs/suggested-next-tasks
 | Management port | 9081 |
 | Database and schema | `carddemo_authorization.authorization_service` |
 | Kafka bootstrap inside Compose | `kafka:29092` |
+| Consumer groups | `authorization-account-state`, `authorization-card-updated` |
+| Migrations | `V1__schema.sql`, `V2__seed.sql`, `V3__unresolved_card_attempt.sql`, `V4__outbox_transaction_key.sql`, `V5__authorization_decision.sql` |
 
 From `card-platform/`:
 

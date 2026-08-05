@@ -67,21 +67,93 @@ class ReadinessHealthConfigTest {
                 .containsEntry("reason", IllegalStateException.class.getSimpleName());
     }
 
+    /**
+     * Asserts readiness reports up once every declared listener is running.
+     *
+     * <p>This is the regression this class previously encoded backwards. The indicator named two
+     * listeners while the service declared three, so readiness could never report up: the compose
+     * health check never passed and both Kubernetes probes failed for good. The test did not catch it
+     * because it registered two containers as well, matching the literal instead of the service.
+     *
+     * <p>The four listeners are {@code TransactionAuthorizedConsumer},
+     * {@code TransactionPostedConsumer}, {@code FraudFlaggedConsumer} and
+     * {@code CustomerContextChangedConsumer}. Readiness now counts what registered, so the number
+     * here follows the service rather than leading it: the fourth listener was added for the
+     * authorization fan-out without this class needing an edit.
+     */
     @Test
-    @DisplayName("requires both notification listeners to be running")
-    void requiresBothNotificationListenersToBeRunning() {
+    @DisplayName("reports ready once all four declared listeners are running")
+    void reportsReadyOnceAllFourDeclaredListenersAreRunning() {
         ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
         KafkaListenerEndpointRegistry registry = mock(KafkaListenerEndpointRegistry.class);
+        MessageListenerContainer authorized = mock(MessageListenerContainer.class);
         MessageListenerContainer posted = mock(MessageListenerContainer.class);
-        MessageListenerContainer assessed = mock(MessageListenerContainer.class);
+        MessageListenerContainer flagged = mock(MessageListenerContainer.class);
+        MessageListenerContainer customerContext = mock(MessageListenerContainer.class);
+        when(authorized.isRunning()).thenReturn(true);
         when(posted.isRunning()).thenReturn(true);
-        when(assessed.isRunning()).thenReturn(true, false);
-        when(registry.getListenerContainers()).thenReturn(List.of(posted, assessed));
+        when(flagged.isRunning()).thenReturn(true);
+        when(customerContext.isRunning()).thenReturn(true);
+        when(registry.getListenerContainers())
+                .thenReturn(List.of(authorized, posted, flagged, customerContext));
         when(provider.getIfAvailable()).thenReturn(registry);
-        HealthIndicator indicator = config.listenersHealthIndicator(provider);
 
-        assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
-        assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+        Health health = config.listenersHealthIndicator(provider).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getDetails())
+                .containsEntry("registered", 4)
+                .containsEntry("running", 4L);
+    }
+
+    /**
+     * Asserts one stopped listener holds readiness down.
+     *
+     * <p>A stopped customer-context listener means this instance stops learning cardholder details
+     * while continuing to render alerts, so it must not receive traffic.
+     */
+    @Test
+    @DisplayName("stays down while one declared listener is stopped")
+    void staysDownWhileOneDeclaredListenerIsStopped() {
+        ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
+        KafkaListenerEndpointRegistry registry = mock(KafkaListenerEndpointRegistry.class);
+        MessageListenerContainer authorized = mock(MessageListenerContainer.class);
+        MessageListenerContainer posted = mock(MessageListenerContainer.class);
+        MessageListenerContainer flagged = mock(MessageListenerContainer.class);
+        MessageListenerContainer customerContext = mock(MessageListenerContainer.class);
+        when(authorized.isRunning()).thenReturn(true);
+        when(posted.isRunning()).thenReturn(true);
+        when(flagged.isRunning()).thenReturn(true);
+        when(customerContext.isRunning()).thenReturn(false);
+        when(registry.getListenerContainers())
+                .thenReturn(List.of(authorized, posted, flagged, customerContext));
+        when(provider.getIfAvailable()).thenReturn(registry);
+
+        Health health = config.listenersHealthIndicator(provider).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails())
+                .containsEntry("registered", 4)
+                .containsEntry("running", 3L);
+    }
+
+    /**
+     * Asserts an absent registry is not mistaken for a service with no listeners.
+     *
+     * <p>The registry appears while the context is still refreshing, and a poll arriving before it
+     * exists has learned nothing. This service declares four listeners, so reporting ready then
+     * would route traffic to an instance that renders no alert at all.
+     */
+    @Test
+    @DisplayName("an absent registry holds readiness down")
+    void anAbsentRegistryHoldsReadinessDown() {
+        ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
+        when(provider.getIfAvailable()).thenReturn(null);
+
+        Health health = config.listenersHealthIndicator(provider).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails()).containsEntry("reason", "missing-listener-registry");
     }
 
     @Test

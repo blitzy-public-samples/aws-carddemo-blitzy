@@ -22,22 +22,23 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Reads the seven meters {@link ObservabilityConfig} registers, and records against each one.
+ * Reads the nine meters {@link ObservabilityConfig} registers, and records against each one.
  *
  * <p>This class has no COBOL ancestor. Each test builds a context holding one
  * {@link SimpleMeterRegistry} and the configuration class, so no database and no message broker has
  * to run.
  *
- * <p>Two properties matter here. Every series registers at start-up, so a scrape taken before the
- * first message lists each one at zero. And each recording method moves its own series alone: a
+ * <p>Three properties matter here. Every series registers at start-up, so a scrape taken before the
+ * first message lists each one at zero. Each recording method moves its own series alone: a
  * method wired to the wrong tag reads zero forever while a dashboard shows a flat line, and this
- * class fails instead.
+ * class fails instead. And the retry count and the terminal count stay apart, so a retried record and
+ * a record this service gave up on are two readings and not one.
  *
  * <p>The listener, the scoring service and the outbox relay that call these methods arrive with
  * {@code messaging/TransactionAuthorizedConsumer.java},
  * {@code domain/RiskScoringService.java} and {@code outbox/OutboxRelay.java}.
  */
-@DisplayName("ObservabilityConfig, the seven meters of the fraud detection service")
+@DisplayName("ObservabilityConfig, the nine meters of the fraud detection service")
 class ObservabilityConfigTest {
 
     /** Events read from the consumed topic. */
@@ -49,12 +50,18 @@ class ObservabilityConfigTest {
     /** Wall time of one event. */
     private static final String PROCESSING_LATENCY = "carddemo.fraud.processing.latency";
 
-    /** Processing faults, tagged by the stage that failed. */
+    /** Processing faults, tagged by the stage that failed. One increment is one attempt. */
     private static final String FAILURES = "carddemo.fraud.failures";
+
+    /**
+     * Records this service gave up on, tagged by what became of the diagnostic naming them. One
+     * increment is one record, which is the denominator {@link #FAILURES} does not carry.
+     */
+    private static final String DEAD_LETTERS = "carddemo.fraud.dead.letters";
 
     /** Every meter name this service reports. */
     private static final Set<String> DECLARED_METER_NAMES = Set.of(EVENTS_CONSUMED,
-            ASSESSMENTS_PRODUCED, PROCESSING_LATENCY, FAILURES);
+            ASSESSMENTS_PRODUCED, PROCESSING_LATENCY, FAILURES, DEAD_LETTERS);
 
     /** The dimension an assessment counter carries. */
     private static final String OUTCOME_TAG = "outcome";
@@ -68,14 +75,17 @@ class ObservabilityConfigTest {
     /** Stage values, one per processing fault. */
     private static final Set<String> STAGE_VALUES = Set.of("deserialize", "process", "publish");
 
+    /** Terminal outcome values, one per fate a diagnostic can meet. */
+    private static final Set<String> DEAD_LETTER_VALUES = Set.of("published", "failed");
+
     /** Starts the configuration class over one registry that holds nothing else. */
     private static final ApplicationContextRunner RUNNER = new ApplicationContextRunner()
             .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
             .withUserConfiguration(ObservabilityConfig.class);
 
     @Test
-    @DisplayName("the four declared names are the only meters in the registry")
-    void theFourDeclaredNamesAreTheOnlyMetersInTheRegistry() {
+    @DisplayName("the five declared names are the only meters in the registry")
+    void theFiveDeclaredNamesAreTheOnlyMetersInTheRegistry() {
         RUNNER.run(context -> {
             assertThat(context).hasNotFailed();
             assertThat(meterNamesOf(context.getBean(MeterRegistry.class)))
@@ -84,12 +94,12 @@ class ObservabilityConfigTest {
     }
 
     @Test
-    @DisplayName("seven series register eagerly and every one reads zero")
-    void sevenSeriesRegisterEagerlyAndEveryOneReadsZero() {
+    @DisplayName("nine series register eagerly and every one reads zero")
+    void nineSeriesRegisterEagerlyAndEveryOneReadsZero() {
         RUNNER.run(context -> {
             MeterRegistry registry = context.getBean(MeterRegistry.class);
 
-            assertThat(registry.getMeters()).hasSize(7);
+            assertThat(registry.getMeters()).hasSize(9);
             assertThat(counterOf(registry, EVENTS_CONSUMED, null, null).count()).isZero();
             for (String outcome : OUTCOME_VALUES) {
                 assertThat(counterOf(registry, ASSESSMENTS_PRODUCED, OUTCOME_TAG, outcome).count())
@@ -97,6 +107,10 @@ class ObservabilityConfigTest {
             }
             for (String stage : STAGE_VALUES) {
                 assertThat(counterOf(registry, FAILURES, STAGE_TAG, stage).count()).isZero();
+            }
+            for (String outcome : DEAD_LETTER_VALUES) {
+                assertThat(counterOf(registry, DEAD_LETTERS, OUTCOME_TAG, outcome).count())
+                        .isZero();
             }
             assertThat(timerOf(registry).count()).isZero();
         });
@@ -112,6 +126,8 @@ class ObservabilityConfigTest {
                     .containsExactlyInAnyOrderElementsOf(OUTCOME_VALUES);
             assertThat(tagValuesOf(registry, FAILURES, STAGE_TAG))
                     .containsExactlyInAnyOrderElementsOf(STAGE_VALUES);
+            assertThat(tagValuesOf(registry, DEAD_LETTERS, OUTCOME_TAG))
+                    .containsExactlyInAnyOrderElementsOf(DEAD_LETTER_VALUES);
             assertThat(metersNamed(registry, EVENTS_CONSUMED).get(0).getId().getTags()).isEmpty();
             assertThat(metersNamed(registry, PROCESSING_LATENCY).get(0).getId().getTags()).isEmpty();
         });
@@ -146,6 +162,51 @@ class ObservabilityConfigTest {
             assertThat(counterOf(registry, FAILURES, STAGE_TAG, "publish").count())
                     .withFailMessage("recordDeserializeFailure moved the publish series")
                     .isZero();
+        });
+    }
+
+    @Test
+    @DisplayName("a terminal outcome is counted per record and never on the attempt series")
+    void aTerminalOutcomeIsCountedPerRecordAndNeverOnTheAttemptSeries() {
+        RUNNER.run(context -> {
+            FraudMeters meters = context.getBean(FraudMeters.class);
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+
+            meters.recordDeadLetterPublished();
+            meters.recordDeadLetterFailure();
+
+            assertThat(counterOf(registry, DEAD_LETTERS, OUTCOME_TAG, "published").count())
+                    .isEqualTo(1.0D);
+            assertThat(counterOf(registry, DEAD_LETTERS, OUTCOME_TAG, "failed").count())
+                    .isEqualTo(1.0D);
+            for (String stage : STAGE_VALUES) {
+                assertThat(counterOf(registry, FAILURES, STAGE_TAG, stage).count())
+                        .withFailMessage("a terminal outcome moved the %s attempt series, so a "
+                                + "record given up on would be indistinguishable from a retry",
+                                stage)
+                        .isZero();
+            }
+            assertThat(counterOf(registry, EVENTS_CONSUMED, null, null).count()).isZero();
+        });
+    }
+
+    @Test
+    @DisplayName("an attempt failure is counted per attempt and never on the terminal series")
+    void anAttemptFailureIsCountedPerAttemptAndNeverOnTheTerminalSeries() {
+        RUNNER.run(context -> {
+            FraudMeters meters = context.getBean(FraudMeters.class);
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+
+            meters.recordProcessFailure();
+            meters.recordPublishFailure();
+            meters.recordDeserializeFailure();
+
+            for (String outcome : DEAD_LETTER_VALUES) {
+                assertThat(counterOf(registry, DEAD_LETTERS, OUTCOME_TAG, outcome).count())
+                        .withFailMessage("a failed attempt moved the %s terminal series, so a "
+                                + "retry storm would read as permanent loss", outcome)
+                        .isZero();
+            }
         });
     }
 

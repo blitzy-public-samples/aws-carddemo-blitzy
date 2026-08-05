@@ -38,11 +38,14 @@ class OutboxRelayTest {
 
     private static final String ACCOUNT_ID = "00000000077";
     private static final String TOPIC = "card.updated";
+    private static final String DEAD_LETTER_TOPIC = "carddemo.dead-letter";
 
     private OutboxEventRepository outboxEvents;
     private EventPublisherPort publisher;
     private Counter eventsPublished;
     private Counter failures;
+    private Counter abandoned;
+    private Counter deadLettersFailed;
     private Timer publishLatency;
     private TransactionTemplate transactionTemplate;
     private AtomicBoolean insideTransaction;
@@ -54,6 +57,8 @@ class OutboxRelayTest {
         publisher = mock(EventPublisherPort.class);
         eventsPublished = mock(Counter.class);
         failures = mock(Counter.class);
+        abandoned = mock(Counter.class);
+        deadLettersFailed = mock(Counter.class);
         publishLatency = mock(Timer.class);
         transactionTemplate = mock(TransactionTemplate.class);
         insideTransaction = new AtomicBoolean();
@@ -74,8 +79,8 @@ class OutboxRelayTest {
             }
         });
 
-        relay = new OutboxRelay(outboxEvents, publisher, eventsPublished, failures, timers, TOPIC,
-                transactionTemplate, properties());
+        relay = new OutboxRelay(outboxEvents, publisher, eventsPublished, failures, abandoned,
+                deadLettersFailed, timers, TOPIC, transactionTemplate, properties());
     }
 
     @Test
@@ -151,7 +156,7 @@ class OutboxRelayTest {
     private static CardProperties properties() {
         return new CardProperties(
                 new CardProperties.Api(65536L),
-                new CardProperties.Kafka(new CardProperties.Kafka.Topics(TOPIC)),
+                new CardProperties.Kafka(new CardProperties.Kafka.Topics(TOPIC, DEAD_LETTER_TOPIC)),
                 new CardProperties.Outbox(new CardProperties.Outbox.Relay(
                         500L,
                         100,

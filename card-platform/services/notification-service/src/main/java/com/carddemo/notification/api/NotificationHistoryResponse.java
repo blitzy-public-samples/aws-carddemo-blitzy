@@ -38,8 +38,9 @@ import java.util.regex.Pattern;
  * @param cardToken the card identity: {@value PanMasker#CARD_TOKEN_LENGTH} lower-case hexadecimal
  *        characters that {@code PanMasker.cardToken} derives. ADDITIVE. It stands in for
  *        {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22}, whose value was a full
- *        Primary Account Number. The derivation is keyless and one-way, so this value discloses no
- *        card number
+ *        Primary Account Number. The derivation is one-way and keyed under a deployment-supplied
+ *        key, so this value discloses no card number and a reader holding it cannot recompute it
+ *        over the card-number space
  * @param cardNumber the masked card number: twelve mask characters then the last four digits, and
  *        never a full Primary Account Number. Display data alone, and {@code null} when the read
  *        model holds no row for the card. Width from {@code TRNX-CARD-NUM PIC X(16)} at
@@ -70,7 +71,7 @@ public record NotificationHistoryResponse(String cardToken,
      * Shape of a card number this response carries: twelve mask characters then four digits.
      *
      * <p>The property {@code cardNumber} of {@code src/main/resources/openapi.yaml} declares this
-     * shape, and {@code ck_statement_transaction_card_number} in
+     * shape, and {@code ck_statement_transaction_masked_card_number} in
      * {@code src/main/resources/db/migration/V1__schema.sql} holds the stored column to the same
      * form. A response with no row carries {@code null}, so no second fully-masked sentinel is
      * needed. Total width stays
@@ -225,11 +226,16 @@ public record NotificationHistoryResponse(String cardToken,
      * message naming this record, so the items are withheld and a caller reads them through
      * {@link #transactions()}.</p>
      *
-     * @return the card token, the item count and the total, with the items withheld
+     * <p>The card token is withheld with them. It discloses no card number, but it names one card
+     * for as long as the key behind it stands, so a log line carrying it would let a reader of the
+     * log follow that card across every request that touched it. The count and the total are what a
+     * reader of a history problem needs.
+     *
+     * @return the item count and the total, with the card token and the items withheld
      */
     @Override
     public String toString() {
-        return "NotificationHistoryResponse[cardToken=" + cardToken
+        return "NotificationHistoryResponse[cardToken=withheld"
                 + ", transactionCount=" + transactionCount
                 + ", totalAmount=" + totalAmount
                 + ", transactions=" + transactionCount + " items withheld]";

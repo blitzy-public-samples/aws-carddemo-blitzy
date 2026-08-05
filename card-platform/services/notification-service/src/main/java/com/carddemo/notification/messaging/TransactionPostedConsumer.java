@@ -5,11 +5,10 @@ import com.carddemo.cobol.PicClause;
 import com.carddemo.events.TransactionPosted;
 import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
+import com.carddemo.notification.domain.CardholderContextReader;
 import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.domain.NotificationService.CardholderDetails;
-import com.carddemo.notification.entity.CardholderContextEntity;
 import com.carddemo.notification.entity.StatementTransactionEntity;
-import com.carddemo.notification.repository.CardholderContextRepository;
 import com.carddemo.notification.repository.ProcessedEventRepository;
 import com.carddemo.notification.repository.StatementTransactionRepository;
 import java.time.Duration;
@@ -27,7 +26,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Reads one {@code TransactionPosted} event, writes one row of the account-keyed read model, and asks
+ * Reads one {@code TransactionPosted} event, writes one row of the card-keyed read model, and asks
  * the domain layer for one cardholder alert.
  *
  * <p>The nightly sort-then-copy sequence of {@code app/jcl/CREASTMT.JCL}, a Job Control Language
@@ -111,7 +110,7 @@ public class TransactionPostedConsumer {
     private final ProcessedEventRepository processedEvents;
 
     /** Reads the account-keyed cardholder fields one alert reports. */
-    private final CardholderContextRepository cardholderContexts;
+    private final CardholderContextReader cardholderContextReader;
 
     /** Renders one cardholder alert and records the delivery attempt. */
     private final NotificationService notificationService;
@@ -127,7 +126,7 @@ public class TransactionPostedConsumer {
      *
      * @param statementTransactions store of read-model rows
      * @param processedEvents       store of duplicate-delivery markers
-     * @param cardholderContexts    store of the account-keyed cardholder projection
+     * @param cardholderContextReader reader of the account-keyed cardholder projection
      * @param notificationService   renderer of the cardholder alert and writer of the attempt row
      * @param transactionTemplate   runner of the one local transaction this listener opens
      * @param metrics               the meter holder {@code config/ObservabilityConfig} registers
@@ -135,15 +134,15 @@ public class TransactionPostedConsumer {
      */
     public TransactionPostedConsumer(StatementTransactionRepository statementTransactions,
             ProcessedEventRepository processedEvents,
-            CardholderContextRepository cardholderContexts,
+            CardholderContextReader cardholderContextReader,
             NotificationService notificationService,
             TransactionTemplate transactionTemplate, NotificationMetrics metrics) {
         this.statementTransactions =
                 Objects.requireNonNull(statementTransactions, "statementTransactions is required");
         this.processedEvents =
                 Objects.requireNonNull(processedEvents, "processedEvents is required");
-        this.cardholderContexts =
-                Objects.requireNonNull(cardholderContexts, "cardholderContexts is required");
+        this.cardholderContextReader = Objects.requireNonNull(cardholderContextReader,
+                "cardholderContextReader is required");
         this.notificationService =
                 Objects.requireNonNull(notificationService, "notificationService is required");
         this.transactionTemplate =
@@ -252,21 +251,21 @@ public class TransactionPostedConsumer {
      * <p>The entity carries no setter, so the twelve non-key values arrive on a fresh instance and
      * {@code save} carries them onto the stored row under the same key.
      *
-     * <p>The two diagnostic lines below name the card by its token, which is opaque and one-way, so
-     * neither a full nor a masked card number reaches a log.
+     * <p>The two diagnostic lines below name the transaction and not the card. The card token is
+     * derived from the card number under a deployment key, so it is stable for one card across every
+     * request: a token in a log line is a durable identifier for a cardholder even though it reveals
+     * no digit of the number it stands for. The transaction identifier names one event instead.
      *
      * @param row the row to store, carrying all fourteen column values
      */
     private void upsertReadModelRow(StatementTransactionEntity row) {
-        String cardToken = row.getId().getCardToken();
         String transactionId = row.getId().getTransactionId();
 
         if (statementTransactions.findById(row.getId()).isPresent()) {
-            LOG.debug("Card token {} transaction {} holds a read-model row already, and this"
-                    + " delivery replaces its twelve non-key values.", cardToken, transactionId);
+            LOG.debug("Transaction {} holds a read-model row already, and this delivery replaces its"
+                    + " twelve non-key values.", transactionId);
         } else {
-            LOG.debug("Card token {} transaction {} enters the read model.", cardToken,
-                    transactionId);
+            LOG.debug("Transaction {} enters the read model.", transactionId);
         }
         statementTransactions.save(row);
     }
@@ -482,35 +481,21 @@ public class TransactionPostedConsumer {
     }
 
     /**
-     * Reads the ten cardholder fields one account carries, or blank fields when none is held.
+     * Reads the ten cardholder fields one account carries, refusing when the projection holds none.
      *
      * <p>{@code messaging/CustomerContextChangedConsumer} fills {@code cardholder_context} from the
-     * account service, which owns the customer record. An account with no row there yields
-     * {@link CardholderDetails#blank()}, and every field then renders as spaces, the state
-     * {@code INITIALIZE STATEMENT-LINES} at {@code app/cbl/CBSTM03A.CBL:L459} leaves.
+     * account service, which owns the customer record, and {@code db/migration/V2__seed.sql}
+     * bootstraps it for the fifty accounts of {@code app/data/ASCII/custdata.txt}. An account with no
+     * row there once yielded blank fields, so the alert rendered with no name, no address and no
+     * credit score, and nothing recorded that it had.
+     * {@link CardholderContextReader#require(String)} reports the gap instead, which leaves the
+     * offset uncommitted and has the delivery taken again rather than rendered empty.
      *
      * @param accountId the account the posted transaction belongs to
-     * @return the cardholder fields, blank when the projection holds no row for the account
+     * @return the cardholder fields the projection holds for the account
      */
     private CardholderDetails cardholderDetails(String accountId) {
-        return cardholderContexts.findById(accountId)
-                .map(TransactionPostedConsumer::detailsOf)
-                .orElseGet(CardholderDetails::blank);
+        return cardholderContextReader.require(accountId);
     }
 
-    /**
-     * Maps one projection row onto the ten fields an alert reports.
-     *
-     * <p>The order matches {@code app/cbl/CBSTM03A.CBL:L462-L485}: the name, the three address
-     * lines, the state and country codes, the mail code and the credit score.
-     *
-     * @param context one row of the account-keyed cardholder projection
-     * @return the ten fields, each at the width its source field declares
-     */
-    private static CardholderDetails detailsOf(CardholderContextEntity context) {
-        return new CardholderDetails(context.getFirstName(), context.getMiddleName(),
-                context.getLastName(), context.getAddressLine1(), context.getAddressLine2(),
-                context.getAddressLine3(), context.getStateCode(), context.getCountryCode(),
-                context.getZipCode(), context.getFicoScore());
-    }
 }

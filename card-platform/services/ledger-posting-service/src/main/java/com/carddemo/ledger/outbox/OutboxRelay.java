@@ -1,11 +1,13 @@
 package com.carddemo.ledger.outbox;
 
+import com.carddemo.events.DeadLetterEnvelope;
 import com.carddemo.events.TransactionDeclined;
 import com.carddemo.events.TransactionPosted;
 import com.carddemo.ledger.config.LedgerProperties;
 import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
 import com.carddemo.ledger.entity.OutboxEventEntity;
 import com.carddemo.ledger.entity.OutboxEventEntity.RelayState;
+import com.carddemo.ledger.messaging.DeadLetterMetadata;
 import com.carddemo.ledger.repository.OutboxEventRepository;
 import java.time.Clock;
 import java.time.Duration;
@@ -83,8 +85,45 @@ public class OutboxRelay {
     /** What this instance writes into {@code claimed_by}. */
     private final String instanceId;
 
+    /**
+     * Where a row this relay gave up on is published, from
+     * {@code carddemo.kafka.topics.dead-letter}.
+     *
+     * <p>The shared topic and not a source-specific one. {@code EventContracts} binds the dead-letter
+     * envelope to this one topic, so it is the only topic the event template will serialize an
+     * envelope to.
+     */
+    private final String deadLetterTopic;
+
     /** Stamps {@code published_at}, in Coordinated Universal Time. */
     private final Clock clock = Clock.systemUTC();
+
+    /**
+     * {@code ABEND-CODE} of a dead letter this relay publishes, four characters.
+     *
+     * <p>Distinct from the code a spent consumer record carries, so the two paths are separable on
+     * the topic without reading anything else.
+     */
+    private static final String ABANDONED_ROW_ABEND_CODE = "OUTB";
+
+    /** {@code ABEND-REASON} of a dead letter this relay publishes, at most fifty characters. */
+    private static final String ABANDONED_ROW_REASON = "outbox row abandoned after the attempt "
+            + "ceiling";
+
+    /** {@code ABEND-MESSAGE} of a dead letter this relay publishes, at most seventy-two. */
+    private static final String ABANDONED_ROW_MESSAGE = "row not published; inspect outbox_event by "
+            + "the failed event identifier";
+
+    /**
+     * Source partition an outbox dead letter declares.
+     *
+     * <p>An outbox row never arrived on a partition, so there is no coordinate to report. The
+     * envelope requires the component, and zero states the absence rather than inventing a location.
+     */
+    private static final int NO_SOURCE_PARTITION = 0;
+
+    /** Source offset an outbox dead letter declares, absent for the same reason. */
+    private static final long NO_SOURCE_OFFSET = 0L;
 
     /**
      * Takes the row store, the producer template, the payload reader and the configured names.
@@ -117,6 +156,8 @@ public class OutboxRelay {
         this.sweepDelay = Duration.ofMillis(relay.fixedDelayMs());
         this.claimTimeout = relay.claimTimeout();
         this.instanceId = relay.instanceId();
+        this.deadLetterTopic = Objects.requireNonNull(topics.deadLetter(),
+                "the dead-letter topic must be present");
         this.destinations = Map.of(
                 TransactionPosted.EVENT_TYPE,
                 new Destination(topics.transactionPosted(), TransactionPosted.class),
@@ -148,6 +189,7 @@ public class OutboxRelay {
         Instant now = clock.instant();
         int failed = recoverStrandedClaims(now);
         int published = 0;
+        int abandoned = 0;
 
         List<OutboxEventEntity> claimed = outboxEvents.claimDueRows(now, Limit.of(batchSize));
         for (OutboxEventEntity row : claimed) {
@@ -159,6 +201,9 @@ public class OutboxRelay {
                         now.plus(backoffAfter(row.getAttemptCount())));
                 outboxEvents.save(row);
                 failed++;
+                if (row.getRelayState() == RelayState.ABANDONED) {
+                    abandoned++;
+                }
                 log.error("A ledger outbox row carries the unconfigured event type {}. "
                                 + "Attempt {} of {}.", row.getEventType(), row.getAttemptCount(),
                         OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
@@ -167,12 +212,13 @@ public class OutboxRelay {
             try {
                 publishAndMark(row, destination);
             } catch (RuntimeException failure) {
-                recordRefusedRow(row, failure, now);
-                return new SweepResult(published, failed + 1);
+                boolean abandonedNow = recordRefusedRow(row, failure, now);
+                return new SweepResult(published, failed + 1,
+                        abandonedNow ? abandoned + 1 : abandoned);
             }
             published++;
         }
-        return new SweepResult(published, failed);
+        return new SweepResult(published, failed, abandoned);
     }
 
     /**
@@ -202,14 +248,59 @@ public class OutboxRelay {
      * @param failure the publish failure
      * @param now     the moment this sweep started
      */
-    private void recordRefusedRow(OutboxEventEntity row, RuntimeException failure, Instant now) {
+    private boolean recordRefusedRow(OutboxEventEntity row, RuntimeException failure, Instant now) {
         String failureClass = rootCause(failure).getClass().getSimpleName();
         row.recordFailure(failureClass, now, now.plus(backoffAfter(row.getAttemptCount())));
         outboxEvents.save(row);
-        log.warn("A ledger outbox row of type {} stays unpublished after {}. "
-                        + "Attempt {} of {}; the sweep stops here.",
-                row.getEventType(), failureClass, row.getAttemptCount(),
-                OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+
+        if (row.getRelayState() != RelayState.ABANDONED) {
+            log.warn("A ledger outbox row of type {} stays unpublished after {}. "
+                            + "Attempt {} of {}; the sweep stops here.",
+                    row.getEventType(), failureClass, row.getAttemptCount(),
+                    OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+            return false;
+        }
+
+        publishDeadLetter(row, failure);
+        log.error("A ledger outbox row of type {} was abandoned after {} attempts, the last failing "
+                        + "with {}. One dead letter names it on {}.",
+                row.getEventType(), row.getAttemptCount(), failureClass, deadLetterTopic);
+        return true;
+    }
+
+    /**
+     * Publishes one dead letter for a row this relay will not attempt again.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L707-L711} answers a write it cannot complete with four
+     * statements that display one message, move 999 into an abend code and call {@code CEE3ABD},
+     * terminating the address space and leaving the operator the job log. Abandoning one row and
+     * naming it on a topic is the target form: the service keeps running and the row is still
+     * accounted for.
+     *
+     * <p>The envelope is the governed form of {@code 01 ABEND-DATA} at
+     * {@code app/cpy/CSMSG02Y.cpy:L21-L29}, and it names the row rather than carrying its payload.
+     * The four diagnostics say what failed; {@code failedEventId} and {@code failedEventType} say
+     * which row, so an operator can reach it without the payload ever leaving this service.
+     *
+     * <p>The send is awaited, so a broker that refuses the dead letter is a failure of this sweep
+     * rather than a silent loss. The row is already {@link RelayState#ABANDONED} and the claim query
+     * does not return it, so this is the one chance to publish it.
+     *
+     * @param row     the row this relay gave up on
+     * @param failure the failure of its last attempt
+     */
+    private void publishDeadLetter(OutboxEventEntity row, RuntimeException failure) {
+        Destination destination = destinations.get(row.getEventType());
+        String sourceTopic = destination == null ? deadLetterTopic : destination.topic();
+
+        DeadLetterEnvelope envelope = DeadLetterMetadata
+                .fromFailure(ABANDONED_ROW_ABEND_CODE, rootCause(failure), ABANDONED_ROW_REASON,
+                        ABANDONED_ROW_MESSAGE)
+                .toEnvelope(row.getAggregateId(), sourceTopic, NO_SOURCE_PARTITION,
+                        NO_SOURCE_OFFSET, row.getEventId().toString(), row.getEventType(),
+                        row.getAttemptCount());
+
+        ledgerEventTemplate.send(deadLetterTopic, row.getAggregateId(), envelope).join();
     }
 
     /**
@@ -253,8 +344,20 @@ public class OutboxRelay {
         return cause;
     }
 
-    /** What one sweep committed, carried outside the transaction for recording. */
-    private record SweepResult(int published, int failed) {
+    /**
+     * What one sweep committed, carried outside the transaction for recording.
+     *
+     * <p>{@code failed} counts attempts this sweep could not complete and {@code abandoned} counts
+     * rows it will not attempt again, so a row that reached the attempt ceiling raises both by one.
+     * The two answer different questions and are recorded under different stages: a publish failure
+     * is expected traffic that a later sweep may clear, and an abandoned row is terminal and needs an
+     * operator.
+     *
+     * @param published rows this sweep marked sent
+     * @param failed    attempts this sweep could not complete
+     * @param abandoned rows that reached {@link OutboxEventEntity#MAX_DELIVERY_ATTEMPTS}
+     */
+    private record SweepResult(int published, int failed, int abandoned) {
 
         void record(LedgerMeters meters) {
             if (published > 0) {
@@ -262,6 +365,9 @@ public class OutboxRelay {
             }
             for (int failure = 0; failure < failed; failure++) {
                 meters.recordFailure(LedgerMeters.PUBLISH_STAGE);
+            }
+            for (int terminal = 0; terminal < abandoned; terminal++) {
+                meters.recordAbandonedRow();
             }
         }
     }

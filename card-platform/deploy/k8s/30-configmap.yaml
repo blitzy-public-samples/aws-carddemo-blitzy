@@ -175,6 +175,9 @@ data:
   GROUP_LEDGER_POSTING: "ledger-posting"
   # Active: the fraud service reads transaction.authorized under this group.
   GROUP_FRAUD_DETECTION: "fraud-detection"
+  # Active: the notification service reads transaction.authorized under this group, which
+  # makes it the third independent consumer of the authorization event.
+  GROUP_NOTIFICATION_AUTHORIZED: "notification-authorized"
   # Active: the notification service reads transaction.posted under this group.
   GROUP_NOTIFICATION_POSTED: "notification-posted"
   # Active: the notification service reads fraud.assessed under this group.
@@ -185,6 +188,10 @@ data:
   # replica tables current. One group per stream, so the two lag, rebalance and
   # reset independently.
   GROUP_AUTHORIZATION_ACCOUNT: "authorization-account-state"
+  # Consumer group of the ledger's own account-state listener. A second reader of the same
+  # stream under a group of its own, so the two services each see every change rather than
+  # splitting the partitions between them.
+  GROUP_LEDGER_ACCOUNT: "ledger-account-state"
   GROUP_AUTHORIZATION_CARD: "authorization-card-updated"
 
   # Authorization replicas
@@ -284,10 +291,11 @@ data:
   # What the ordinary identity owns, comma separated, one authority per
   # entitlement: SCOPE_ACCOUNT_<eleven digits>, SCOPE_CUSTOMER_<nine digits> or
   # SCOPE_CARD_<card token>. An account and a customer identifier are written exactly
-  # as the column holds them, leading zeros included, and a card token is the 32
-  # lower-case hexadecimal characters PanMasker.tokenOf produces for that card number.
-  # Empty grants nothing, so an ownership-scoped route answers 403 until a value
-  # appears here.
+  # as the column holds them, leading zeros included, and a card token is the 64
+  # lower-case hexadecimal characters PanMasker.cardToken produces for that card number
+  # under CARD_TOKEN_VERSION below and the CARD_TOKEN_SECRET in
+  # 31-secret.example.yaml. Empty grants nothing, so an ownership-scoped route answers
+  # 403 until a value appears here.
   #
   # The three values below are the same three card-platform/.env.example carries, and
   # they are here so that a demo scripted on one path reproduces on the other: an
@@ -300,7 +308,19 @@ data:
   # the USER identity still has to authenticate with the hash in
   # carddemo-identity-secret before any of them applies. Re-point them at the records
   # a real deployment owns, or empty the value to grant nothing.
-  USER_SCOPES: "SCOPE_ACCOUNT_00000000001,SCOPE_CUSTOMER_000000001,SCOPE_CARD_1134636222d1a2485d20203d0e970c72124893eb01be73a5fde5fdcccc2c4ac9"
+  USER_SCOPES: "SCOPE_ACCOUNT_00000000001,SCOPE_CUSTOMER_000000001,SCOPE_CARD_98433fc178365d966539a9156365078b3b382bbb8d75143e37e49a18290d58c0"
+
+  # The card-token version every service derives under. The key itself is
+  # CARD_TOKEN_SECRET in carddemo-identity-secret, because it is key material and this
+  # file is not a Secret; the version is not, and belongs here beside the authority that
+  # names a token.
+  #
+  # The version is part of the message the keyed code covers, so raising it rolls every
+  # token over under the same key. That is the staged rollover: raise it, re-derive the
+  # fifty card_token literals in the card service seed and the SCOPE_CARD authority
+  # above, then apply both together. card-platform/.env.example carries the procedure and
+  # the same two values, so a demo scripted on Compose reproduces here.
+  CARD_TOKEN_VERSION: "1"
 
   # Transport Layer Security for the two ports each service serves
   # On here and off in the compose stack, and the reason is the network rather than the

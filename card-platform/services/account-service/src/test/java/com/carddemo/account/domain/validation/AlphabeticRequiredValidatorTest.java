@@ -127,13 +127,13 @@ class AlphabeticRequiredValidatorTest {
     private static final String COUNTRY_NO_LONGER_THAN_WIDTH =
             COUNTRY_LABEL + NO_LONGER_THAN + COUNTRY_LENGTH + CHARACTERS;
 
-    /** The 26 characters of {@code LIT-UPPER} at app/cbl/COACTUPC.cbl:L588-L589. */
     /**
      * One character of the figurative constant {@code LOW-VALUES}, which a COBOL comparison tests
      * for one position at a time.
      */
     private static final String LOW_VALUE = "\0";
 
+    /** The 26 characters of {@code LIT-UPPER} at app/cbl/COACTUPC.cbl:L588-L589. */
     private static final String LIT_UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
     /** The 26 characters of {@code LIT-LOWER} at app/cbl/COACTUPC.cbl:L590-L591. */

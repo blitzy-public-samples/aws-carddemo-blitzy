@@ -131,13 +131,26 @@ spring:
 carddemo:
   kafka:
     topics:
+      # Consumed. One authorized transaction per record, posted by messaging/TransactionAuthorizedConsumer.
       transaction-authorized: "${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}"
+      # Consumed to keep account_balance_projection current. That table is a copy of three fields of
+      # the account record the account service owns, and the posting path at
+      # app/cbl/CBTRN02C.cbl:L545-L560 adds to it. Without this stream an account opened after
+      # deployment never gets a row, and the cycle close at app/cbl/CBACT04C.cbl:L353-L354 never
+      # reaches the two accumulators here.
+      account-state-changed: "${TOPIC_ACCOUNT_STATE_CHANGED:account.state-changed}"
+      # Published, one per posted transaction and one per refused feed record.
       transaction-posted: "${TOPIC_TRANSACTION_POSTED:transaction.posted}"
       transaction-declined: "${TOPIC_TRANSACTION_DECLINED:transaction.declined}"
       # The shared name is a fallback. Normal failures route to <source-topic><suffix>, which keeps
       # event formats separate and lets each recovery consumer bind one schema.
       dead-letter: "${TOPIC_DEAD_LETTER:carddemo.dead-letter}"
       dead-letter-suffix: "${TOPIC_DEAD_LETTER_SUFFIX:.DLT}"
+
+    # One consumer group per listener, so the two streams lag, rebalance and reset independently of
+    # each other. The posting listener keeps the group name spring.kafka.consumer.group-id carries.
+    groups:
+      account-state-changed: "${GROUP_LEDGER_ACCOUNT:ledger-account-state}"
 
   # Delivery attempts a consumer makes, and the wait between two attempts.
   consumer:

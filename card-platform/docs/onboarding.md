@@ -73,6 +73,29 @@ sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH=$(hash_password "$USER_PASSW
 sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH=$(hash_password "$MONITORING_PASSWORD")|" .env
 ```
 
+### The card-token key
+
+`CARD_TOKEN_SECRET` and `CARD_TOKEN_VERSION` are the last two security values, and they are not `REPLACE` markers: `.env.example` ships a working demo key so the stack starts. A card token is a keyed `HMAC-SHA-256` over the full card number under that secret, prefixed by the version, rendered as 64 lower-case hexadecimal characters. Both values are required and there is no fallback, so a service refuses to start without them.
+
+Leave both alone for a demonstration. If you rotate either one, three checked-in values become wrong at the same instant, and all three have to move together:
+
+- the 50 `card_token` literals in `services/card-service/src/main/resources/db/migration/V2__seed.sql`;
+- the `SCOPE_CARD_` authority inside `USER_SCOPES`, in `.env.example` and in `deploy/k8s/30-configmap.yaml`;
+- any card token already stored by the notification read model, which keys `statement_transaction` on it.
+
+Derive one token with the key you intend to ship, using the module you have already built:
+
+```bash
+COBOL_JAR="$(find libs/cobol-compat/target -name 'cobol-compat-*.jar' | head -1)"
+CARD_TOKEN_SECRET='your-new-key-of-at-least-32-characters' CARD_TOKEN_VERSION=2 \
+  jshell --class-path "$COBOL_JAR" -s - <<'JSHELL'
+System.out.println(com.carddemo.cobol.PanMasker.cardToken("0500024453765740"));
+/exit
+JSHELL
+```
+
+Under the shipped demo key and version 1, that card number derives `d29277ff9f4215818ca524cbf2e94927149958ef6c6a9f49242ffa18a484fe9d`. A rotated key gives a different value, which is the whole point of the key.
+
 ### Build and start
 
 Run the full verification lifecycle before building images:
@@ -194,9 +217,9 @@ The aggregator builds nine modules in this order:
 | `libs/event-contracts` | Event records, envelope, schemas, and validating serialization |
 | `libs/cobol-compat` | Fixed-point arithmetic, parsing, date rules, masking, and reference data |
 | `services/authorization-service` | Synchronous authorization and account projection consumption |
-| `services/ledger-posting-service` | Posting arithmetic and balance projection |
+| `services/ledger-posting-service` | Posting arithmetic, plus a balance projection the account service's own changes refresh |
 | `services/fraud-detection-service` | Net-new risk assessment |
-| `services/notification-service` | Statement read model and alerts |
+| `services/notification-service` | Statement read model and alerts, over four independent listeners |
 | `services/account-service` | Account, customer, and cycle-close operations |
 | `services/card-service` | Card list, detail, and update |
 | `equivalence-tests` | Cross-service contract and source-parity tests |
@@ -225,7 +248,9 @@ The platform has no application front-end, schema-registry container, service me
 
 Create a Maven service module and depend on the two shared libraries. Subscribe with a new consumer group, add a `processed_event` table, and commit the marker with the business effect.
 
-No producer changes are required. Fraud detection proves the path because it has no source ancestor and consumes an existing event.
+Three declarations sit outside Java and are easy to forget. Name the topic and the group in the service's `application.yml`. Add a `grant_consumer` line for the new principal, topic, and group in the `create_acls` function of `docker-compose.yml`, and the matching entry in `deploy/k8s/10-kafka.yaml`; without them the broker refuses the subscription and the service starts but never receives an event. Add the `<topic>.DLT` name to `create_topics` if the consumer routes spent records to a source-specific dead-letter topic rather than the shared fallback.
+
+No producer changes are required. Fraud detection proves the path because it has no source ancestor and consumes an existing event. Notification proves it a second time: it was added as the third independent reader of `transaction.authorized` under `notification-authorized`, and neither the authorization producer nor the other two consumers changed.
 
 ### Add a decline rule
 
@@ -268,6 +293,14 @@ Authorization reads counters that posting grows. Only `app/cbl/CBACT04C.cbl:L353
 
 Call `POST /accounts/{accountId}/cycle-close` before the counters make every later authorization decline. The endpoint resets only the two counters and does not calculate interest.
 
+### 6. Rotating the card-token key invalidates checked-in values
+
+A card token is a keyed hash, so it is a function of `CARD_TOKEN_SECRET` and `CARD_TOKEN_VERSION` as much as of the card number. Change either and the 50 seeded `card_token` literals, the `SCOPE_CARD_` authority in `USER_SCOPES`, and every token a read model already stored all become unreachable at once. The failure is quiet on the authority: a card detail request simply answers 403 for a card the caller does own. [The card-token key](#the-card-token-key) gives the rotation procedure and a command that derives a token under a candidate key.
+
+### 7. A replica needs an event before it holds a row
+
+Authorization's credit snapshot, the ledger's balance projection, notification's cardholder context, and card's cross-reference copy are all replicas of data another service owns. Each is seeded from a repository fixture so the first request is correct, and each is then refreshed only when its owner publishes a change. An account created after deployment therefore has no replica row until its first `AccountStateChanged` arrives, and a consumer that cannot find a required row fails and retries rather than inventing a blank one. Do not read a missing replica row as a decision: the ledger deliberately does not decline a transaction whose projection row is absent, because that would reverse an approval another service already made.
+
 ## Where to go next
 
 - [Platform README](../README.md) — repository map and short quickstart
@@ -275,6 +308,9 @@ Call `POST /accounts/{accountId}/cycle-close` before the counters make every lat
 - [Event Flow](event-flow.md) — every topic, group, and delivery guarantee
 - [Data Model](data-model.md) — service-owned tables and source fields
 - [Decision Log](decision-log.md) — alternatives, reasons, and accepted risks
+- [Business Rule Flags](business-rule-flags.md) — every open source rule with its locator
+- [Suggested Next Tasks](suggested-next-tasks.md) — the follow-up work, with verification criteria
+- [Equivalence Results](equivalence-results.md) — fixture-by-fixture parity evidence
 - [Traceability Matrix](traceability-matrix.md) — complete forward and backward mapping
 - [Business Rule Flags](business-rule-flags.md) — 26 source findings for human review
 - [Equivalence Results](equivalence-results.md) — fixture-by-fixture parity evidence

@@ -37,8 +37,8 @@ The full offline command completed successfully across all ten reactor projects.
 
 | Measure | Observed result |
 |---|---:|
-| Equivalence unit and contract tests | 180 passed |
-| Failsafe equivalence tests | 178 passed |
+| Equivalence unit and contract tests | 253 passed |
+| Failsafe equivalence tests | 182 passed |
 | Required named equivalence classes | 6 present and passing |
 | Failures | 0 |
 | Errors | 0 |
@@ -77,14 +77,14 @@ The `app/data/EBCDIC/` directory contains 12 data artifacts, excluding `.gitkeep
 
 | Test class | Subject | Assertion | Result |
 |---|---|---|---|
-| `PostingEquivalenceTest` | All 300 daily transactions | Posting, category balances, account balances, rejects, ordering, timestamp normalization, and idempotency match documented source semantics | PASS — 49 tests |
+| `PostingEquivalenceTest` | All 300 daily transactions | Posting, category balances, account balances, rejects, ordering, timestamp normalization, and idempotency match documented source semantics | PASS — 52 tests |
 | `AuthorizationDecisionEquivalenceTest` | Four decline reasons and boundaries | Codes, descriptions, source ordering, equality, missing rows, and the narrowed precision boundary match | PASS — 14 tests |
 | `BillPaymentEquivalenceTest` | Online payment path | The transaction stores the opening balance, the account reaches zero, and both cycle accumulators remain unchanged | PASS — 9 tests |
 | `InterestCalculationEquivalenceTest` | Rate lookup and cycle-close carve-out | Primary lookup, one DEFAULT retry, failed retry, rate rows, and accumulator reset match | PASS — 13 tests |
 | `ValidationEquivalenceTest` | Card and account validation | Source messages, punctuation, credit-score bounds, and fixture values match | PASS — 49 tests |
 | `DecimalTruncationEquivalenceTest` | Fixed-point arithmetic | Exact add/subtract sites, interest truncation, alternate rounding modes, and Picture-field narrowing match | PASS — 11 tests |
 
-Supporting equivalence classes added 33 further passing tests for fixture coverage, identifier fidelity, and card seeding.
+Supporting equivalence classes added 34 further passing tests for fixture coverage, identifier fidelity, and card seeding: `FixtureCoverageEquivalenceTest` 18, `IdentifierFidelityEquivalenceTest` 9, and `CardSeedEquivalenceTest` 7.
 
 ### Authorization decisions
 

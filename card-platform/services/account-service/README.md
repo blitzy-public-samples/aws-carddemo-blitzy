@@ -15,7 +15,7 @@
 
 ## Purpose
 
-`account-service` owns account, customer, disclosure-group, and validation-reference data. It exposes account and customer reads, a coordinated account-plus-customer update, and the narrow billing-cycle close required by authorization. Only mutations produce `AccountStateChanged`; reads publish nothing.
+`account-service` owns account, customer, disclosure-group, and validation-reference data. It exposes account and customer reads, a coordinated account-plus-customer update, and the narrow billing-cycle close required by authorization. Only mutations publish: an update or a cycle close produces `AccountStateChanged`, and an update that moves a cardholder field also produces `CustomerContextChanged`. Reads publish nothing.
 
 <br/>
 
@@ -57,11 +57,14 @@ The full contract is [OpenAPI](src/main/resources/openapi.yaml). Business traffi
 | :--- | :--- | :--- | :--- |
 | Account update | `account.state-changed` | `AccountStateChanged` with `ACCOUNT_UPDATED` | Both records changed and committed |
 | Cycle close | `account.state-changed` | `AccountStateChanged` with `BILLING_CYCLE_CLOSED` | The account existed and committed |
+| Account update | `customer.context-changed` | `CustomerContextChanged` | The update changed a cardholder field the statement renderer reads |
 | Outbox relay failure | `carddemo.dead-letter` | `DeadLetterEnvelope` | Publish retries were exhausted |
 
 An unchanged update produces no event. A missing account on cycle close produces no event. The account row, customer row when applicable, and event row commit atomically before the relay publishes.
 
-The authorization service consumes `AccountStateChanged` to maintain its private credit snapshot. No synchronous account-service call sits in authorization.
+Both events validate against their governed schema inside the transaction that writes them, so an event this service could never publish is refused while its own transaction can still roll back.
+
+`AccountStateChanged` feeds two independent replicas. The authorization service consumes it under `authorization-account-state` to maintain its private credit snapshot, and the ledger consumes it under `ledger-account-state` to bootstrap and refresh `account_balance_projection`. `CustomerContextChanged` feeds notification's renderer context under `notification-customer`. This service calls none of the three, and none of them calls it: no synchronous account-service call sits on the authorization path.
 
 <br/>
 
@@ -87,6 +90,8 @@ The migrations have distinct jobs:
 | `V1__schema.sql` | Eight tables, constraints, and indexes |
 | `V2__seed.sql` | Account, customer, and disclosure-group fixtures |
 | `V3__reference_data.sql` | 786 rows encoding 1,276 copybook literals |
+| `V4__card_cross_reference_replica.sql` | The private cross-reference copy this service reads to resolve a customer to an account |
+| `V5__outbox_dead_letter_state.sql` | `outbox_event.dead_letter_state`, the durable record of whether an abandoned row still owes a dead-letter diagnostic |
 
 The phone source contains 490 broad-list entries plus 410 general-purpose and 80 easily recognised entries. The table stores one row per distinct code and records its narrower band.
 
@@ -99,7 +104,7 @@ The phone source contains 490 broad-list entries plus 410 general-purpose and 80
 3. **Dates remain ten-character strings.** Authorization compares account expiry lexically against a timestamp prefix.
 4. **Concurrency is field-level, not version-column based.** Ten account fields and seventeen customer fields define the source conflict set.
 5. **Date separators are not compared.** The source compares year, month, and day slices only.
-6. **The account service owns no card cross-reference.** Customer lookup receives the customer identifier explicitly.
+6. **The cross-reference here is a private replica, not the owning copy.** `V4__card_cross_reference_replica.sql` holds 50 rows so an account can be resolved to its own customer instead of trusting a caller-supplied pairing. The card service owns the record; this copy is read and never written by a request.
 7. **Validation keeps fixed-width semantics.** Case folds, padding, tolerant numeric parsing, and the 300-to-850 credit-score range are intentional.
 8. **Java 25 is explicit.** Class-file major version must be 69, not 61.
 
@@ -122,8 +127,14 @@ graph LR
     OUT[("outbox_event")]
     RELAY["outbox relay"]
     TOPIC{{"account.state-changed"}}
+    CTX{{"customer.context-changed"}}
+    DEAD{{"carddemo.dead-letter"}}
     AUTH["authorization consumer"]
     SNAP[("account_credit_snapshot")]
+    LEDGER["ledger consumer"]
+    PROJ[("account_balance_projection")]
+    NOTIFY["notification consumer"]
+    NCTX[("cardholder_context")]
 
     CLIENT --> GET
     GET --> DB
@@ -135,17 +146,25 @@ graph LR
     DB --> OUT
     OUT --> RELAY
     RELAY ==> TOPIC
+    RELAY ==> CTX
+    RELAY -.->|row abandoned| DEAD
     TOPIC ==> AUTH
     AUTH --> SNAP
+    TOPIC ==> LEDGER
+    LEDGER --> PROJ
+    CTX ==> NOTIFY
+    NOTIFY --> NCTX
 ```
 
 Legend for Figure 1:
 
 - Plain arrows are request, comparison, or database work.
 - Thick arrows are Kafka publish and consume.
+- The dotted arrow is the terminal dead-letter route a spent outbox row takes.
 - The diamond is the source-compatible concurrent-change gate.
 - Cylinders are private tables in different service schemas.
 - Reads stop at the account database and publish nothing.
+- One `account.state-changed` event feeds two independent replicas under two consumer groups.
 
 Figure 2 shows the local transaction around a successful account update.
 
@@ -203,7 +222,8 @@ The platform-wide event view is in [Event Flow](../../docs/event-flow.md).
 | Business port | 8085 |
 | Management port | 9085 |
 | Database and schema | `carddemo_account.account_service` |
-| Published topic | `account.state-changed` |
+| Published topics | `account.state-changed`, `customer.context-changed`, `carddemo.dead-letter` |
+| Consumer groups | None. This service registers no listener |
 
 From `card-platform/`:
 

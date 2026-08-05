@@ -4,7 +4,9 @@ import com.carddemo.account.entity.OutboxEventEntity;
 import com.carddemo.account.messaging.AccountStateChanged;
 import com.carddemo.account.messaging.CustomerContextChanged;
 import com.carddemo.account.repository.OutboxEventRepository;
+import com.carddemo.events.serde.EventContracts;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -30,6 +32,12 @@ import tools.jackson.databind.ObjectMapper;
  * <p>The account row, the customer row and this row commit together.
  * {@link #write(AccountStateChanged)} joins the transaction its caller opened, with
  * {@link Propagation#MANDATORY}, and opens none of its own.
+ *
+ * <p>Both write methods measure the serialized event against its governed schema document before
+ * they save it, so the earliest boundary an event crosses is also the first one that checks it. A
+ * payload the document refuses fails the caller's transaction, which leaves neither the business
+ * state nor the event row stored. Validating only at publish time would move that refusal to the
+ * relay, hours after the state it accompanied had committed.
  */
 @Component
 public class OutboxWriter {
@@ -96,7 +104,8 @@ public class OutboxWriter {
      *
      * @param event the event to store
      * @throws NullPointerException                when {@code event} is {@code null}
-     * @throws IllegalArgumentException            when the serialized event exceeds
+     * @throws IllegalArgumentException            when the serialized event breaks its contract
+     *                                             document, or exceeds
      *                                             {@value #PAYLOAD_MAX_BYTES} octets
      * @throws tools.jackson.core.JacksonException when the event cannot be written as text
      */
@@ -104,23 +113,12 @@ public class OutboxWriter {
     public void write(AccountStateChanged event) {
         Objects.requireNonNull(event, "event must be present");
 
-        String payload = objectMapper.writeValueAsString(event);
-        requirePayloadWithinCeiling(payload, event.eventId());
+        String payload = writeAndCheck(event.eventType(), event.eventId(), event);
 
         outboxEventRepository.save(new OutboxEventEntity(event.eventId(), event.eventType(),
                 payload, event.aggregateId(), event.occurredAt()));
     }
 
-    /**
-     * Checks one serialized event against {@link #PAYLOAD_MAX_BYTES} octets of UTF-8.
-     *
-     * <p>The check runs before the insert, and an oversized document fails with its measured length
-     * named. The message carries the event identifier, which names no account and no person.
-     *
-     * @param payload the serialized event
-     * @param eventId the identifier of the event the payload holds
-     * @throws IllegalArgumentException when the payload exceeds {@value #PAYLOAD_MAX_BYTES} octets
-     */
     /**
      * Writes one {@code customer.context-changed} event into the outbox, in the caller's
      * transaction.
@@ -134,24 +132,60 @@ public class OutboxWriter {
      *
      * @param event the event to store
      * @throws NullPointerException     when {@code event} is absent
-     * @throws IllegalArgumentException when the serialized payload exceeds the column width
+     * @throws IllegalArgumentException when the serialized payload breaks its contract document or
+     *                                  exceeds the column width
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public void writeCustomerContext(CustomerContextChanged event) {
         Objects.requireNonNull(event, "event must be present");
 
-        String payload = objectMapper.writeValueAsString(event);
-        requirePayloadWithinCeiling(payload, event.eventId());
+        String payload = writeAndCheck(event.eventType(), event.eventId(), event);
 
         outboxEventRepository.save(new OutboxEventEntity(event.eventId(), event.eventType(),
                 payload, event.aggregateId(), event.occurredAt()));
     }
 
-    private static void requirePayloadWithinCeiling(String payload, UUID eventId) {
+    /**
+     * Writes one event to text and measures that text against its contract document and its column.
+     *
+     * <p>Both checks run before the row is saved, and both throw. The caller's transaction is the
+     * one that rewrote the account record and the customer record, so a payload the contract refuses
+     * rolls that rewrite back and leaves neither the state nor the event stored. The alternative is
+     * worse than a failed request: an event that no consumer can deserialize would sit in
+     * {@code outbox_event} beside committed business state, and the relay would meet it on every
+     * sweep until it abandoned the row.
+     *
+     * <p>{@link EventContracts} holds the one registry pairing an event type with its schema
+     * document, so the document consulted here is the document the publisher and every consumer
+     * validate against. The account service publishes two types and this method serves both, which
+     * is why the type and the identifier arrive as arguments rather than being read from a
+     * particular record.
+     *
+     * <p>A refusal message holds JavaScript Object Notation pointers, broken keyword names and the
+     * event identifier. None of those is a customer value, so no account identifier, cardholder
+     * name, Social Security number or monetary amount reaches a log through a refusal.
+     *
+     * @param eventType the governed event type, which selects the contract document
+     * @param eventId   the identifier of the event being written, named in a refusal
+     * @param event     the event to write
+     * @return the event as JSON text, checked against its document and its column width
+     * @throws IllegalArgumentException when the written payload breaks its contract document, or
+     *                                  exceeds {@value #PAYLOAD_MAX_BYTES} octets of UTF-8
+     */
+    private String writeAndCheck(String eventType, UUID eventId, Object event) {
+        String payload = objectMapper.writeValueAsString(event);
+
+        List<String> violations = EventContracts.violationsOf(eventType, payload);
+        if (!violations.isEmpty()) {
+            throw new IllegalArgumentException("event " + eventId + " breaks its contract: "
+                    + EventContracts.describeViolations(eventType, violations));
+        }
+
         int octets = payload.getBytes(StandardCharsets.UTF_8).length;
         if (octets > PAYLOAD_MAX_BYTES) {
             throw new IllegalArgumentException("event " + eventId + " serializes to " + octets
                     + " octets and the payload column holds " + PAYLOAD_MAX_BYTES);
         }
+        return payload;
     }
 }

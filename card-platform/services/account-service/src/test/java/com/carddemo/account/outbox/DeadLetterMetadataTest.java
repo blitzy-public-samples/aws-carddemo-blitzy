@@ -37,6 +37,7 @@ import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import tools.jackson.databind.JsonNode;
@@ -477,7 +478,16 @@ class DeadLetterMetadataTest {
 
         assertThat(row.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.ABANDONED);
         assertThat(row.getAttemptCount()).isEqualTo(OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
-        verify(repository).save(row);
+        // Two saves, and the second one is the point: the abandonment is stored with the obligation
+        // to name this row, and the acknowledgement of the diagnostic is stored separately once the
+        // broker has taken it. A single save would mean the relay either forgot the obligation or
+        // cleared it before the broker answered.
+        verify(repository, times(2)).save(row);
+        assertThat(row.getDeadLetterState())
+                .as("the acknowledged diagnostic discharges the obligation")
+                .isEqualTo(OutboxEventEntity.DeadLetterState.PUBLISHED);
+        assertThat(row.getDeadLetterPublishedAt()).isEqualTo(TERMINAL_ATTEMPT);
+        assertThat(row.owesDeadLetter()).isFalse();
         assertThat(publisher.deadLetterTopic).isEqualTo(DEAD_LETTER_TOPIC_NAME);
         assertThat(publisher.deadLetterPayload).isNotNull();
 

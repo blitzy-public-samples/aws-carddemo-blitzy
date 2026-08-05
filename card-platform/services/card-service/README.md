@@ -47,6 +47,8 @@ The list defaults to seven rows and accepts sizes from 1 through 100. It reads o
 
 Visible card fields are masked. The list cursor is the irreversible 64-character card token and travels in the response body and `X-Card-Cursor` header, never exposing the full continuation key.
 
+Card detail authorizes on the card token derived from the submitted number, not on its masked form, because only the last four digits of a masked number vary and two cards can therefore share one masked value. The service then compares the stored row's own account identifier with the one the request named, and answers with the source's absent-row response when they disagree. That comparison is a deliberate departure from `app/cbl/COCRDSLC.cbl:L739-L740`, recorded as entry D1 in [Business Rule Flags](../../docs/business-rule-flags.md).
+
 The full contract is [OpenAPI](src/main/resources/openapi.yaml). Business traffic uses port 8086 and management traffic uses 9086.
 
 <br/>
@@ -56,10 +58,27 @@ The full contract is [OpenAPI](src/main/resources/openapi.yaml). Business traffi
 | Producer path | Topic | Event | Condition |
 | :--- | :--- | :--- | :--- |
 | Card update | `card.updated` | `CardUpdated` | The locked card changed and committed |
+| Outbox relay abandonment | `carddemo.dead-letter` | `DeadLetterEnvelope` | A row is spent: its stored type has no configured topic, the broker refused it for the last permitted attempt, or a stranded claim exhausted its attempts |
 
 `CardUpdated` version 2 carries the masked card number, account identifier, expiration date, and active status. Version 2 deliberately omits the embossed name. The account identifier is also the Kafka key.
 
 The card row and outbox row commit together. `OutboxRelay` publishes later and marks the row. The card verification value never enters an event, response, or log.
+
+All three abandonment paths route through one method, so a row cannot reach `ABANDONED` without a diagnostic naming it. The diagnostic is a governed envelope with the four fields of `01 ABEND-DATA` at `app/cpy/CSMSG02Y.cpy:L21-L29`, and it carries no payload value. Durability comes from the transaction rather than from a state column: the whole sweep runs inside one `TransactionTemplate` and the publisher blocks, so a refusal propagates, rolls the abandonment back with it, and returns the row to the claim query with its attempt count unchanged.
+
+| Meter | Kind | What moves it |
+| :--- | :--- | :--- |
+| `carddemo.card.update.applied` | Counter | One committed card update |
+| `carddemo.card.update.conflicts` | Counter | One update refused after a concurrent change |
+| `carddemo.card.events.published` | Counter | One outbox row published and marked |
+| `carddemo.card.failures` | Counter | One publish attempt that failed |
+| `carddemo.card.xref.divergence` | Counter | One replica disagreement observed during an update |
+| `carddemo.card.outbox.abandoned` | Counter | One row spent, with its diagnostic acknowledged |
+| `carddemo.card.dead.letters.failed` | Counter | One diagnostic the broker refused |
+| `carddemo.card.update.latency` | Timer | Update duration to commit |
+| `carddemo.card.publish.latency` | Timer | Publish duration to broker acknowledgement |
+
+There is deliberately no `dead.letters.published` counter. Because a refused diagnostic rolls the abandonment back, `outbox.abandoned` and a published-diagnostic count would hold the same value at every instant, and two names for one number invite a reader to compare them.
 
 <br/>
 
@@ -113,6 +132,7 @@ graph LR
     OUT[("outbox_event")]
     RELAY["outbox relay"]
     TOPIC{{"card.updated"}}
+    DEAD{{"carddemo.dead-letter"}}
 
     CLIENT --> LIST
     CLIENT --> DETAIL
@@ -127,6 +147,7 @@ graph LR
     CHECK -->|yes or no| OUT
     OUT --> RELAY
     RELAY ==> TOPIC
+    RELAY -.->|row abandoned| DEAD
 ```
 
 Legend for Figure 1:
@@ -135,6 +156,7 @@ Legend for Figure 1:
 - The diamond compares the two local account identifiers.
 - Cylinders are private card-service tables.
 - The thick arrow is the Kafka publication.
+- The dotted arrow is the terminal diagnostic a spent outbox row produces.
 - The comparison never changes the source-compatible update outcome.
 
 The platform-wide consumer paths are in [Event Flow](../../docs/event-flow.md).
@@ -161,7 +183,9 @@ The platform-wide consumer paths are in [Event Flow](../../docs/event-flow.md).
 | Business port | 8086 |
 | Management port | 9086 |
 | Database and schema | `carddemo_card.card_service` |
-| Published topic | `card.updated` |
+| Published topics | `card.updated`, `carddemo.dead-letter` |
+| Topic properties | `carddemo.kafka.topics.card-updated`, `carddemo.kafka.topics.dead-letter` |
+| Consumer groups | None. This service registers no listener |
 
 From `card-platform/`:
 

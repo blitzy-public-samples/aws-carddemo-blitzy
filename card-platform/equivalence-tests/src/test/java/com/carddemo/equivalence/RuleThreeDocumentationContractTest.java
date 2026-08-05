@@ -120,15 +120,17 @@ class RuleThreeDocumentationContractTest {
                 "19 programs, 19 transactions",
                 "Every surface below is unauthenticated",
                 "None answers yet",
+                "Seven listeners are present",
+                "may publish a decline when its account projection is missing",
                 "| planned |")) {
             assertFalse(platform.contains(stale), "platform README retains stale text: " + stale);
         }
 
         for (String delivered : List.of(
-                "Seven listeners are present",
-                "Seven business topics, four source-specific dead-letter topics, and one shared fallback",
+                "Nine listeners are present",
+                "Seven business topics, five source-specific dead-letter topics, and one shared fallback",
                 "8 files, 17 mapsets, 18 programs, and 18 transactions",
-                "178 Failsafe equivalence tests",
+                "182 Failsafe equivalence tests",
                 "Every business route requires HTTP Basic authentication")) {
             assertTrue(platform.contains(delivered), "platform README must name " + delivered);
         }
@@ -263,7 +265,9 @@ class RuleThreeDocumentationContractTest {
         }
         for (String group : List.of(
                 "ledger-posting",
+                "ledger-account-state",
                 "fraud-detection",
+                "notification-authorized",
                 "notification-posted",
                 "notification-fraud",
                 "notification-customer",

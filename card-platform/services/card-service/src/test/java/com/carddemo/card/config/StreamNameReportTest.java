@@ -26,7 +26,8 @@ class StreamNameReportTest {
     /** The shipped defaults, bound by hand so no context has to start. */
     private static final CardProperties SHIPPED = new CardProperties(
             new CardProperties.Api(65536L),
-            new CardProperties.Kafka(new CardProperties.Kafka.Topics("card.updated")),
+            new CardProperties.Kafka(new CardProperties.Kafka.Topics("card.updated",
+                    "carddemo.dead-letter")),
             new CardProperties.Outbox(new CardProperties.Outbox.Relay(
                     500L,
                     100,
@@ -42,7 +43,7 @@ class StreamNameReportTest {
 
         assertThat(report.reportedNames())
                 .extracting(StreamNameReport.ReportedName::environmentKey)
-                .containsExactly("TOPIC_CARD_UPDATED");
+                .containsExactly("TOPIC_CARD_UPDATED", "TOPIC_DEAD_LETTER");
     }
 
     @Test
@@ -50,7 +51,8 @@ class StreamNameReportTest {
     void theReportedValueIsTheBoundValue() {
         CardProperties overridden = new CardProperties(
                 SHIPPED.api(),
-                new CardProperties.Kafka(new CardProperties.Kafka.Topics("card.updated.v2")),
+                new CardProperties.Kafka(new CardProperties.Kafka.Topics("card.updated.v2",
+                        "carddemo.dead-letter.v2")),
                 SHIPPED.outbox(),
                 SHIPPED.processedEvent(),
                 SHIPPED.retention());
@@ -59,14 +61,15 @@ class StreamNameReportTest {
 
         assertThat(report.reportedNames())
                 .extracting(StreamNameReport.ReportedName::value)
-                .containsExactly("card.updated.v2");
+                .containsExactly("card.updated.v2", "carddemo.dead-letter.v2");
     }
 
     @Test
     @DisplayName("a report entry names a variable the platform actually sets")
     void aReportEntryNamesAVariableThePlatformActuallySets() {
         MockEnvironment platformSupplied = new MockEnvironment()
-                .withProperty("TOPIC_CARD_UPDATED", "card.updated");
+                .withProperty("TOPIC_CARD_UPDATED", "card.updated")
+                .withProperty("TOPIC_DEAD_LETTER", "carddemo.dead-letter");
 
         StreamNameReport report = new StreamNameReport(platformSupplied, SHIPPED);
 

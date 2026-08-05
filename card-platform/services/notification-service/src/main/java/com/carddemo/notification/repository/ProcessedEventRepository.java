@@ -12,9 +12,10 @@ import org.springframework.data.repository.query.Param;
  * Reads and writes the marker that records one processed event identifier, so a second delivery
  * of that event changes nothing.
  *
- * <p>The listeners {@code messaging/TransactionPostedConsumer} and
- * {@code messaging/FraudAssessedConsumer} check the event identifier before acting, then write the
- * marker in the same local transaction as the read-model row it guards.
+ * <p>Each of the four listeners checks the event identifier before acting, then writes the marker in
+ * the same local transaction as the work it guards: {@code messaging/TransactionAuthorizedConsumer},
+ * {@code messaging/TransactionPostedConsumer}, {@code messaging/FraudFlaggedConsumer} and
+ * {@code messaging/CustomerContextChangedConsumer}.
  *
  * <p>The repository pattern's Common Business Oriented Language (COBOL) ancestor is the generic
  * parameter area {@code LK-M03B-AREA} at {@code app/cbl/CBSTM03B.CBL:L100-L112}, whose operation

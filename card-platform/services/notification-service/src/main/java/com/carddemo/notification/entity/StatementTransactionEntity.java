@@ -16,7 +16,11 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 /**
- * The account-keyed read model this service serves its alert history from.
+ * The card-keyed read model this service serves its alert history from.
+ *
+ * <p>The primary key is {@code (card_token, transaction_id)} and the table carries no account column.
+ * The source read model is keyed by card, from the sort at {@code app/jcl/CREASTMT.JCL:L53}, and an
+ * alert is addressed to a cardholder rather than to an account.
  *
  * <p>Fourteen columns map the record {@code 01 TRNX-RECORD.} at {@code app/cpy/COSTM01.CPY:L20}.
  * The composite key is the group {@code 05 TRNX-KEY.} at {@code app/cpy/COSTM01.CPY:L21}, which

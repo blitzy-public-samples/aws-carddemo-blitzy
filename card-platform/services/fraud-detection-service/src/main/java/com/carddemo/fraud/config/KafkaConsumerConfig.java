@@ -274,6 +274,12 @@ public class KafkaConsumerConfig {
      * record it produces and the container raises it before invoking any listener, so a listener
      * cannot see and cannot count it.
      *
+     * <p>It is equally the only place the TERMINAL outcome of a delivery is observable. By the time
+     * the container calls a recoverer the backoff is spent and no further attempt will be made, so
+     * this is the one moment at which a record can be counted as permanently given up on rather than
+     * as one more failed attempt. {@code carddemo.fraud.dead.letters} carries that count, tagged by
+     * whether the diagnostic reached the broker.
+     *
      * @param deadLetterTemplate the raw-byte template, resolved by bean name
      * @param meters             the recording surface, so a failure the listener cannot see is still
      *                           counted
@@ -288,7 +294,7 @@ public class KafkaConsumerConfig {
                 new ByteValuedRecoverer(deadLetterTemplate, deadLetterTopic, deadLetterSuffix);
 
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(
-                new DeserializeCountingRecoverer(recoverer, meters),
+                new CountingRecoverer(recoverer, meters),
                 new FixedBackOff(retryBackoffMs, deliveryAttempts - FIRST_ATTEMPT));
         errorHandler.addNotRetryableExceptions(DeserializationException.class,
                 SerializationException.class);
@@ -469,18 +475,25 @@ public class KafkaConsumerConfig {
     }
 
     /**
-     * Counts one deserialization or schema failure, then hands the record to the real recoverer.
+     * Counts what the container is about to give up on, then hands the record to the real recoverer.
      *
-     * <p>This is the only point in the service that observes such a failure. It is raised inside the
-     * container before a listener is invoked, so the listener that would otherwise count it never
-     * runs.
+     * <p>Two different facts are counted here, and the difference is the point of this class.
      *
-     * <p>Only that class of failure is counted. A failure a listener reached is counted there, once
-     * per attempt, and counting it again here would report one business failure as several. The count
-     * happens before the delegate publishes, so a dead-letter send that itself fails still leaves the
-     * failure counted rather than losing it.
+     * <p>The CAUSE, for one class of failure only. A deserialization or schema failure is raised
+     * inside the container before a listener is invoked, so the listener that would otherwise count
+     * it never runs, and this is the only point in the service that observes one. A failure a
+     * listener did reach is counted there instead, once per attempt, and counting it again here would
+     * report one business failure as several. The cause is counted before the delegate publishes, so a
+     * dead-letter send that itself fails still leaves the failure counted rather than losing it.
+     *
+     * <p>The TERMINAL OUTCOME, for every failure without exception. The container calls a recoverer
+     * only once the backoff is spent, so every record that arrives here is one this service will not
+     * attempt again. That is counted once per record under {@code carddemo.fraud.dead.letters}, tagged
+     * {@code published} once the diagnostic has reached the broker and {@code failed} when the send
+     * refused it. A refusal is rethrown as well as counted, because the container has to know the
+     * record was not recovered; the count is what makes the loss visible without reading a log.
      */
-    private static final class DeserializeCountingRecoverer implements ConsumerRecordRecoverer {
+    private static final class CountingRecoverer implements ConsumerRecordRecoverer {
 
         /** Publishes the failed record on the dead-letter topic. */
         private final ConsumerRecordRecoverer delegate;
@@ -490,9 +503,12 @@ public class KafkaConsumerConfig {
 
         /**
          * Wraps {@code delegate}, counting a deserialization or schema failure against
-         * {@code meters} first.
+         * {@code meters} first and the terminal outcome of the record afterwards.
+         *
+         * @param delegate the recoverer that publishes the diagnostic
+         * @param meters   the recording surface both counts reach
          */
-        private DeserializeCountingRecoverer(ConsumerRecordRecoverer delegate,
+        private CountingRecoverer(ConsumerRecordRecoverer delegate,
                 ObservabilityConfig.FraudMeters meters) {
             this.delegate = Objects.requireNonNull(delegate, "delegate must be present");
             this.meters = Objects.requireNonNull(meters, "meters must be present");
@@ -503,7 +519,13 @@ public class KafkaConsumerConfig {
             if (isPayloadFailure(failure)) {
                 meters.recordDeserializeFailure();
             }
-            delegate.accept(record, failure);
+            try {
+                delegate.accept(record, failure);
+            } catch (RuntimeException undelivered) {
+                meters.recordDeadLetterFailure();
+                throw undelivered;
+            }
+            meters.recordDeadLetterPublished();
         }
 
         /**

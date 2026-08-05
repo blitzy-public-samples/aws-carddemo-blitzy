@@ -42,10 +42,27 @@ public class ReadinessHealthConfig {
         };
     }
 
+    /**
+     * Reports whether every listener this service registered is running.
+     *
+     * <p>The expected number is read from the registry rather than written here. A literal was what
+     * made this probe unsatisfiable: the file named two while the service declared three, so readiness
+     * stayed down for good, the compose health check never passed and both Kubernetes probes failed
+     * permanently. A literal also has to be edited every time a listener is added, which is how that
+     * mismatch arose in the first place.
+     *
+     * <p>The inventory of listeners the platform is supposed to declare is held at build time by
+     * {@code equivalence-tests} {@code ProjectionBootstrapContractTest}, which enumerates every
+     * listener of every service and fails until a newly added one is declared there deliberately.
+     * That is a firmer guard than a probe, because it runs before anything is deployed.
+     *
+     * @param registries provider of the listener registry, absent before the context finishes
+     * @return the indicator the readiness group polls
+     */
     @Bean
     public HealthIndicator listenersHealthIndicator(
             ObjectProvider<KafkaListenerEndpointRegistry> registries) {
-        return () -> listenersHealth(registries.getIfAvailable(), 2);
+        return () -> listenersHealth(registries.getIfAvailable());
     }
 
     @Bean
@@ -67,15 +84,32 @@ public class ReadinessHealthConfig {
         }
     }
 
-    static Health listenersHealth(KafkaListenerEndpointRegistry registry, int expected) {
-        Collection<MessageListenerContainer> containers = registry == null
-                ? java.util.List.of()
-                : registry.getListenerContainers();
+    /**
+     * Compares the listeners that registered against the listeners that are running.
+     *
+     * <p>An absent registry is down rather than up. The registry appears while the context is still
+     * refreshing, so a poll that arrives before it exists has learned nothing and must not report
+     * ready.
+     *
+     * <p>A service that declares no listener registers no container, and an empty set has nothing
+     * that is not running, so it reports up. That is the correct answer for the two services that
+     * only serve requests, and it is now a property of the rule instead of a literal zero.
+     *
+     * @param registry the listener registry, or {@code null} before the context supplies one
+     * @return up when every registered container is running, and down otherwise
+     */
+    static Health listenersHealth(KafkaListenerEndpointRegistry registry) {
+        if (registry == null) {
+            return Health.down().withDetail("reason", "missing-listener-registry").build();
+        }
+        Collection<MessageListenerContainer> containers = registry.getListenerContainers();
+        int registered = containers.size();
         long running = containers.stream().filter(MessageListenerContainer::isRunning).count();
-        return containers.size() == expected && running == expected
-                ? Health.up().withDetails(Map.of("expected", expected, "running", running)).build()
+        return running == registered
+                ? Health.up().withDetails(
+                        Map.of("registered", registered, "running", running)).build()
                 : Health.down().withDetails(
-                        Map.of("expected", expected, "running", running)).build();
+                        Map.of("registered", registered, "running", running)).build();
     }
 
     private static Throwable rootCause(Throwable failure) {

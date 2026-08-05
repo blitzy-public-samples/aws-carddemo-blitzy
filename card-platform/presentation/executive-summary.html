@@ -470,7 +470,7 @@ graph LR
     U ==> K{{"transaction.authorized keyed by account"}}
     K ==> L["ledger-posting-service"]
     K ==> F["fraud-detection-service"]
-    K ==> N["notification-service via downstream topics"]
+    K ==> N["notification-service"]
     U -.-> D[("6 private schemas")]
     L -.-> D
     F -.-> D
@@ -492,7 +492,7 @@ graph LR
         <span class="slide-number">05</span>
         <div class="eyebrow">Independent reactions</div>
         <h2>Figure 2 — One outcome event starts the work</h2>
-        <p>Each call emits one outcome event. No consumer calls another; topics carry every downstream handoff.</p>
+        <p>Each call emits one outcome event. Three services read that one event, each under its own consumer group. No consumer calls another; topics carry every downstream handoff.</p>
         <div class="mermaid-frame">
           <pre class="mermaid">
 graph LR
@@ -501,9 +501,10 @@ graph LR
   A ==> TD{{"transaction.declined"}}
   TA ==> L["ledger-posting-service"]
   TA ==> F["fraud-detection-service"]
+  TA ==> N["notification-service"]
   L ==> TP{{"transaction.posted"}}
   F ==> FA{{"fraud.assessed"}}
-  TP ==> N["notification-service"]
+  TP ==> N
   FA ==> N
   TA -.-> DL{{"carddemo.dead-letter"}}
   TP -.-> DL

@@ -1,26 +1,27 @@
 package com.carddemo.ledger.config;
 
-import com.carddemo.events.DeadLetterEnvelope;
+
 import com.carddemo.events.serde.JsonSchemaValidatingDeserializer;
 import com.carddemo.ledger.messaging.DeadLetterMetadata;
-
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
-
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
-
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.springframework.boot.kafka.autoconfigure.KafkaConnectionDetails;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
@@ -28,11 +29,13 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ConsumerRecordRecoverer;
 import org.springframework.kafka.listener.ContainerProperties;
-import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer.HeaderNames.HeadersToAdd;
+import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.serializer.DeserializationException;
@@ -91,6 +94,21 @@ public class KafkaConsumerConfig {
 
     /** The attempt count a dead letter reports when the container recorded none. */
     private static final int ONE_ATTEMPT = 1;
+
+    /**
+     * The largest attempt count a diagnostic reports.
+     *
+     * <p>The container sets the delivery-attempt header, but the header name is not reserved, so a
+     * producer can set it too. The count is clamped rather than trusted, so a value a producer chose
+     * cannot reach a diagnostic or an envelope that bounds it.
+     */
+    private static final int MAX_REPORTED_ATTEMPTS = 1_000;
+
+    /** Bean name of the byte-serializing template the dead-letter route publishes through. */
+    private static final String DEAD_LETTER_TEMPLATE_BEAN = "deadLetterKafkaTemplate";
+
+    /** Acknowledgement setting every producer of this service carries. */
+    private static final String ACKS_FROM_ALL_REPLICAS = "all";
 
     /** The prefix the two acknowledgement modes that require the listener to acknowledge share. */
     private static final String MANUAL_ACK_MODE_PREFIX = "MANUAL";
@@ -214,6 +232,39 @@ public class KafkaConsumerConfig {
     }
 
     /**
+     * Builds the template a spent record's diagnostic is published through.
+     *
+     * <p>Production is idempotent and acknowledged by every in-sync replica, matching the event
+     * template. The key serializer writes text and the value serializer writes raw bytes, because the
+     * recoverer renders the diagnostic itself and hands over the rendered form.
+     *
+     * <p>The two serializer settings the bound block carries are removed rather than overridden. That
+     * block names the schema-validating serializer for a business event, and leaving it in place would
+     * hand these bytes to a serializer that expects an event record.
+     *
+     * @param kafkaProperties  the bound {@code spring.kafka} block
+     * @param ledgerProperties the bound {@code carddemo} block, read for the fallback topic
+     * @return the template the error handler injects as {@code deadLetterKafkaTemplate}
+     */
+    @Bean(name = DEAD_LETTER_TEMPLATE_BEAN)
+    public KafkaTemplate<String, byte[]> deadLetterKafkaTemplate(KafkaProperties kafkaProperties,
+            LedgerProperties ledgerProperties) {
+
+        Map<String, Object> settings =
+                new LinkedHashMap<>(kafkaProperties.buildProducerProperties());
+        settings.put(ProducerConfig.ACKS_CONFIG, ACKS_FROM_ALL_REPLICAS);
+        settings.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, Boolean.TRUE);
+        settings.remove(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG);
+        settings.remove(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG);
+
+        KafkaTemplate<String, byte[]> template = new KafkaTemplate<>(
+                new DefaultKafkaProducerFactory<>(settings, new StringSerializer(),
+                        new ByteArraySerializer()));
+        template.setDefaultTopic(ledgerProperties.kafka().topics().deadLetter());
+        return template;
+    }
+
+    /**
      * Builds the delivery-attempt policy and the dead-letter route.
      *
      * <p>One record is taken up to {@code carddemo.consumer.retry.max-attempts} times, waiting
@@ -226,21 +277,38 @@ public class KafkaConsumerConfig {
      * {@code AccountBalanceUpdater.AccountBalanceRowMissingException} is registered under neither
      * classification and keeps the retryable default.
      *
-     * @param ledgerEventKafkaTemplate the template {@code config/KafkaProducerConfig} declares
-     * @param ledgerProperties         the bound {@code carddemo} block
+     * <p>The route publishes through {@link #deadLetterKafkaTemplate}, whose value serializer writes
+     * raw bytes, and not through the event template {@code config/KafkaProducerConfig} declares. That
+     * template validates an event against the schema of its own type and refuses a topic that type is
+     * not bound to, and {@code EventContracts} binds every governed type to exactly one topic. A
+     * source-specific destination handed an event-shaped value would therefore fail serialization
+     * before the send, leaving every spent record with nowhere to go at all. The diagnostic is
+     * rendered and bounded before it is handed over instead, which is what the fraud and notification
+     * consumers do with the same four-field layout.
+     *
+     * <p>The route is wrapped so the terminal outcome is counted. A recoverer runs only once the
+     * backoff is spent, so it is the one point at which a delivery can be counted as permanently given
+     * up on rather than as one more failed attempt. {@code carddemo.ledger.dead.letters} carries that
+     * count, once per record and tagged by whether the diagnostic reached the broker.
+     *
+     * @param deadLetterKafkaTemplate the byte-serializing template, resolved by bean name
+     * @param ledgerProperties        the bound {@code carddemo} block
+     * @param meters                  the recording surface the terminal outcome is counted against
      * @return the error handler the container factory installs
      */
     @Bean
     public DefaultErrorHandler ledgerConsumerErrorHandler(
-            KafkaTemplate<String, Object> ledgerEventKafkaTemplate,
-            LedgerProperties ledgerProperties) {
+            KafkaTemplate<String, byte[]> deadLetterKafkaTemplate,
+            LedgerProperties ledgerProperties,
+            ObservabilityConfig.LedgerMeters meters) {
 
         LedgerProperties.Consumer.Retry retry = ledgerProperties.consumer().retry();
         LedgerProperties.Kafka.Topics topics = ledgerProperties.kafka().topics();
-        DeadLetterEnvelopeRecoverer recoverer = new DeadLetterEnvelopeRecoverer(
-                ledgerEventKafkaTemplate, topics.deadLetter(), topics.deadLetterSuffix());
+        ByteValuedRecoverer recoverer = new ByteValuedRecoverer(
+                deadLetterKafkaTemplate, topics.deadLetter(), topics.deadLetterSuffix());
 
-        DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer,
+        DefaultErrorHandler errorHandler = new DefaultErrorHandler(
+                new CountingRecoverer(recoverer, meters),
                 new FixedBackOff(retry.backoffMs(), retry.maxAttempts() - FIRST_DELIVERY));
         errorHandler.addNotRetryableExceptions(DeserializationException.class,
                 SerializationException.class);
@@ -309,14 +377,14 @@ public class KafkaConsumerConfig {
     static ProducerRecord<Object, Object> sanitizedDeadLetterRecord(ConsumerRecord<?, ?> record,
             TopicPartition topicPartition, Headers headers) {
 
-        DeadLetterEnvelope envelope = DeadLetterMetadata
+        String diagnostic = DeadLetterMetadata
                 .of(DEAD_LETTER_ABEND_CODE, POSTING_JOB_NAME, reasonOf(headers),
                         DEAD_LETTER_MESSAGE)
-                .toEnvelope(UNRESOLVED_ACCOUNT_KEY, record.topic(), record.partition(),
-                        record.offset(), null, null, attemptCountOf(record));
+                .toFixedWidthRecord();
 
         return new ProducerRecord<>(topicPartition.topic(), partitionOf(topicPartition),
-                recordCoordinates(record), envelope, allowedDeadLetterHeaders(headers));
+                recordCoordinates(record), diagnostic.getBytes(StandardCharsets.UTF_8),
+                allowedDeadLetterHeaders(headers));
     }
 
     /** Identifies a source record without retaining its producer-controlled key. */
@@ -354,27 +422,33 @@ public class KafkaConsumerConfig {
     }
 
     /**
-     * Addresses one {@link DeadLetterEnvelope} to the dead-letter topic for a record no listener
-     * could take.
+     * Addresses one rendered diagnostic to the dead-letter topic of a record no listener could take.
      *
-     * <p>{@link DeadLetterPublishingRecoverer} sends the failing record onward. The template this
-     * recoverer sends through writes a registered event record and nothing else. The envelope is the
-     * one event type bound to the dead-letter topic, so it is the outgoing value and the failing
-     * payload travels nowhere. Neither a card number nor a verification value can reach the topic
-     * through it.
+     * <p>{@link DeadLetterPublishingRecoverer} sends the failing record onward, and the inherited
+     * behaviour republishes the refused key and the refused bytes. Where a deserializer refused the
+     * record those bytes are the ones a schema control rejected, so record construction is overridden
+     * and neither travels. Neither a card number nor a verification value can reach the topic.
      *
-     * <p>The outgoing record is rebuilt from an allowlist. The refused bytes, original key,
-     * arbitrary producer headers, exception message and stack trace do not travel. The failure
-     * class contributes only its short name to the schema-validated envelope. An instance holds no
-     * mutable state, so consumer threads may share one.
+     * <p>What travels is the four fixed-width fields of {@code 01 ABEND-DATA} at
+     * {@code app/cpy/CSMSG02Y.cpy:L21-L29}, rendered by
+     * {@link DeadLetterMetadata#toFixedWidthRecord()} at their declared widths of four, eight, fifty
+     * and seventy-two characters. The value is bytes rather than an event object, and that is what
+     * lets the destination stay the dead-letter topic of the source stream. The envelope form of the
+     * same diagnostics carries the other case: {@code outbox/OutboxRelay} publishes it to the shared
+     * dead-letter topic for a row this service gave up on, where a single bound topic is correct.
+     *
+     * <p>The outgoing record is rebuilt from an allowlist. The refused bytes, original key, arbitrary
+     * producer headers, exception message and stack trace do not travel, and the failure class
+     * contributes only its short name. An instance holds no mutable state, so consumer threads may
+     * share one.
      */
-    private static final class DeadLetterEnvelopeRecoverer extends DeadLetterPublishingRecoverer {
+    private static final class ByteValuedRecoverer extends DeadLetterPublishingRecoverer {
 
         /**
          * Builds a recoverer addressing one dead-letter topic per source topic, with the configured
          * shared topic as a fallback.
          */
-        private DeadLetterEnvelopeRecoverer(KafkaOperations<?, ?> template,
+        private ByteValuedRecoverer(KafkaOperations<?, ?> template,
                 String deadLetterTopic, String deadLetterSuffix) {
             super(template, (failedRecord, failure) ->
                     resolveDeadLetterDestination(
@@ -421,12 +495,63 @@ public class KafkaConsumerConfig {
                 || attempt.value().length != Integer.BYTES) {
             return ONE_ATTEMPT;
         }
-        return ByteBuffer.wrap(attempt.value()).getInt();
+        return Math.clamp(ByteBuffer.wrap(attempt.value()).getInt(), ONE_ATTEMPT,
+                MAX_REPORTED_ATTEMPTS);
     }
 
     /** The resolved partition, and {@code null} when the resolver named a negative one. */
     private static Integer partitionOf(TopicPartition topicPartition) {
         int partition = topicPartition.partition();
         return partition < 0 ? null : partition;
+    }
+
+    /**
+     * Counts one delivery this service has given up on, then hands the record to the real route.
+     *
+     * <p>The container calls a recoverer only once the backoff is spent, so every record arriving here
+     * is one this service will not attempt again. That is counted once per RECORD under
+     * {@code carddemo.ledger.dead.letters}, which is the denominator no stage of
+     * {@code carddemo.ledger.failures} carries: those count attempts, and a poison message previously
+     * showed only as a rising per-attempt figure with nothing marking the point of abandonment.
+     *
+     * <p>The count follows the send rather than preceding it, so the two outcomes are distinguishable:
+     * {@code published} once the diagnostic has reached the broker, and {@code failed} when the send
+     * refused it. A refusal is rethrown as well as counted, because the container has to know the
+     * record was not recovered.
+     *
+     * <p>The cause of the failure is counted elsewhere and never here, so one business failure is
+     * never reported as several. An instance holds no mutable state and a Micrometer counter accepts
+     * concurrent recording, so consumer threads may share one.
+     */
+    private static final class CountingRecoverer implements ConsumerRecordRecoverer {
+
+        /** Publishes the bounded diagnostic on the dead-letter topic of the source topic. */
+        private final ConsumerRecordRecoverer route;
+
+        /** The recording surface the terminal outcome lands on. */
+        private final ObservabilityConfig.LedgerMeters meters;
+
+        /**
+         * Wraps {@code route} with the terminal count.
+         *
+         * @param route  the recoverer that publishes the diagnostic
+         * @param meters the recording surface
+         */
+        private CountingRecoverer(ConsumerRecordRecoverer route,
+                ObservabilityConfig.LedgerMeters meters) {
+            this.route = Objects.requireNonNull(route, "route must be present");
+            this.meters = Objects.requireNonNull(meters, "meters must be present");
+        }
+
+        @Override
+        public void accept(ConsumerRecord<?, ?> failedRecord, Exception failure) {
+            try {
+                route.accept(failedRecord, failure);
+            } catch (RuntimeException undelivered) {
+                meters.recordDeadLetterFailure();
+                throw undelivered;
+            }
+            meters.recordDeadLetterPublished();
+        }
     }
 }

@@ -251,11 +251,12 @@ class RetentionSweepTest {
     private static NotificationProperties shippedProperties() {
         return new NotificationProperties(
                 new NotificationProperties.Kafka(
-                        new NotificationProperties.Kafka.Groups("notification-posted",
-                                "notification-fraud", "notification-customer"),
-                        new NotificationProperties.Kafka.Topics("transaction.posted",
-                                "fraud.assessed", "customer.context-changed",
-                                "carddemo.dead-letter", ".DLT")),
+                        new NotificationProperties.Kafka.Groups("notification-authorized",
+                                "notification-posted", "notification-fraud",
+                                "notification-customer"),
+                        new NotificationProperties.Kafka.Topics("transaction.authorized",
+                                "transaction.posted", "fraud.assessed",
+                                "customer.context-changed", "carddemo.dead-letter", ".DLT")),
                 new NotificationProperties.Consumer(
                         new NotificationProperties.Consumer.Retry(3, 1000L)),
                 new NotificationProperties.ProcessedEvent(MARKER_RETENTION_HOURS),
@@ -284,6 +285,9 @@ class RetentionSweepTest {
      * assertion about which store it reached, and would delete nothing at all in production.
      */
     private static final class CountingTransactionTemplate extends TransactionTemplate {
+
+        /** Declared because the framework superclass is serializable; no instance is serialized. */
+        private static final long serialVersionUID = 1L;
 
         private int opened;
 

@@ -222,7 +222,7 @@ class ComposeEnvironmentIsolationContractTest {
                 "PROCESSED_EVENT_RETENTION_HOURS",
                 "RETENTION_SWEEP_INTERVAL_MS"));
         required.put("account-service", union(producerRetention, Set.of("TOPIC_DEAD_LETTER")));
-        required.put("card-service", producerRetention);
+        required.put("card-service", union(producerRetention, Set.of("TOPIC_DEAD_LETTER")));
         return Map.copyOf(required);
     }
 

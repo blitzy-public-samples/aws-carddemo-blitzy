@@ -22,6 +22,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.apache.kafka.common.errors.SerializationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -131,6 +132,47 @@ class OutboxRelayTest {
         assertTrue(row.isPublished());
         assertThat(row.getAttemptCount()).isEqualTo(1);
         verify(kafkaTemplate).send(eq(ASSESSED_TOPIC), eq(ACCOUNT_ID), any());
+        verify(meters).recordPublishFailure();
+    }
+
+    @Test
+    void aRowNoTickCanPublishIsDeadLetteredAndCountedOncePerRecord() {
+        OutboxEventEntity row = clearedRow();
+        when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
+        when(kafkaTemplate.send(eq(ASSESSED_TOPIC), anyString(), any()))
+                .thenReturn(CompletableFuture.failedFuture(new SerializationException(
+                        "the event broke its schema document")));
+        when(kafkaTemplate.send(eq(DEAD_LETTER_TOPIC), eq(ACCOUNT_ID), any()))
+                .thenReturn(CompletableFuture.completedFuture(null));
+
+        relay.publishPendingEvents();
+
+        assertTrue(row.isPublished(),
+                "a row that can never be published is closed once its diagnostic has landed");
+        verify(kafkaTemplate).send(eq(DEAD_LETTER_TOPIC), eq(ACCOUNT_ID), any());
+        verify(meters).recordDeadLetterPublished();
+        verify(meters, never()).recordDeadLetterFailure();
+        verify(meters).recordPublishFailure();
+    }
+
+    @Test
+    void aRefusedDiagnosticIsCountedApartFromTheAttemptThatFailed() {
+        OutboxEventEntity row = clearedRow();
+        when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
+        when(kafkaTemplate.send(eq(ASSESSED_TOPIC), anyString(), any()))
+                .thenReturn(CompletableFuture.failedFuture(new SerializationException(
+                        "the event broke its schema document")));
+        when(kafkaTemplate.send(eq(DEAD_LETTER_TOPIC), eq(ACCOUNT_ID), any()))
+                .thenReturn(CompletableFuture.failedFuture(
+                        new IllegalStateException("broker unavailable")));
+
+        relay.publishPendingEvents();
+
+        assertThat(row.isPublished())
+                .as("a row whose diagnostic was refused stays open, so a later tick offers both again")
+                .isFalse();
+        verify(meters).recordDeadLetterFailure();
+        verify(meters, never()).recordDeadLetterPublished();
         verify(meters).recordPublishFailure();
     }
 

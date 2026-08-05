@@ -3,6 +3,7 @@ package com.carddemo.card.api;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -76,6 +77,9 @@ class CardControllerTest {
     /** The account the card belongs to, eleven digits. */
     private static final String ACCOUNT_ID = "00000000050";
 
+    /** An account identifier the stored card does not belong to, eleven digits like the column. */
+    private static final String OTHER_ACCOUNT_ID = "00000000099";
+
     private CardQueryService cardQueries;
     private CardUpdateService cardUpdates;
     private SecurityConfig.CardOwnership ownership;
@@ -86,9 +90,9 @@ class CardControllerTest {
     void buildController() {
         cardQueries = mock(CardQueryService.class);
         cardUpdates = mock(CardUpdateService.class);
-        ownership = masked -> true;
-        controller = new CardController(cardQueries, cardUpdates, masked -> ownership
-                .ownsCard(masked));
+        ownership = cardNumber -> true;
+        controller = new CardController(cardQueries, cardUpdates, cardNumber -> ownership
+                .ownsCard(cardNumber));
     }
 
     /** The list route. */
@@ -247,7 +251,7 @@ class CardControllerTest {
          */
         @Test
         void aCardTheCallerDoesNotOwnAnswersForbiddenWithoutReading() {
-            ownership = masked -> false;
+            ownership = cardNumber -> false;
 
             ResponseEntity<?> response = controller.readCard(
                     new CardDetailRequest(ACCOUNT_ID, CARD_NUMBER));
@@ -266,7 +270,7 @@ class CardControllerTest {
             ApiErrorResponse absent = assertInstanceOf(ApiErrorResponse.class, controller
                     .readCard(new CardDetailRequest(ACCOUNT_ID, CARD_NUMBER)).getBody());
 
-            ownership = masked -> false;
+            ownership = cardNumber -> false;
             ApiErrorResponse refused = assertInstanceOf(ApiErrorResponse.class, controller
                     .readCard(new CardDetailRequest(ACCOUNT_ID, CARD_NUMBER)).getBody());
 
@@ -274,60 +278,91 @@ class CardControllerTest {
                     "neither answer discloses which cards this service holds");
         }
 
-        /** Asserts the ownership check is asked about the masked form and never the full number. */
+        /**
+          * Asserts the ownership check is asked about the full number, so it can derive the token.
+          *
+          * <p>The masked form names every card ending in the same four digits. Handing the predicate
+          * a masked value would mean one entitlement admitted a group of cards, which is the defect
+          * this assertion exists to keep closed. The masked value still reaches the response, and
+          * {@link #aStoredCardIsReturnedMasked()} holds that half.
+          */
         @Test
-        void theOwnershipCheckIsAskedAboutTheMaskedForm() {
+        void theOwnershipCheckIsAskedAboutTheFullNumber() {
             List<String> asked = new java.util.ArrayList<>();
-            ownership = masked -> {
-                asked.add(masked);
+            ownership = cardNumber -> {
+                asked.add(cardNumber);
                 return true;
             };
             when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
             controller.readCard(new CardDetailRequest(ACCOUNT_ID, CARD_NUMBER));
 
-            assertEquals(List.of(MASKED), asked,
-                    "SecurityConfig names the card scope by its masked form");
+            assertEquals(List.of(CARD_NUMBER), asked,
+                    "SecurityConfig derives the card token, so it needs the number and not a mask");
+            assertNotEquals(List.of(MASKED), asked,
+                    "a masked value would name a group of cards rather than one");
         }
 
         /**
          * Asserts the read keys on the card number alone, and never on the account the caller sent.
          *
-         * <p>{@code app/cbl/COCRDSLC.cbl:L739} is commented out and L740 is not, so the account is
-         * edited and then unused. A read that keyed on both would refuse a request the source
-         * answers.
+         * <p>{@code app/cbl/COCRDSLC.cbl:L739} is commented out and L740 is not, so the source edits
+         * the account and keys on the card. The key is reproduced; the account decides the answer
+         * afterwards rather than the row that is read.
          */
         @Test
         void theReadKeysOnTheCardNumberAlone() {
             when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
-            controller.readCard(new CardDetailRequest("00000000099", CARD_NUMBER));
+            controller.readCard(new CardDetailRequest(OTHER_ACCOUNT_ID, CARD_NUMBER));
 
             verify(cardQueries).findByCardNumber(CARD_NUMBER);
             verify(cardQueries, never()).findByAccountId(any());
         }
 
         /**
-         * Asserts a row belonging to another account is still returned.
+         * Asserts a row belonging to another account is answered as an absent row.
          *
-         * <p>This is the source behaviour reproduced rather than corrected: the read never compares
-         * the account of the row it found against the account the caller supplied. The register of
-         * flagged rules carries it for a human decision.
+         * <p>The source granted every signed-on user every card, so its unchecked account changed
+         * nothing. Here the account is a caller-supplied key, and returning the row would let one
+         * entitlement be exercised under any account identifier a caller chose. The answer is the
+         * absent-row answer exactly: {@code 404} and the text
+         * {@code app/cbl/COCRDSLC.cbl:L760} sets, so a caller cannot tell the two cases apart and
+         * learns nothing about which accounts hold which cards.
          */
         @Test
-        void aRowOfAnotherAccountIsStillReturned() {
+        void aRowOfAnotherAccountIsAnsweredAsAnAbsentRow() {
             when(cardQueries.findByCardNumber(CARD_NUMBER))
                     .thenReturn(Optional.of(storedCard()));
 
             ResponseEntity<?> response = controller.readCard(
-                    new CardDetailRequest("00000000099", CARD_NUMBER));
+                    new CardDetailRequest(OTHER_ACCOUNT_ID, CARD_NUMBER));
+
+            assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode(),
+                    "a card of another account is not this caller's card to read");
+            ApiErrorResponse body = assertInstanceOf(ApiErrorResponse.class, response.getBody());
+            assertEquals(CardValidationMessages.DID_NOT_FIND_ACCTCARD_COMBO, body.message(),
+                    "the same text an absent row carries");
+        }
+
+        /**
+         * Asserts the account comparison reads a padded request value as the same account.
+         *
+         * <p>The four edits strip before they measure width, so a caller can reach the comparison
+         * with a trailing space. {@code CARD-ACCT-ID PIC 9(11)} in a fixed-width field is the source
+         * of that habit. A comparison that failed on the space would refuse a request every edit
+         * accepted, and a caller would read {@code 404} for a card it owns.
+         */
+        @Test
+        void theAccountComparisonReadsAPaddedRequestValueAsTheSameAccount() {
+            when(cardQueries.findByCardNumber(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard()));
+
+            ResponseEntity<?> response = controller.readCard(
+                    new CardDetailRequest(ACCOUNT_ID + " ", CARD_NUMBER));
 
             assertEquals(HttpStatus.OK, response.getStatusCode(),
-                    "the source read keys on the card number alone");
-            CardDetailResponse detail =
-                    assertInstanceOf(CardDetailResponse.class, response.getBody());
-            assertEquals(ACCOUNT_ID, detail.accountId(),
-                    "the row reports the account it actually belongs to");
+                    "padding is field shape and not a different account");
         }
     }
 

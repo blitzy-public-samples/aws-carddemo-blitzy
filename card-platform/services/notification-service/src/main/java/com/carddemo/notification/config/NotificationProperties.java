@@ -67,13 +67,21 @@ public record NotificationProperties(
 
         /**
          * One group per listener, and no group shared. This service registers listeners on the
-         * posted, assessment, and customer-context topics.
+         * authorized, posted, assessment, and customer-context topics.
          *
+         * <p>The group on the authorized topic is this service's own. The ledger and the fraud
+         * detector read that same topic under groups of their own, and a group is what Kafka tracks
+         * offsets against, so all three receive every record and none of them consumes on behalf of
+         * another.
+         *
+         * @param transactionAuthorized  the group of the listener on the authorized topic
          * @param transactionPosted the group of the listener on the posted topic
          * @param fraudAssessed     the group of the listener on the assessment topic
          * @param customerContextChanged the group of the listener on the customer-context topic
          */
         public record Groups(
+
+                @NotBlank String transactionAuthorized,
 
                 @NotBlank String transactionPosted,
 
@@ -83,8 +91,13 @@ public record NotificationProperties(
         }
 
         /**
-         * The three consumed topics, the fallback dead-letter topic and the per-topic suffix.
+         * The four consumed topics, the fallback dead-letter topic and the per-topic suffix.
          *
+         * @param transactionAuthorized  the authorization decision, whose rules are the batch
+         *                               validation paragraphs at
+         *                               {@code app/cbl/CBTRN02C.cbl:L380-L420}. Reading it directly
+         *                               makes this the third independent consumer of that event,
+         *                               which AAP 0.1.1 and 0.8.3 require
          * @param transactionPosted      the posted balance, taken from
          *                               {@code app/cbl/CBTRN02C.cbl:L547}
          * @param fraudAssessed          the topic both assessment outcomes travel on
@@ -97,6 +110,8 @@ public record NotificationProperties(
          *                               the topic it arrived on
          */
         public record Topics(
+
+                @NotBlank String transactionAuthorized,
 
                 @NotBlank String transactionPosted,
 

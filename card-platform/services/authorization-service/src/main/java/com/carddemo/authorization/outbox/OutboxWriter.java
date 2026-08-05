@@ -56,9 +56,11 @@ import tools.jackson.databind.json.JsonMapper;
  * {@code app/cbl/COTRN02C.cbl:L444-L449} and {@code app/cbl/COBIL00C.cbl:L212-L217}.
  *
  * <p>This class writes no {@code processed_event} marker. That marker guards an event a consumer
- * receives, and this service registers no consumer, so it has no inbound delivery to guard. Where a
- * consumer does write one, the marker commits with the effects it guards and the delivery is
- * acknowledged only after that transaction commits.
+ * receives, and this class sits on the produce side of the service, so it has no inbound delivery to
+ * guard. The service does register consumers: {@code messaging/AccountStateChangedConsumer} and
+ * {@code messaging/CardUpdatedConsumer} keep {@code account_credit_snapshot} and {@code card_xref}
+ * current, and each of the two writes its marker into the same transaction as the replica row it
+ * applies, acknowledging the delivery only after that transaction commits.
  */
 @Component
 public class OutboxWriter {

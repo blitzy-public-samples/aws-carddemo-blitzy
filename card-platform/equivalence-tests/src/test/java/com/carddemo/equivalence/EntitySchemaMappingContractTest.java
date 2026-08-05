@@ -95,8 +95,20 @@ class EntitySchemaMappingContractTest {
      * <p>The notification read model accounts for two of these where one source field sits: the card
      * token that keys a row and the masked card number that displays it. A masked value identifies no
      * single card, so it can display one and key none.</p>
+     *
+     * <p>Two more sit on the ledger's balance projection and have no source field at all. That table
+     * is a copy of three fields of the account record, and a copy has to record which change it last
+     * replicated so a redelivery arriving behind a newer one discards itself. The source reads the
+     * account dataset directly at {@code app/cbl/CBTRN02C.cbl:L545}, so it has no copy and needs no
+     * such column.</p>
+     *
+     * <p>The last two sit on the account service's outbox row and have no source field either. A row
+     * the relay gives up on owes one terminal diagnostic, and that obligation has to outlive a broker
+     * outage, so it is a column rather than one unawaited send. The source answers a write it cannot
+     * complete by ending the address space at {@code app/cbl/CBTRN02C.cbl:L707-L711}, which leaves
+     * the operator a job log and nothing to record.</p>
      */
-    private static final int MAPPED_COLUMN_COUNT = 248;
+    private static final int MAPPED_COLUMN_COUNT = 252;
 
     /** Dialect the mapping model renders SQL types for, matching the shipped database. */
     private static final String POSTGRES_DIALECT = "org.hibernate.dialect.PostgreSQLDialect";

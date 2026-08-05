@@ -2,12 +2,15 @@ package com.carddemo.ledger.repository;
 
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import jakarta.persistence.LockModeType;
+import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Optional;
+import java.util.UUID;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.data.repository.Repository;
-import org.springframework.data.repository.query.Param;
 
 /**
  * Finds and stores rows of {@link AccountBalanceProjectionEntity}, the balance and the two
@@ -102,4 +105,56 @@ public interface AccountBalanceProjectionRepository
      * @return how many accounts the table holds
      */
     long count();
+
+    /**
+     * Replaces one account's three value columns with the state a change published, unless the row
+     * already carries a later change.
+     *
+     * <p>One statement rather than read-then-write. It is idempotent, so replaying the topic
+     * converges on the same rows. It is ordered too, so a redelivery arriving behind a newer change
+     * discards itself instead of moving the replica backwards.
+     *
+     * <p>The write replaces rather than adds, and that is the source semantic.
+     * {@code app/cbl/COACTUPC.cbl:L3964-L3974} moves the balance and both accumulators from the
+     * screen onto the record, overwriting whatever the posting program had accumulated, and
+     * {@code app/cbl/CBACT04C.cbl:L353-L354} moves zero into both accumulators. Both are rewrites of
+     * the one {@code ACCTDAT} record, and this projection is a copy of three of its fields.
+     *
+     * <p>An absent row is inserted, which is how an account opened after deployment first gets a
+     * projection. Without that insert the posting path has nothing to add to, and
+     * {@code domain/AccountBalanceUpdater} raises for every transaction on that account forever.
+     *
+     * <p>{@code source_occurred_at IS NULL} on the stored row means the row came from
+     * {@code V2__seed.sql}. Any change supersedes it.
+     *
+     * @param accountId        the eleven-digit account identifier, the primary key
+     * @param currentBalance   ACCT-CURR-BAL, scale 2
+     * @param cycleCredit      ACCT-CURR-CYC-CREDIT, scale 2
+     * @param cycleDebit       ACCT-CURR-CYC-DEBIT, scale 2, signed
+     * @param sourceEventId    the event that carried the change
+     * @param sourceOccurredAt when that event occurred, from its envelope
+     * @return 1 when the row was written, and 0 when a later change was already recorded
+     */
+    @Modifying
+    @Query(value = """
+            INSERT INTO account_balance_projection (account_id, current_balance,
+                                                    cycle_credit, cycle_debit,
+                                                    source_event_id, source_occurred_at)
+            VALUES (:accountId, :currentBalance, :cycleCredit, :cycleDebit,
+                    :sourceEventId, :sourceOccurredAt)
+            ON CONFLICT (account_id) DO UPDATE SET
+                current_balance    = EXCLUDED.current_balance,
+                cycle_credit       = EXCLUDED.cycle_credit,
+                cycle_debit        = EXCLUDED.cycle_debit,
+                source_event_id    = EXCLUDED.source_event_id,
+                source_occurred_at = EXCLUDED.source_occurred_at
+            WHERE account_balance_projection.source_occurred_at IS NULL
+               OR account_balance_projection.source_occurred_at < EXCLUDED.source_occurred_at
+            """, nativeQuery = true)
+    int applyStateChange(@Param("accountId") String accountId,
+            @Param("currentBalance") BigDecimal currentBalance,
+            @Param("cycleCredit") BigDecimal cycleCredit,
+            @Param("cycleDebit") BigDecimal cycleDebit,
+            @Param("sourceEventId") UUID sourceEventId,
+            @Param("sourceOccurredAt") Instant sourceOccurredAt);
 }

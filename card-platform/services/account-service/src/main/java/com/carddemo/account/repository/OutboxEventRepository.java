@@ -155,4 +155,31 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = SKIP_LOCKED_TIMEOUT))
     List<OutboxEventEntity> findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
             OutboxEventEntity.RelayState relayState, Instant claimedBefore, Limit limit);
+
+    /**
+     * Returns abandoned rows that still owe a terminal diagnostic, oldest attempt first.
+     *
+     * <p>An abandoned row is terminal and {@link #claimDueRows(Instant, Limit)} does not return it,
+     * so without this query the sweep that gave up on a row is the last sweep that ever sees it.
+     * This is the query that makes a refused dead letter a delay rather than a loss: the obligation
+     * sits in {@code dead_letter_state} and every later sweep reads it back until the broker
+     * acknowledges the diagnostic.
+     *
+     * <p>The same {@code SKIP LOCKED} lock the claim query takes applies here, so two relay
+     * instances sweeping one table divide the owed diagnostics between them instead of publishing
+     * the same one twice.
+     *
+     * <p>The partial index {@code ix_outbox_event_dead_letter_required} from
+     * {@code src/main/resources/db/migration/V5__outbox_dead_letter_state.sql} serves this query and
+     * holds only the owed rows, so the read costs nothing while the relay is healthy.
+     *
+     * @param deadLetterState always {@link OutboxEventEntity.DeadLetterState#REQUIRED}; passing it
+     *                        keeps the derived query readable rather than hiding the state in a name
+     * @param limit           how many owed rows one sweep takes on
+     * @return abandoned rows owing a diagnostic, oldest attempt first, and empty when none is owed
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = SKIP_LOCKED_TIMEOUT))
+    List<OutboxEventEntity> findByDeadLetterStateOrderByLastAttemptAtAsc(
+            OutboxEventEntity.DeadLetterState deadLetterState, Limit limit);
 }

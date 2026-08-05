@@ -3,6 +3,7 @@ package com.carddemo.equivalence;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.cobol.PicClause;
@@ -159,7 +160,8 @@ class ProjectionBootstrapContractTest {
 
     /** Modules whose migrations this class reads. */
     private static final List<String> SEEDED_MODULES = List.of(
-            "authorization-service", "ledger-posting-service", "account-service", "card-service");
+            "authorization-service", "ledger-posting-service", "notification-service",
+            "account-service", "card-service");
 
     /** Every module, including those that seed nothing, for the configuration assertions. */
     private static final List<String> ALL_MODULES = List.of(
@@ -205,6 +207,13 @@ class ProjectionBootstrapContractTest {
         tables.put("account-service.card_xref",
                 "Replica used by the account update path to derive the customer identifier from "
                         + "the account identifier instead of trusting a caller-supplied pairing");
+        tables.put("notification-service.cardholder_context",
+                "Read by every rendered alert, filling the ten cardholder fields "
+                        + "5000-CREATE-STATEMENT assembles at app/cbl/CBSTM03A.CBL:L462-L485. The "
+                        + "account service owns the customer record. This table was absent from "
+                        + "this inventory while it was created by a migration and filled by none, "
+                        + "which is why every alert for an account whose customer record had not "
+                        + "changed since deployment rendered with no name and no address");
         return Map.copyOf(tables);
     }
 
@@ -413,6 +422,84 @@ class ProjectionBootstrapContractTest {
                             + "app/data/ASCII/cardxref.txt");
             assertEquals(FIXTURE_ROW_COUNT, seededRows("card-service", "card").size(),
                     "the card table holds one row per record of app/data/ASCII/carddata.txt");
+            assertEquals(FIXTURE_ROW_COUNT,
+                    seededRows("notification-service", "cardholder_context").size(),
+                    "the cardholder projection holds one row per customer of "
+                            + "app/data/ASCII/custdata.txt, resolved to its account through "
+                            + "app/data/ASCII/cardxref.txt, so a first alert renders complete "
+                            + "cardholder fields rather than blank ones");
+        }
+
+        /**
+         * Asserts every seeded cardholder row carries the values its customer record holds.
+         *
+         * <p>A row count alone would pass over fifty invented rows. This compares the ten fields an
+         * alert reports against {@code app/data/ASCII/custdata.txt}, whose layout is
+         * {@code 01 CUSTOMER-RECORD} at {@code app/cpy/CVCUS01Y.cpy:L4-L23}, resolving each customer
+         * to its account through {@code app/data/ASCII/cardxref.txt} exactly as the seed does. The ten
+         * fields are the ten {@code 5000-CREATE-STATEMENT} assembles at
+         * {@code app/cbl/CBSTM03A.CBL:L462-L485}.
+         */
+        @Test
+        @DisplayName("the cardholder projection opens on every customer record of the fixture")
+        void theCardholderProjectionOpensOnEveryCustomerRecord() {
+            Map<String, String> accountByCustomer = new LinkedHashMap<>();
+            for (CopybookRecordParser.CardCrossReferenceRecord xref
+                    : CardDemoFixtureLoader.loadCardCrossReferences()) {
+                accountByCustomer.put(xref.customerId().trim(), xref.accountId().trim());
+            }
+
+            Map<String, CopybookRecordParser.CustomerRecord> byAccount = new LinkedHashMap<>();
+            for (CopybookRecordParser.CustomerRecord customer
+                    : CardDemoFixtureLoader.loadCustomers()) {
+                String account = accountByCustomer.get(customer.customerId().trim());
+                assertNotNull(account, "every customer of the fixture resolves to an account");
+                byAccount.put(account, customer);
+            }
+
+            List<String> divergent = new ArrayList<>();
+            for (SeededRow row : seededRows("notification-service", "cardholder_context")) {
+                String account = row.text("account_id").trim();
+                CopybookRecordParser.CustomerRecord customer = byAccount.get(account);
+                if (customer == null) {
+                    divergent.add("seeded account not in the fixture");
+                    continue;
+                }
+                compare(divergent, row, "first_name", customer.firstName());
+                compare(divergent, row, "middle_name", customer.middleName());
+                compare(divergent, row, "last_name", customer.lastName());
+                compare(divergent, row, "address_line_1", customer.addressLine1());
+                compare(divergent, row, "address_line_2", customer.addressLine2());
+                compare(divergent, row, "address_line_3", customer.addressLine3());
+                compare(divergent, row, "state_code", customer.stateCode());
+                compare(divergent, row, "country_code", customer.countryCode());
+                compare(divergent, row, "zip_code", customer.addressZip());
+            }
+
+            assertEquals(List.of(), divergent,
+                    "each seeded cardholder field must carry the value its customer record holds, "
+                            + "or a first alert would report a cardholder the fixture never "
+                            + "described: " + divergent);
+        }
+
+        /**
+         * Compares one seeded column against one fixture field, recording a divergence.
+         *
+         * <p>Both sides are trimmed. The fixture holds each field padded to its declared width and
+         * the seed stores it trimmed, because a renderer pads every field to the width its source
+         * field declares, so trailing spaces are a rendering concern rather than a storage one.
+         *
+         * @param divergent the running list of divergences
+         * @param row       the seeded row
+         * @param column    the column to read
+         * @param expected  the fixture value
+         */
+        private void compare(List<String> divergent, SeededRow row, String column,
+                String expected) {
+            String seeded = row.text(column).trim();
+            if (!seeded.equals(expected == null ? "" : expected.trim())) {
+                divergent.add(at("notification-service", "cardholder_context", column, 0));
+            }
         }
 
         /**
@@ -904,12 +991,83 @@ class ProjectionBootstrapContractTest {
          * reads the rows back.</p>
          */
         @Test
-        @DisplayName("the platform declares exactly the seven listeners named here, and no other")
-        void thePlatformDeclaresExactlyTheSevenNamedListeners() {
+        @DisplayName("the platform declares exactly the nine listeners named here, and no other")
+        void thePlatformDeclaresExactlyTheNineNamedListeners() {
             assertEquals(EXPECTED_LISTENERS, listenerSources().keySet(),
                     "a listener added or removed changes what consumes the one event an "
                             + "authorization call publishes, and the fan-out is the property this "
                             + "migration exists to demonstrate");
+        }
+
+        /**
+         * Asserts the authorization event has at least three direct consumers, each in its own
+         * service and each under a consumer group of its own.
+         *
+         * <p>This is the user's success condition read literally: "authorizing a transaction produces
+         * one event, and at least three independent services consume that event without any direct
+         * coupling to each other or to the authorization service". AAP 0.1.1 and 0.8.3 carry it.
+         *
+         * <p>Three separate properties are checked, because two of them can hold while the third
+         * fails. The count is at least three. No consumer is the producer, so the fan-out is not the
+         * authorization service reading its own event back. And each consumer resolves a distinct
+         * group property, because a group is what Kafka tracks offsets against: three listeners
+         * sharing one group would divide the partitions between them, so each record would reach
+         * exactly one of the three and the fan-out would be a partition split wearing the shape of a
+         * fan-out.
+         *
+         * <p>The floor is a minimum and not an equality. A fourth independent consumer would satisfy
+         * the requirement too, and the exact inventory is pinned by
+         * {@link #thePlatformDeclaresExactlyTheNineNamedListeners()} instead.
+         */
+        @Test
+        @DisplayName("the authorization event has at least three independent direct consumers")
+        void theAuthorizationEventHasAtLeastThreeIndependentDirectConsumers() {
+            String authorizedTopicProperty = "carddemo.kafka.topics.transaction-authorized";
+            Map<String, String> groupByListener = new LinkedHashMap<>();
+
+            for (Map.Entry<String, String> listener : listenerSources().entrySet()) {
+                if (authorizedTopicProperty.equals(topicPropertyOf(listener.getValue()))) {
+                    groupByListener.put(listener.getKey(), groupPropertyOf(listener.getValue()));
+                }
+            }
+
+            Set<String> modules = groupByListener.keySet().stream()
+                    .map(key -> key.split(" ")[0])
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+
+            assertTrue(groupByListener.size() >= 3,
+                    "the one event an authorization call publishes must be read directly by at "
+                            + "least three consumers, and these read it: " + groupByListener);
+            assertEquals(groupByListener.size(), modules.size(),
+                    "each consumer must live in a service of its own, so no two of them share a "
+                            + "deployment or a failure: " + groupByListener.keySet());
+            assertFalse(modules.contains("authorization-service"),
+                    "the producer must not appear among the consumers, or the fan-out would be the "
+                            + "authorization service reading its own event back: " + modules);
+            assertFalse(groupByListener.containsValue(""),
+                    "every listener must name the property its group comes from, so the group it "
+                            + "joins can be read from the source: " + groupByListener);
+
+            // Compare the group NAMES each service resolves, not the property names. Two services
+            // may name the same property, because each resolves it from its own application.yml:
+            // the ledger and the fraud detector both read spring.kafka.consumer.group-id and that
+            // property carries a different value in each of their files. Comparing property names
+            // would report those two as sharing a group when they do not.
+            Map<String, String> resolvedGroups = new LinkedHashMap<>();
+            for (Map.Entry<String, String> listener : groupByListener.entrySet()) {
+                String module = listener.getKey().split(" ")[0];
+                resolvedGroups.put(listener.getKey(),
+                        resolvedGroupName(module, listener.getValue()));
+            }
+
+            assertFalse(resolvedGroups.containsValue(""),
+                    "every group property must resolve to a name in its own module's "
+                            + "application.yml: " + resolvedGroups);
+            assertEquals(new LinkedHashSet<>(resolvedGroups.values()).size(),
+                    resolvedGroups.size(),
+                    "each consumer must join a group of its own. Sharing one group would divide the "
+                            + "partitions between them, so each record would reach one consumer "
+                            + "instead of all three: " + resolvedGroups);
         }
 
         @Test
@@ -1148,40 +1306,52 @@ class ProjectionBootstrapContractTest {
          * <p>One authorization call publishes one event, and the fan-out of that event is the
          * property this migration exists to demonstrate. An inventory assertion is what makes a
          * listener silently lost or silently added a build failure: a count, or an emptiness check,
-         * passes with one listener and hides the other six.
+         * passes with one listener and hides the other eight.
          *
          * <p>Four services consume. The authorization service reads the two state-change events
-         * that keep the projections its decline rules read current, ledger posting and fraud
-         * detection each read the authorization event under a group of their own, and the
-         * notification service reads three.
+         * that keep the projections its decline rules read current. Ledger posting, fraud detection
+         * and notification each read the authorization event under a group of their own, which is
+         * the three independent consumers AAP 0.1.1 and 0.8.3 require. Ledger posting also reads the
+         * account state-change event that keeps its balance projection current, and the notification
+         * service reads four topics in all.
+         *
+         * <p>{@code account.state-changed} therefore carries two independent readers, and the two
+         * hold different sets of its components. The authorization service replicates the credit
+         * limit and the expiry date its decline rules read; the ledger replicates the balance and the
+         * two cycle accumulators its posting path adds to. Neither reads the other's copy.
          */
         private static final Set<String> EXPECTED_LISTENERS = new LinkedHashSet<>(List.of(
                 "authorization-service AccountStateChangedConsumer.java",
                 "authorization-service CardUpdatedConsumer.java",
+                "ledger-posting-service AccountStateChangedConsumer.java",
                 "ledger-posting-service TransactionAuthorizedConsumer.java",
                 "fraud-detection-service TransactionAuthorizedConsumer.java",
                 "notification-service CustomerContextChangedConsumer.java",
                 "notification-service FraudFlaggedConsumer.java",
+                "notification-service TransactionAuthorizedConsumer.java",
                 "notification-service TransactionPostedConsumer.java"));
 
         /**
          * The reader set of each consumed topic, keyed by the property the listener resolves.
          *
-         * <p>{@code transaction.authorized} carrying two independent readers is the user's
-         * headline requirement made checkable: neither reader appears in the other's list, and
-         * neither is the authorization service.
+         * <p>{@code transaction.authorized} carrying three independent readers is the user's
+         * headline requirement made checkable: no reader appears in another's list, and none of the
+         * three is the authorization service. Ledger posting derives the balance, fraud detection
+         * scores the risk, and notification alerts the cardholder, each under a group of its own.
          *
          * <p>Each reader list is held in ascending order and the assertion sorts what it collects,
          * so the assertion reports membership and not the order the source tree is walked in.
          */
         private static final Map<String, List<String>> EXPECTED_TOPIC_READERS = Map.of(
                 "carddemo.kafka.topics.account-state-changed",
-                List.of("authorization-service AccountStateChangedConsumer.java"),
+                List.of("authorization-service AccountStateChangedConsumer.java",
+                        "ledger-posting-service AccountStateChangedConsumer.java"),
                 "carddemo.kafka.topics.card-updated",
                 List.of("authorization-service CardUpdatedConsumer.java"),
                 "carddemo.kafka.topics.transaction-authorized",
                 List.of("fraud-detection-service TransactionAuthorizedConsumer.java",
-                        "ledger-posting-service TransactionAuthorizedConsumer.java"),
+                        "ledger-posting-service TransactionAuthorizedConsumer.java",
+                        "notification-service TransactionAuthorizedConsumer.java"),
                 "carddemo.kafka.topics.customer-context-changed",
                 List.of("notification-service CustomerContextChangedConsumer.java"),
                 "carddemo.kafka.topics.fraud-assessed",
@@ -1205,6 +1375,47 @@ class ProjectionBootstrapContractTest {
             Matcher topic = Pattern.compile("topics\\s*=\\s*\"\\$\\{([^:}]+)")
                     .matcher(withoutComments);
             return topic.find() ? topic.group(1) : "";
+        }
+
+        /**
+         * Resolves one group property to the group name a module's shipped configuration gives it.
+         *
+         * <p>A group value is written as a placeholder chain such as
+         * {@code ${OUTER:${INNER:literal}}}, and the literal at the end is the name the shipped
+         * configuration joins. This reader follows the chain to that literal.
+         *
+         * @param module        the Maven module directory name
+         * @param groupProperty the property the listener names
+         * @return the group name, or the empty string when the module's configuration names none
+         */
+        private String resolvedGroupName(String module, String groupProperty) {
+            String configuration = configurationOf(module);
+            String leaf = groupProperty.substring(groupProperty.lastIndexOf('.') + 1);
+            Matcher declaration = Pattern.compile(
+                    Pattern.quote(leaf) + "\\s*:\\s*\"?([^\"\\n]+)\"?").matcher(configuration);
+            if (!declaration.find()) {
+                return "";
+            }
+            String value = declaration.group(1).trim();
+            Matcher literal = Pattern.compile("([A-Za-z0-9._-]+)\\}*\\s*\"?$").matcher(value);
+            return literal.find() ? literal.group(1) : value;
+        }
+
+        /**
+         * Reads the consumer-group property one listener resolves.
+         *
+         * <p>Comments are stripped and literals kept, as {@link #topicPropertyOf(String)} does, so a
+         * property named in prose cannot be mistaken for one the annotation resolves.
+         *
+         * @param source the listener source, as shipped
+         * @return the property name, or the empty string when the listener names none
+         */
+        private String groupPropertyOf(String source) {
+            String withoutComments = source.replaceAll("(?s)/\\*.*?\\*/", " ")
+                    .replaceAll("//[^\\n]*", " ");
+            Matcher group = Pattern.compile("groupId\\s*=\\s*\"\\$\\{([^:}]+)")
+                    .matcher(withoutComments);
+            return group.find() ? group.group(1) : "";
         }
 
         /**

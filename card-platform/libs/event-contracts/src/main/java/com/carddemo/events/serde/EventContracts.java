@@ -129,7 +129,14 @@ public final class EventContracts {
     /**
      * The event types this module holds a contract for.
      *
-     * @return the seven registered event types
+     * <p>The set is read from the registry rather than restated here, so it grows with the schema
+     * documents on the classpath. It currently holds nine types — the five transaction and fraud
+     * events, the three state-change events and the dead-letter envelope — drawn from thirteen
+     * versioned documents, because a type with more than one governed version contributes one
+     * entry and {@code FraudFlagged} and {@code FraudCleared} contribute one entry each while
+     * sharing a topic.
+     *
+     * @return every registered event type
      */
     public static Set<String> eventTypes() {
         return SCHEMA_RESOURCES.keySet();

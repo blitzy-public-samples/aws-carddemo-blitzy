@@ -195,24 +195,51 @@ final class AuthorizationRequestTest {
     }
 
     /**
-     * Asserts the card number is the only identifier that names a subject.
+     * Asserts either identifier names a subject, and that naming neither is the one refusal.
      *
-     * <p>{@code app/cbl/COTRN02C.cbl:L206-L209} also accepts an account identifier and resolves a
-     * card from the alternate index, and that branch is not reproduced: the card it returns is
-     * whichever one the index holds first rather than one the caller presented, so a caller naming
-     * an account authorizes a card the caller never held. The record the decision reproduces carries
-     * a card number and no account identifier at all ({@code app/cpy/CVTRA06Y.cpy:L4-L18}).
+     * <p>{@code app/cbl/COTRN02C.cbl:L196-L209} accepts an account identifier and resolves a card
+     * from the alternate index, {@code :L210-L223} accepts a card number and resolves the account
+     * from the cross-reference, and {@code :L224-L229} is the {@code WHEN OTHER} limb that refuses a
+     * request carrying neither with {@value AuthorizationRequest#IDENTIFIER_REQUIRED_MESSAGE}. All
+     * three limbs are reproduced, so validation here asks only that one of the two arrived. Which
+     * card an account resolves to is the service's question rather than this record's, and
+     * {@code domain/AuthorizationService} answers it against {@code card_xref}.
      */
     @Test
-    void onlyACardNumberNamesTheSubject() {
+    void eitherIdentifierNamesTheSubject() {
         assertEquals(Set.of(AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE),
                 messages(withIdentifiers(null, null)),
-                "a request naming no card is rejected");
-        assertEquals(Set.of(AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE),
-                messages(withIdentifiers(ACCOUNT_ID, null)),
-                "an account identifier does not substitute for a card number");
+                "a request naming neither identifier is the WHEN OTHER refusal");
+        assertEquals(Set.of(), messages(withIdentifiers(ACCOUNT_ID, null)),
+                "an account identifier alone names the subject");
         assertEquals(Set.of(), messages(withIdentifiers(null, CARD_NUMBER)),
                 "a card number alone names the subject");
+        assertEquals(Set.of(), messages(withIdentifiers(ACCOUNT_ID, CARD_NUMBER)),
+                "both identifiers together are a cross-check rather than a conflict");
+    }
+
+    /**
+     * Asserts the two derived predicates separate the two source branches.
+     *
+     * <p>{@link AuthorizationRequest#isIdentifierSupplied()} carries the constraint and answers the
+     * {@code WHEN OTHER} question of {@code app/cbl/COTRN02C.cbl:L224-L229}.
+     * {@link AuthorizationRequest#isCardNumberSupplied()} carries no constraint and answers a
+     * different question: which of the two branches at {@code :L196-L209} and {@code :L210-L223} the
+     * request took. Collapsing the two into one predicate would make an account-only request either
+     * unrefusable or unresolvable.
+     */
+    @Test
+    void theTwoPredicatesSeparateTheTwoSourceBranches() {
+        assertFalse(withIdentifiers(null, null).isIdentifierSupplied(),
+                "neither identifier supplied fails the constraint");
+        assertTrue(withIdentifiers(ACCOUNT_ID, null).isIdentifierSupplied(),
+                "an account identifier satisfies the constraint");
+        assertFalse(withIdentifiers(ACCOUNT_ID, null).isCardNumberSupplied(),
+                "an account-only request took the account branch");
+        assertTrue(withIdentifiers(null, CARD_NUMBER).isCardNumberSupplied(),
+                "a card-only request took the card branch");
+        assertTrue(withIdentifiers(ACCOUNT_ID, CARD_NUMBER).isCardNumberSupplied(),
+                "a request carrying both takes the card branch and cross-checks the account");
     }
 
     /**
@@ -429,6 +456,12 @@ final class AuthorizationRequestTest {
      *
      * <p>Widening would authorize a different identifier. Zero-padding {@code 4111} produces
      * {@code 0000000000004111}, a valid sixteen-digit key belonging to whichever cardholder holds it.
+     *
+     * <p>A short identifier reports its shape and not
+     * {@value AuthorizationRequest#IDENTIFIER_REQUIRED_MESSAGE}. The field arrived filled, so
+     * {@code app/cbl/COTRN02C.cbl:L197} and {@code :L211} are the tests it failed, and the
+     * {@code WHEN OTHER} limb at {@code :L224-L229} is reached only by a request that filled neither
+     * field.
      */
     @Test
     void aShortIdentifierIsRefusedRatherThanWidened() {
@@ -436,10 +469,9 @@ final class AuthorizationRequestTest {
                 "one digit is not the eleven-digit identifier the record field holds");
         assertNull(withIdentifiers(null, "4111").canonicalCardNumber(),
                 "four digits are not the sixteen-digit card number the key holds");
-        assertEquals(Set.of(AuthorizationRequest.ACCOUNT_ID_NOT_NUMERIC_MESSAGE,
-                        AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE),
+        assertEquals(Set.of(AuthorizationRequest.ACCOUNT_ID_NOT_NUMERIC_MESSAGE),
                 messages(withIdentifiers("7", null)),
-                "the short account reports its shape and that no usable identifier remains");
+                "the present but short account reports its shape and nothing else");
         assertEquals(Set.of(AuthorizationRequest.CARD_NUMBER_NOT_NUMERIC_MESSAGE),
                 messages(withIdentifiers(null, "4111")),
                 "the present but short card reports its shape");

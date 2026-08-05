@@ -43,7 +43,7 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
 /**
  * Request authentication and authorization for the notification service.
  *
- * <p>This service holds an account-keyed read model and renders a cardholder alert. Its one route
+ * <p>This service holds a card-keyed read model and renders a cardholder alert. Its one route
  * returns an account's transaction history, which discloses what a cardholder bought, where and
  * for how much. The route is scoped to accounts the caller owns, and its page size is bounded.
  *
@@ -194,9 +194,11 @@ public class SecurityConfig {
      * <p>An identity becomes one authority for its role and one authority per ownership scope, so
      * the whole entitlement of a caller travels in the authority list and no custom principal type
      * is needed. A scope reads {@code SCOPE_ACCOUNT_00000000001} or
-     * {@code SCOPE_CARD_1134636222d1a2485d20203d0e970c72124893eb01be73a5fde5fdcccc2c4ac9}:
-     * the kind, then the identifier exactly as
-     * the column holds it, leading zeros included.
+     * {@code SCOPE_CARD_<card token>}: the kind, then the identifier exactly as the column holds
+     * it, leading zeros included. A card token is the sixty-four hexadecimal characters
+     * {@code com.carddemo.cobol.PanMasker.cardToken} derives under the configured card-token key,
+     * so an authority granted for one card names that card alone and no card sharing its last four
+     * digits.
      *
      * @param identities the configured identities
      * @return one {@link UserDetails} per configured identity

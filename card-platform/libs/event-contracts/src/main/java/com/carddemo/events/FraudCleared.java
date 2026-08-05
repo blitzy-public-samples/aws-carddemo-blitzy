@@ -24,9 +24,11 @@ import java.util.regex.Pattern;
  *
  * <p>{@code FraudFlagged} and {@code FraudCleared} share the {@code fraud.assessed} topic. A
  * consumer reads {@code eventType} to learn which payload arrived, so the canonical constructor
- * accepts {@link #EVENT_TYPE} and rejects every other value. No service consumes that topic today:
- * the {@code notification-fraud} consumer group is declared in {@code card-platform/.env.example}
- * and no listener is registered against it.
+ * accepts {@link #EVENT_TYPE} and rejects every other value. The notification service consumes that
+ * topic under the {@code notification-fraud} consumer group, in
+ * {@code com.carddemo.notification.messaging.FraudFlaggedConsumer}, and routes on
+ * {@code eventType}: a flagged assessment renders a cardholder alert and a cleared one records the
+ * outcome without one.
  *
  * <p>The fraud detection service reads the authorization event and publishes this one. That
  * service never sits in the authorization response path and calls no other consumer.

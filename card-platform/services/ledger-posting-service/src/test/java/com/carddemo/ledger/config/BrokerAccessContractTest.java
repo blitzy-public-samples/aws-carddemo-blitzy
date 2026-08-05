@@ -68,10 +68,26 @@ class BrokerAccessContractTest {
     /** The consumer group placeholder both matrices name this service's group by. */
     private static final String GROUP = "GROUP_LEDGER_POSTING";
 
-    /** The one key under {@code carddemo.kafka.topics} this service reads rather than writes. */
-    private static final String CONSUMED_KEY = "transaction-authorized";
+    /** The consumer group of the second listener, which keeps the balance projection current. */
+    private static final String ACCOUNT_STATE_GROUP = "GROUP_LEDGER_ACCOUNT";
 
-    /** A suffix composed with {@link #CONSUMED_KEY}, not an independently addressable topic. */
+    /**
+     * Each key under {@code carddemo.kafka.topics} this service reads, mapped to the group it reads
+     * under.
+     *
+     * <p>Two listeners, two groups. The posting listener reads the authorization event, and the
+     * account-state listener keeps {@code account_balance_projection} current so an account opened
+     * after deployment gets a row and a closed billing cycle zeroes the two accumulators here.
+     *
+     * <p>Every other key under that block is a destination this service writes. Each consumed key
+     * needs three entries between the two matrices: a consumer entry naming its own group, and a
+     * producer entry on its composed dead-letter destination.
+     */
+    private static final Map<String, String> CONSUMED_KEYS = Map.of(
+            "transaction-authorized", GROUP,
+            "account-state-changed", ACCOUNT_STATE_GROUP);
+
+    /** A suffix composed with each of {@link #CONSUMED_KEYS}, not an addressable topic itself. */
     private static final String DEAD_LETTER_SUFFIX_KEY = "dead-letter-suffix";
 
     /** Reads {@code ${NAME:default}}, and also {@code ${OUTER:${NAME:default}}}. */
@@ -102,25 +118,35 @@ class BrokerAccessContractTest {
         @DisplayName("grants the source-specific dead-letter destination")
         void grantsTheSourceSpecificDeadLetterDestination() {
             Map<String, Topic> topics = topics();
-            Topic consumed = topics.get(CONSUMED_KEY);
             Topic suffix = topics.get(DEAD_LETTER_SUFFIX_KEY);
+            String matrix = collapseContinuations(read(platformRoot().resolve(COMPOSE_FILE)));
 
-            assertThat(collapseContinuations(read(platformRoot().resolve(COMPOSE_FILE))))
-                    .contains("grant_producer \"$${" + PRINCIPAL + "}\" \"$${"
-                            + consumed.variable() + "}$${" + suffix.variable() + "}\"");
+            for (String consumedKey : CONSUMED_KEYS.keySet()) {
+                Topic consumed = topics.get(consumedKey);
+                String expected = "grant_producer \"$${" + PRINCIPAL + "}\" \"$${"
+                        + consumed.variable() + "}$${" + suffix.variable() + "}\"";
+                assertThat(matrix)
+                        .as("%s is consumed, so %s must let this service write its dead-letter "
+                                + "destination %s", consumedKey, COMPOSE_FILE, expected)
+                        .contains(expected);
+            }
         }
 
         @Test
         @DisplayName("grants one consumer entry for the consumed topic under this service's group")
         void grantsTheConsumedTopic() {
-            String matrix = read(platformRoot().resolve(COMPOSE_FILE));
-            Topic consumed = topics().get(CONSUMED_KEY);
+            String matrix = collapseContinuations(read(platformRoot().resolve(COMPOSE_FILE)));
+            Map<String, Topic> topics = topics();
 
-            assertThat(collapseContinuations(matrix))
-                    .as("%s must let this service read %s under %s", COMPOSE_FILE,
-                            consumed.variable(), GROUP)
-                    .contains("grant_consumer \"$${" + PRINCIPAL + "}\" \"$${"
-                            + consumed.variable() + "}\" \"$${" + GROUP + "}\"");
+            for (Map.Entry<String, String> consumed : CONSUMED_KEYS.entrySet()) {
+                Topic topic = topics.get(consumed.getKey());
+                String expected = "grant_consumer \"$${" + PRINCIPAL + "}\" \"$${"
+                        + topic.variable() + "}\" \"$${" + consumed.getValue() + "}\"";
+                assertThat(matrix)
+                        .as("%s must let this service read %s under %s", COMPOSE_FILE,
+                                topic.variable(), consumed.getValue())
+                        .contains(expected);
+            }
         }
     }
 
@@ -148,25 +174,35 @@ class BrokerAccessContractTest {
         @DisplayName("grants the source-specific dead-letter destination")
         void grantsTheSourceSpecificDeadLetterDestination() {
             Map<String, Topic> topics = topics();
-            Topic consumed = topics.get(CONSUMED_KEY);
             Topic suffix = topics.get(DEAD_LETTER_SUFFIX_KEY);
+            String matrix = collapseContinuations(read(platformRoot().resolve(KAFKA_MANIFEST)));
 
-            assertThat(collapseContinuations(read(platformRoot().resolve(KAFKA_MANIFEST))))
-                    .contains("grant_producer \"${" + PRINCIPAL + "}\" \"${"
-                            + consumed.variable() + "}${" + suffix.variable() + "}\"");
+            for (String consumedKey : CONSUMED_KEYS.keySet()) {
+                Topic consumed = topics.get(consumedKey);
+                String expected = "grant_producer \"${" + PRINCIPAL + "}\" \"${"
+                        + consumed.variable() + "}${" + suffix.variable() + "}\"";
+                assertThat(matrix)
+                        .as("%s is consumed, so %s must let this service write its dead-letter "
+                                + "destination %s", consumedKey, KAFKA_MANIFEST, expected)
+                        .contains(expected);
+            }
         }
 
         @Test
         @DisplayName("grants one consumer entry for the consumed topic under this service's group")
         void grantsTheConsumedTopic() {
             String matrix = collapseContinuations(read(platformRoot().resolve(KAFKA_MANIFEST)));
-            Topic consumed = topics().get(CONSUMED_KEY);
+            Map<String, Topic> topics = topics();
 
-            assertThat(matrix)
-                    .as("%s must let this service read %s under %s", KAFKA_MANIFEST,
-                            consumed.variable(), GROUP)
-                    .contains("grant_consumer \"${" + PRINCIPAL + "}\" \"${"
-                            + consumed.variable() + "}\" \"${" + GROUP + "}\"");
+            for (Map.Entry<String, String> consumed : CONSUMED_KEYS.entrySet()) {
+                Topic topic = topics.get(consumed.getKey());
+                String expected = "grant_consumer \"${" + PRINCIPAL + "}\" \"${"
+                        + topic.variable() + "}\" \"${" + consumed.getValue() + "}\"";
+                assertThat(matrix)
+                        .as("%s must let this service read %s under %s", KAFKA_MANIFEST,
+                                topic.variable(), consumed.getValue())
+                        .contains(expected);
+            }
         }
     }
 
@@ -179,8 +215,8 @@ class BrokerAccessContractTest {
         void namesBothDirections() {
             Map<String, Topic> topics = topics();
 
-            assertThat(topics).as("carddemo.kafka.topics must name the consumed topic")
-                    .containsKey(CONSUMED_KEY);
+            assertThat(topics).as("carddemo.kafka.topics must name every consumed topic")
+                    .containsKeys(CONSUMED_KEYS.keySet().toArray(String[]::new));
             assertThat(destinations()).as("this service publishes, so it must name a destination")
                     .isNotEmpty();
         }
@@ -208,7 +244,7 @@ class BrokerAccessContractTest {
     /** Every independently addressable topic this service writes. */
     private static Map<String, Topic> destinations() {
         Map<String, Topic> destinations = new LinkedHashMap<>(topics());
-        destinations.remove(CONSUMED_KEY);
+        CONSUMED_KEYS.keySet().forEach(destinations::remove);
         destinations.remove(DEAD_LETTER_SUFFIX_KEY);
         return destinations;
     }

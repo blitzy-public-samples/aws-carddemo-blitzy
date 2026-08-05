@@ -205,8 +205,8 @@ public class NotificationService {
      * <p>The card token names the card the rows are read under, and the card number reaches this
      * method in either form and is masked before it reaches the attempt row.
      * {@code statement_transaction.card_token} carries the key and
-     * {@code statement_transaction.card_number} carries the masked display value, which the check
-     * constraint {@code ck_statement_transaction_card_number} in
+     * {@code statement_transaction.masked_card_number} carries the masked display value, which the
+     * check constraint {@code ck_statement_transaction_masked_card_number} in
      * {@code src/main/resources/db/migration/V1__schema.sql} enforces.</p>
      *
      * <p>Rows arrive in ascending transaction-identifier order, reproducing
@@ -226,7 +226,7 @@ public class NotificationService {
      *        {@code app/cbl/CBSTM03A.CBL:L483}
      * @param newBalance the balance after posting, filling {@code ST-CURR-BAL} at
      *        {@code app/cbl/CBSTM03A.CBL:L484}; must not be {@code null}
-     * @param cardholder the cardholder fields, blank where no customer record is available; must
+     * @param cardholder the cardholder fields the projection holds for the account; must
      *        not be {@code null}
      * @param format the output format to render; must not be {@code null}
      * @return the rendered alert
@@ -285,7 +285,7 @@ public class NotificationService {
      * @param riskScore the score the fraud service assigned
      * @param triggeredRules the identifiers of the rules that fired; must not be {@code null}, and
      *        no element may be {@code null}
-     * @param cardholder the cardholder fields, blank where no customer record is available; must
+     * @param cardholder the cardholder fields the projection holds for the account; must
      *        not be {@code null}
      * @param format the output format to render; must not be {@code null}
      * @return the rendered alert
@@ -308,6 +308,75 @@ public class NotificationService {
         this.metrics.notificationsRendered(metricTag(format)).increment();
         LOGGER.info("Rendered a fraud alert as {} over {} triggered rules",
                 format, triggeredRules.size());
+
+        return alert;
+    }
+
+    /**
+     * Renders the alert one authorized transaction produces.
+     *
+     * <p>ADDITIVE. The source has no authorization program at all: the decision rules this alert
+     * follows live in the batch validation paragraphs at {@code app/cbl/CBTRN02C.cbl:L380-L420}, and
+     * {@code app/cbl/CBSTM03A.CBL} renders a statement per billing cycle rather than per transaction.
+     * The cardholder fields reported here are the fields {@code 5000-CREATE-STATEMENT} assembles at
+     * {@code app/cbl/CBSTM03A.CBL:L458-L504}.</p>
+     *
+     * <p>WHY THE BALANCE RENDERS AS SPACES. An authorization establishes no balance. The ledger
+     * derives the new balance when it posts the transaction, and publishes it on
+     * {@code TransactionPosted}, which
+     * {@link #renderPostedTransactionAlert(String, String, String, String, BigDecimal,
+     * CardholderDetails, RenderedFormat)} reports. This alert says a transaction was authorized and
+     * nothing about what the account now holds, so its balance field is left in the state
+     * {@code INITIALIZE STATEMENT-LINES} at {@code app/cbl/CBSTM03A.CBL:L459} leaves, exactly as a
+     * fraud alert is.</p>
+     *
+     * <p>WHY ONE DETAIL ROW AND NOT THE READ MODEL. The read model holds transactions the ledger has
+     * posted. An authorized transaction has not been posted yet, so reading the model would report
+     * every earlier transaction and omit the one this alert is about. The single detail row is built
+     * from the event, and the total is that one amount, which is what
+     * {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429} accumulates over a
+     * one-row set.</p>
+     *
+     * @param cardToken the token of the card the authorization named; must not be {@code null}
+     * @param cardNumber the masked card number the event carries, reported as supplied
+     * @param transactionId the authorized transaction; must not be {@code null}
+     * @param accountId the account identifier, filling {@code ST-ACCT-ID} at
+     *        {@code app/cbl/CBSTM03A.CBL:L483}
+     * @param description the transaction description, filling the detail row
+     * @param amount the authorized amount; must not be {@code null}
+     * @param cardholder the cardholder fields; must not be {@code null}
+     * @param format the output format to render; must not be {@code null}
+     * @return the rendered alert
+     * @throws NullPointerException when {@code cardToken}, {@code transactionId}, {@code amount},
+     *         {@code cardholder} or {@code format} is {@code null}
+     * @throws IllegalArgumentException when no renderer reports {@code format}
+     */
+    public String renderAuthorizationAlert(String cardToken, String cardNumber,
+            String transactionId, String accountId, String description, BigDecimal amount,
+            CardholderDetails cardholder, RenderedFormat format) {
+        Objects.requireNonNull(cardToken, "cardToken must not be null");
+        Objects.requireNonNull(transactionId, "transactionId must not be null");
+        Objects.requireNonNull(amount, "amount must not be null");
+        Objects.requireNonNull(cardholder, "cardholder must not be null");
+
+        NotificationRenderer renderer = rendererFor(format);
+        CardholderContext context = cardholderContext(cardholder, accountId, NO_BALANCE);
+
+        // The event already carries this field masked. Masking is idempotent, because it keeps the
+        // last four characters and rewrites the rest, so passing an already-masked value through
+        // returns it unchanged. Applying it anyway means a producer that ever sent a full number
+        // still writes a masked one to notification_log, which is what AAP 0.6.4 requires of every
+        // stored and published rendering of a card number.
+        String maskedCardNumber = PanMasker.maskCardNumber(cardNumber);
+
+        List<TransactionRow> detailRows =
+                List.of(new TransactionRow(transactionId, description, editTrailingSignZ(amount)));
+        BigDecimal total = accumulate(NO_TRANSACTIONS, amount);
+
+        String alert = renderer.renderStatementAlert(context, detailRows, total);
+        this.metrics.notificationsRendered(metricTag(format)).increment();
+        recordAttempt(cardToken, maskedCardNumber, transactionId, format);
+        LOGGER.info("Rendered an authorization alert as {} over one detail row", format);
 
         return alert;
     }
@@ -485,8 +554,13 @@ public class NotificationService {
      * separately. {@code 5000-CREATE-STATEMENT} at {@code app/cbl/CBSTM03A.CBL:L462-L485} reads the
      * same fields.</p>
      *
-     * <p>A component may be {@code null} or blank, and then renders as spaces. A caller holding no
-     * customer record uses {@link #blank()}.</p>
+     * <p>A component may be {@code null} or blank, and then renders as spaces, which is the state
+     * {@code INITIALIZE STATEMENT-LINES} at {@code app/cbl/CBSTM03A.CBL:L459} leaves.
+     *
+     * <p>There is deliberately no factory for an all-blank set. Each listener reads these fields
+     * through {@link CardholderContextReader#require(String)}, which reports a missing projection row
+     * rather than substituting blanks: an alert with no name and no address is a failure that used to
+     * look like a rendering, and the only way it can be noticed is if nothing manufactures it.</p>
      *
      * @param firstName {@code CUST-FIRST-NAME}
      * @param middleName {@code CUST-MIDDLE-NAME}
@@ -502,19 +576,6 @@ public class NotificationService {
     public record CardholderDetails(String firstName, String middleName, String lastName,
             String addressLine1, String addressLine2, String addressLine3, String stateCode,
             String countryCode, String zipCode, String ficoScore) {
-
-        /**
-         * Returns a set of cardholder fields that are all blank.
-         *
-         * <p>Every component renders as spaces, the state {@code INITIALIZE STATEMENT-LINES} at
-         * {@code app/cbl/CBSTM03A.CBL:L459} leaves. A consumer of {@code TransactionPosted} or
-         * {@code FraudFlagged} holds no customer record, because neither event carries one.</p>
-         *
-         * @return the blank fields
-         */
-        public static CardholderDetails blank() {
-            return new CardholderDetails("", "", "", "", "", "", "", "", "", "");
-        }
 
         /**
          * Renders the type and the component count, and no component value.

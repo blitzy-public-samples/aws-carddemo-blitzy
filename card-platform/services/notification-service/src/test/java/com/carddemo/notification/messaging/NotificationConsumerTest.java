@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -20,6 +21,8 @@ import com.carddemo.events.FraudFlagged;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionPosted;
 import com.carddemo.notification.config.ObservabilityConfig;
+import com.carddemo.notification.domain.CardholderContextReader;
+import com.carddemo.notification.entity.CardholderContextEntity;
 import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.repository.CardholderContextRepository;
 import com.carddemo.notification.repository.ProcessedEventRepository;
@@ -28,6 +31,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -100,6 +104,12 @@ class NotificationConsumerTest {
     void buildCollaborators() {
         processedEvents = mock(ProcessedEventRepository.class);
         cardholderContexts = mock(CardholderContextRepository.class);
+        // A present row is the realistic state: db/migration/V2__seed.sql bootstraps the projection
+        // for every account of the customer fixture. A missing row is reported as a fault now rather
+        // than rendered as blank cardholder fields, so leaving this unstubbed would assert against a
+        // failure path in tests that are about ordering and idempotency.
+        lenient().when(cardholderContexts.findById(anyString()))
+                .thenReturn(Optional.of(seededContext(ACCOUNT_ID)));
         acknowledgment = mock(Acknowledgment.class);
         transactionTemplate = new TransactionTemplate(mock(PlatformTransactionManager.class));
     }
@@ -117,7 +127,8 @@ class NotificationConsumerTest {
             statementTransactions = mock(StatementTransactionRepository.class);
             notificationService = mock(NotificationService.class);
             consumer = new TransactionPostedConsumer(statementTransactions, processedEvents,
-                    cardholderContexts, notificationService, transactionTemplate,
+                    new CardholderContextReader(cardholderContexts), notificationService,
+                    transactionTemplate,
                     new ObservabilityConfig().notificationMetrics(new SimpleMeterRegistry()));
         }
 
@@ -184,8 +195,8 @@ class NotificationConsumerTest {
         @BeforeEach
         void buildConsumer() {
             notificationService = mock(NotificationService.class);
-            consumer = new FraudFlaggedConsumer(cardholderContexts, processedEvents,
-                    notificationService, transactionTemplate,
+            consumer = new FraudFlaggedConsumer(new CardholderContextReader(cardholderContexts),
+                    processedEvents, notificationService, transactionTemplate,
                     new ObservabilityConfig().notificationMetrics(new SimpleMeterRegistry()));
         }
 
@@ -421,5 +432,17 @@ class NotificationConsumerTest {
      * @param value any text
      */
     private record NotAnAssessment(String value) {
+    }
+
+    /**
+     * One populated cardholder projection row, as {@code db/migration/V2__seed.sql} loads it.
+     *
+     * @param accountId the account the row is keyed by
+     * @return the row, with every field carrying a value
+     */
+    private static CardholderContextEntity seededContext(String accountId) {
+        return new CardholderContextEntity(accountId, "Immanuel", "Madeline", "Kessler",
+                "618 Deshaun Route", "Apt. 802", "Altenwerthshire", "NC", "USA", "12546", "274",
+                java.time.Instant.EPOCH, java.time.Instant.EPOCH);
     }
 }

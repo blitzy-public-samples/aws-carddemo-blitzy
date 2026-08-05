@@ -57,10 +57,10 @@ public class RetentionSweep {
     /** Rows one marker purge deletes, so a long-idle schema cannot produce one huge statement. */
     private static final int MARKER_PURGE_LIMIT = 1000;
 
-    /** Store of the card-keyed read model. */
     /** Rows one purge deletes, so a long-idle schema cannot produce one huge statement. */
     private static final int ROW_PURGE_LIMIT = 1000;
 
+    /** Store of the card-keyed read model. */
     private final StatementTransactionRepository statementTransactions;
 
     /** Store of the alert-attempt rows. */

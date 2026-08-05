@@ -147,11 +147,13 @@ spring:
     listener:
       ack-mode: manual_immediate
 
-# Properties this module owns. The one topic below carries a card update, and a card
-# list or a card read publishes nothing. docker-compose.yml creates the topic. The
-# outbox relay sweeps on the delay below, which @EnableScheduling on
-# CardApplication.java activates. This module registers no listener, so it carries no
-# retry setting: a delivery attempt count belongs to the service that consumes.
+# Properties this module owns. The first topic below carries a card update, and a card
+# list or a card read publishes nothing. The second carries the terminal diagnostic the
+# outbox relay publishes for a row it abandoned. docker-compose.yml creates both topics
+# and grants this service a producer entry on each. The outbox relay sweeps on the delay
+# below, which @EnableScheduling on CardApplication.java activates. This module registers
+# no listener, so it carries no retry setting: a delivery attempt count belongs to the
+# service that consumes.
 carddemo:
   # Refuse oversized declared bodies before Jackson reads them, and apply the shared stream
   # constraints to a chunked request that declares no length.
@@ -160,6 +162,15 @@ carddemo:
   kafka:
     topics:
       card-updated: ${TOPIC_CARD_UPDATED:card.updated}
+      # The one shared dead-letter topic. This module registers no listener, so no
+      # record of its own is ever dead-lettered on consumption. outbox/OutboxRelay
+      # publishes one governed DeadLetterEnvelope here for a row it has abandoned
+      # after the ten attempts OutboxEventEntity.MAX_DELIVERY_ATTEMPTS allows, which
+      # is the one record of an event this service gave up on. The publish is
+      # awaited by messaging/KafkaEventPublisher, so a broker that
+      # refuses it rolls the sweep back and the row is offered again rather than
+      # left terminal with no diagnostic anywhere.
+      dead-letter: ${TOPIC_DEAD_LETTER:carddemo.dead-letter}
   outbox:
     relay:
       fixed-delay-ms: ${OUTBOX_RELAY_INTERVAL_MS:500}

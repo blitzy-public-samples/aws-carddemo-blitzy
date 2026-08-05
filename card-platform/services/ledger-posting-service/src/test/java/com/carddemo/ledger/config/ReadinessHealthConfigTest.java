@@ -71,18 +71,98 @@ class ReadinessHealthConfigTest {
     }
 
     @Test
-    @DisplayName("requires the transaction listener to be running")
-    void requiresTheTransactionListenerToBeRunning() {
+    @DisplayName("requires both listeners to be running")
+    void requiresBothListenersToBeRunning() {
         ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
         KafkaListenerEndpointRegistry registry = mock(KafkaListenerEndpointRegistry.class);
         MessageListenerContainer transaction = mock(MessageListenerContainer.class);
-        when(transaction.isRunning()).thenReturn(true, false);
-        when(registry.getListenerContainers()).thenReturn(List.of(transaction));
+        MessageListenerContainer accountState = mock(MessageListenerContainer.class);
+        when(transaction.isRunning()).thenReturn(true);
+        when(accountState.isRunning()).thenReturn(true, false);
+        when(registry.getListenerContainers()).thenReturn(List.of(transaction, accountState));
         when(provider.getIfAvailable()).thenReturn(registry);
         HealthIndicator indicator = config.listenersHealthIndicator(provider);
 
         assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
         assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+    }
+
+    /**
+     * Asserts a registered listener that is not running holds readiness down.
+     *
+     * <p>This is the condition the probe exists to catch. The expected number of listeners is read
+     * from the registry rather than written into the class, so what readiness can still tell an
+     * operator is whether the listeners that registered are actually consuming. A listener registered
+     * and stopped means this instance either posts nothing or lets its replica of the account record
+     * fall behind without limit, and it must not receive traffic.
+     */
+    @Test
+    @DisplayName("stays down while a registered listener is not running")
+    void staysDownWhileARegisteredListenerIsNotRunning() {
+        ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
+        KafkaListenerEndpointRegistry registry = mock(KafkaListenerEndpointRegistry.class);
+        MessageListenerContainer posting = mock(MessageListenerContainer.class);
+        MessageListenerContainer accountState = mock(MessageListenerContainer.class);
+        when(posting.isRunning()).thenReturn(true);
+        when(accountState.isRunning()).thenReturn(false);
+        when(registry.getListenerContainers()).thenReturn(List.of(posting, accountState));
+        when(provider.getIfAvailable()).thenReturn(registry);
+
+        Health health = config.listenersHealthIndicator(provider).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails())
+                .containsEntry("registered", 2)
+                .containsEntry("running", 1L);
+    }
+
+    /**
+     * Asserts a listener added later needs no edit to this class.
+     *
+     * <p>A literal expected count is what made the notification service permanently unready: the
+     * number named there was two while three listeners were declared. This service reached two
+     * listeners the same way, by gaining the account-state listener. Readiness now counts what
+     * registered, so a third listener reports ready the moment it runs, and the inventory of listeners
+     * the platform should declare is held at build time by the equivalence contract suite instead.
+     */
+    @Test
+    @DisplayName("a listener added later reports ready without an edit here")
+    void aListenerAddedLaterNeedsNoEditHere() {
+        ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
+        KafkaListenerEndpointRegistry registry = mock(KafkaListenerEndpointRegistry.class);
+        MessageListenerContainer posting = mock(MessageListenerContainer.class);
+        MessageListenerContainer accountState = mock(MessageListenerContainer.class);
+        MessageListenerContainer addedLater = mock(MessageListenerContainer.class);
+        when(posting.isRunning()).thenReturn(true);
+        when(accountState.isRunning()).thenReturn(true);
+        when(addedLater.isRunning()).thenReturn(true);
+        when(registry.getListenerContainers())
+                .thenReturn(List.of(posting, accountState, addedLater));
+        when(provider.getIfAvailable()).thenReturn(registry);
+
+        Health health = config.listenersHealthIndicator(provider).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getDetails()).containsEntry("registered", 3);
+    }
+
+    /**
+     * Asserts an absent registry is not mistaken for a service with no listeners.
+     *
+     * <p>The registry appears while the context is still refreshing. A poll arriving before it exists
+     * has learned nothing, and reporting ready then would route traffic to an instance whose listeners
+     * have not been created yet.
+     */
+    @Test
+    @DisplayName("an absent registry holds readiness down")
+    void anAbsentRegistryHoldsReadinessDown() {
+        ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
+        when(provider.getIfAvailable()).thenReturn(null);
+
+        Health health = config.listenersHealthIndicator(provider).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails()).containsEntry("reason", "missing-listener-registry");
     }
 
     @Test

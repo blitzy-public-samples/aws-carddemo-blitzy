@@ -98,13 +98,13 @@ class AlphanumericRequiredValidatorTest {
      */
     private static final int EDIT_LENGTH = 20;
 
-    /** Value of digits alone, the boundary case against the alphabetic-only edit. */
     /**
      * One character of the figurative constant {@code LOW-VALUES}, which a COBOL comparison tests
      * for one position at a time.
      */
     private static final String LOW_VALUE = "\0";
 
+    /** Value of digits alone, the boundary case against the alphabetic-only edit. */
     private static final String DIGITS_ONLY = "0123456789";
 
     /** Value of letters followed by digits. */

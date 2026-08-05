@@ -64,7 +64,8 @@ class RequestBodyCeilingFilterTest {
     private static CardProperties properties(long ceiling) {
         return new CardProperties(
                 new CardProperties.Api(ceiling),
-                new CardProperties.Kafka(new CardProperties.Kafka.Topics("card.updated")),
+                new CardProperties.Kafka(new CardProperties.Kafka.Topics("card.updated",
+                        "carddemo.dead-letter")),
                 new CardProperties.Outbox(new CardProperties.Outbox.Relay(
                         500L, 100, "card-relay", java.time.Duration.ofMinutes(2L)), 168L),
                 new CardProperties.ProcessedEvent(168L),

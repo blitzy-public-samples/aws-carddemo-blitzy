@@ -44,7 +44,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 
 /**
- * Shape tests for {@link StatementTransactionEntity}, the account-keyed read model of the notification
+ * Shape tests for {@link StatementTransactionEntity}, the card-keyed read model of the notification
  * service.
  *
  * <p>Every assertion reads declared members and Jakarta Persistence (JPA) annotations through
@@ -79,7 +79,7 @@ import org.junit.jupiter.api.function.Executable;
  * serialization boundary. The tests here assert the column name, the field type, the declared width
  * and the null constraint, and assert no character pattern.
  */
-@DisplayName("StatementTransactionEntity, the mapped shape of the account-keyed read model")
+@DisplayName("StatementTransactionEntity, the mapped shape of the card-keyed read model")
 final class StatementTransactionEntityTest {
 
     /** Table the read model maps, from {@code src/main/resources/db/migration/V1__schema.sql}. */

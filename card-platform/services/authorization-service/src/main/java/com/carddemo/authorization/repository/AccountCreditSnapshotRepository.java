@@ -41,20 +41,28 @@ import org.springframework.data.repository.query.Param;
  *
  * <h2>The refresh contract</h2>
  *
- * <p>No consumer calls {@link #save(AccountCreditSnapshotEntity)} today: this service registers no
- * listener, so the method is the refresh path and nothing exercises it. A consumer that is added
- * must apply the event through that method and record the event identifier through
- * {@code ProcessedEventRepository} in the SAME local transaction. Splitting the two leaves a window
- * where the projection has moved and the marker has not, and a redelivery inside that window
- * applies the same change twice.</p>
+ * <p>{@code messaging/AccountStateChangedConsumer} is the refresh path. It applies each event
+ * through {@link #applyStateChange}, and it records the event identifier through
+ * {@code ProcessedEventRepository} in the SAME local transaction. Splitting the two would leave a
+ * window where the projection has moved and the marker has not, and a redelivery inside that window
+ * would apply the same change twice.</p>
  *
- * <p>{@link AccountCreditSnapshotEntity} carries no setter, so a refresh builds a replacement row
- * with the same identifier and saves it. The identifier is already present, so the save is an
+ * <p>{@link #applyStateChange} rather than {@link #save(AccountCreditSnapshotEntity)} carries the
+ * refresh, because the refresh has to be ordered as well as idempotent. One statement compares
+ * {@code source_occurred_at} before it writes, so a redelivery arriving behind a newer event
+ * discards itself rather than moving a cycle balance backwards. {@link #save} inserts or replaces
+ * unconditionally and has no such comparison, so it belongs to a test that is establishing a known
+ * row and not to the consumer.</p>
+ *
+ * <p>{@link AccountCreditSnapshotEntity} carries no setter, so a caller of {@link #save} builds a
+ * replacement row with the same identifier. The identifier is already present, so that save is an
  * update and never a second row.</p>
  *
- * <p>Until a consumer exists, every row is the one the seed migration wrote, and a decline rule
- * reading this projection is reading account state as it stood at deployment. That is the state this
- * interface makes refreshable; it does not by itself make the rows fresh.</p>
+ * <p>A row whose {@code source_occurred_at} is null is the row {@code V2__seed.sql} wrote, and the
+ * first event for that account supersedes it. Where events stop arriving the rows go stale rather
+ * than wrong, and {@code domain/AuthorizationService} refuses the call under
+ * {@code ObservabilityConfig.REPLICA_STAGE} instead of authorizing against state it cannot vouch
+ * for.</p>
  *
  * <p>No {@code delete} is exposed. Nothing removes an account from this projection, because the
  * account record has no delete path in {@code app/cbl/}. A missing row also has a defined meaning
@@ -101,9 +109,10 @@ public interface AccountCreditSnapshotRepository
     /**
      * Writes one snapshot row, refreshing the account it already holds.
      *
-     * <p>This is the only write to {@code account_credit_snapshot}, and no current code calls it. A
-     * consumer of {@code AccountStateChanged} is to build a row from the event payload and save it
-     * here, in the same local transaction as the idempotency marker that guards the apply.
+     * <p>This write is unconditional, which is why {@code messaging/AccountStateChangedConsumer}
+     * does not use it: applying an event needs the ordering comparison that {@link #applyStateChange}
+     * carries, and this method has none. What it is for is establishing a known row, which is what a
+     * test does before it exercises a rule.
      *
      * <p>The row carries the account identifier as its identity, so saving an account already
      * present updates that row. Saving an account absent from the projection inserts one, which is

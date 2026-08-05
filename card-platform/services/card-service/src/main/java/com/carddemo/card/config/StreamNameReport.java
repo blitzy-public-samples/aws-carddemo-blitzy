@@ -19,7 +19,8 @@ import org.springframework.stereotype.Component;
  *
  * <h2>The problem this solves</h2>
  *
- * <p>Every topic name arrives as {@code ${TOPIC_CARD_UPDATED:card.updated}}, so the image carries a
+ * <p>Every topic name arrives with a default beside its variable, for example
+ * {@code ${TOPIC_CARD_UPDATED:card.updated}}, so the image carries a
  * default and the platform supplies the real value. That is deliberate: a service has to start on a
  * developer machine with nothing set. It also means a dropped, renamed or mistyped key in
  * {@code card-platform/deploy/k8s/30-configmap.yaml} or {@code card-platform/docker-compose.yml}
@@ -78,10 +79,15 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
      * @return one entry per stream name, never empty
      */
     List<ReportedName> reportedNames() {
-        return List.of(new ReportedName(
-                "topic this service publishes a card update onto",
-                "TOPIC_CARD_UPDATED",
-                properties.kafka().topics().cardUpdated()));
+        return List.of(
+                new ReportedName(
+                        "topic this service publishes a card update onto",
+                        "TOPIC_CARD_UPDATED",
+                        properties.kafka().topics().cardUpdated()),
+                new ReportedName(
+                        "topic this service publishes a terminal outbox diagnostic onto",
+                        "TOPIC_DEAD_LETTER",
+                        properties.kafka().topics().deadLetter()));
     }
 
     @Override

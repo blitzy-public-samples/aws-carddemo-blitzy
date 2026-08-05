@@ -1,24 +1,29 @@
 package com.carddemo.fraud.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.carddemo.events.TransactionAuthorized;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.QueryTimeoutException;
+import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.serializer.DeserializationException;
 
 /**
- * Holds the error handler to counting a deserialization failure, and to counting nothing else.
+ * Holds the error handler to counting a deserialization failure, to counting every record it gives up
+ * on, and to counting nothing else.
  *
  * <p>A payload no deserializer could read is raised by the container before any listener runs, so the
  * listener cannot count it. Before this was fixed the only call to the deserialize counter sat in the
@@ -27,11 +32,24 @@ import org.springframework.kafka.support.serializer.DeserializationException;
  *
  * <p>The second test is the one that keeps the fix honest in the other direction. A failure the
  * listener did reach is already counted there, once per delivery attempt. Counting every recovered
- * record here as well would report one business failure as several, which is the defect this platform
- * was separately told to remove from the notification service. The two classes are disjoint, and the
- * count below proves they stay that way.
+ * record on the ATTEMPT series here as well would report one business failure as several, which is the
+ * defect this platform was separately told to remove from the notification service. The two classes are
+ * disjoint, and the count below proves they stay that way.
+ *
+ * <p>The terminal series is different, and the last nest is about that. The container calls a recoverer
+ * only once the backoff is spent, so every record reaching it is one this service will not attempt
+ * again. That is counted once per record under {@code carddemo.fraud.dead.letters}, whatever the cause,
+ * because a retry storm and a permanent loss are the two readings an operator has to be able to tell
+ * apart.
+ *
+ * <p>The refusal case asserts the count rather than a propagated failure, and that is deliberate. The
+ * wrapper does rethrow, so the container is told the record was not recovered, but
+ * {@code FailedRecordTracker} inside {@code DefaultErrorHandler} logs that failure and returns rather
+ * than letting it out of {@code handleOne}. The count is therefore the only observable evidence, which
+ * is exactly the gap the terminal series was added to close.
  */
-@DisplayName("The error handler counts a deserialization failure and nothing else")
+@DisplayName("The error handler counts a deserialization failure, every record it gives up on, and "
+        + "nothing else")
 class DeserializeFailureCountingTest {
 
     /** The topic under test, and the one this service consumes. */
@@ -43,8 +61,11 @@ class DeserializeFailureCountingTest {
     /** The dead-letter topic the recoverer publishes to. */
     private static final String DEAD_LETTER_TOPIC = "carddemo.dead-letter";
 
-    /** The failure counter, tagged with the stage that raised it. */
+    /** The failure counter, tagged with the stage that raised it. One increment is one attempt. */
     private static final String FAILURES = "carddemo.fraud.failures";
+
+    /** The terminal counter, tagged with what became of the diagnostic. One increment is one record. */
+    private static final String DEAD_LETTERS = "carddemo.fraud.dead.letters";
 
     @Nested
     @DisplayName("A payload that did not read")
@@ -106,6 +127,52 @@ class DeserializeFailureCountingTest {
         }
     }
 
+    @Nested
+    @DisplayName("Every record the container gives up on")
+    class TerminalRecord {
+
+        @Test
+        @DisplayName("is counted once as dead-lettered, whatever the cause")
+        void isCountedOnceAsDeadLettered() {
+            SimpleMeterRegistry registry = new SimpleMeterRegistry();
+            recoverOnce(registry, new QueryTimeoutException("the write timed out"));
+
+            assertThat(deadLetters(registry, "published"))
+                    .as("the backoff is spent by the time a recoverer runs, so this is the one "
+                            + "moment a record can be counted as permanently given up on")
+                    .isEqualTo(1.0d);
+            assertThat(deadLetters(registry, "failed")).isZero();
+        }
+
+        @Test
+        @DisplayName("is counted as dead-lettered for a payload failure too")
+        void isCountedForAPayloadFailureToo() {
+            SimpleMeterRegistry registry = new SimpleMeterRegistry();
+            recoverOnce(registry, deserializationFailure());
+
+            assertThat(deadLetters(registry, "published"))
+                    .as("a cause and an outcome are different axes: the deserialize stage says why, "
+                            + "and the terminal series says the record is gone")
+                    .isEqualTo(1.0d);
+        }
+
+        @Test
+        @DisplayName("counts as refused when the dead-letter send itself fails")
+        void countsAsRefusedWhenTheSendFails() {
+            SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+            recoverOnce(registry, new QueryTimeoutException("the write timed out"), true);
+
+            assertThat(deadLetters(registry, "failed"))
+                    .as("nothing names this record on any topic, which is the reading that matters "
+                            + "and the reading a log line alone does not give")
+                    .isEqualTo(1.0d);
+            assertThat(deadLetters(registry, "published"))
+                    .as("a diagnostic the broker refused is not a diagnostic an operator can find")
+                    .isZero();
+        }
+    }
+
     /**
      * Builds the shipped error handler over {@code registry} and drives one record through its
      * recovery path.
@@ -114,14 +181,32 @@ class DeserializeFailureCountingTest {
      * recoverer runs immediately. The dead-letter template is a mock: what is under test is the count,
      * and a send that never happens still leaves the count where it belongs.
      */
-    @SuppressWarnings("unchecked")
     private static void recoverOnce(SimpleMeterRegistry registry, Exception failure) {
+        recoverOnce(registry, failure, false);
+    }
+
+    /**
+     * Drives one record through the recovery path, optionally with a broker that refuses the send.
+     *
+     * @param registry     the registry every count lands in
+     * @param failure      the failure the container recovered from
+     * @param sendIsRefused whether the dead-letter template throws when asked to send
+     */
+    @SuppressWarnings("unchecked")
+    private static void recoverOnce(SimpleMeterRegistry registry, Exception failure,
+            boolean sendIsRefused) {
         ObservabilityConfig.FraudMeters meters = new ObservabilityConfig().fraudMeters(registry);
         KafkaConsumerConfig config = new KafkaConsumerConfig("kafka:29092", TOPIC,
                 "fraud-detection", DEAD_LETTER_TOPIC, DEAD_LETTER_SUFFIX, 1L, 0L);
 
-        DefaultErrorHandler errorHandler = config.transactionAuthorizedErrorHandler(
-                mock(KafkaTemplate.class), meters);
+        KafkaTemplate<String, byte[]> template = mock(KafkaTemplate.class);
+        if (sendIsRefused) {
+            when(template.send(any(ProducerRecord.class)))
+                    .thenThrow(new KafkaException("the broker refused the diagnostic"));
+        }
+
+        DefaultErrorHandler errorHandler =
+                config.transactionAuthorizedErrorHandler(template, meters);
         errorHandler.handleOne(failure, record(), mock(Consumer.class),
                 mock(MessageListenerContainer.class));
     }
@@ -142,5 +227,11 @@ class DeserializeFailureCountingTest {
     private static double stage(SimpleMeterRegistry registry, String stage) {
         return registry.find(FAILURES).tag("stage", stage).counter() == null ? 0.0d
                 : registry.find(FAILURES).tag("stage", stage).counter().count();
+    }
+
+    /** Reads one outcome of the terminal counter, answering zero where it carries no value. */
+    private static double deadLetters(SimpleMeterRegistry registry, String outcome) {
+        return registry.find(DEAD_LETTERS).tag("outcome", outcome).counter() == null ? 0.0d
+                : registry.find(DEAD_LETTERS).tag("outcome", outcome).counter().count();
     }
 }

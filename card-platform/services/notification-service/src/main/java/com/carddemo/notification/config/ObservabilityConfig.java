@@ -86,8 +86,9 @@ public class ObservabilityConfig {
      * method.</p>
      *
      * <p>The path that records against each meter:
+     * {@code messaging/TransactionAuthorizedConsumer.java},
      * {@code messaging/TransactionPostedConsumer.java} and
-     * {@code messaging/FraudAssessedConsumer.java}, plus
+     * {@code messaging/FraudFlaggedConsumer.java}, plus
      * {@code messaging/CustomerContextChangedConsumer.java}, increment
      * {@link NotificationMetrics#eventsConsumed(String)}, time
      * {@link NotificationMetrics#processingLatency(String)}, increment
@@ -106,12 +107,22 @@ public class ObservabilityConfig {
 
         /**
          * Tag values the {@code event.type} dimension carries, one per consumed event. This service
-         * reads three topics, which is exactly what its broker entries grant it.
-         * {@code transaction.posted} carries the new balance, two verdicts travel together on
-         * {@code fraud.assessed}, and {@code customer.context-changed} carries renderer context. It
-         * holds no entry on {@code transaction.authorized} and registers no series for it: a series
-         * that can only ever read zero states something about the topology that is not true.
+         * reads four topics, which is exactly what its broker entries grant it.
+         * {@code transaction.authorized} carries the decision the authorization service reached,
+         * {@code transaction.posted} carries the new balance the ledger derived, two verdicts travel
+         * together on {@code fraud.assessed}, and {@code customer.context-changed} carries renderer
+         * context.
+         *
+         * <p>The entry on {@code transaction.authorized} makes this service the third service that
+         * consumes the authorization event directly, beside the ledger and the fraud detector, which
+         * is the fan-out AAP 0.1.1 and 0.8.3 require. None of the three reads any of the others.
+         *
+         * <p>Every value below is registered as a series. A value a listener records against but that
+         * no series carries is not a compile error and not a test failure: the lookup falls back to
+         * {@link #UNKNOWN}, and the events of that listener are silently attributed to a tag that
+         * names nothing. {@code CustomerContextChanged} was in exactly that state.
          */
+        public static final String EVENT_TRANSACTION_AUTHORIZED = "TransactionAuthorized";
         public static final String EVENT_TRANSACTION_POSTED = "TransactionPosted";
         public static final String EVENT_FRAUD_FLAGGED = "FraudFlagged";
         public static final String EVENT_FRAUD_CLEARED = "FraudCleared";
@@ -146,8 +157,9 @@ public class ObservabilityConfig {
         private final Counter duplicatesSkipped;
 
         NotificationMetrics(MeterRegistry registry) {
-            List<String> eventTypes = List.of(EVENT_TRANSACTION_POSTED, EVENT_FRAUD_FLAGGED,
-                    EVENT_FRAUD_CLEARED, UNKNOWN);
+            List<String> eventTypes = List.of(EVENT_TRANSACTION_AUTHORIZED,
+                    EVENT_TRANSACTION_POSTED, EVENT_FRAUD_FLAGGED, EVENT_FRAUD_CLEARED,
+                    EVENT_CUSTOMER_CONTEXT_CHANGED, UNKNOWN);
             List<String> failureKinds = List.of(FAILURE_SCHEMA_VALIDATION, FAILURE_DESERIALIZATION,
                     FAILURE_PERSISTENCE, FAILURE_RENDERING, UNKNOWN);
 

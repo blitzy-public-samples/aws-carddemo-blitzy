@@ -8,9 +8,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -21,7 +19,6 @@ import org.springframework.boot.kafka.autoconfigure.KafkaConnectionDetails;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
@@ -183,14 +180,17 @@ public class KafkaProducerConfig {
     /**
      * Builds the one publisher of this module, and the only bean here that holds a broker type.
      *
+     * <p>The publisher takes no meter. {@code outbox/OutboxRelay} is the one caller of every publish
+     * and the one component that can see every way an attempt fails, so it owns
+     * {@code carddemo.account.publish.failed} alone. When both counted, one refused publish was
+     * reported twice.
+     *
      * @param kafkaTemplate the pinned template
-     * @param meters        the registered instruments, which count a failed publish attempt
      * @return the publisher the relay calls
      */
     @Bean
-    public EventPublisherPort accountEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
-            ObservabilityConfig.AccountMeters meters) {
-        return new KafkaEventPublisher(kafkaTemplate, configuredTopics, meters, publishTimeout);
+    public EventPublisherPort accountEventPublisher(KafkaTemplate<String, String> kafkaTemplate) {
+        return new KafkaEventPublisher(kafkaTemplate, configuredTopics, publishTimeout);
     }
 
     /**
@@ -201,6 +201,15 @@ public class KafkaProducerConfig {
      * keyword, an event type, a topic name or a length. None holds a value read from the payload,
      * so no account identifier, customer name, Social Security number or government-issued
      * identifier reaches a log through a failed publish.
+     *
+     * <p>A refused argument, a payload the validator rejects and an event type that does not belong
+     * on the topic all throw before any send starts, which is the first half of the contract
+     * {@link EventPublisherPort#publish(String, String, String)} states. Everything after the send
+     * completes the returned stage, and that stage carries its own bound: it fails with a
+     * {@code TimeoutException} once {@code carddemo.outbox.relay.publish-timeout} elapses, so one
+     * unreachable broker cannot hold the relay sweep that called it for longer than the property
+     * allows. This class records no meter, because the relay counts each failed attempt exactly
+     * once.
      */
     private static final class KafkaEventPublisher implements EventPublisherPort {
 
@@ -224,9 +233,6 @@ public class KafkaProducerConfig {
         /** Each event type this service publishes, mapped to its configured topic. */
         private final Map<String, String> configuredTopics;
 
-        /** Counts a publish attempt that failed. */
-        private final ObservabilityConfig.AccountMeters meters;
-
         /** The one publish-side gate, shared with every other event of this platform. */
         private final EventJsonValidator validator = EventJsonValidator.shared();
 
@@ -234,86 +240,40 @@ public class KafkaProducerConfig {
         private final Duration publishTimeout;
 
         /**
-         * Takes the template, the configured topic per event type, the instruments and the wait.
+         * Takes the template, the configured topic per event type and the per-send wait.
          *
          * @param kafkaTemplate    the template that sends every event to the broker
          * @param configuredTopics each event type this service publishes, mapped to its topic
-         * @param meters           the instruments that count a failed publish attempt
          * @param publishTimeout   how long one send waits for the broker
          */
         KafkaEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
-                Map<String, String> configuredTopics, ObservabilityConfig.AccountMeters meters,
-                Duration publishTimeout) {
+                Map<String, String> configuredTopics, Duration publishTimeout) {
             this.kafkaTemplate = kafkaTemplate;
             this.configuredTopics = configuredTopics;
-            this.meters = meters;
             this.publishTimeout = publishTimeout;
         }
 
         @Override
         public CompletionStage<Void> publish(String topic, String aggregateId, String payload) {
-            try {
-                if (topic == null || payload == null) {
-                    throw new IllegalArgumentException("topic and payload are both required");
-                }
-                if (aggregateId == null || !AGGREGATE_ID_MATCHER.matcher(aggregateId).matches()) {
-                    throw new IllegalArgumentException("aggregateId must match "
-                            + AGGREGATE_ID_PATTERN + " and the supplied value "
-                            + (aggregateId == null ? "is null"
-                                    : "holds " + aggregateId.length() + " characters"));
-                }
-
-                JsonNode event = validator.validate(payload);
-                String eventType = requireBoundToTopic(event, topic);
-                requireSingleAccountIdentity(aggregateId, event);
-
-                log.debug("Publishing account event {} to topic {}, payload length {}", eventType,
-                        topic, payload.length());
-                return kafkaTemplate.send(topic, aggregateId, payload)
-                        .thenApply(result -> (Void) null)
-                        .whenComplete((ignored, failure) -> {
-                            if (failure != null) {
-                                meters.recordPublishFailure();
-                            }
-                        });
-            } catch (RuntimeException failure) {
-                meters.recordPublishFailure();
-                throw failure;
+            if (topic == null || payload == null) {
+                throw new IllegalArgumentException("topic and payload are both required");
             }
-        }
-
-        /**
-         * Sends one payload and waits no longer than {@link #publishTimeout} for the broker.
-         *
-         * <p>An unbounded wait holds this thread, and with it the relay sweep that called it, for as
-         * long as the broker is unreachable. The bounded wait turns that into one thrown failure the
-         * caller records against the row.
-         *
-         * <p>The thrown message names the topic and the bound and reads no field of the payload, so
-         * a caller that logs it records no account identifier, customer name or Social Security
-         * number.
-         *
-         * @param topic       the destination topic
-         * @param aggregateId the message key
-         * @param payload     the event text
-         * @throws KafkaException when the broker does not acknowledge inside the bound, when the
-         *         send fails, or when the waiting thread is interrupted
-         */
-        private void sendAndWait(String topic, String aggregateId, String payload) {
-            try {
-                kafkaTemplate.send(topic, aggregateId, payload)
-                        .get(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
-            } catch (TimeoutException lapsed) {
-                throw new KafkaException("the broker did not acknowledge a send to topic " + topic
-                        + " within " + publishTimeout, lapsed);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                throw new KafkaException("the wait on a send to topic " + topic
-                        + " was interrupted", interrupted);
-            } catch (ExecutionException failed) {
-                throw new KafkaException("a send to topic " + topic + " failed",
-                        failed.getCause());
+            if (aggregateId == null || !AGGREGATE_ID_MATCHER.matcher(aggregateId).matches()) {
+                throw new IllegalArgumentException("aggregateId must match "
+                        + AGGREGATE_ID_PATTERN + " and the supplied value "
+                        + (aggregateId == null ? "is null"
+                                : "holds " + aggregateId.length() + " characters"));
             }
+
+            JsonNode event = validator.validate(payload);
+            String eventType = requireBoundToTopic(event, topic);
+            requireSingleAccountIdentity(aggregateId, event);
+
+            log.debug("Publishing account event {} to topic {}, payload length {}", eventType,
+                    topic, payload.length());
+            return kafkaTemplate.send(topic, aggregateId, payload)
+                    .thenApply(result -> (Void) null)
+                    .orTimeout(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
         }
 
         /**

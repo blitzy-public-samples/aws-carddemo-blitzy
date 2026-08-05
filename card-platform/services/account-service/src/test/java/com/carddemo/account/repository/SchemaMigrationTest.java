@@ -18,7 +18,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Checks that the four Flyway migrations of the account service apply to an empty schema, and that
+ * Checks that the five Flyway migrations of the account service apply to an empty schema, and that
  * the seed loads the row counts its fixtures carry.
  *
  * <p>Every method here reads, and none writes. Other test classes in this package assert the same
@@ -124,17 +124,18 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     // assertion below reads one.
     // ------------------------------------------------------------------------------------------
 
-    /** Versions Flyway parses from the four migration file names, in installed order. */
-    private static final String[] MIGRATION_VERSIONS = {"1", "2", "3", "4"};
+    /** Versions Flyway parses from the five migration file names, in installed order. */
+    private static final String[] MIGRATION_VERSIONS = {"1", "2", "3", "4", "5"};
 
     /**
-     * The four files under {@code src/main/resources/db/migration}, in installed order.
+     * The five files under {@code src/main/resources/db/migration}, in installed order.
      */
     private static final String[] MIGRATION_SCRIPTS = {
             "V1__schema.sql",
             "V2__seed.sql",
             "V3__reference_data.sql",
-            "V4__card_cross_reference_replica.sql"
+            "V4__card_cross_reference_replica.sql",
+            "V5__outbox_dead_letter_state.sql"
     };
 
     // ------------------------------------------------------------------------------------------
@@ -165,7 +166,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /** Ordinal of the single column each counting query selects. */
     private static final int FIRST_COLUMN = 1;
 
-    /** The component that applied the four migrations, and the source of the schema name. */
+    /** The component that applied the five migrations, and the source of the schema name. */
     @Autowired
     private Flyway flyway;
 
@@ -188,7 +189,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /**
      * Returns the schema the Flyway bean reports, holding it to an unquoted lower-case identifier.
      *
-     * @return the schema the four migrations landed in
+     * @return the schema the five migrations landed in
      */
     private String migratedSchema() {
         String reported = flyway.getConfiguration().getDefaultSchema();
@@ -327,20 +328,19 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     // ------------------------------------------------------------------------------------------
-    // The four migrations applied, and applied in order
+    // The five migrations applied, and applied in order
     // ------------------------------------------------------------------------------------------
 
     /**
      * Reads the history table in installed-rank order and compares the version sequence. Version 1
-     * therefore installed before version 2, version 2 before version 3, and version 3 before
-     * version 4.
+     * therefore installed before version 2, and each later version before the one after it.
      *
      * @throws SQLException when the history query fails
      */
     @Test
-    @DisplayName("flyway_schema_history holds four versioned rows, versions 1 through 4 in "
+    @DisplayName("flyway_schema_history holds five versioned rows, versions 1 through 5 in "
             + "installed-rank order")
-    void historyHoldsTheFourVersionsInInstalledRankOrder() throws SQLException {
+    void historyHoldsTheFiveVersionsInInstalledRankOrder() throws SQLException {
         List<AppliedMigration> applied = appliedMigrations();
         List<Integer> ranks = applied.stream().map(AppliedMigration::installedRank).toList();
 
@@ -365,13 +365,13 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     /**
-     * Asserts the four script names in installed-rank order.
+     * Asserts the five script names in installed-rank order.
      *
      * @throws SQLException when the history query fails
      */
     @Test
-    @DisplayName("the four versioned rows name all account migration scripts in order")
-    void historyNamesTheFourMigrationScripts() throws SQLException {
+    @DisplayName("the five versioned rows name all account migration scripts in order")
+    void historyNamesTheFiveMigrationScripts() throws SQLException {
         assertThat(appliedMigrations()).extracting(AppliedMigration::script)
                 .as("scripts under src/main/resources/db/migration, read in installed-rank order")
                 .containsExactly(MIGRATION_SCRIPTS);
@@ -492,7 +492,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the counting query fails
      */
     @Test
-    @DisplayName("outbox_event holds no row after the four migrations")
+    @DisplayName("outbox_event holds no row after the five migrations")
     void outboxEventHoldsNoRowAfterMigration() throws SQLException {
         assertThat(countRows(OUTBOX_EVENT_TABLE))
                 .as("rows in %s, which no migration of this module inserts into",
@@ -507,7 +507,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the counting query fails
      */
     @Test
-    @DisplayName("processed_event holds no row after the four migrations")
+    @DisplayName("processed_event holds no row after the five migrations")
     void processedEventHoldsNoRowAfterMigration() throws SQLException {
         assertThat(countRows(PROCESSED_EVENT_TABLE))
                 .as("rows in %s, which no migration of this module inserts into",

@@ -69,17 +69,27 @@ class ObservabilityConfigTest {
     /** Outbox publish attempts that failed. */
     private static final String PUBLISH_FAILED = PREFIX + "publish.failed";
 
+    /** Outbox rows the relay gave up on. */
+    private static final String OUTBOX_ABANDONED = PREFIX + "outbox.abandoned";
+
+    /** Terminal diagnostics the broker acknowledged. */
+    private static final String DEAD_LETTERS_PUBLISHED = PREFIX + "dead.letters.published";
+
+    /** Terminal diagnostic attempts the broker refused. */
+    private static final String DEAD_LETTERS_FAILED = PREFIX + "dead.letters.failed";
+
     /** Transaction rollback and commit failures, separated by operation. */
     private static final String TRANSACTION_FAILURES = PREFIX + "transaction.failures";
 
     /** Every meter name this service reports. */
     private static final Set<String> DECLARED_METER_NAMES = Set.of(EVENTS_CONSUMED, UPDATE_LATENCY,
             UPDATE_APPLIED, VALIDATION_FAILED, CYCLE_CLOSED, OUTBOX_PUBLISHED, PUBLISH_FAILED,
-            TRANSACTION_FAILURES);
+            OUTBOX_ABANDONED, DEAD_LETTERS_PUBLISHED, DEAD_LETTERS_FAILED, TRANSACTION_FAILURES);
 
-    /** The six counter names. {@link #UPDATE_LATENCY} is the one timer. */
+    /** The nine counter names. {@link #UPDATE_LATENCY} is the one timer. */
     private static final List<String> COUNTER_NAMES = List.of(EVENTS_CONSUMED, UPDATE_APPLIED,
-            VALIDATION_FAILED, CYCLE_CLOSED, OUTBOX_PUBLISHED, PUBLISH_FAILED);
+            VALIDATION_FAILED, CYCLE_CLOSED, OUTBOX_PUBLISHED, PUBLISH_FAILED, OUTBOX_ABANDONED,
+            DEAD_LETTERS_PUBLISHED, DEAD_LETTERS_FAILED);
 
     /** Starts the configuration class over one registry that holds nothing else. */
     private static final ApplicationContextRunner RUNNER = new ApplicationContextRunner()
@@ -102,7 +112,9 @@ class ObservabilityConfigTest {
             assertThat(meterNamesOf(registry)).allSatisfy(name -> assertThat(name)
                     .withFailMessage("meter %s left the carddemo.account namespace", name)
                     .startsWith(PREFIX));
-            assertThat(registry.getMeters()).hasSize(9);
+            assertThat(registry.getMeters())
+                    .as("eleven names, and transaction.failures carries two operations")
+                    .hasSize(12);
         });
     }
 
@@ -122,8 +134,8 @@ class ObservabilityConfigTest {
     }
 
     @Test
-    @DisplayName("six meters are counters, the update meter is a timer, and all seven read zero")
-    void sixMetersAreCountersAndTheUpdateMeterIsATimer() {
+    @DisplayName("nine meters are counters, the update meter is a timer, and all ten read zero")
+    void nineMetersAreCountersAndTheUpdateMeterIsATimer() {
         RUNNER.run(context -> {
             MeterRegistry registry = context.getBean(MeterRegistry.class);
 
@@ -161,6 +173,33 @@ class ObservabilityConfigTest {
                     .isZero();
             assertThat(counterOf(registry, PUBLISH_FAILED).count())
                     .withFailMessage("a published sweep counted as a publish failure")
+                    .isZero();
+        });
+    }
+
+    @Test
+    @DisplayName("the terminal series separates a spent row, a named row and an unnamed one")
+    void theTerminalSeriesSeparatesASpentRowFromItsDiagnostic() {
+        RUNNER.run(context -> {
+            AccountMeters meters = context.getBean(AccountMeters.class);
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+
+            meters.recordOutboxAbandoned();
+            meters.recordDeadLetterFailure();
+            meters.recordDeadLetterPublished();
+
+            assertThat(counterOf(registry, OUTBOX_ABANDONED).count())
+                    .withFailMessage("a row given up on must be countable apart from its attempts")
+                    .isEqualTo(1.0D);
+            assertThat(counterOf(registry, DEAD_LETTERS_FAILED).count()).isEqualTo(1.0D);
+            assertThat(counterOf(registry, DEAD_LETTERS_PUBLISHED).count()).isEqualTo(1.0D);
+            assertThat(counterOf(registry, PUBLISH_FAILED).count())
+                    .withFailMessage("an abandonment or a refused diagnostic counted as a per-"
+                            + "attempt publish failure, which is the double counting the review "
+                            + "named")
+                    .isZero();
+            assertThat(counterOf(registry, OUTBOX_PUBLISHED).count())
+                    .withFailMessage("a diagnostic counted as a published business event")
                     .isZero();
         });
     }
@@ -205,6 +244,9 @@ class ObservabilityConfigTest {
             meters.recordUpdateFailure();
             meters.recordCycleCloseFailure();
             meters.recordUpdateLatency(Duration.ofMillis(1));
+            meters.recordOutboxAbandoned();
+            meters.recordDeadLetterPublished();
+            meters.recordDeadLetterFailure();
 
             assertThat(meters.eventsConsumedTotal())
                     .withFailMessage("the events-consumed counter moved, and this service reads no "
@@ -221,7 +263,7 @@ class ObservabilityConfigTest {
                     .withFailMessage("a recording method for the events-consumed counter appeared, "
                             + "and this service consumes no event")
                     .doesNotContain("recordEventConsumed", "recordEventsConsumed");
-            assertThat(recordingMethods).hasSize(8);
+            assertThat(recordingMethods).hasSize(11);
         });
     }
 

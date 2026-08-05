@@ -105,7 +105,8 @@ class ObservabilityConfigTest {
      * series, because a series that can only ever read zero states a topology that is not true.
      */
     private static final Set<String> EVENT_TYPE_VALUES =
-            Set.of("TransactionPosted", "FraudFlagged", "FraudCleared", FALLBACK_TAG_VALUE);
+            Set.of("TransactionAuthorized", "TransactionPosted", "FraudFlagged", "FraudCleared",
+                    "CustomerContextChanged", FALLBACK_TAG_VALUE);
 
     /** Tag values the {@code format} dimension carries, one per renderer and the fallback. */
     private static final Set<String> FORMAT_VALUES = Set.of("text", "html", FALLBACK_TAG_VALUE);
@@ -134,6 +135,7 @@ class ObservabilityConfigTest {
      * constant fails.
      */
     private static final Map<String, String> DECLARED_TAG_VALUE_CONSTANTS = Map.ofEntries(
+            Map.entry("EVENT_TRANSACTION_AUTHORIZED", "TransactionAuthorized"),
             Map.entry("EVENT_TRANSACTION_POSTED", "TransactionPosted"),
             Map.entry("EVENT_FRAUD_FLAGGED", "FraudFlagged"),
             Map.entry("EVENT_FRAUD_CLEARED", "FraudCleared"),
@@ -201,7 +203,7 @@ class ObservabilityConfigTest {
      *
      * <p>The listeners that call these lookups arrive with
      * {@code messaging/TransactionPostedConsumer.java} and
-     * {@code messaging/FraudAssessedConsumer.java}, and the renderer counters with
+     * {@code messaging/FraudFlaggedConsumer.java}, and the renderer counters with
      * {@code domain/NotificationService.java}. Every lookup below already returns a live meter.</p>
      */
     @Test
@@ -326,15 +328,24 @@ class ObservabilityConfigTest {
     }
 
     /**
-     * Asserts the {@code event.type} dimension carries the three consumed event types and the
-     * fallback series. This service reads {@code transaction.posted} and {@code fraud.assessed}.
-     * {@code FraudFlagged} and {@code FraudCleared} share the second of those, and the envelope
-     * event type separates them. A fourth series would claim a topic this service cannot read.
+     * Asserts the {@code event.type} dimension carries one series per consumed event type, plus the
+     * fallback.
+     *
+     * <p>This service reads four topics. {@code transaction.authorized} carries the authorization
+     * decision, and reading it directly makes this the third independent consumer of that event
+     * beside the ledger and the fraud detector. {@code transaction.posted} carries the new balance.
+     * {@code FraudFlagged} and {@code FraudCleared} share {@code fraud.assessed}, and the envelope
+     * event type separates them. {@code customer.context-changed} refreshes the cardholder
+     * projection.
+     *
+     * <p>Every value a listener records against must appear here. A value with no series does not
+     * fail to compile and does not fail a test elsewhere: the lookup silently falls back, and that
+     * listener's events are attributed to a tag naming nothing. {@code CustomerContextChanged} was
+     * in exactly that state, counted by its listener and registered by nothing.
      */
     @Test
-    @DisplayName("event.type carries TransactionPosted, FraudFlagged, FraudCleared and the "
-            + "fallback")
-    void theEventTypeTagCarriesThreeConsumedTypesAndTheFallbackSeries() {
+    @DisplayName("event.type carries one series per consumed event type and the fallback")
+    void theEventTypeTagCarriesEveryConsumedTypeAndTheFallbackSeries() {
         RUNNER.run(context -> {
             MeterRegistry registry = context.getBean(MeterRegistry.class);
 
@@ -853,7 +864,6 @@ class ObservabilityConfigTest {
         return readings;
     }
 
-    /** Returns the distinct meter names one registry holds. */
     /**
      * Reads the count of the counter carrying one tag value.
      *
@@ -884,6 +894,7 @@ class ObservabilityConfigTest {
                 "no timer named " + name + " carries " + tagKey + "=" + tagValue).count();
     }
 
+    /** Returns the distinct meter names one registry holds. */
     private static Set<String> meterNamesOf(MeterRegistry registry) {
         return registry.getMeters().stream().map(meter -> meter.getId().getName())
                 .collect(Collectors.toCollection(TreeSet::new));

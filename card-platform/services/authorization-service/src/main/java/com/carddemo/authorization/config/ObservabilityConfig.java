@@ -26,8 +26,12 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>{@link #EVENTS_WRITTEN_COUNTER} is the events family. Its ancestor is the transaction count of
  * {@code app/cbl/CBTRN02C.cbl:L206}, printed at {@code app/cbl/CBTRN02C.cbl:L227}. One authorization
- * call writes one event, and the two series separate an approval from a decline. This service reads
- * no topic, so no consumed-event series appears.
+ * call writes one event, and the two series separate an approval from a decline. The family stays a
+ * produce-side family even though the service does read two topics: {@code messaging/AccountStateChangedConsumer}
+ * and {@code messaging/CardUpdatedConsumer} refresh replica rows rather than reach an authorization
+ * decision, so neither one writes an event and neither registers a consumed-event series. A replica
+ * delivery this service cannot apply lands on {@link #FAILURES_COUNTER} under {@link #REPLICA_STAGE}
+ * instead.
  *
  * <p>{@link #DECISION_TIMER} is the latency family, one timer over one decision. The source times
  * nothing, so this family has no ancestor.
@@ -38,13 +42,17 @@ import org.springframework.context.annotation.Configuration;
  * {@code app/cbl/CBTRN02C.cbl:L229-L230} ends the batch job with return code 4 once that count
  * passes zero. No decline reaches {@link #FAILURES_COUNTER}.
  *
- * <p>{@link #FAILURES_COUNTER} pre-registers a {@link #PERSIST_STAGE} series and a
- * {@link #PUBLISH_STAGE} series at zero. No current code records either one: a decision that cannot
- * commit and an outbox row the relay cannot publish both surface as a log entry and an uncommitted
- * transaction. The source answer to either is {@code 9999-ABEND-PROGRAM} at
- * {@code app/cbl/CBTRN02C.cbl:L707-L711}, four statements that display one message, move 999 into an
- * abend code and call {@code CEE3ABD}. Neither that routine nor the file-status formatter at
- * {@code app/cbl/CBTRN02C.cbl:L714-L727} is reproduced.
+ * <p>{@link #FAILURES_COUNTER} pre-registers a {@link #PERSIST_STAGE} series, a
+ * {@link #PUBLISH_STAGE} series and a {@link #REPLICA_STAGE} series at zero, and each of the three
+ * has a recorder. {@code domain/AuthorizationService} counts the persist stage where the decision
+ * and its outbox row cannot commit, and the replica stage where the rows it resolved were observed
+ * too long ago to authorize against. {@code outbox/OutboxRelay} counts the publish stage where a row
+ * cannot reach the broker. {@code config/KafkaConsumerConfig} counts the replica stage again where a
+ * replica delivery is spent and routes to the dead-letter topic. The source answer to any of them is
+ * {@code 9999-ABEND-PROGRAM} at {@code app/cbl/CBTRN02C.cbl:L707-L711}, four statements that display
+ * one message, move 999 into an abend code and call {@code CEE3ABD}. Neither that routine nor the
+ * file-status formatter at {@code app/cbl/CBTRN02C.cbl:L714-L727} is reproduced, because a counted
+ * failure and a retried or dead-lettered delivery replace a terminated address space.
  *
  * <p>{@code domain/AuthorizationService} records against {@link #EVENTS_WRITTEN_COUNTER},
  * {@link #DECISION_TIMER} and {@link #DECISIONS_COUNTER} under these names, so one meter serves the
@@ -52,7 +60,7 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>Every meter registers while the context builds, so a scrape taken before the first request
  * lists each series at zero. Each tag value set is closed and small: five outcomes, two event types,
- * two stages, one service name.
+ * three stages, one service name.
  *
  * <p>No meter name and no tag holds an account identifier, a transaction identifier or an event
  * identifier. None holds a card number, and none holds the three-digit verification value that

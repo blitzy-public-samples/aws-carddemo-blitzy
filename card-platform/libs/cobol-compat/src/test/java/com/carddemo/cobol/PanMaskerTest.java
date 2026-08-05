@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -138,7 +139,7 @@ class PanMaskerTest {
     /** The count of three-digit values a {@code PIC 9(03)} field can hold. */
     private static final int STORED_VERIFICATION_VALUE_COMBINATIONS = 1000;
 
-    /** The width of a card token, the hexadecimal rendering of a SHA-256 digest. */
+    /** The width of a card token, the hexadecimal rendering of a 256-bit keyed code. */
     private static final int CARD_TOKEN_WIDTH = 64;
 
     /** A second card number sharing the last four characters of {@link #FULL_CARD_NUMBER}. */
@@ -154,8 +155,14 @@ class PanMaskerTest {
     private static final java.util.Map<String, String> DECLARED_TOKEN_TEXT = java.util.Map.of(
             "CARD_TOKEN_PATTERN", "^[0-9a-f]{64}$",
             "ABSENT_CARD_TOKEN", "0".repeat(CARD_TOKEN_WIDTH),
-            "CARD_TOKEN_LABEL", "CardDemo/card-token/v1:",
-            "CARD_TOKEN_ALGORITHM", "SHA-256");
+            "CARD_TOKEN_LABEL_PREFIX", "CardDemo/card-token/v",
+            "CARD_TOKEN_ALGORITHM", "HmacSHA256",
+            "REDACTED_KEY", "[redacted]",
+            "CARD_TOKEN_SECRET_PROPERTY", "carddemo.card-token.secret",
+            "CARD_TOKEN_SECRET_VARIABLE", "CARD_TOKEN_SECRET",
+            "CARD_TOKEN_VERSION_PROPERTY", "carddemo.card-token.version",
+            "CARD_TOKEN_VERSION_VARIABLE", "CARD_TOKEN_VERSION",
+            "DEFAULT_CARD_TOKEN_VERSION", "1");
 
     @Test
     void maskCardNumberHidesAllButTheLastFourCharacters() {
@@ -388,10 +395,11 @@ class PanMaskerTest {
             field.setAccessible(true);
             String held = (String) field.get(null);
 
-            // Three string fields are declared text rather than mask characters: the token shape a
-            // schema document and a check constraint repeat, the label the token digest covers, and
-            // the digest algorithm name. Each is compared against the literal expected here, which
-            // is how this test still proves the field holds no argument value.
+            // Ten string fields are declared text rather than mask characters: the token shape a
+            // schema document and a check constraint repeat, the label the keyed code covers, the
+            // algorithm name, the redaction a rendered key holder shows, and the five configuration
+            // names and the default version. Each is compared against the literal expected here,
+            // which is how this test still proves the field holds no argument value.
             if (DECLARED_TOKEN_TEXT.containsKey(field.getName())) {
                 assertEquals(DECLARED_TOKEN_TEXT.get(field.getName()), held,
                         "field " + field.getName() + " stopped holding its declared literal");
@@ -557,32 +565,180 @@ class PanMaskerTest {
     }
 
     /**
-     * Pins the token of one card number, so a change to the digest, the domain label or the
-     * truncation width fails the build before it can silently re-key every stored row.
+     * Pins the token derivation, so a change to the algorithm, the covered message or the width
+     * fails the build before it can silently re-key every stored row.
      *
      * <p>A token is a persistent key. Changing how it is derived orphans every row already keyed on
      * the old value, so the derivation is frozen here and the expectation is computed from the
-     * declared inputs, with no value copied from a run.
+     * declared inputs under the key this build configures, with no value copied from a run.
      */
     @Test
     void theTokenDerivationIsFrozen() throws Exception {
-        java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-        digest.update("CardDemo/card-token/v1:".getBytes(
-                java.nio.charset.StandardCharsets.US_ASCII));
-        digest.update(FULL_CARD_NUMBER.getBytes(java.nio.charset.StandardCharsets.UTF_8));
-        byte[] full = digest.digest();
+        String expected = expectedToken(configuredKey(), PanMasker.cardTokenVersion(),
+                FULL_CARD_NUMBER);
 
-        StringBuilder expected = new StringBuilder(PanMasker.CARD_TOKEN_LENGTH);
-        for (int index = 0; index < PanMasker.CARD_TOKEN_LENGTH / 2; index++) {
-            expected.append(String.format("%02x", full[index]));
-        }
-
-        assertEquals(expected.toString(), PanMasker.cardToken(FULL_CARD_NUMBER),
+        assertEquals(expected, PanMasker.cardToken(FULL_CARD_NUMBER),
                 "the token derivation changed, so every row already keyed on a token is orphaned");
         assertEquals(64, PanMasker.CARD_TOKEN_LENGTH,
                 "the token width changed, so every column sized for it is wrong");
         assertEquals("^[0-9a-f]{64}$", PanMasker.CARD_TOKEN_PATTERN,
                 "the token shape changed, so a stored value may no longer validate");
+    }
+
+    /**
+     * Proves the derivation is keyed: one card number under two keys yields two tokens.
+     *
+     * <p>This is the property an unkeyed digest cannot supply. A holder of a token cannot recompute
+     * it for a candidate card number without the key, so the finite sixteen-digit card-number space
+     * stops being an offline search.
+     */
+    @Test
+    void twoKeysYieldTwoTokensForOneCardNumber() throws Exception {
+        String underOneKey = expectedToken(A_KEY, PanMasker.DEFAULT_CARD_TOKEN_VERSION,
+                FULL_CARD_NUMBER);
+        String underAnother = expectedToken(ANOTHER_KEY, PanMasker.DEFAULT_CARD_TOKEN_VERSION,
+                FULL_CARD_NUMBER);
+
+        assertNotEquals(underOneKey, underAnother,
+                "one card number derived two equal tokens under two keys, so the derivation is not"
+                        + " keyed and a token is recomputable by anyone holding one");
+        assertEquals(underOneKey, withConfiguration(A_KEY, null,
+                () -> PanMasker.cardToken(FULL_CARD_NUMBER)),
+                "the configured key is not the key the derivation takes");
+        assertEquals(underAnother, withConfiguration(ANOTHER_KEY, null,
+                () -> PanMasker.cardToken(FULL_CARD_NUMBER)),
+                "a key change did not take effect, so a rollover cannot be staged");
+    }
+
+    /**
+     * Proves the version rolls every token over under one key, which is what stages a rollover.
+     */
+    @Test
+    void raisingTheVersionRollsEveryTokenOverUnderOneKey() throws Exception {
+        String atVersionOne = withConfiguration(A_KEY, "1",
+                () -> PanMasker.cardToken(FULL_CARD_NUMBER));
+        String atVersionTwo = withConfiguration(A_KEY, "2",
+                () -> PanMasker.cardToken(FULL_CARD_NUMBER));
+
+        assertNotEquals(atVersionOne, atVersionTwo,
+                "the version is not part of the covered message, so raising it rolls nothing over");
+        assertEquals(expectedToken(A_KEY, "1", FULL_CARD_NUMBER), atVersionOne,
+                "the version one token is not the code over the version one message");
+        assertEquals(expectedToken(A_KEY, "2", FULL_CARD_NUMBER), atVersionTwo,
+                "the version two token is not the code over the version two message");
+        assertEquals("1", PanMasker.DEFAULT_CARD_TOKEN_VERSION,
+                "the default version changed, so every seeded token belongs to another version");
+        assertEquals("1", withConfiguration(A_KEY, null, PanMasker::cardTokenVersion),
+                "an unset version must report the default rather than an absent value");
+    }
+
+    /**
+     * Proves an unconfigured key derives no token at all, rather than falling back to a value every
+     * reader of this repository can recompute.
+     */
+    @Test
+    void anUnconfiguredOrTooShortKeyDerivesNoToken() throws Exception {
+        IllegalStateException unconfigured = assertThrows(IllegalStateException.class,
+                () -> withConfiguration(null, null, () -> PanMasker.cardToken(FULL_CARD_NUMBER)),
+                "an unconfigured key derived a token, so tokens are recomputable without a key");
+        assertTrue(unconfigured.getMessage().contains(PanMasker.CARD_TOKEN_SECRET_PROPERTY),
+                "the refusal must name the property that supplies the key");
+
+        String tooShort = "x".repeat(PanMasker.CARD_TOKEN_SECRET_MIN_LENGTH - 1);
+        IllegalStateException short_ = assertThrows(IllegalStateException.class,
+                () -> withConfiguration(tooShort, null,
+                        () -> PanMasker.cardToken(FULL_CARD_NUMBER)),
+                "a key under the block size was accepted rather than refused");
+        assertFalse(short_.getMessage().contains(tooShort),
+                "the refusal quoted the key material");
+
+        IllegalStateException badVersion = assertThrows(IllegalStateException.class,
+                () -> withConfiguration(A_KEY, "0", PanMasker::cardTokenVersion),
+                "a version outside one to three non-zero-leading digits was accepted");
+        assertTrue(badVersion.getMessage().contains(PanMasker.CARD_TOKEN_VERSION_PROPERTY),
+                "the refusal must name the property that supplies the version");
+
+        assertEquals(PanMasker.ABSENT_CARD_TOKEN,
+                withConfiguration(null, null, () -> PanMasker.tokenOf(null)),
+                "an absent card number needs no key, because it derives no code");
+    }
+
+    /** Proves no rendering of the resolved key holder carries key material. */
+    @Test
+    void theResolvedKeyRendersWithoutItsKeyMaterial() throws Exception {
+        PanMasker.cardToken(FULL_CARD_NUMBER);
+
+        java.lang.reflect.Field resolved = PanMasker.class.getDeclaredField("RESOLVED_KEY");
+        resolved.setAccessible(true);
+        Object held = ((java.util.concurrent.atomic.AtomicReference<?>) resolved.get(null)).get();
+
+        assertNotNull(held, "a derivation left no resolved key, so every call rebuilds one");
+        assertFalse(held.toString().contains(configuredKey()),
+                "the resolved key rendered its key material, so a log line could carry it");
+        assertTrue(held.toString().contains("[redacted]"),
+                "the resolved key must state that its key material is withheld");
+    }
+
+    /** A key of the minimum width, used where a test configures one of its own. */
+    private static final String A_KEY = "panmasker-test-key-one-0123456789";
+
+    /** A second key of the minimum width, differing from {@link #A_KEY}. */
+    private static final String ANOTHER_KEY = "panmasker-test-key-two-9876543210";
+
+    /** Returns the key this build configured, which every other test derives under. */
+    private static String configuredKey() {
+        String property = System.getProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY);
+        return property == null || property.isBlank()
+                ? System.getenv(PanMasker.CARD_TOKEN_SECRET_VARIABLE)
+                : property;
+    }
+
+    /**
+     * Computes the token one card number must carry under one key and version, from the declared
+     * inputs alone.
+     */
+    private static String expectedToken(String key, String version, String cardNumber)
+            throws Exception {
+        javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        mac.init(new javax.crypto.spec.SecretKeySpec(
+                key.getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
+        byte[] code = mac.doFinal(("CardDemo/card-token/v" + version + ":" + cardNumber)
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        StringBuilder rendered = new StringBuilder(PanMasker.CARD_TOKEN_LENGTH);
+        for (byte octet : code) {
+            rendered.append(String.format("%02x", octet));
+        }
+        return rendered.toString();
+    }
+
+    /**
+     * Runs one derivation under a named key and version, then restores the build's own settings.
+     *
+     * <p>The restore runs whatever the body does, so one failing case cannot leave the remaining
+     * tests of this class deriving under another key.
+     */
+    private static <T> T withConfiguration(String key, String version,
+            java.util.concurrent.Callable<T> body) throws Exception {
+        String heldKey = System.getProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY);
+        String heldVersion = System.getProperty(PanMasker.CARD_TOKEN_VERSION_PROPERTY);
+        try {
+            restore(PanMasker.CARD_TOKEN_SECRET_PROPERTY, key);
+            restore(PanMasker.CARD_TOKEN_VERSION_PROPERTY, version);
+            return body.call();
+        } finally {
+            restore(PanMasker.CARD_TOKEN_SECRET_PROPERTY, heldKey);
+            restore(PanMasker.CARD_TOKEN_VERSION_PROPERTY, heldVersion);
+        }
+    }
+
+    /** Sets one system property, or clears it when the value is absent. */
+    private static void restore(String property, String value) {
+        if (value == null) {
+            System.clearProperty(property);
+        } else {
+            System.setProperty(property, value);
+        }
     }
 
     @Test
@@ -672,13 +828,31 @@ class PanMaskerTest {
         assertEquals('*', PanMasker.MASK_CHARACTER);
         assertEquals(MASK_PREFIX.length(), HIDDEN_CHARACTER_COUNT);
 
+        // Every method that takes a card-shaped value takes exactly that one value, so none can
+        // combine two of them into one result. The three exceptions each take no card-shaped value
+        // at all: cardTokenVersion reports the configured version, resolvedKey builds the key, and
+        // configured reads one setting from a property name and a variable name.
+        Set<String> argumentFreeOfCardValues = Set.of("cardTokenVersion", "resolvedKey",
+                "configuredSecret", "configured");
         for (Method method : PanMasker.class.getDeclaredMethods()) {
-            if (method.isSynthetic()) {
+            if (method.isSynthetic() || argumentFreeOfCardValues.contains(method.getName())) {
                 continue;
             }
             assertEquals(1, method.getParameterCount(),
                     "method " + method.getName() + " accepts a second argument");
         }
+
+        Set<String> publicSurface = new LinkedHashSet<>();
+        for (Method method : PanMasker.class.getDeclaredMethods()) {
+            if (!method.isSynthetic() && Modifier.isPublic(method.getModifiers())) {
+                publicSurface.add(method.getName());
+            }
+        }
+        assertEquals(Set.of("maskCardNumber", "redactCardVerificationValue", "cardToken",
+                        "tokenOf", "cardTokenVersion"),
+                publicSurface,
+                "the public surface changed, and every addition needs its own disclosure"
+                        + " guarantee stated in this class");
     }
 
     /**

@@ -45,6 +45,11 @@ public class AccountBalanceUpdater {
      * event for the same account waits and then reads the balance this call stored. Without that
      * lock two events read one balance and the second store overwrites the first amount.
      *
+     * <p>The stored replica provenance is carried forward unchanged. A posting is a delta this
+     * service owns rather than a state the account service published, so it advances no ordering
+     * value; clearing the two columns instead would let a change
+     * {@code messaging/AccountStateChangedConsumer} had already applied apply a second time.
+     *
      * @param accountId the eleven-digit account identifier, padded as {@code ACCT-ID PIC 9(11)} at
      *                  {@code app/cpy/CVACT01Y.cpy:L5} holds it
      * @param amount    the posted amount, from {@code DALYTRAN-AMT PIC S9(09)V99} at
@@ -69,7 +74,8 @@ public class AccountBalanceUpdater {
         }
 
         accountBalances.save(new AccountBalanceProjectionEntity(stored.getAccountId(),
-                postedBalance, postedCycleCredit, postedCycleDebit));
+                postedBalance, postedCycleCredit, postedCycleDebit, stored.getSourceEventId(),
+                stored.getSourceOccurredAt()));
         return postedBalance;
     }
 

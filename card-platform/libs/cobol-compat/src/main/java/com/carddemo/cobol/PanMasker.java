@@ -1,9 +1,13 @@
 package com.carddemo.cobol;
 
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
+import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Pattern;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 /**
  * Masks a Primary Account Number (PAN) for a published payload or a log line, and derives the
@@ -30,6 +34,23 @@ import java.util.HexFormat;
  * supplies the identity instead: one card, one token, and no two cards share one. A route key, a
  * storage key and an ownership authority take the token, and the masked form stays display data.
  *
+ * <p>A card token is a <strong>keyed</strong> value. The card-number space is finite and its
+ * shape is public, so an unkeyed digest of a card number can be recomputed for every candidate
+ * card number by anyone holding a token. {@link #cardToken(String)} therefore takes a keyed
+ * message authentication code under a deployment-supplied key, which a holder of the token does
+ * not have. No key is compiled in and no key has a default: a deployment that configures none
+ * derives no token at all, because a token derived under a key everybody knows is not a token.
+ * {@link #CARD_TOKEN_SECRET_PROPERTY} and {@link #CARD_TOKEN_SECRET_VARIABLE} name the two places
+ * the key is read from.
+ *
+ * <p>A token carries a version, from {@link #CARD_TOKEN_VERSION_PROPERTY} or
+ * {@link #CARD_TOKEN_VERSION_VARIABLE}, and the version is part of the message the code covers.
+ * Raising the version therefore rolls every token over under the same key, and turning the key
+ * over rolls every token over under the same version. Either is a deliberate act with one
+ * consequence: a stored token, a granted ownership authority and a cursor already issued name the
+ * card they named under the previous key and version, so both are migrated together.
+ * {@code card-platform/docs/suggested-next-tasks.md} carries the procedure.
+ *
  * <p>Card number validation in the source is a numeric class test only, at
  * {@code app/cbl/COCRDUPC.cbl:L782-784}. This class adds no further card-number validation.
  */
@@ -55,8 +76,8 @@ public final class PanMasker {
             String.valueOf(MASK_CHARACTER).repeat(CARD_VERIFICATION_VALUE_LENGTH);
 
     /**
-     * The width of a card token: the sixty-four hexadecimal characters a SHA-256 digest renders
-     * as.
+     * The width of a card token: the sixty-four hexadecimal characters a 256-bit message
+     * authentication code renders as.
      */
     public static final int CARD_TOKEN_LENGTH = 64;
 
@@ -73,16 +94,63 @@ public final class PanMasker {
     public static final String ABSENT_CARD_TOKEN = "0".repeat(CARD_TOKEN_LENGTH);
 
     /**
-     * The label the token digest covers ahead of the card number.
-     *
-     * <p>The label separates this digest from every other digest of the same card number. A
-     * digest taken elsewhere over the bare card number does not equal a token, so one cannot be
-     * mistaken for the other. The trailing version marker is what a later token scheme changes.
+     * System property that supplies the card-token key. Read before
+     * {@link #CARD_TOKEN_SECRET_VARIABLE}, so a test or a single process overrides a deployment
+     * without editing its environment.
      */
-    private static final String CARD_TOKEN_LABEL = "CardDemo/card-token/v1:";
+    public static final String CARD_TOKEN_SECRET_PROPERTY = "carddemo.card-token.secret";
 
-    /** The digest algorithm {@link #cardToken(String)} applies. */
-    private static final String CARD_TOKEN_ALGORITHM = "SHA-256";
+    /** Environment variable that supplies the card-token key where the property is unset. */
+    public static final String CARD_TOKEN_SECRET_VARIABLE = "CARD_TOKEN_SECRET";
+
+    /** System property that supplies the card-token version. */
+    public static final String CARD_TOKEN_VERSION_PROPERTY = "carddemo.card-token.version";
+
+    /** Environment variable that supplies the card-token version where the property is unset. */
+    public static final String CARD_TOKEN_VERSION_VARIABLE = "CARD_TOKEN_VERSION";
+
+    /** The version every token carries where a deployment names none. */
+    public static final String DEFAULT_CARD_TOKEN_VERSION = "1";
+
+    /**
+     * Characters a configured key must hold at least.
+     *
+     * <p>Thirty-two characters is the block size of the underlying hash. A shorter key is padded
+     * to that width by the algorithm, which spends key material rather than adding it, so a key
+     * under this width is refused at the point of use instead of silently weakening every token.
+     */
+    public static final int CARD_TOKEN_SECRET_MIN_LENGTH = 32;
+
+    /**
+     * The label the token code covers ahead of the version and the card number.
+     *
+     * <p>The label separates this code from every other code taken under the same key. A code
+     * taken elsewhere over the bare card number does not equal a token, so one cannot be mistaken
+     * for the other.
+     */
+    private static final String CARD_TOKEN_LABEL_PREFIX = "CardDemo/card-token/v";
+
+    /** Separates the version marker from the card number inside the covered message. */
+    private static final char CARD_TOKEN_LABEL_TERMINATOR = ':';
+
+    /** The keyed algorithm {@link #cardToken(String)} applies. */
+    private static final String CARD_TOKEN_ALGORITHM = "HmacSHA256";
+
+    /** What a rendered key holder shows in place of key material. */
+    private static final String REDACTED_KEY = "[redacted]";
+
+    /** The shape a configured version must take: one to three digits, the first of them non-zero. */
+    private static final Pattern CARD_TOKEN_VERSION = Pattern.compile("^[1-9][0-9]{0,2}$");
+
+    /**
+     * The key last resolved, held so that a repeated derivation does not rebuild it.
+     *
+     * <p>The entry is replaced whenever the configured version or key changes, which is what lets
+     * a rollover take effect inside a running process and lets a test exercise two versions in
+     * one run. The reference holds the key material rather than a hash of it, so nothing here is
+     * written to a log or carried into an exception message.
+     */
+    private static final AtomicReference<TokenKey> RESOLVED_KEY = new AtomicReference<>();
 
     /** The twelve mask characters that precede the four visible characters. */
     private static final String MASK_PREFIX =
@@ -153,39 +221,6 @@ public final class PanMasker {
     }
 
     /**
-     * Derives the card token of one card number.
-     *
-     * <p>The token is the {@value #CARD_TOKEN_ALGORITHM} digest of a fixed label followed by the
-     * stripped card number, rendered as {@value #CARD_TOKEN_LENGTH} lower-case hexadecimal
-     * characters. It always matches {@value #CARD_TOKEN_PATTERN}.
-     *
-     * <p>Three properties are what callers rely on. The same card number always yields the same
-     * token, so a service that never meets the card number twice still keys its rows on one
-     * value. Two different card numbers yield different tokens, which is the identity a masked
-     * card number cannot supply. No character of the card number survives into the token, so a
-     * token is safe in a route, an access log, a trace and a stored key.
-     *
-     * <p>The derivation is a digest and not a keyed function, so the token needs no configuration
-     * and no shared secret: any service holding a card number reaches the same token, and a
-     * service holding only a token cannot read it back. That is the whole guarantee this method
-     * makes. A deployment that must also withstand an offline search of the card-number space
-     * replaces the digest with a keyed function or a vault-issued surrogate, and the label above
-     * is the one value such a change turns over.
-     *
-     * <p>Leading and trailing whitespace is discarded, so a value read from a fixed-width
-     * {@code CARD-NUM PIC X(16)} field and the same value trimmed produce one token. Nothing else
-     * is normalized: a value of another width is a different card number and yields a different
-     * token.
-     *
-     * @param cardNumber the full card number, as stored in {@code CARD-NUM}; must not be
-     *                   {@code null} and must hold at least one non-whitespace character
-     * @return {@value #CARD_TOKEN_LENGTH} lower-case hexadecimal characters
-     * @throws NullPointerException     if {@code cardNumber} is {@code null}
-     * @throws IllegalArgumentException if {@code cardNumber} holds no non-whitespace character,
-     *                                  because a blank value names no card and every blank value
-     *                                  would collapse onto one token
-     */
-    /**
      * Returns the token of one card number, or {@link #ABSENT_CARD_TOKEN} when none is supplied.
      *
      * <p>The same value {@link #cardToken(String)} returns. Two names exist because callers on both
@@ -194,6 +229,8 @@ public final class PanMasker {
      *
      * @param cardNumber the full card number, or {@code null} or blank when the caller holds none
      * @return {@value #CARD_TOKEN_LENGTH} lower-case hexadecimal characters
+     * @throws IllegalStateException if a card number is supplied and no card-token key is
+     *                               configured
      */
     public static String tokenOf(String cardNumber) {
         if (cardNumber == null || cardNumber.isBlank()) {
@@ -202,6 +239,48 @@ public final class PanMasker {
         return cardToken(cardNumber);
     }
 
+    /**
+     * Derives the card token of one card number.
+     *
+     * <p>The token is the {@value #CARD_TOKEN_ALGORITHM} code, taken under the configured key,
+     * over the label, the configured version and the stripped card number, rendered as
+     * {@value #CARD_TOKEN_LENGTH} lower-case hexadecimal characters. It always matches
+     * {@value #CARD_TOKEN_PATTERN}.
+     *
+     * <p>Four properties are what callers rely on. Under one key and one version the same card
+     * number always yields the same token, so a service that never meets the card number twice
+     * still keys its rows on one value. Two different card numbers yield different tokens, which
+     * is the identity a masked card number cannot supply. No character of the card number
+     * survives into the token, so a token is safe in a route, an access log, a trace and a stored
+     * key. And a holder of the token cannot recompute it for a candidate card number, because
+     * recomputing it needs the key.
+     *
+     * <p>The key is read at each derivation from {@link #CARD_TOKEN_SECRET_PROPERTY} and then
+     * {@link #CARD_TOKEN_SECRET_VARIABLE}, and the version from
+     * {@link #CARD_TOKEN_VERSION_PROPERTY} and then {@link #CARD_TOKEN_VERSION_VARIABLE}. Reading
+     * per derivation rather than once at class initialization is what makes a rollover take effect
+     * without a restart. The resolved key is held between derivations, so the cost of a repeat is
+     * one comparison.
+     *
+     * <p>Leading and trailing whitespace is discarded, so a value read from a fixed-width
+     * {@code CARD-NUM PIC X(16)} field and the same value trimmed produce one token. Nothing else
+     * is normalized: a value of another width is a different card number and yields a different
+     * token.
+     *
+     * <p>No exception message here quotes the card number, the key or any part of either. A
+     * message about the key reports its width and nothing else.
+     *
+     * @param cardNumber the full card number, as stored in {@code CARD-NUM}; must not be
+     *                   {@code null} and must hold at least one non-whitespace character
+     * @return {@value #CARD_TOKEN_LENGTH} lower-case hexadecimal characters
+     * @throws NullPointerException     if {@code cardNumber} is {@code null}
+     * @throws IllegalArgumentException if {@code cardNumber} holds no non-whitespace character,
+     *                                  because a blank value names no card and every blank value
+     *                                  would collapse onto one token
+     * @throws IllegalStateException    if no key is configured, if the configured key is under
+     *                                  {@value #CARD_TOKEN_SECRET_MIN_LENGTH} characters, or if
+     *                                  the configured version is not one to three digits
+     */
     public static String cardToken(String cardNumber) {
         if (cardNumber == null) {
             throw new NullPointerException("cardNumber is required to derive a card token");
@@ -213,29 +292,151 @@ public final class PanMasker {
                     "cardNumber holds no character and names no card to tokenize");
         }
 
-        byte[] covered = (CARD_TOKEN_LABEL + value).getBytes(StandardCharsets.UTF_8);
-        return HEX.formatHex(digestOf(covered));
+        TokenKey key = resolvedKey();
+        byte[] covered = (CARD_TOKEN_LABEL_PREFIX + key.version() + CARD_TOKEN_LABEL_TERMINATOR
+                + value).getBytes(StandardCharsets.UTF_8);
+        return HEX.formatHex(key.code(covered));
     }
 
     /**
-     * Digests the bytes one token covers.
+     * Returns the version every token derived now carries.
      *
-     * <p>{@value #CARD_TOKEN_ALGORITHM} is required of every Java platform, so the checked
-     * exception the lookup declares cannot arise here. It becomes an error rather than a
-     * swallowed condition, because a platform without the algorithm cannot key a row at all.
+     * <p>A caller records it beside a token it stores, so a later rollover can tell a token of the
+     * previous version from one of the current version without re-deriving either.
      *
-     * @param covered the label and the card number, as bytes
-     * @return the digest
-     * @throws IllegalStateException if the runtime does not supply
-     *                               {@value #CARD_TOKEN_ALGORITHM}
+     * @return the configured version, or {@value #DEFAULT_CARD_TOKEN_VERSION} where none is set
+     * @throws IllegalStateException if the configured version is not one to three digits
      */
-    private static byte[] digestOf(byte[] covered) {
-        try {
-            return MessageDigest.getInstance(CARD_TOKEN_ALGORITHM).digest(covered);
-        } catch (NoSuchAlgorithmException absent) {
-            throw new IllegalStateException(
-                    "this runtime supplies no " + CARD_TOKEN_ALGORITHM + " digest, so no card "
-                            + "token can be derived", absent);
+    public static String cardTokenVersion() {
+        String configured = configured(CARD_TOKEN_VERSION_PROPERTY, CARD_TOKEN_VERSION_VARIABLE);
+        String version = configured == null ? DEFAULT_CARD_TOKEN_VERSION : configured;
+        if (!CARD_TOKEN_VERSION.matcher(version).matches()) {
+            throw new IllegalStateException("the configured card-token version must be one to"
+                    + " three digits opening with a non-zero digit, and the configured value holds"
+                    + " " + version.length() + " characters. Set " + CARD_TOKEN_VERSION_PROPERTY
+                    + " or " + CARD_TOKEN_VERSION_VARIABLE + " to a value of that shape.");
+        }
+        return version;
+    }
+
+    /**
+     * Returns the key and version in force, building the key only when either has changed.
+     *
+     * @return the key material and the version tokens are derived under
+     * @throws IllegalStateException if no key is configured or the configured key is too short
+     */
+    private static TokenKey resolvedKey() {
+        String version = cardTokenVersion();
+        String secret = configuredSecret();
+
+        TokenKey held = RESOLVED_KEY.get();
+        if (held != null && held.matches(version, secret)) {
+            return held;
+        }
+
+        TokenKey rebuilt = new TokenKey(version, secret,
+                new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), CARD_TOKEN_ALGORITHM));
+        RESOLVED_KEY.set(rebuilt);
+        return rebuilt;
+    }
+
+    /**
+     * Reads the configured key, and refuses to derive a token where none is configured.
+     *
+     * <p>No default exists on purpose. A key compiled into this repository is a key every reader
+     * of it holds, and a token derived under such a key is recomputable for every candidate card
+     * number, which is the whole property the key exists to supply.
+     *
+     * @return the configured key, stripped of surrounding whitespace
+     * @throws IllegalStateException if no key is configured or the configured key is under
+     *                               {@value #CARD_TOKEN_SECRET_MIN_LENGTH} characters
+     */
+    private static String configuredSecret() {
+        String configured = configured(CARD_TOKEN_SECRET_PROPERTY, CARD_TOKEN_SECRET_VARIABLE);
+        if (configured == null) {
+            throw new IllegalStateException("no card-token key is configured, so no card token can"
+                    + " be derived. Set the system property " + CARD_TOKEN_SECRET_PROPERTY
+                    + " or the environment variable " + CARD_TOKEN_SECRET_VARIABLE
+                    + ". card-platform/.env.example documents the value a demo deployment uses.");
+        }
+        if (configured.length() < CARD_TOKEN_SECRET_MIN_LENGTH) {
+            throw new IllegalStateException("the configured card-token key holds "
+                    + configured.length() + " characters and at least "
+                    + CARD_TOKEN_SECRET_MIN_LENGTH + " are required, because a shorter key is"
+                    + " padded to the hash block size rather than filling it.");
+        }
+        return configured;
+    }
+
+    /**
+     * Reads one setting from a system property, then from an environment variable.
+     *
+     * @param property the system property name, read first
+     * @param variable the environment variable name, read where the property carries no value
+     * @return the value with surrounding whitespace removed, or {@code null} where neither carries
+     *         one
+     */
+    private static String configured(String property, String variable) {
+        String value = System.getProperty(property);
+        if (value == null || value.isBlank()) {
+            value = System.getenv(variable);
+        }
+        return value == null || value.isBlank() ? null : value.strip();
+    }
+
+    /**
+     * One resolved card-token key: the version it derives under, the key text it was built from,
+     * and the key itself.
+     *
+     * <p>The key text is retained only so that {@link #matches(String, String)} can tell a
+     * configuration change from a repeat. Neither {@link #toString()} nor any message in this
+     * class renders it.
+     *
+     * @param version the version marker the covered message carries
+     * @param secret  the configured key text this entry was built from
+     * @param key     the key the code is taken under
+     */
+    private record TokenKey(String version, String secret, SecretKeySpec key) {
+
+        /**
+         * Reports whether this entry was built from the supplied version and key.
+         *
+         * @param currentVersion the version now configured
+         * @param currentSecret  the key now configured
+         * @return {@code true} when neither has changed
+         */
+        private boolean matches(String currentVersion, String currentSecret) {
+            return version.equals(currentVersion) && secret.equals(currentSecret);
+        }
+
+        /**
+         * Takes the code of one covered message under this key.
+         *
+         * <p>A {@link Mac} holds the state of one computation, so one is built per call rather
+         * than shared. {@value #CARD_TOKEN_ALGORITHM} is required of every Java platform, so
+         * neither checked exception the two calls declare can arise from a valid key.
+         *
+         * @param covered the label, the version and the card number, as bytes
+         * @return the code, thirty-two octets wide
+         * @throws IllegalStateException if the runtime supplies no
+         *                               {@value #CARD_TOKEN_ALGORITHM} implementation
+         */
+        private byte[] code(byte[] covered) {
+            try {
+                Mac mac = Mac.getInstance(CARD_TOKEN_ALGORITHM);
+                mac.init(key);
+                return mac.doFinal(covered);
+            } catch (NoSuchAlgorithmException | InvalidKeyException unusable) {
+                throw new IllegalStateException("this runtime supplies no usable "
+                        + CARD_TOKEN_ALGORITHM + " implementation, so no card token can be"
+                        + " derived", unusable);
+            }
+        }
+
+        /** Renders this entry without its key material. */
+        @Override
+        public String toString() {
+            return "TokenKey[version=" + version + ", secret=" + REDACTED_KEY + "]";
         }
     }
 }

@@ -28,6 +28,7 @@ import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.OutboxEventRepository;
 import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionDeclined;
@@ -671,26 +672,100 @@ final class AuthorizationServiceTest {
     }
 
     /**
-     * Asserts a request naming only an account decides nothing and resolves no card.
+     * Asserts a request naming only an account resolves its card and decides on that card.
      *
-     * <p>{@code app/cbl/COTRN02C.cbl:L206-L209} reads the alternate index and moves the first card
-     * number it finds into the field the validation then uses. That card is whichever one the index
-     * holds first rather than one the caller presented, so reproducing the branch would let a caller
-     * who guesses an account identifier authorize against another cardholder's card. The branch is
-     * refused instead, and no read of the alternate index runs.
+     * <p>{@code app/cbl/COTRN02C.cbl:L208} performs {@code READ-CXACAIX-FILE} on the account
+     * identifier and {@code :L209} moves {@code XREF-CARD-NUM} into the field the validation then
+     * uses, so the account branch resolves a card and decides exactly as the card branch would. The
+     * read runs against the alternate index defined at {@code app/jcl/XREFFILE.jcl:L72-L77}, and the
+     * target form takes the row in ascending card-number order so one account always resolves the
+     * same card.
      */
     @Test
-    void aRequestNamingOnlyAnAccountResolvesNoCardAndDecidesNothing() {
+    void aRequestNamingOnlyAnAccountResolvesItsCardAndDecides() {
+        resolveCardFromAccount();
+        resolveCard();
         resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                 EXPIRY_AFTER_CAPTURE);
 
+        AuthorizationService.Outcome outcome =
+                service.authorize(requestNamingOnlyAnAccount(), ACTOR);
+
+        assertTrue(outcome.approved(), "the card the account resolved decides the request");
+        assertEquals(new BigDecimal(ACCOUNT_ID), outcome.accountId(),
+                "the outcome names the account the resolved row carries");
+        verify(cardCrossReferences).findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID);
+        assertEquals(1, written.size(), "one account-only request writes one event");
+        assertEquals(PanMasker.maskCardNumber(CARD_NUMBER), audited.get(0).getMaskedCardNumber(),
+                "the decision row records the resolved card, masked, and not the account");
+        assertEquals(PanMasker.cardToken(CARD_NUMBER), audited.get(0).getCardToken(),
+                "the decision row carries the token derived from the resolved card");
+    }
+
+    /**
+     * Asserts the resolved card is the one the decision runs on, not one the caller may name.
+     *
+     * <p>The account branch has no card number of its own, so the value the rules see has to come
+     * from the cross-reference row. Reading it from anywhere else would decide against a card the
+     * row does not carry.
+     */
+    @Test
+    void theAccountBranchDecidesOnTheCardTheCrossReferenceRowCarries() {
+        resolveCardFromAccount();
+        resolveCard();
+        resolveAccount(new BigDecimal("100.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
+                EXPIRY_AFTER_CAPTURE);
+
+        AuthorizationService.Outcome outcome =
+                service.authorize(requestNamingOnlyAnAccount(), ACTOR);
+
+        assertEquals(Optional.of(DeclineReason.OVER_CREDIT_LIMIT), outcome.declineReason(),
+                "the resolved card reached the credit-limit rule on the resolved account");
+        verify(cardCrossReferences).findByCardNumber(CARD_NUMBER);
+        assertEquals(DeclineReason.OVER_CREDIT_LIMIT.description(),
+                describe(outcome), "the decline carries the source description");
+    }
+
+    /**
+     * Asserts an account holding no cross-reference row is an input refusal and not a decline.
+     *
+     * <p>The {@code NOTFND} limb of {@code READ-CXACAIX-FILE} at
+     * {@code app/cbl/COTRN02C.cbl:L591-L592} answers
+     * {@value AuthorizationRequest#ACCOUNT_ID_NOT_FOUND_MESSAGE} and re-sends the screen, so nothing
+     * is captured. It is not reject reason {@code 0100}: a request naming no card number has no card
+     * number to record, mask or tokenize on a declined event.
+     */
+    @Test
+    void anAccountHoldingNoCardIsRefusedRatherThanDeclined() {
+        when(cardCrossReferences.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+                .thenReturn(Optional.empty());
+
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> service.authorize(requestNamingOnlyAnAccount(), ACTOR),
-                "an account identifier resolved a card, which is the path this fix closes");
+                () -> service.authorize(requestNamingOnlyAnAccount(), ACTOR));
+
+        assertEquals(AuthorizationRequest.ACCOUNT_ID_NOT_FOUND_MESSAGE, refused.getMessage(),
+                "the refusal carries the NOTFND text of app/cbl/COTRN02C.cbl:L591-L592");
+        verify(identifiers, never()).nextIdentifier();
+        assertEquals(List.of(), written, "a refused request writes no event");
+        assertEquals(List.of(), audited, "a refused request records no decision");
+    }
+
+    /**
+     * Asserts a request naming neither identifier still carries the {@code WHEN OTHER} refusal.
+     *
+     * <p>{@code app/cbl/COTRN02C.cbl:L224-L229} is the limb that answers when both fields are empty,
+     * and it is the one refusal the two accepted branches leave. No cross-reference read runs,
+     * because there is no identifier to read on.
+     */
+    @Test
+    void aRequestNamingNeitherIdentifierIsRefusedBeforeAnyRead() {
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                () -> service.authorize(requestNamingNeitherIdentifier(), ACTOR));
 
         assertEquals(AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE, refused.getMessage(),
                 "the refusal carries the WHEN OTHER text of app/cbl/COTRN02C.cbl:L226");
         verify(cardCrossReferences, never()).findFirstByAccountIdOrderByCardNumberAsc(any());
+        verify(cardCrossReferences, never()).findByCardNumber(any());
         assertEquals(List.of(), written, "a refused request writes no event");
         assertEquals(List.of(), audited, "a refused request records no decision");
     }
@@ -877,6 +952,20 @@ final class AuthorizationServiceTest {
         return outcome.declineReason().map(DeclineReason::description).orElse(null);
     }
 
+    /**
+     * Stubs the alternate-index read so {@link #ACCOUNT_ID} resolves {@link #CARD_NUMBER}.
+     *
+     * <p>This is {@code READ-CXACAIX-FILE} at {@code app/cbl/COTRN02C.cbl:L208}, the read the
+     * account branch performs before {@code :L209} moves the card number it found into the field the
+     * validation uses.
+     */
+    private void resolveCardFromAccount() {
+        when(cardCrossReferences.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+                .thenReturn(Optional.of(
+                        new CardCrossReferenceEntity(CARD_NUMBER, "000000011", ACCOUNT_ID,
+                                OBSERVED_AT)));
+    }
+
     /** Stubs the cross-reference read so the card resolves to {@link #ACCOUNT_ID}. */
     private void resolveCard() {
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER))
@@ -949,6 +1038,11 @@ final class AuthorizationServiceTest {
     /** @return a valid request naming {@link #ACCOUNT_ID} and no card number */
     private static AuthorizationRequest requestNamingOnlyAnAccount() {
         return build(null, ACCOUNT_ID, "504.77", ORIGIN_TIMESTAMP, null);
+    }
+
+    /** @return a request naming neither identifier, which is the WHEN OTHER limb's input */
+    private static AuthorizationRequest requestNamingNeitherIdentifier() {
+        return build(null, null, "504.77", ORIGIN_TIMESTAMP, null);
     }
 
     /**

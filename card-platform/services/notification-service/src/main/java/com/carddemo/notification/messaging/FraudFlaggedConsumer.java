@@ -4,10 +4,9 @@ import com.carddemo.events.FraudCleared;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
+import com.carddemo.notification.domain.CardholderContextReader;
 import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.domain.NotificationService.CardholderDetails;
-import com.carddemo.notification.entity.CardholderContextEntity;
-import com.carddemo.notification.repository.CardholderContextRepository;
 import com.carddemo.notification.repository.ProcessedEventRepository;
 import java.time.Duration;
 import java.time.Instant;
@@ -85,7 +84,7 @@ public class FraudFlaggedConsumer {
             "no alert rendered or marker written for /transactionId";
 
     /** Reads the account-keyed cardholder fields one alert reports. */
-    private final CardholderContextRepository cardholderContexts;
+    private final CardholderContextReader cardholderContextReader;
 
     /** Claims one event identifier, so a second delivery of it changes nothing. */
     private final ProcessedEventRepository processedEvents;
@@ -102,18 +101,18 @@ public class FraudFlaggedConsumer {
     /**
      * Takes the two repositories, the domain service, the transaction runner and the meters.
      *
-     * @param cardholderContexts  store of the account-keyed cardholder projection
+     * @param cardholderContextReader reader of the account-keyed cardholder projection
      * @param processedEvents     store of duplicate-delivery markers
      * @param notificationService renderer of the cardholder alert
      * @param transactionTemplate runner of the one local transaction this listener opens
      * @param metrics             the meter holder {@code config/ObservabilityConfig} registers
      * @throws NullPointerException if any argument is null
      */
-    public FraudFlaggedConsumer(CardholderContextRepository cardholderContexts,
+    public FraudFlaggedConsumer(CardholderContextReader cardholderContextReader,
             ProcessedEventRepository processedEvents, NotificationService notificationService,
             TransactionTemplate transactionTemplate, NotificationMetrics metrics) {
-        this.cardholderContexts =
-                Objects.requireNonNull(cardholderContexts, "cardholderContexts is required");
+        this.cardholderContextReader = Objects.requireNonNull(cardholderContextReader,
+                "cardholderContextReader is required");
         this.processedEvents =
                 Objects.requireNonNull(processedEvents, "processedEvents is required");
         this.notificationService =
@@ -238,32 +237,19 @@ public class FraudFlaggedConsumer {
     }
 
     /**
-     * Reads the ten cardholder fields one account carries, or blank fields when none is held.
+     * Reads the ten cardholder fields one account carries, refusing when the projection holds none.
+     *
+     * <p>An account with no row once yielded blank fields, so a fraud alert reached a cardholder with
+     * no name and no address on it. {@link CardholderContextReader#require(String)} reports the gap
+     * instead, which leaves the offset uncommitted and has the delivery taken again.
      *
      * @param accountId the account the assessment names
-     * @return the cardholder fields, blank when the projection holds no row for the account
+     * @return the cardholder fields the projection holds for the account
      */
     private CardholderDetails cardholderDetails(String accountId) {
-        return cardholderContexts.findById(accountId)
-                .map(FraudFlaggedConsumer::detailsOf)
-                .orElseGet(CardholderDetails::blank);
+        return cardholderContextReader.require(accountId);
     }
 
-    /**
-     * Maps one projection row onto the ten fields an alert reports.
-     *
-     * <p>The order matches {@code app/cbl/CBSTM03A.CBL:L462-L485}: the name, the three address
-     * lines, the state and country codes, the mail code and the credit score.
-     *
-     * @param context one row of the account-keyed cardholder projection
-     * @return the ten fields, each at the width its source field declares
-     */
-    private static CardholderDetails detailsOf(CardholderContextEntity context) {
-        return new CardholderDetails(context.getFirstName(), context.getMiddleName(),
-                context.getLastName(), context.getAddressLine1(), context.getAddressLine2(),
-                context.getAddressLine3(), context.getStateCode(), context.getCountryCode(),
-                context.getZipCode(), context.getFicoScore());
-    }
 
     /**
      * Normalises the consumed topic for the marker column, which holds null for none.

@@ -134,7 +134,6 @@ class CardRepositoryIT {
      */
     private static final String MIGRATED_SCHEMA = "card_service";
 
-    /** Row count {@code V2__seed.sql} loads into {@code card}. */
     /**
      * Rows one screen of the card list holds, from
      * {@code WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7} at
@@ -151,6 +150,7 @@ class CardRepositoryIT {
     /** Account identifier of seeded row one, eleven characters wide. */
     private static final String ROW_1_ACCOUNT_ID = "00000000050";
 
+    /** Row count {@code V2__seed.sql} loads into {@code card}. */
     private static final int SEEDED_ROW_COUNT = 50;
 
     /** The three migration versions Flyway applies, in the order it applies them. */

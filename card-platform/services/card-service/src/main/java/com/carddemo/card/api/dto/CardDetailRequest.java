@@ -46,9 +46,12 @@ import jakarta.validation.constraints.Pattern;
  * <p>The read that follows keys on the card number alone.
  * {@code app/cbl/COCRDSLC.cbl:L740} moves the card number into the read key and the account move
  * above it at {@code app/cbl/COCRDSLC.cbl:L739} is commented out, so the account component is
- * edited and then not used as a key. That is the source behaviour and this platform reproduces it:
- * no path here compares the account of the row it found against the account the caller supplied,
- * because adding that comparison would refuse a request the source answers.
+ * edited and then not used as a key. The key is reproduced and the account is compared after the
+ * read: a row belonging to another account is answered as an absent row. The source needed no such
+ * comparison because it granted every signed-on user every card; here the account is a
+ * caller-supplied key, and an unchecked one would let an entitlement for one card reach a row under
+ * any account identifier a caller cared to send. {@code api/CardController#readCard} carries the
+ * citations and the register of flagged rules carries the departure.
  *
  * @param accountId the eleven-digit account identifier, from {@code CC-ACCT-ID PIC X(11)} at
  *        {@code app/cpy/CVCRD01Y.cpy:L34}. A missing value takes

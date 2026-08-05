@@ -157,9 +157,14 @@ spec:
                   name: carddemo-config
                   key: LEDGER_KAFKA_USER
             # Consumes transaction.authorized in consumer group ledger-posting. Each
-            # consumer group holds its own read position, so the four groups
-            # 30-configmap.yaml declares advance independently. 10-kafka.yaml grants
-            # this broker identity that one group and no other.
+            # consumer group holds its own read position, so the eight groups
+            # 30-configmap.yaml declares advance independently. 10-kafka.yaml grants this
+            # broker identity that group and GROUP_LEDGER_ACCOUNT, and no other.
+            #
+            # This service runs a second listener, which reads account.state-changed under
+            # GROUP_LEDGER_ACCOUNT to keep account_balance_projection current. That group and
+            # the topic name arrive through the envFrom above rather than as a binding here,
+            # because only the group the framework property below names needs one.
             - name: SPRING_KAFKA_CONSUMER_GROUP_ID
               valueFrom:
                 configMapKeyRef:

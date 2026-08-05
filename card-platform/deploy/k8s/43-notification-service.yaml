@@ -185,6 +185,14 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: GROUP_NOTIFICATION_POSTED
+            # The transaction.authorized listener joins this group. It is this service's own,
+            # so this service reads the authorization event independently of the ledger and the
+            # fraud detector, which read the same topic under groups of theirs.
+            - name: GROUP_NOTIFICATION_AUTHORIZED
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_NOTIFICATION_AUTHORIZED
             # The transaction.posted listener joins this group.
             - name: GROUP_NOTIFICATION_POSTED
               valueFrom:

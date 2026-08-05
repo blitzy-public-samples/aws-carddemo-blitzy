@@ -39,23 +39,30 @@ CREATE TABLE card (
     -- This column identifies exactly one, which is why the paging cursor of the card
     -- list carries it and never a card number.
     --
-    -- The value is the SHA-256 digest of the label CardDemo/card-token/v1: followed by
-    -- the sixteen characters of card_number, rendered as sixty-four lower-case
-    -- hexadecimal characters. com.carddemo.cobol.PanMasker.cardToken is the one place
-    -- that derivation lives, and CardEntity applies it to every row this service
-    -- writes. V2__seed.sql carries the same value as a checked-in literal on each of
-    -- its fifty rows, which keeps the derivation out of SQL entirely, and
+    -- The value is the HmacSHA256 code, taken under the configured card-token key, over
+    -- the label CardDemo/card-token/v<version>: followed by the sixteen characters of
+    -- card_number, rendered as sixty-four lower-case hexadecimal characters.
+    -- com.carddemo.cobol.PanMasker.cardToken is the one place that derivation lives, and
+    -- CardEntity applies it to every row this service writes. The code is keyed rather
+    -- than a plain digest because the card-number space is sixteen digits wide: a plain
+    -- digest of it can be recomputed for every candidate card number by anyone holding
+    -- one token, and a token here reaches a cursor, a route and a response.
+    --
+    -- V2__seed.sql carries the same value as a checked-in literal on each of its fifty
+    -- rows, which keeps the derivation out of SQL entirely, and
     -- CardRepositoryIT.everySeededTokenMatchesTheJavaDerivation compares all fifty
-    -- literals against the helper. A drifted literal therefore fails a test rather
-    -- than splitting one card's identity in two.
+    -- literals against the helper. A drifted literal therefore fails a test rather than
+    -- splitting one card's identity in two. Those literals belong to one key and one
+    -- version: card-platform/.env.example declares both, and
+    -- CardTokenKeyContractTest holds every artifact that carries a token to them.
     card_token              CHAR(64) NOT NULL,
     CONSTRAINT pk_card PRIMARY KEY (card_number),
     CONSTRAINT ck_card_account_id_digits
         CHECK (account_id ~ '^[0-9]{11}$'),
     CONSTRAINT ck_card_verification_value_digits
         CHECK (card_verification_value ~ '^[0-9]{3}$'),
-    -- A digest renders as lower-case hexadecimal, and sixty-four characters of it
-    -- cannot hold the sixteen digits of a card number.
+    -- A code renders as lower-case hexadecimal, and sixty-four characters of it cannot
+    -- hold the sixteen digits of a card number.
     CONSTRAINT ck_card_card_token_hex
         CHECK (card_token ~ '^[0-9a-f]{64}$'),
     -- One card reaches one token and no two cards share one, which is what lets a

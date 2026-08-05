@@ -47,11 +47,24 @@ The full contract is [OpenAPI](src/main/resources/openapi.yaml). Business traffi
 | Consumes | `TransactionAuthorized` | `transaction.authorized` | `fraud-detection` |
 | Produces | `FraudFlagged` | `fraud.assessed` | — |
 | Produces | `FraudCleared` | `fraud.assessed` | — |
-| Failure route | `DeadLetterEnvelope` | `carddemo.dead-letter` | — |
+| Listener failure route | 134-character fixed-width abend diagnostic | `transaction.authorized.DLT`, falling back to `carddemo.dead-letter` | — |
+| Relay abandonment route | `DeadLetterEnvelope` | `carddemo.dead-letter` | — |
 
 The two verdict events share one topic and are distinguished by `eventType`. The account identifier is the Kafka key, preserving per-account velocity order.
 
 The assessment and outbox row commit together. Publication happens later through `OutboxRelay`.
+
+This service is the clearest demonstration of the platform's extensibility claim: it has no COBOL ancestor, it consumes an event the authorization service already published, and adding it required no change to that service or to the other two consumers of the same event.
+
+| Meter | Kind | What moves it |
+| :--- | :--- | :--- |
+| `carddemo.fraud.events.consumed` | Counter | One delivery accepted for processing |
+| `carddemo.fraud.assessments.produced` | Counter | One verdict, tagged `outcome=flagged` or `outcome=cleared` |
+| `carddemo.fraud.failures` | Counter | One failed attempt, tagged by stage |
+| `carddemo.fraud.dead.letters` | Counter | One spent record, tagged `outcome=published` or `outcome=failed` |
+| `carddemo.fraud.processing.latency` | Timer | Consumer duration to commit |
+
+`failures` counts attempts and `dead.letters` counts records, so summing the two is never meaningful. A fourth `stage` value would have overlapped `deserialize`, because a record spent at deserialization is also a terminal record.
 
 <br/>
 
@@ -109,6 +122,7 @@ graph LR
     R["OutboxRelay"]
     OUT{{"fraud.assessed"}}
     API["read-only assessment API"]
+    SRCDLT{{"transaction.authorized.DLT"}}
     DEAD{{"carddemo.dead-letter"}}
 
     IN ==> C
@@ -120,7 +134,8 @@ graph LR
     DB --> R
     R ==> OUT
     API --> DB
-    C -.-> DEAD
+    C -.-> SRCDLT
+    R -.->|"row abandoned"| DEAD
 ```
 
 Legend for Figure 1:
@@ -129,7 +144,7 @@ Legend for Figure 1:
 - Plain arrows are in-process evaluation or reads.
 - The diamond is the idempotency check.
 - The cylinder contains private fraud tables.
-- The dotted arrow is terminal dead-letter routing.
+- Dotted arrows are the two terminal routes: a spent consumed record to the source topic plus `.DLT`, and an abandoned outbox row to the shared topic.
 
 The platform-wide paired views live in [Architecture, Before and After](../../docs/architecture-before-after.md).
 

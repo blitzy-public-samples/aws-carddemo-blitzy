@@ -15,7 +15,7 @@
 
 ## Purpose
 
-`notification-service` consumes posted transactions, fraud assessments, and customer-context changes. It maintains a token-keyed transaction model and an account-keyed cardholder context, then renders plain-text or HTML alerts. It publishes no business event and calls no other service. Full statement generation remains outside the migrated runtime.
+`notification-service` consumes authorized transactions, posted transactions, fraud assessments, and customer-context changes. It maintains a token-keyed transaction model and an account-keyed cardholder context, then renders plain-text or HTML alerts. It reads `transaction.authorized` directly, so it is one of the three independent consumers of the one authorization event rather than a consumer of the ledger's output. It publishes no business event and calls no other service. Full statement generation remains outside the migrated runtime.
 
 <br/>
 
@@ -54,10 +54,13 @@ The full contract is [OpenAPI](src/main/resources/openapi.yaml). Business traffi
 
 | Consumer | Topic | Group | Behavior |
 | :--- | :--- | :--- | :--- |
+| `TransactionAuthorizedConsumer` | `transaction.authorized` | `notification-authorized` | Record the authorization against the card-keyed model and render the cardholder alert |
 | `TransactionPostedConsumer` | `transaction.posted` | `notification-posted` | Upsert statement row, refresh masked card correlation, render alert |
 | `FraudFlaggedConsumer` | `fraud.assessed` | `notification-fraud` | Render flagged alert or acknowledge a cleared assessment |
 | `CustomerContextChangedConsumer` | `customer.context-changed` | `notification-customer` | Refresh account-keyed name, address, and credit-score context |
 | Shared error handler | `<source>.DLT` | — | Route terminal failures without mixing source wire shapes |
+
+Four listeners, four groups. The first one is why this service counts as an independent consumer of the authorization event: it holds its own offsets on `transaction.authorized` and reaches an alert without waiting for the ledger to post. Reading `transaction.posted` alone would have made it a consumer of the ledger's success rather than of the authorization decision.
 
 `FraudFlagged` and `FraudCleared` share `fraud.assessed`. The listener receives a validated object and distinguishes the two governed record types before acting.
 
@@ -76,9 +79,9 @@ The private database is `carddemo_notification`, with schema `notification_servi
 | `statement_transaction` | Thirteen authoritative transaction fields from `TransactionPosted` version 2 |
 | `cardholder_context` | Account-keyed name, address, and credit-score context from `CustomerContextChanged` |
 | `notification_log` | Metadata-only alert attempt |
-| `processed_event` | Duplicate guard for all three consumer groups |
+| `processed_event` | Duplicate guard for all four consumer groups; `consumed_topic` keeps one event identifier claimable once per group |
 
-`cardholder_context` starts empty and applies customer-context events with last-writer-wins ordering on the producer timestamp. A transaction row stores a 64-character card token for identity and the masked card number only for display.
+`cardholder_context` is bootstrapped by `V2__seed.sql` with one row per fixture account, read from `app/data/ASCII/custdata.txt` and resolved to an account through `app/data/ASCII/cardxref.txt`. Each seeded row carries the Unix epoch, which is before any instant a producer can report, so the first real `CustomerContextChanged` always supersedes it. Later events apply with last-writer-wins ordering on the producer timestamp. A render never manufactures blank cardholder fields for a missing row: it fails and retries, because a blank alert is silently wrong on a cardholder-facing path. A transaction row stores a 64-character card token for identity and the masked card number only for display.
 
 `PlainTextRenderer` reproduces the fixed-width source lines. `HtmlRenderer` reproduces source markup content without adding a front-end framework.
 
@@ -102,18 +105,21 @@ The private database is `carddemo_notification`, with schema `notification_servi
 
 ## Architecture
 
-Figure 1 shows three independent consumers writing one private notification model.
+Figure 1 shows four independent consumers writing one private notification model.
 
-**Figure 1 — Notification Data Flow: Three Topics, Three Consumer Groups, and One Private Model**
+**Figure 1 — Notification Data Flow: Four Topics, Four Consumer Groups, and One Private Model**
 
 ```mermaid
 graph LR
+    TA{{"transaction.authorized"}}
     TP{{"transaction.posted"}}
     FA{{"fraud.assessed"}}
     CC{{"customer.context-changed"}}
+    AC["TransactionAuthorizedConsumer"]
     PC["TransactionPostedConsumer"]
     FC["FraudFlaggedConsumer"]
     CCIN["CustomerContextChangedConsumer"]
+    AG{"eventId processed"}
     PG{"eventId processed"}
     FG{"eventId processed"}
     CG{"eventId processed"}
@@ -126,12 +132,17 @@ graph LR
     API["history endpoint"]
     DEAD{{"source-specific .DLT"}}
 
+    TA ==> AC
     TP ==> PC
     FA ==> FC
     CC ==> CCIN
+    AC --> AG
     PC --> PG
     FC --> FG
     CCIN --> CG
+    AG --> ST
+    AG --> LOG
+    AG --> MARK
     PG --> ST
     PG --> MARK
     FG --> LOG
@@ -143,6 +154,7 @@ graph LR
     CP --> PLAIN
     CP --> HTML
     API --> ST
+    AC -.-> DEAD
     PC -.-> DEAD
     FC -.-> DEAD
     CCIN -.-> DEAD
@@ -156,6 +168,7 @@ Legend for Figure 1:
 - Cylinders are private notification tables.
 - Dotted arrows are terminal dead-letter routing.
 - No outbound business event or service call leaves the module.
+- `transaction.authorized` is read directly, so an alert does not depend on the ledger having posted first.
 
 The platform-wide paired views are in [Architecture, Before and After](../../docs/architecture-before-after.md).
 
@@ -182,7 +195,8 @@ See [Suggested Next Tasks](../../docs/suggested-next-tasks.md) for follow-up wor
 | Business port | 8084 |
 | Management port | 9084 |
 | Database and schema | `carddemo_notification.notification_service` |
-| Consumer groups | `notification-posted`, `notification-fraud`, `notification-customer` |
+| Consumer groups | `notification-authorized`, `notification-posted`, `notification-fraud`, `notification-customer` |
+| Migrations | `V1__schema.sql`, `V2__seed.sql` |
 
 From `card-platform/`:
 
@@ -195,7 +209,7 @@ curl -fsS http://localhost:9084/actuator/health
 
 The Dockerfile copies the packaged archive from `target/`, so build the module before its image.
 
-Direct tests cover all three consumers, duplicate and failure paths, all statement columns, cardholder context, renderer output, attempt metadata, schema migration, and the history API.
+Direct tests cover all four consumers, duplicate and failure paths, all statement columns, cardholder context, renderer output, attempt metadata, schema migration, and the history API.
 
 <br/>
 

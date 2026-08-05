@@ -5,7 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import com.carddemo.events.DeadLetterEnvelope;
+import com.carddemo.ledger.messaging.DeadLetterMetadata;
 import java.nio.charset.StandardCharsets;
 import java.util.HashSet;
 import java.util.Set;
@@ -59,20 +59,18 @@ class KafkaConsumerConfigTest {
                 KafkaConsumerConfig.sanitizedDeadLetterRecord(
                         refused, new TopicPartition(SOURCE_TOPIC + ".DLT", -1), assembled);
 
-        DeadLetterEnvelope envelope = (DeadLetterEnvelope) outgoing.value();
+        String diagnostic = valueText(outgoing);
         Set<String> headerNames = new HashSet<>();
         outgoing.headers().forEach(header -> headerNames.add(header.key()));
 
         assertEquals(SOURCE_TOPIC + ".DLT", outgoing.topic(), "destination");
         assertNull(outgoing.partition(), "broker-selected partition");
         assertEquals(SOURCE_TOPIC + "-2-41", outgoing.key(), "coordinate key");
-        assertEquals("00000000000", envelope.aggregateId(), "unresolved aggregate sentinel");
-        assertEquals(SOURCE_TOPIC, envelope.sourceTopic(), "source topic");
-        assertEquals(2, envelope.sourcePartition(), "source partition");
-        assertEquals(41L, envelope.sourceOffset(), "source offset");
-        assertTrue(envelope.reason().endsWith("PayloadRejectedException"), "failure class");
-        assertFalse(envelope.toString().contains(FULL_CARD_NUMBER), "card number in envelope");
-        assertFalse(envelope.toString().contains(REFUSED_JSON), "payload in envelope");
+        assertEquals(DeadLetterMetadata.RECORD_LENGTH, diagnostic.length(),
+                "the four fixed-width fields of 01 ABEND-DATA and nothing else");
+        assertTrue(diagnostic.contains("PayloadRejectedException"), "failure class");
+        assertFalse(diagnostic.contains(FULL_CARD_NUMBER), "card number in the diagnostic");
+        assertFalse(diagnostic.contains(REFUSED_JSON), "payload in the diagnostic");
         assertEquals(EXPECTED_HEADERS, headerNames, "header allowlist");
         assertEquals(SOURCE_TOPIC,
                 text(outgoing.headers().lastHeader(KafkaHeaders.DLT_ORIGINAL_TOPIC)),
@@ -112,6 +110,24 @@ class KafkaConsumerConfigTest {
                 text(headers.lastHeader(KafkaConsumerConfig.HEADER_REASON)));
         assertFalse(text(headers.lastHeader(KafkaConsumerConfig.HEADER_REASON))
                 .contains(FULL_CARD_NUMBER));
+    }
+
+    /**
+     * Reads the outgoing value as the text it holds.
+     *
+     * <p>The recoverer renders the diagnostic and hands it over as bytes, because the value
+     * serializer of its template writes bytes rather than validating an event against a schema. The
+     * envelope form of the same four components carries the other case, an outbox row the relay gave
+     * up on, and that one is bound to the shared dead-letter topic.
+     *
+     * @param outgoing the record the recoverer built
+     * @return the value decoded as text
+     */
+    private static String valueText(ProducerRecord<Object, Object> outgoing) {
+        assertTrue(outgoing.value() instanceof byte[],
+                "the outgoing value is " + outgoing.value().getClass().getName()
+                        + ", and a source-specific destination carries bytes");
+        return new String((byte[]) outgoing.value(), StandardCharsets.UTF_8);
     }
 
     private static byte[] utf8(String text) {

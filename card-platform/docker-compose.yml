@@ -91,6 +91,18 @@ x-service-environment: &service-environment
   # shared block makes the service route and the broker-created topic agree when
   # a deployment changes the default.
   TOPIC_DEAD_LETTER_SUFFIX: ${TOPIC_DEAD_LETTER_SUFFIX:-.DLT}
+  # The keyed card token every service derives. It is shared because a token has to be
+  # one value across the stack: the card service seeds it, the authorization service
+  # stores it on a decision, the notification service keys its read model on it, and a
+  # SCOPE_CARD authority names it. Two services deriving under different keys would key
+  # the same card two ways and split every read model that joins on it.
+  #
+  # com.carddemo.cobol.PanMasker supplies no default key, so an unset value stops a
+  # tokenizing call rather than falling back to a digest anyone can recompute over the
+  # sixteen-digit card-number space. .env.example documents the demo value, the rollover
+  # procedure and the three artifacts a change re-derives.
+  CARD_TOKEN_SECRET: ${CARD_TOKEN_SECRET:-carddemo-demo-card-token-key-not-for-production}
+  CARD_TOKEN_VERSION: ${CARD_TOKEN_VERSION:-1}
   # Transport Layer Security for the two ports each service serves, off here and on in
   # deploy/k8s/30-configmap.yaml. This stack runs every service on one Docker bridge on
   # one machine and publishes each port on the loopback address alone. A cluster pod
@@ -340,11 +352,13 @@ services:
       GROUP_AUTHORIZATION: ${GROUP_AUTHORIZATION:-authorization}
       GROUP_LEDGER_POSTING: ${GROUP_LEDGER_POSTING:-ledger-posting}
       GROUP_FRAUD_DETECTION: ${GROUP_FRAUD_DETECTION:-fraud-detection}
+      GROUP_NOTIFICATION_AUTHORIZED: ${GROUP_NOTIFICATION_AUTHORIZED:-notification-authorized}
       GROUP_NOTIFICATION_POSTED: ${GROUP_NOTIFICATION_POSTED:-notification-posted}
       GROUP_NOTIFICATION_FRAUD: ${GROUP_NOTIFICATION_FRAUD:-notification-fraud}
       GROUP_NOTIFICATION_CUSTOMER: ${GROUP_NOTIFICATION_CUSTOMER:-notification-customer}
       GROUP_AUTHORIZATION_ACCOUNT: ${GROUP_AUTHORIZATION_ACCOUNT:-authorization-account-state}
       GROUP_AUTHORIZATION_CARD: ${GROUP_AUTHORIZATION_CARD:-authorization-card-updated}
+      GROUP_LEDGER_ACCOUNT: ${GROUP_LEDGER_ACCOUNT:-ledger-account-state}
       # One node holds one copy of every partition.
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
@@ -466,6 +480,7 @@ services:
                        "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}" \
                        "$${TOPIC_CARD_UPDATED}" \
                        "$${TOPIC_TRANSACTION_AUTHORIZED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
+                       "$${TOPIC_ACCOUNT_STATE_CHANGED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
                        "$${TOPIC_TRANSACTION_POSTED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
                        "$${TOPIC_FRAUD_ASSESSED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
                        "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
@@ -521,11 +536,18 @@ services:
             "$${GROUP_AUTHORIZATION_CARD}" || return 1
           grant_producer "$${AUTHORIZATION_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
 
-          # Ledger posting: consumes the authorization event, publishes the posted or
-          # rejected outcome, and routes a record it cannot process to that source
-          # topic's dead-letter topic.
+          # Ledger posting: consumes the authorization event, consumes the account
+          # state-change stream that keeps account_balance_projection current, publishes the
+          # posted or rejected outcome, and routes a record it cannot process to that source
+          # topic's dead-letter topic. Without the second consumer entry an account opened
+          # after deployment never gets a projection row and every transaction on it is
+          # dead-lettered, and a closed billing cycle never zeroes the two accumulators here.
           grant_consumer "$${LEDGER_KAFKA_USER}" "$${TOPIC_TRANSACTION_AUTHORIZED}" \
             "$${GROUP_LEDGER_POSTING}" || return 1
+          grant_consumer "$${LEDGER_KAFKA_USER}" "$${TOPIC_ACCOUNT_STATE_CHANGED}" \
+            "$${GROUP_LEDGER_ACCOUNT}" || return 1
+          grant_producer "$${LEDGER_KAFKA_USER}" \
+            "$${TOPIC_ACCOUNT_STATE_CHANGED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
           grant_producer "$${LEDGER_KAFKA_USER}" "$${TOPIC_TRANSACTION_POSTED}" || return 1
           grant_producer "$${LEDGER_KAFKA_USER}" "$${TOPIC_TRANSACTION_DECLINED}" || return 1
           grant_producer "$${LEDGER_KAFKA_USER}" \
@@ -542,17 +564,27 @@ services:
             "$${TOPIC_TRANSACTION_AUTHORIZED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
           grant_producer "$${FRAUD_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
 
-          # Notification: three listeners, three groups of its own, and one dead-letter
+          # Notification: four listeners, four groups of its own, and one dead-letter
           # topic per consumed source. It publishes no business event of its own. Its
-          # shipped configuration names transaction.posted, fraud.assessed and
-          # customer.context-changed, so it holds no entry on transaction.authorized:
-          # an entry the configuration does not need is an entry a compromise can use.
+          # shipped configuration names transaction.authorized, transaction.posted,
+          # fraud.assessed and customer.context-changed, and it holds exactly those four
+          # entries: an entry the configuration does not need is an entry a compromise
+          # can use.
+          #
+          # The entry on transaction.authorized makes this the third service that reads
+          # the authorization event directly, beside the ledger and the fraud detector,
+          # which is the fan-out AAP 0.1.1 and 0.8.3 require. Each of the three reads
+          # under a group of its own, so none consumes on behalf of another.
+          grant_consumer "$${NOTIFICATION_KAFKA_USER}" "$${TOPIC_TRANSACTION_AUTHORIZED}" \
+            "$${GROUP_NOTIFICATION_AUTHORIZED}" || return 1
           grant_consumer "$${NOTIFICATION_KAFKA_USER}" "$${TOPIC_TRANSACTION_POSTED}" \
             "$${GROUP_NOTIFICATION_POSTED}" || return 1
           grant_consumer "$${NOTIFICATION_KAFKA_USER}" "$${TOPIC_FRAUD_ASSESSED}" \
             "$${GROUP_NOTIFICATION_FRAUD}" || return 1
           grant_consumer "$${NOTIFICATION_KAFKA_USER}" "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}" \
             "$${GROUP_NOTIFICATION_CUSTOMER}" || return 1
+          grant_producer "$${NOTIFICATION_KAFKA_USER}" \
+            "$${TOPIC_TRANSACTION_AUTHORIZED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
           grant_producer "$${NOTIFICATION_KAFKA_USER}" \
             "$${TOPIC_TRANSACTION_POSTED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
           grant_producer "$${NOTIFICATION_KAFKA_USER}" \
@@ -564,9 +596,17 @@ services:
           # Account and card: each publishes its own state-change event when a state
           # change occurs, and consumes nothing. The account service publishes two: the
           # account fields on one topic and the ten cardholder fields on the other.
+          #
+          # Each also holds one entry on the shared dead-letter topic, and neither is
+          # optional. An outbox relay that exhausts its attempts on a row names that row
+          # there and nowhere else, so a service without this entry gives up on an event
+          # with no record of it leaving the container. Neither service holds a consumer
+          # entry on that topic: they write a diagnostic and never read one.
           grant_producer "$${ACCOUNT_KAFKA_USER}" "$${TOPIC_ACCOUNT_STATE_CHANGED}" || return 1
           grant_producer "$${ACCOUNT_KAFKA_USER}" "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}" || return 1
+          grant_producer "$${ACCOUNT_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
           grant_producer "$${CARD_KAFKA_USER}" "$${TOPIC_CARD_UPDATED}" || return 1
+          grant_producer "$${CARD_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
         }
 
         # The marker the healthcheck reads is written last, after every topic exists and
@@ -704,7 +744,8 @@ services:
     restart: unless-stopped
 
   # Ledger posting service container. Configured to read transaction.authorized
-  # under the ledger-posting group and to write transaction.posted. The posting
+  # under the ledger-posting group, to read account.state-changed under the
+  # ledger-account-state group, and to write transaction.posted. The posting
   # arithmetic, the balance query and the outbox relay are active; the listener
   # invokes the posting arithmetic for every newly claimed authorization event.
   ledger-posting-service:
@@ -731,14 +772,19 @@ services:
       SPRING_FLYWAY_DEFAULT_SCHEMA: ${LEDGER_DB_SCHEMA:-ledger_service}
       SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${LEDGER_DB_SCHEMA:-ledger_service}
       # This service's own broker identity. The entries the broker installs for it
-      # cover exactly what its configuration needs: it reads transaction.authorized under the ledger-posting group and publishes transaction.posted. An
-      # entry naming another service's topic or group is absent, so a compromise here
-      # reaches neither. A username is not a credential and carries a fallback; the
-      # password carries none.
+      # cover exactly what its configuration needs: it reads transaction.authorized under
+      # the ledger-posting group, reads account.state-changed under the ledger-account-state
+      # group, and publishes transaction.posted. An entry naming another service's topic or
+      # group is absent, so a compromise here reaches neither. A username is not a credential
+      # and carries a fallback; the password carries none.
       KAFKA_SASL_USERNAME: ${LEDGER_KAFKA_USER:-carddemo-ledger}
       KAFKA_SASL_PASSWORD: ${LEDGER_KAFKA_PASSWORD:?LEDGER_KAFKA_PASSWORD must be set; copy .env.example to .env and give this service its own broker password}
       SPRING_KAFKA_CONSUMER_GROUP_ID: ${GROUP_LEDGER_POSTING:-ledger-posting}
       GROUP_LEDGER_POSTING: ${GROUP_LEDGER_POSTING:-ledger-posting}
+      # Second listener, second group. account_balance_projection is a copy of three fields of
+      # the account record the account service owns, and the posting path adds to it.
+      GROUP_LEDGER_ACCOUNT: ${GROUP_LEDGER_ACCOUNT:-ledger-account-state}
+      TOPIC_ACCOUNT_STATE_CHANGED: ${TOPIC_ACCOUNT_STATE_CHANGED:-account.state-changed}
       TOPIC_TRANSACTION_AUTHORIZED: ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized}
       TOPIC_TRANSACTION_POSTED: ${TOPIC_TRANSACTION_POSTED:-transaction.posted}
       # The reject path of app/cbl/CBTRN02C.cbl:L446-L465 publishes the declined
@@ -883,6 +929,8 @@ services:
       # messages between them, so each carries its own. The first group below is the
       # framework default a listener falls back to when it names no group.
       SPRING_KAFKA_CONSUMER_GROUP_ID: ${GROUP_NOTIFICATION_POSTED:-notification-posted}
+      TOPIC_TRANSACTION_AUTHORIZED: ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized}
+      GROUP_NOTIFICATION_AUTHORIZED: ${GROUP_NOTIFICATION_AUTHORIZED:-notification-authorized}
       GROUP_NOTIFICATION_POSTED: ${GROUP_NOTIFICATION_POSTED:-notification-posted}
       GROUP_NOTIFICATION_FRAUD: ${GROUP_NOTIFICATION_FRAUD:-notification-fraud}
       GROUP_NOTIFICATION_CUSTOMER: ${GROUP_NOTIFICATION_CUSTOMER:-notification-customer}
@@ -1016,15 +1064,23 @@ services:
       SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${CARD_DB_SCHEMA:-card_service}
       # This service's own broker identity. The entries the broker installs for it
       # cover exactly what its configuration needs: it publishes card.updated
-      # when a state change occurs. An entry naming another service's topic or group
-      # is absent, so a compromise here reaches neither. A username is not a
+      # when a state change occurs, and it names a row its outbox relay gave up on
+      # on the shared dead-letter topic. An entry naming another service's topic or
+      # group is absent, so a compromise here reaches neither. A username is not a
       # credential and carries a fallback; the password carries none.
       KAFKA_SASL_USERNAME: ${CARD_KAFKA_USER:-carddemo-card}
       KAFKA_SASL_PASSWORD: ${CARD_KAFKA_PASSWORD:?CARD_KAFKA_PASSWORD must be set; copy .env.example to .env and give this service its own broker password}
-      # The one topic this service is to publish, on a mutation only. Its payload
-      # matches schemas/card-updated-v2.json in event-contracts. The v1 document
-      # remains governed for old records.
+      # The one business topic this service is to publish, on a mutation only. Its
+      # payload matches schemas/card-updated-v2.json in event-contracts. The v1
+      # document remains governed for old records.
       TOPIC_CARD_UPDATED: ${TOPIC_CARD_UPDATED:-card.updated}
+      # The shared dead-letter topic. This service registers no listener, so nothing
+      # of its own is dead-lettered on consumption. outbox/OutboxRelay publishes one
+      # governed DeadLetterEnvelope here for a row it abandoned after ten attempts,
+      # which is the one record of a card update no consumer will ever see. The send
+      # is awaited, so a broker that refuses it rolls the sweep back and the row is
+      # offered again rather than left terminal with no diagnostic anywhere.
+      TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
       # Producer reliability, the same set the other two publishers carry.
       # messaging/KafkaEventPublisher.java reads these back from the producer
       # factory at construction and refuses to start unless every one holds.

@@ -285,7 +285,9 @@ The missing ASCII security twin is why signon tests construct their records. The
 | Processed-event tables | No source duplicate protection | Additive pattern |
 | Dead-letter envelope and route | `CSMSG02Y.cpy` supplies reporting fields; broker routing is additive | Mixed source-derived and additive |
 | `PanMasker` and masked payload fields | No source masking exists | Additive security boundary |
-| `AccountStateChanged` and `CardUpdated` | Account and card state fields; event publication is additive | Additive state-change contracts |
+| `card.card_token` and every route, cursor, authority, and read-model key built on it | No source token exists; `app/cpy/CVACT02Y.cpy` declares no such field and no program derives one | Additive identity, keyed under a deployment secret |
+| `AccountStateChanged`, `CustomerContextChanged`, and `CardUpdated` | Account, customer, and card state fields; event publication is additive | Additive state-change contracts |
+| Replica provenance columns and the durable dead-letter obligation | No source equivalent; `app/csd/CARDDEMO.CSD:L3-L9` disables recovery on every file | Additive reliability state |
 | `card-platform/pom.xml`, Dockerfiles, Compose, and Kubernetes manifests | No source build or container manifest | Net new platform |
 | OpenAPI documents | CICS transaction contracts and target controller routes | New documentation of migrated APIs |
 | Documents under `card-platform/docs/` | AAP Rules 1-3 and source evidence | Rule-mandated additions |

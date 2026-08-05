@@ -121,7 +121,7 @@ The populated fields total 36 bytes, matching `app/data/ASCII/cardxref.txt`. The
 
 **Figure 2 — Ledger posting state, reference lookups, rejects, and messaging infrastructure**
 
-Figure 2 shows the posting tables and the composite category-balance key.
+Figure 2 shows the posting tables and the composite category-balance key. `account_balance_projection` has two writers: the posting path adds a delta the ledger owns, and `messaging/AccountStateChangedConsumer` replaces the three value columns from the account service's own snapshot.
 
 ```mermaid
 erDiagram
@@ -144,6 +144,8 @@ erDiagram
         numeric_12_2 current_balance
         numeric_12_2 cycle_credit
         numeric_12_2 cycle_debit
+        uuid source_event_id
+        timestamptz source_occurred_at
     }
     TRANSACTION_TYPE {
         char2 type_code PK
@@ -183,6 +185,7 @@ erDiagram
 - Composite `PK` markers form one primary key.
 - Relationship lines describe domain keys; migrations do not add cross-table foreign keys.
 - `OUTBOX_EVENT` and `PROCESSED_EVENT` are additive messaging tables.
+- `source_event_id` and `source_occurred_at` on `ACCOUNT_BALANCE_PROJECTION` record which account change the row last replicated, and the second is the ordering value that makes a redelivery harmless.
 
 #### `transaction`
 
@@ -211,6 +214,7 @@ The target stores a masked card value rather than the full source card field.
 | --- | --- | --- |
 | `app/cpy/CVTRA01Y.cpy:L5-L9` | Account 11, type 2, category 4, balance `S9(09)V99` | `transaction_category_balance`; composite key `(account_id, type_code, category_code)` |
 | `app/cpy/CVACT01Y.cpy:L5`, `L7`, `L13-L14` | Account, current balance, cycle credit, cycle debit | `account_balance_projection`; account primary key |
+| No source field | Provenance of the last replicated account change | `account_balance_projection.source_event_id` and `source_occurred_at`, added by `V3__account_state_replica.sql`; both `NULL` on a seeded row, and a `CHECK` holds the pair together |
 | `app/cpy/CVTRA03Y.cpy:L5-L6` | Type and 50-character description | `transaction_type`; 7 seeded rows |
 | `app/cpy/CVTRA04Y.cpy:L6-L8` | Type, category, and description | `transaction_category`; 18 seeded rows |
 
@@ -281,7 +285,7 @@ erDiagram
 
 **Figure 4 — Notification read model, cardholder context, attempts, and duplicate guard**
 
-Figure 4 shows two private read models and an attempt log serving three listeners.
+Figure 4 shows two private read models and an attempt log serving four listeners.
 
 ```mermaid
 erDiagram
@@ -329,7 +333,7 @@ erDiagram
 
 - Entity boxes are tables in `carddemo_notification.notification_service`.
 - `STATEMENT_TRANSACTION` derives from the re-keyed statement layout, replacing the source PAN key with an irreversible card token.
-- `CARDHOLDER_CONTEXT` is private, starts empty, and is refreshed by `CustomerContextChanged`.
+- `CARDHOLDER_CONTEXT` is private, is seeded with fifty rows from `app/data/ASCII/custdata.txt` by `V2__seed.sql`, and is refreshed by `CustomerContextChanged`.
 - Relationship lines are domain associations rather than declared foreign keys.
 
 #### `statement_transaction`
@@ -348,7 +352,7 @@ erDiagram
 | `TRNX-PROC-TS` | `PIC X(26)`, line 35 | `processing_timestamp` | `CHAR(26)` |
 | `FILLER` | `PIC X(20)`, line 36 | — | — |
 
-The source composite key is 32 bytes. `app/jcl/CREASTMT.JCL:L30` defines `KEYS(32 0)`, and line 53 sorts by card number then transaction identifier. The target key is 80 characters: a 64-character SHA-256 card token plus the 16-character transaction identifier. The masked card number is display data and never a key.
+The source composite key is 32 bytes. `app/jcl/CREASTMT.JCL:L30` defines `KEYS(32 0)`, and line 53 sorts by card number then transaction identifier. The target key is 80 characters: a 64-character card token plus the 16-character transaction identifier. The token is a keyed `HMAC-SHA-256` over the full card number under `CARD_TOKEN_SECRET`, so it cannot be recomputed from a card number alone. The masked card number is display data and never a key.
 
 #### `cardholder_context`
 
@@ -359,14 +363,14 @@ The source composite key is 32 bytes. `app/jcl/CREASTMT.JCL:L30` defines `KEYS(3
 | `app/cpy/CVCUS01Y.cpy:L22` | `fico_score` | Three-character display value |
 | No source field | `source_occurred_at`, `observed_at` | Additive last-writer-wins provenance |
 
-`CustomerContextChangedConsumer` populates the table. It applies no event older than the row's `source_occurred_at`.
+`V2__seed.sql` bootstraps the table with one row per fixture account, resolved from customer to account through `XREF-CUST-ID` and `XREF-ACCT-ID`. Each seeded row carries the Unix epoch in both timestamp columns, which is before any instant a producer can report, so the first real event always supersedes it and a bootstrap row reads as maximally stale. `CustomerContextChangedConsumer` then refreshes the table, applying no event older than the row's `source_occurred_at`. Without the seed a first alert for an account whose customer record never changed would render with no name, no address, and no credit score.
 
 #### Attempt and marker tables
 
 | Table | Shape | Rule |
 | --- | --- | --- |
 | `notification_log` | UUID, card token, masked card, transaction, channel, attempt time | Stores metadata only, never a rendered body |
-| `processed_event` | Event identifier, process time, consumed topic | Guards all three notification listener groups |
+| `processed_event` | Event identifier, process time, consumed topic | Guards all four notification listener groups; `consumed_topic` keeps one event identifier claimable once per group |
 
 ### Account database
 
@@ -414,6 +418,7 @@ erDiagram
         char11 aggregate_id
         text payload
         varchar16 relay_state
+        varchar12 dead_letter_state
     }
     PROCESSED_EVENT {
         uuid event_id PK
@@ -427,6 +432,7 @@ erDiagram
 - No direct account-to-customer relationship exists because `CVACT01Y.cpy` carries no customer identifier.
 - Customer resolution uses private cross-reference data in authorization and card services, not a cross-database foreign key.
 - `OUTBOX_EVENT` publishes account state changes; `PROCESSED_EVENT` is additive infrastructure.
+- `dead_letter_state`, added by `V5__outbox_dead_letter_state.sql`, is the durable record of whether an abandoned row still owes a dead-letter diagnostic. It holds `NOT_REQUIRED`, `REQUIRED`, or `PUBLISHED`, and only a broker acknowledgement moves it to the last value.
 
 #### `account`
 
@@ -490,6 +496,7 @@ Figure 6 shows the card record and its private cross-reference copy.
 erDiagram
     CARD {
         char16 card_number PK
+        char64 card_token UK
         char11 account_id
         char3 card_verification_value
         char50 embossed_name
@@ -523,12 +530,14 @@ erDiagram
 - `CARD_XREF` is a private replica, not a shared table.
 - The relationship supports consistency comparison and is not a declared foreign key.
 - `OUTBOX_EVENT` publishes `CardUpdated`; `PROCESSED_EVENT` is reserved consumer infrastructure.
+- `card_token` is derived, not stored from a source field. `V2__seed.sql` loads the fifty fixture tokens computed under the shipped demo key, so rotating `CARD_TOKEN_SECRET` requires regenerating that migration.
 
 #### `card`
 
 | Copybook field | Picture clause and locator | Target column | Type | Note |
 | --- | --- | --- | --- | --- |
 | `CARD-NUM` | `PIC X(16)`, `app/cpy/CVACT02Y.cpy:L5` | `card_number` | `CHAR(16)` | Primary key |
+| No source field | Keyed `HMAC-SHA-256` of `CARD-NUM` under `CARD_TOKEN_SECRET` | `card_token` | `CHAR(64)` | Additive. Unique, constrained to 64 lower-case hexadecimal characters, and the only card identifier any external surface accepts |
 | `CARD-ACCT-ID` | `PIC 9(11)`, line 6 | `account_id` | `CHAR(11)` | Indexed, leading zeros retained |
 | `CARD-CVV-CD` | `PIC 9(03)`, line 7 | `card_verification_value` | `CHAR(3)` | Never serialized |
 | `CARD-EMBOSSED-NAME` | `PIC X(50)`, line 8 | `embossed_name` | `CHAR(50)` | Updated by card service |
@@ -572,6 +581,7 @@ Card update cannot repair a missing cross-reference row because the card record 
 | Category-balance filler, 22 bytes | Dropped |
 | Card filler, 59 bytes | Dropped |
 | Communication Area navigation fields | Dropped with the terminal presentation |
+| No source construct | `card.card_token` added, because the source named a card by its full number on a screen only a signed-on terminal user could reach |
 | `ACCT-EXPIRAION-DATE` | Renamed to `expiration_date`, stored as `VARCHAR(10)` |
 | `CARD-EXPIRAION-DATE` | Renamed to `expiration_date`, stored as `DATE` |
 

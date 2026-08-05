@@ -1,6 +1,7 @@
 package com.carddemo.ledger.messaging;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -20,6 +21,7 @@ import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.ledger.config.ObservabilityConfig;
 import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
+import com.carddemo.ledger.domain.AccountBalanceUpdater.AccountBalanceRowMissingException;
 import com.carddemo.ledger.domain.PostingService;
 import com.carddemo.ledger.domain.RejectRecorder;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
@@ -90,8 +92,6 @@ final class TransactionAuthorizedConsumerTest {
     private static final String TOPIC = "transaction.authorized";
 
     private PostingService postingService;
-    private RejectRecorder rejectRecorder;
-    private AccountBalanceProjectionRepository accountBalances;
     private ProcessedEventRepository processedEvents;
     private MeterRegistry registry;
     private LedgerMeters meters;
@@ -109,14 +109,12 @@ final class TransactionAuthorizedConsumerTest {
     @BeforeEach
     void buildSubject() {
         postingService = mock(PostingService.class);
-        rejectRecorder = mock(RejectRecorder.class);
-        accountBalances = mock(AccountBalanceProjectionRepository.class);
         processedEvents = mock(ProcessedEventRepository.class);
         registry = new SimpleMeterRegistry();
         meters = new ObservabilityConfig().ledgerMeters(registry);
         acknowledgment = mock(Acknowledgment.class);
-        consumer = new TransactionAuthorizedConsumer(postingService, rejectRecorder, accountBalances,
-                processedEvents, meters, selfProviderReturningSubject());
+        consumer = new TransactionAuthorizedConsumer(postingService, processedEvents, meters,
+                selfProviderReturningSubject());
     }
 
     /**
@@ -181,11 +179,17 @@ final class TransactionAuthorizedConsumerTest {
                 .thenReturn(1);
     }
 
-    /** Stores a balance row for the account, so the posting path is the one that runs. */
-    private void balanceRowExists() {
-        when(accountBalances.findById(ACCOUNT_ID)).thenReturn(Optional
-                .of(new AccountBalanceProjectionEntity(ACCOUNT_ID, new BigDecimal("193.00"),
-                        new BigDecimal("0.00"), new BigDecimal("0.00"))));
+    /**
+     * Makes the posting raise the fault a missing balance row produces.
+     *
+     * <p>{@code domain/AccountBalanceUpdater} performs that read, so this class observes only the
+     * exception. A missing row means this service's replica of the account record is behind, not that
+     * the account is absent: the authorization service read its own copy of it moments earlier.
+     */
+    private void postingFindsNoBalanceRow() {
+        doThrow(new AccountBalanceRowMissingException(ACCOUNT_ID))
+                .when(postingService).postTransaction(any(TransactionAuthorized.class),
+                        anyString());
     }
 
     @Nested
@@ -196,13 +200,11 @@ final class TransactionAuthorizedConsumerTest {
         @DisplayName("one delivery with a balance row posts once and acknowledges once")
         void oneDeliveryPostsAndAcknowledges() {
             claimSucceeds();
-            balanceRowExists();
             TransactionAuthorized event = anEvent();
 
             consumer.onTransactionAuthorized(aDelivery(event), acknowledgment);
 
             verify(postingService, times(1)).postTransaction(event, ACCOUNT_ID);
-            verifyNoInteractions(rejectRecorder);
             verify(acknowledgment, times(1)).acknowledge();
         }
 
@@ -210,7 +212,6 @@ final class TransactionAuthorizedConsumerTest {
         @DisplayName("the event travels to the posting service unchanged")
         void theEventTravelsUnchanged() {
             claimSucceeds();
-            balanceRowExists();
             TransactionAuthorized event = anEvent();
 
             TransactionAuthorizedConsumer.Outcome outcome = consumer.applyOneEvent(event, ACCOUNT_ID, TOPIC);
@@ -235,7 +236,6 @@ final class TransactionAuthorizedConsumerTest {
         @DisplayName("a posting counts one consumed event and one posted outcome")
         void aPostingCountsItsOutcome() {
             claimSucceeds();
-            balanceRowExists();
 
             consumer.onTransactionAuthorized(aDelivery(anEvent()), acknowledgment);
 
@@ -251,47 +251,47 @@ final class TransactionAuthorizedConsumerTest {
     }
 
     @Nested
-    @DisplayName("The reject path, app/cbl/CBTRN02C.cbl:L395-L399 then L446-L465")
-    class RejectPath {
+    @DisplayName("A missing balance row is a fault and never a decline")
+    class MissingBalanceRow {
 
         @Test
-        @DisplayName("an absent balance row rejects under reason 0101 and never posts")
-        void anAbsentBalanceRowRejects() {
+        @DisplayName("an absent balance row refuses the acknowledgement and records no decline")
+        void anAbsentBalanceRowIsAFault() {
             claimSucceeds();
-            when(accountBalances.findById(ACCOUNT_ID)).thenReturn(Optional.empty());
-            TransactionAuthorized event = anEvent();
+            postingFindsNoBalanceRow();
 
-            TransactionAuthorizedConsumer.Outcome outcome = consumer.applyOneEvent(event, ACCOUNT_ID, TOPIC);
+            assertThrows(AccountBalanceRowMissingException.class,
+                    () -> consumer.onTransactionAuthorized(aDelivery(anEvent()), acknowledgment),
+                    "the fault travels to the container rather than being answered with a decline");
 
-            assertEquals(TransactionAuthorizedConsumer.Outcome.REJECTED, outcome,
-                    "the account read of app/cbl/CBTRN02C.cbl:L395 decides before the post");
-            verify(rejectRecorder).recordReject(event, DeclineReason.ACCOUNT_NOT_FOUND);
-            verifyNoInteractions(postingService);
+            verify(acknowledgment, never()).acknowledge();
+            assertEquals(0.0d, counter("carddemo.ledger.transactions.processed", "outcome",
+                    "rejected"), "an approved authorization is never counted as a reject here");
+            assertEquals(1.0d, counter("carddemo.ledger.failures", "stage", "process"),
+                    "the fault is counted as a failure, which is what it is");
         }
 
         @Test
-        @DisplayName("the reject reason carries the verbatim text of app/cbl/CBTRN02C.cbl:L398")
-        void theReasonCarriesItsSourceText() {
+        @DisplayName("no outcome value names a reject, so this class cannot report one")
+        void noOutcomeValueNamesAReject() {
+            assertEquals(2, TransactionAuthorizedConsumer.Outcome.values().length,
+                    "one delivery either posts or is a duplicate");
+            for (TransactionAuthorizedConsumer.Outcome outcome
+                    : TransactionAuthorizedConsumer.Outcome.values()) {
+                assertNotEquals("REJECTED", outcome.name(),
+                        "a reject is a feed-validation failure and belongs to RejectRecorder");
+            }
+        }
+
+        @Test
+        @DisplayName("the reject reason of app/cbl/CBTRN02C.cbl:L398 is established before publication")
+        void theReasonIsEstablishedBeforePublication() {
             assertEquals("0101", DeclineReason.ACCOUNT_NOT_FOUND.code(),
                     "reject reason 0101 is assigned at app/cbl/CBTRN02C.cbl:L397");
             assertEquals("ACCOUNT RECORD NOT FOUND", DeclineReason.ACCOUNT_NOT_FOUND.description(),
                     "the text is moved at app/cbl/CBTRN02C.cbl:L398");
-        }
-
-        @Test
-        @DisplayName("a reject acknowledges and counts as an outcome, not as a failure")
-        void aRejectIsExpectedTraffic() {
-            claimSucceeds();
-            when(accountBalances.findById(ACCOUNT_ID)).thenReturn(Optional.empty());
-
-            consumer.onTransactionAuthorized(aDelivery(anEvent()), acknowledgment);
-
-            verify(acknowledgment, times(1)).acknowledge();
-            assertEquals(1.0d, counter("carddemo.ledger.transactions.processed", "outcome",
-                    "rejected"), "WS-REJECT-COUNT at app/cbl/CBTRN02C.cbl:L186 counts a reject");
-            assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "process"),
-                    "app/cbl/CBTRN02C.cbl:L229-L230 answers a reject with return code 4 and no"
-                            + " abend, so a reject is not a failure");
+            assertTrue(DeclineReason.ACCOUNT_NOT_FOUND.resolvesAccount(),
+                    "the reason resolves an account, so the authorization service can carry it");
         }
     }
 
@@ -308,15 +308,13 @@ final class TransactionAuthorizedConsumerTest {
             consumer.onTransactionAuthorized(aDelivery(anEvent()), acknowledgment);
 
             verifyNoInteractions(postingService);
-            verifyNoInteractions(rejectRecorder);
-            verifyNoInteractions(accountBalances);
             verify(acknowledgment, times(1)).acknowledge();
             assertEquals(1.0d, counter("carddemo.ledger.transactions.processed", "outcome",
                     "duplicate"), "a duplicate delivery counts under its own outcome");
         }
 
         @Test
-        @DisplayName("the claim runs before the balance read, so no read precedes the guard")
+        @DisplayName("the claim runs before the posting, so no write precedes the guard")
         void theClaimRunsFirst() {
             when(processedEvents.claimEvent(any(UUID.class), any(Instant.class), anyString()))
                     .thenReturn(0);
@@ -326,14 +324,13 @@ final class TransactionAuthorizedConsumerTest {
                     "the claim decides the outcome on its own");
             verify(processedEvents, times(1)).claimEvent(any(UUID.class), any(Instant.class),
                     eq(TOPIC));
-            verifyNoInteractions(accountBalances);
+            verifyNoInteractions(postingService);
         }
 
         @Test
         @DisplayName("the marker records the topic the delivery arrived on")
         void theMarkerRecordsTheTopic() {
             claimSucceeds();
-            balanceRowExists();
 
             consumer.applyOneEvent(anEvent(), ACCOUNT_ID, TOPIC);
 
@@ -349,7 +346,6 @@ final class TransactionAuthorizedConsumerTest {
         @DisplayName("a posting fault leaves the offset uncommitted and counts one failure")
         void aPostingFaultRefusesTheAcknowledgement() {
             claimSucceeds();
-            balanceRowExists();
             doThrow(new IllegalStateException("store unavailable")).when(postingService)
                     .postTransaction(any(TransactionAuthorized.class), eq(ACCOUNT_ID));
 
@@ -378,7 +374,6 @@ final class TransactionAuthorizedConsumerTest {
         @DisplayName("the latency timer records even when the delivery failed")
         void theTimerRecordsAFailedDelivery() {
             claimSucceeds();
-            balanceRowExists();
             doThrow(new IllegalStateException("store unavailable")).when(postingService)
                     .postTransaction(any(TransactionAuthorized.class), eq(ACCOUNT_ID));
 
@@ -454,7 +449,6 @@ final class TransactionAuthorizedConsumerTest {
         @DisplayName("no meter name and no tag value carries an identifier")
         void noMeterCarriesAnIdentifier() {
             claimSucceeds();
-            balanceRowExists();
             consumer.onTransactionAuthorized(aDelivery(anEvent()), acknowledgment);
 
             registry.getMeters().forEach(meter -> {

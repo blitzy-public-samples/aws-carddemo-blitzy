@@ -75,12 +75,12 @@ These checks are reasonable improvements, but each changes source-equivalent out
 
 ## Projection and lifecycle work
 
-### Backfill notification customer context before cutover
+### Extend the cardholder-context bootstrap beyond the fixture accounts
 
-- **Change:** Add a controlled backfill that publishes or imports the current customer context before live traffic starts.
-- **Where:** `CustomerContextChanged` keeps `cardholder_context` current after mutations, but the table starts empty and unchanged fixture customers emit no event.
-- **Check:** Backfill all fixture accounts, then render a posted transaction without first editing its customer.
-- **Behavior change:** No authorization change; the notification read model becomes complete at cutover.
+- **Change:** Add a controlled backfill for accounts the repository fixtures do not contain, so a real cutover starts with a complete renderer projection.
+- **Where:** `V2__seed.sql` in the notification service now bootstraps `cardholder_context` with one row per fixture account, read from `app/data/ASCII/custdata.txt` and resolved through `app/data/ASCII/cardxref.txt`. That closes the demo gap. An account outside those fifty still has no row until the account service publishes its first `CustomerContextChanged`, and a real migration carries far more than fifty accounts.
+- **Check:** Import a customer set larger than the fixture, then render an alert for one of the imported accounts without first editing its customer record. No render may report an absent projection.
+- **Behavior change:** No authorization change. The notification read model becomes complete for a population the fixtures do not describe.
 
 ### Define cross-reference repair ownership
 
@@ -89,12 +89,12 @@ These checks are reasonable improvements, but each changes source-equivalent out
 - **Check:** Repair one divergent row without changing the source-equivalent card-update result.
 - **Behavior change:** Operational correction only.
 
-### Implement retention jobs
+### Give the retention sweeps an operational review
 
-- **Change:** Add owned purge jobs for outbox, processed-event, fraud, notification, and diagnostic retention policies.
-- **Where:** Each service migration records a retention window and purge key in table comments, but no scheduler deletes rows.
-- **Check:** Purge only terminal or expired rows and preserve durable financial records.
-- **Behavior change:** Data lifecycle only.
+- **Change:** Review each shipped retention horizon against a real data-protection policy, and decide which tables a regulator would forbid this platform to purge at all.
+- **Where:** All six services now run a scheduled `domain/RetentionSweep` that deletes only published outbox rows and expired processed-event markers within its own schema, so no horizon is documentation-only. What no engineer can settle is whether the shipped numbers are the right numbers: every one is a demonstration default, and `notification` additionally sweeps three history tables that hold cardholder-facing records.
+- **Check:** State each horizon's owner and legal basis. Prove that a sweep never removes a row a later replay or audit needs, and that a failed sweep delays deletion without failing a delivery.
+- **Behavior change:** Data lifecycle only. Changing a horizon changes no business rule.
 
 ## Security migration
 
@@ -104,6 +104,14 @@ These checks are reasonable improvements, but each changes source-equivalent out
 - **Where:** The source comparison is plaintext at `app/cbl/COSGN00C.cbl:L223`; the target refuses hashes without a `{bcrypt}` prefix.
 - **Check:** Import a test record, authenticate with the original password, and verify that no plaintext password remains.
 - **Behavior change:** Security migration, not authorization-rule parity.
+
+### Turn over the card-token key
+
+- **Change:** Replace the demo card-token key with one generated for the deployment, and re-derive every token already written down. A card token is an `HmacSHA256` code taken under `CARD_TOKEN_SECRET`, so a token belongs to one key and one version and does not survive a change to either.
+- **Where:** `com.carddemo.cobol.PanMasker.cardToken` derives it. Three artifacts carry tokens derived under the shipped key: the fifty `card_token` literals in `services/card-service/src/main/resources/db/migration/V2__seed.sql`, the `SCOPE_CARD` authority in `.env.example` and `deploy/k8s/30-configmap.yaml`, and any `statement_transaction`, `notification_log` or `authorization_decision` row an earlier run stored. The key itself is `CARD_TOKEN_SECRET` in `.env.example` and `deploy/k8s/31-secret.example.yaml`, mirrored to the build by the `carddemo.card-token.secret` property in `pom.xml`.
+- **Procedure:** Generate a key of at least 32 characters. Raise `CARD_TOKEN_VERSION` in the same change, so the rollover is recorded in the token itself and a stored value can be told from a current one. Re-derive the fifty seed literals and the granted authority under the new key and version. Re-key or discard stored rows: the notification read model and the notification log are rebuilt from replayed events, and `authorization_decision.card_token` is a diagnostic column an operator may choose to leave at its previous version. Apply the key, the version, the seed and the authority together.
+- **Check:** `CardTokenKeyContractTest` fails while any of the four artifacts still names the previous key or version, and `CardRepositoryIT.everySeededTokenMatchesTheJavaDerivation` fails while a seeded literal does not match the derivation. Both passing is the signal that the turnover is complete.
+- **Behavior change:** None to any business rule. Card identity is ADDITIVE in full: `app/cpy/CVACT02Y.cpy` declares no token field and no source program derives one.
 
 ## Source hygiene
 
@@ -170,6 +178,31 @@ The following tasks modify the read-only legacy tree. They belong to the source 
 - **Behavior change:** Documentation only.
 
 That path remains unchanged here because Rule 3 required a surgical modernization section, not unrelated edits to accurate legacy instructions.
+
+## Work the integration remediation surfaced
+
+Three items were measured while resolving review findings and left deliberately outside the scope of those fixes. Each names the reason it was not folded in.
+
+### Count a notification dead letter after its route, not before
+
+- **Change:** Move the increment of `carddemo.notification.records.dead.lettered` to after the delegating recoverer returns, and add a separate increment for a refused publication.
+- **Where:** The `CountingRecoverer` inside `services/notification-service/.../config/KafkaConsumerConfig.java` increments before it routes, so a diagnostic the broker refused still reads as dead-lettered. The ledger and fraud recoverers were corrected to count after the delegate returns, and separately before a rethrow, under review finding MN-18. Notification was not named by that finding and already had a per-record terminal series distinct from its per-attempt series, so it was recorded rather than changed.
+- **Check:** Point the recoverer at a topic its principal cannot write and assert the published series stays at zero while a refusal series moves.
+- **Behavior change:** None. A metric reads correctly where it previously over-reported by one on a refusal.
+
+### Give the ledger's feed-reject path a runtime entry point, or state that it has none
+
+- **Change:** Decide whether this platform should ingest a daily transaction feed at all. If it should, add the entry point that supplies a `FeedTransaction`. If it should not, say so in the ledger's guide so a reader does not look for a caller that was never intended.
+- **Where:** `domain/RejectRecorder` reproduces `2500-WRITE-REJECT-REC` at `app/cbl/CBTRN02C.cbl:L446-L465` and writes the 430-byte reject row plus one `TransactionDeclined`. Its input type was narrowed to `FeedTransaction` under review finding CR-03, because refusing a `TransactionAuthorized` would reverse a decision the authorization service owns. No delivered listener or route supplies a feed record, so the path is exercised only by its tests.
+- **Check:** Either a delivered entry point produces a reject row and one declined event for a source-invalid feed record, or the guide states the absence and the parity test remains the only caller.
+- **Behavior change:** Adding an ingestion path adds a capability. Documenting the absence changes nothing.
+
+### Revisit card's dead-letter durability if its publisher port becomes asynchronous
+
+- **Change:** If `EventPublisherPort.publish` in the card service ever returns a future rather than blocking, replace the rollback-based durability with the explicit `dead_letter_state` column the account service uses.
+- **Where:** Card's relay publishes its abandonment diagnostic inside the same `TransactionTemplate` as the abandonment itself, and its port blocks, so a broker refusal propagates and rolls the abandonment back with it. The row then returns to the claim query with its attempt count unchanged, which is why card needed no migration. Account's port returns a `CompletionStage` and its sweep catches and continues, so it needs the column. Both models are recorded in the [decision log](decision-log.md).
+- **Check:** Refuse the dead-letter publication and assert the row is claimable again with its attempt count unchanged.
+- **Behavior change:** None today. The note exists because the guarantee depends on a property of the port, not on the relay.
 
 ## Informational register items
 

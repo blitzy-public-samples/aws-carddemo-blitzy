@@ -161,11 +161,14 @@ class CardDtoRenderingTest {
             assertFalse(rendered.contains(MASKED),
                     "expanding the page would repeat every masked number in it: " + rendered);
             assertTrue(rendered.contains("nextPageExists=true")
-                            && rendered.contains("nextCursor=" + CURSOR),
-                    "the rendering keeps the paging state, which is what a paging problem needs, "
-                            + "and names the cursor in full. The cursor is a card token, which "
-                            + "carries no digit of the card number it stands for, so it discloses "
-                            + "nothing a log line may not hold: " + rendered);
+                            && rendered.contains("nextCursor=present"),
+                    "the rendering keeps the paging state, which is what a paging problem needs: "
+                            + rendered);
+            assertFalse(rendered.contains(CURSOR),
+                    "the cursor is a card token. It carries no digit of the card number it stands "
+                            + "for, but it names one card for as long as its key stands, so a log "
+                            + "line holding it would let a reader follow that card across every "
+                            + "request that touched it: " + rendered);
         }
 
         @Test

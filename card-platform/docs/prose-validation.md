@@ -13,6 +13,7 @@ This report applies Rule 5 to the project's authored prose. Rule 5 defines the f
 - **Root boundary:** Only the new `Modernized card platform` section in the root `README.md` is scored. The pre-existing mainframe guide is outside this review.
 - **Deck boundary:** Only headings, body copy, bullets, metric labels, and table cells are scored. Markup, styles, Mermaid source, and scripts are excluded.
 - **Architecture boundary:** The report judges writing, not architecture. The relevant Rule 5 decision remains in `docs/decision-log.md`.
+- **Revision scope:** An integration review of the delivered platform changed prose in ten targets — numbers 1, 3, 4, 5, 6, 7, 9, 11, and the five service guides among 12 through 17. Every changed passage was scored again under the same weighting, and every verdict below holds. The new passages are held to one extra test beyond the principles: each states a delivered fact rather than an intention, because the review found stale claims in prose that had been CLEAN when written and became untrue when the code moved beneath it.
 
 ## Summary
 

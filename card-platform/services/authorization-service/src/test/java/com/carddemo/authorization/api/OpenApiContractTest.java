@@ -81,22 +81,46 @@ final class OpenApiContractTest {
     }
 
     /**
-     * Asserts the request schema requires the eleven components the source requires, plus the card
-     * number.
+     * Asserts the request schema requires the eleven components the source requires, and neither
+     * identifier.
      *
-     * <p>The card number is required because it is the only way a request names its subject.
-     * {@code app/cbl/COTRN02C.cbl:L206-L209} also accepts an account identifier and resolves a card
-     * from the alternate index, and that branch is not reproduced: the card it returns is whichever
-     * one the index holds first rather than one the caller presented.
+     * <p>Neither identifier is listed, because {@code VALIDATE-INPUT-KEY-FIELDS} at
+     * {@code app/cbl/COTRN02C.cbl:L195-L230} accepts either one: the account branch at
+     * {@code :L196-L209} resolves a card from the alternate index and the card branch at
+     * {@code :L210-L223} resolves an account from the cross-reference. A required list can express
+     * "this field must arrive" and cannot express "one of these two must arrive", so the either-or
+     * rule lives on {@link AuthorizationRequest#isIdentifierSupplied()} and the schema description
+     * states it in words. Listing {@code cardNumber} here would document a contract the service does
+     * not enforce and would refuse the account branch at the interface.
      */
     @Test
-    void theRequestSchemaRequiresTheSourceFieldsAndTheCardNumber() {
-        assertEquals(new TreeSet<>(List.of("amount", "cardNumber", "description", "merchantCity",
+    void theRequestSchemaRequiresTheSourceFieldsAndNeitherIdentifier() {
+        assertEquals(new TreeSet<>(List.of("amount", "description", "merchantCity",
                 "merchantId", "merchantName", "merchantZip", "originTimestamp",
                 "processingTimestamp", "source", "transactionCategoryCode", "transactionTypeCode")),
                 new TreeSet<>(requiredOf("AuthorizationRequest")),
-                "app/cbl/COTRN02C.cbl:L251-L320 rejects eleven fields when empty, and the card "
-                        + "number is the twelfth this service requires");
+                "app/cbl/COTRN02C.cbl:L251-L320 rejects eleven fields when empty, and neither "
+                        + "identifier is one of them");
+    }
+
+    /**
+     * Asserts the document states the either-or rule the required list cannot express.
+     *
+     * <p>Dropping {@code cardNumber} from the required list is only half of the contract. A reader
+     * has to be told that one of the two identifiers must arrive and what happens when neither does,
+     * or the document reads as though both were optional.
+     */
+    @Test
+    void theDocumentStatesTheEitherOrIdentifierRule() {
+        String request = String.valueOf(schemaOf("AuthorizationRequest").get("description"));
+        assertTrue(request.contains("at least one of the two must arrive"),
+                "the document states that one identifier is required");
+        assertTrue(request.contains(AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE),
+                "the document quotes the WHEN OTHER refusal a request naming neither receives");
+        assertTrue(request.contains(AuthorizationRequest.ACCOUNT_ID_NOT_FOUND_MESSAGE),
+                "the document quotes the NOTFND refusal an unresolvable account receives");
+        assertFalse(request.contains("not reproduced"),
+                "the document must not describe the account branch as omitted");
     }
 
     /**
@@ -106,8 +130,8 @@ final class OpenApiContractTest {
     void theDocumentDescribesTheAccountCrossCheckAndTheUnresolvedCardEvent() {
         String accountId = String.valueOf(
                 propertyOf("AuthorizationRequest", "accountId").get("description"));
-        assertTrue(accountId.contains("Optional account cross-check"),
-                "accountId is an optional cross-check, never a card lookup substitute");
+        assertTrue(accountId.contains("Supplied alone, it names the subject"),
+                "accountId supplied alone resolves the card the decision runs on");
         assertTrue(accountId.contains("must equal the account"),
                 "the documented cross-check refuses a mismatched account");
 

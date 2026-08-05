@@ -133,19 +133,31 @@ carddemo:
 
     # One group per listener. Two listeners sharing one group would split the
     # messages between them, so each name is distinct.
-    # messaging/TransactionPostedConsumer reads the first and
-    # messaging/FraudAssessedConsumer reads the second.
+    # messaging/TransactionAuthorizedConsumer, messaging/TransactionPostedConsumer,
+    # messaging/FraudFlaggedConsumer and messaging/CustomerContextChangedConsumer read
+    # one topic each. FraudFlagged and FraudCleared both arrive on fraud.assessed, so
+    # messaging/FraudFlaggedConsumer handles both and routes on the envelope eventType.
     groups:
+      # Each listener reads under its own group, so none of them affects another's offsets and a
+      # replay of one topic does not replay the others. The group on transaction.authorized is this
+      # service's own, which is what makes it independent of the ledger's and the fraud detector's
+      # groups on that same topic.
+      transaction-authorized: "${GROUP_NOTIFICATION_AUTHORIZED:notification-authorized}"
       transaction-posted: "${GROUP_NOTIFICATION_POSTED:notification-posted}"
       fraud-assessed: "${GROUP_NOTIFICATION_FRAUD:notification-fraud}"
       customer-context-changed: "${GROUP_NOTIFICATION_CUSTOMER:notification-customer}"
 
-    # Three topics this module consumes. transaction.posted carries the new balance.
-    # FraudFlagged and FraudCleared both travel on fraud.assessed, and that listener
-    # routes on the envelope eventType field. customer.context-changed refreshes the
-    # account-keyed cardholder context. Source-specific dead-letter topics keep the
-    # three wire shapes separate, with one shared fallback for missing source metadata.
+    # Four topics this module consumes. transaction.authorized carries the decision the
+    # authorization service reached, and reading it directly makes this the third independent
+    # consumer of that event, beside the ledger and the fraud detector, which is the fan-out
+    # AAP 0.1.1 and 0.8.3 require. transaction.posted carries the new balance the ledger
+    # derived, so the two alerts report different facts: one that a transaction was authorized,
+    # one that the balance changed. FraudFlagged and FraudCleared both travel on fraud.assessed,
+    # and that listener routes on the envelope eventType field. customer.context-changed
+    # refreshes the account-keyed cardholder context. Source-specific dead-letter topics keep the
+    # four wire shapes separate, with one shared fallback for missing source metadata.
     topics:
+      transaction-authorized: "${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}"
       transaction-posted: "${TOPIC_TRANSACTION_POSTED:transaction.posted}"
       fraud-assessed: "${TOPIC_FRAUD_ASSESSED:fraud.assessed}"
       customer-context-changed: "${TOPIC_CUSTOMER_CONTEXT_CHANGED:customer.context-changed}"

@@ -80,6 +80,25 @@
     <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
     <maven-failsafe-plugin.version>3.5.6</maven-failsafe-plugin.version>
     <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
+
+    <!--
+      The card-token key and version every test in this build derives tokens
+      under. com.carddemo.cobol.PanMasker takes a keyed message authentication
+      code and supplies no default key, so a build that named none would fail
+      every test that tokenizes a card number.
+
+      The two values below are the demo values card-platform/.env.example
+      declares as CARD_TOKEN_SECRET and CARD_TOKEN_VERSION, and the fifty
+      card_token literals in
+      services/card-service/src/main/resources/db/migration/V2__seed.sql and the
+      SCOPE_CARD authority in .env.example are derived under them. The three
+      places therefore have to carry one value, and
+      com.carddemo.equivalence.CardTokenKeyContractTest fails the build when they
+      diverge. Change the key for a real deployment through the environment, not
+      here, and re-derive the seeded tokens and granted authorities with it.
+    -->
+    <carddemo.card-token.secret>carddemo-demo-card-token-key-not-for-production</carddemo.card-token.secret>
+    <carddemo.card-token.version>1</carddemo.card-token.version>
   </properties>
 
   <dependencyManagement>
@@ -231,11 +250,19 @@
           </configuration>
         </plugin>
 
-        <!-- Unit tests. The default patterns cover the Test suffix. -->
+        <!-- Unit tests. The default patterns cover the Test suffix. The two
+             system properties supply the card-token key every module derives
+             tokens under; PanMasker supplies no default. -->
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
           <version>${maven-surefire-plugin.version}</version>
+          <configuration>
+            <systemPropertyVariables>
+              <carddemo.card-token.secret>${carddemo.card-token.secret}</carddemo.card-token.secret>
+              <carddemo.card-token.version>${carddemo.card-token.version}</carddemo.card-token.version>
+            </systemPropertyVariables>
+          </configuration>
         </plugin>
 
         <!-- Integration and equivalence tests, bound to integration-test and
@@ -246,6 +273,10 @@
           <version>${maven-failsafe-plugin.version}</version>
           <configuration>
             <classesDirectory>${project.build.outputDirectory}</classesDirectory>
+            <systemPropertyVariables>
+              <carddemo.card-token.secret>${carddemo.card-token.secret}</carddemo.card-token.secret>
+              <carddemo.card-token.version>${carddemo.card-token.version}</carddemo.card-token.version>
+            </systemPropertyVariables>
           </configuration>
           <executions>
             <execution>

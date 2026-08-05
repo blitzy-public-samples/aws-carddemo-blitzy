@@ -20,8 +20,10 @@ import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.DeclineReason;
 import com.carddemo.events.EventEnvelope;
-import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionDeclined;
+import com.carddemo.ledger.domain.RejectRecorder.FeedTransaction;
+import com.carddemo.ledger.config.ObservabilityConfig;
+import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
 import com.carddemo.ledger.entity.RejectedTransactionEntity;
 import com.carddemo.ledger.outbox.OutboxRelay;
 import com.carddemo.ledger.outbox.OutboxWriter;
@@ -30,6 +32,8 @@ import com.carddemo.ledger.repository.RejectedTransactionRepository;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -148,29 +152,62 @@ class RejectRecorderTest {
     /** The store the {@code WRITE} at {@code :L451} became, the writer beside it, the subject. */
     private RejectedTransactionRepository rejectedTransactions;
     private OutboxWriter outbox;
+
+    /** Registry the reject counter registers with, read by the counting assertion. */
+    private MeterRegistry registry;
+
+    /** The recording surface the subject raises its counter through. */
+    private LedgerMeters meters;
+
     private RejectRecorder subject;
 
     @BeforeEach
     void buildRecorder() {
         rejectedTransactions = mock(RejectedTransactionRepository.class);
         outbox = mock(OutboxWriter.class);
-        subject = new RejectRecorder(rejectedTransactions, outbox);
+        registry = new SimpleMeterRegistry();
+        meters = new ObservabilityConfig().ledgerMeters(registry);
+        subject = new RejectRecorder(rejectedTransactions, outbox, meters);
     }
 
     /** Builds a refusal from fixture record 1 carrying {@code amount}. */
-    private static TransactionAuthorized refusal(BigDecimal amount) {
+    private static FeedTransaction refusal(BigDecimal amount) {
         return refusal(TRANSACTION_ID, amount);
     }
 
     /** Builds a refusal under {@code transactionId}, sixteen characters of {@code DALYTRAN-ID}. */
-    private static TransactionAuthorized refusal(String transactionId, BigDecimal amount) {
-        return TransactionAuthorized.of(ACCOUNT_ID, transactionId, TYPE_CODE, CATEGORY_CODE, SOURCE,
-                DESCRIPTION, amount, MERCHANT_ID, MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP,
-                MASKED_CARD_NUMBER, CARD_TOKEN, AUTHORIZED_AT);
+    private static FeedTransaction refusal(String transactionId, BigDecimal amount) {
+        return feedRecord(ACCOUNT_ID, transactionId, amount, SOURCE, DESCRIPTION, MERCHANT_NAME,
+                MERCHANT_CITY, MERCHANT_ZIP);
+    }
+
+    /**
+     * Builds one feed record, varying the components a test varies.
+     *
+     * <p>The subject accepts this type and not {@code TransactionAuthorized}, and the reason is the
+     * point of the type: a feed record has reached no decision, so refusing it is possible, while an
+     * authorized event carries a decision another service already published.
+     *
+     * @param accountId     the account the cross-reference read resolved
+     * @param transactionId DALYTRAN-ID
+     * @param amount        DALYTRAN-AMT, signed
+     * @param source        DALYTRAN-SOURCE
+     * @param description   DALYTRAN-DESC
+     * @param merchantName  DALYTRAN-MERCHANT-NAME
+     * @param merchantCity  DALYTRAN-MERCHANT-CITY
+     * @param merchantZip   DALYTRAN-MERCHANT-ZIP
+     * @return the record the subject refuses
+     */
+    private static FeedTransaction feedRecord(String accountId, String transactionId,
+            BigDecimal amount, String source, String description, String merchantName,
+            String merchantCity, String merchantZip) {
+        return new FeedTransaction(accountId, transactionId, TYPE_CODE, CATEGORY_CODE, source,
+                description, amount, MERCHANT_ID, merchantName, merchantCity, merchantZip,
+                MASKED_CARD_NUMBER, AUTHORIZED_AT);
     }
 
     /** Builds a constructed input naming its code, for the three codes the feed never reaches. */
-    private static TransactionAuthorized constructedRefusal(DeclineReason reason) {
+    private static FeedTransaction constructedRefusal(DeclineReason reason) {
         return refusal(CONSTRUCTED_ID_PREFIX + reason.code(), AMOUNT);
     }
 
@@ -247,8 +284,9 @@ class RejectRecorderTest {
         }
 
         @Test
-        @DisplayName("takes the store and writer alone and makes the write one required transaction")
-        void takesTheStoreAndTheWriterAlone() throws NoSuchMethodException {
+        @DisplayName("takes the store, the writer and the meters, and makes the write one required "
+                + "transaction")
+        void takesTheStoreTheWriterAndTheMeters() throws NoSuchMethodException {
             Constructor<?>[] constructors = RejectRecorder.class.getDeclaredConstructors();
             Set<String> held = new LinkedHashSet<>();
             for (Field field : RejectRecorder.class.getDeclaredFields()) {
@@ -260,12 +298,15 @@ class RejectRecorderTest {
             }
 
             assertEquals(1, constructors.length, "one way to build it");
-            assertEquals(List.of(RejectedTransactionRepository.class, OutboxWriter.class),
-                    List.of(constructors[0].getParameterTypes()), "no meter reaches it");
-            assertEquals(Set.of("RejectedTransactionRepository", "OutboxWriter", "Clock"), held,
+            assertEquals(List.of(RejectedTransactionRepository.class, OutboxWriter.class,
+                            LedgerMeters.class),
+                    List.of(constructors[0].getParameterTypes()),
+                    "the store, the writer and the counter one reject raises");
+            assertEquals(Set.of("RejectedTransactionRepository", "OutboxWriter", "LedgerMeters",
+                            "Clock"), held,
                     "ordinary traffic, so no log writer");
             java.lang.reflect.Method recordReject = RejectRecorder.class.getMethod(
-                    "recordReject", TransactionAuthorized.class, DeclineReason.class);
+                    "recordReject", FeedTransaction.class, DeclineReason.class);
             assertEquals(void.class, recordReject.getReturnType(), ":L465 EXIT yields no value");
             assertEquals(Propagation.REQUIRED,
                     recordReject.getAnnotation(Transactional.class).propagation(),
@@ -321,14 +362,12 @@ class RejectRecorderTest {
         @Test
         @DisplayName("values filling each declared width still render both halves")
         void valuesFillingEachDeclaredWidthStillRender() {
-            TransactionAuthorized wide = TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID,
-                    TYPE_CODE, CATEGORY_CODE, "X".repeat(PicClause.DALYTRAN_SOURCE_WIDTH),
-                    "X".repeat(PicClause.DALYTRAN_DESC_WIDTH), AMOUNT, MERCHANT_ID,
+            FeedTransaction wide = feedRecord(ACCOUNT_ID, TRANSACTION_ID, AMOUNT,
+                    "X".repeat(PicClause.DALYTRAN_SOURCE_WIDTH),
+                    "X".repeat(PicClause.DALYTRAN_DESC_WIDTH),
                     "X".repeat(PicClause.DALYTRAN_MERCHANT_NAME_WIDTH),
                     "X".repeat(PicClause.DALYTRAN_MERCHANT_CITY_WIDTH),
-                    "X".repeat(PicClause.DALYTRAN_MERCHANT_ZIP_WIDTH), MASKED_CARD_NUMBER,
-                    CARD_TOKEN,
-                    AUTHORIZED_AT);
+                    "X".repeat(PicClause.DALYTRAN_MERCHANT_ZIP_WIDTH));
 
             assertDoesNotThrow(() -> subject.recordReject(wide, DeclineReason.OVER_CREDIT_LIMIT),
                     "a field filling its positions leaves :L177-L178 holding their widths");
@@ -420,7 +459,7 @@ class RejectRecorderTest {
         @DisplayName(
                 "the reason that resolves no account identifier is refused, and nothing stores")
         void reasonThatResolvesNoAccountIsRefused() {
-            TransactionAuthorized event = refusal(AMOUNT);
+            FeedTransaction event = refusal(AMOUNT);
 
             IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
                     () -> subject.recordReject(event, DeclineReason.INVALID_CARD_NUMBER),
@@ -491,10 +530,9 @@ class RejectRecorderTest {
         @DisplayName(
                 "the declined event names the refused transaction's own account, and keys on it")
         void theDeclinedEventNamesTheRefusedTransactionsAccount(DeclineReason reason) {
-            TransactionAuthorized refused = TransactionAuthorized.of(OTHER_ACCOUNT_ID,
-                    CONSTRUCTED_ID_PREFIX + reason.code(), TYPE_CODE, CATEGORY_CODE, SOURCE,
-                    DESCRIPTION, AMOUNT, MERCHANT_ID, MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP,
-                    MASKED_CARD_NUMBER, CARD_TOKEN, AUTHORIZED_AT);
+            FeedTransaction refused = feedRecord(OTHER_ACCOUNT_ID,
+                    CONSTRUCTED_ID_PREFIX + reason.code(), AMOUNT, SOURCE, DESCRIPTION,
+                    MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP);
 
             subject.recordReject(refused, reason);
 

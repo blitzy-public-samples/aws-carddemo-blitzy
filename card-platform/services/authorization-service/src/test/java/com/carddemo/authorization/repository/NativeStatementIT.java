@@ -82,10 +82,10 @@ class NativeStatementIT {
     /** Schema Flyway migrates, and the one the connection search path names. */
     private static final String MIGRATED_SCHEMA = "authorization_service";
 
-    /** Topic the claimed markers of this class record. */
     /** Batch bound one purge statement is given, larger than any fixture the class stores. */
     private static final int PURGE_BATCH = 1000;
 
+    /** Topic the claimed markers of this class record. */
     private static final String CONSUMED_TOPIC = "account.state-changed";
 
     /** One seeded card and the account it belongs to, from app/data/ASCII/cardxref.txt. */

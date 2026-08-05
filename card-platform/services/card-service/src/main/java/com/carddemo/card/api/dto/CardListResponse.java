@@ -95,9 +95,12 @@ public record CardListResponse(List<CardSummary> cards, boolean nextPageExists, 
      * multiplied by every log line that touches it. A count says everything an operator reading a
      * paging problem needs, and a caller that wants a card can render that card.
      *
-     * <p>The cursor appears in full. It is a card token, which carries no digit of a card number
-     * and is not reversible, so a log line holding it discloses nothing and names the exact browse
-     * position a paging problem asks about.
+     * <p>The cursor is reported as present or absent and never in full. It is a card token, so it
+     * carries no digit of a card number and nothing derives one from it, but it does name one card
+     * for as long as the key behind it stands. A log line carrying it would let a reader of the log
+     * follow one card across every request that touched it, which is the linkage a pseudonym exists
+     * to prevent. Whether a cursor was issued is what a paging problem asks; which card it names is
+     * not.
      *
      * @return one line naming the class, how many cards the page holds and the paging state
      */
@@ -105,6 +108,6 @@ public record CardListResponse(List<CardSummary> cards, boolean nextPageExists, 
     public String toString() {
         return "CardListResponse[cards=" + cards.size() + " on this page"
                 + ", nextPageExists=" + nextPageExists
-                + ", nextCursor=" + (nextCursor == null ? "absent" : nextCursor) + "]";
+                + ", nextCursor=" + (nextCursor == null ? "absent" : "present") + "]";
     }
 }

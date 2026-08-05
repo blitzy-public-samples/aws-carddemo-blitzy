@@ -34,22 +34,27 @@ import java.math.BigDecimal;
  * blank field reports its own empty text, and only a filled field reports a shape failure. One
  * definition of "supplied" therefore governs the constraints and the derived accessors alike.
  *
- * <p>Twelve components are required, matching the eleven fields
+ * <p>Eleven components are required, matching the eleven fields
  * {@code app/cbl/COTRN02C.cbl:L251-L320} rejects when empty — the transaction type code, the category
- * code, the source, the description, the amount, both timestamps, and the four merchant fields —
- * plus the card number. {@code transactionId} may not be supplied at all: this service allocates
- * every identifier, as {@link #TRANSACTION_ID_NOT_ACCEPTED_MESSAGE} explains, and
- * {@code accountId} is optional.
+ * code, the source, the description, the amount, both timestamps, and the four merchant fields.
+ * {@code transactionId} may not be supplied at all: this service allocates every identifier, as
+ * {@link #TRANSACTION_ID_NOT_ACCEPTED_MESSAGE} explains.
  *
- * <p>A caller names its subject by card number and by nothing else.
- * {@code app/cbl/COTRN02C.cbl:L195-L230} also branches on an account identifier, and that branch is
- * not reproduced: it resolves whichever card the alternate index returns first, so a caller naming
- * an account authorizes a card the caller never held. A missing card number reports
- * {@value #IDENTIFIER_REQUIRED_MESSAGE}, the {@code WHEN OTHER} text of that paragraph. A component
- * filled with spaces counts as absent, matching the {@code NOT = SPACES AND LOW-VALUES} test at
- * {@code app/cbl/COTRN02C.cbl:L196}. When {@code accountId} is supplied beside the required card,
- * it is a cross-check only: the decision still resolves the card first, then refuses the request
- * unless the resolved account agrees with the caller's value.
+ * <p>A caller names its subject by card number or by account identifier, and at least one of the two
+ * has to arrive. {@code VALIDATE-INPUT-KEY-FIELDS} at {@code app/cbl/COTRN02C.cbl:L195-L230} is the
+ * paragraph this reproduces, and it admits either: the account branch at {@code :L196-L209} reads the
+ * cross-reference by account identifier through its alternate index and takes the card number the row
+ * carries, the card branch at {@code :L210-L223} reads it by card number and takes the account
+ * identifier, and the {@code WHEN OTHER} branch at {@code :L224-L229} refuses a request carrying
+ * neither with {@value #IDENTIFIER_REQUIRED_MESSAGE}. {@link #isIdentifierSupplied()} is that third
+ * branch. A component filled with spaces counts as absent, matching the
+ * {@code NOT = SPACES AND LOW-VALUES} test at {@code app/cbl/COTRN02C.cbl:L196}.
+ *
+ * <p>Where both arrive, the two are cross-checked rather than ranked. The source takes its account
+ * branch first and overwrites the caller's card number with whichever card the alternate index
+ * returned, which would authorize a card the caller did not name. This service resolves the card
+ * first and then refuses the request unless the resolved account agrees with the caller's value, so
+ * neither identifier can silently displace the other.
  *
  * <p>Every free-text component is bounded twice: by the width of its source field and by
  * {@value #PRINTABLE_TEXT_PATTERN}, which admits no control character. The description
@@ -106,8 +111,10 @@ import java.math.BigDecimal;
  *                                {@code app/cpy/CVTRA06Y.cpy:L14}. Required, and at most ten
  *                                characters.
  * @param cardNumber              card number, from {@code DALYTRAN-CARD-NUM PIC X(16)} at
- *                                {@code app/cpy/CVTRA06Y.cpy:L15}. Required, one to sixteen digits,
- *                                and the only way a request names its subject.
+ *                                {@code app/cpy/CVTRA06Y.cpy:L15}. One to sixteen digits. Required
+ *                                unless {@code accountId} arrives instead, which is the card branch
+ *                                of {@code app/cbl/COTRN02C.cbl:L210-L223} beside its account branch
+ *                                at {@code :L196-L209}.
  *                                {@link #canonicalCardNumber()} returns it at its stored width.
  * @param originTimestamp         moment the transaction was captured, from
  *                                {@code DALYTRAN-ORIG-TS PIC X(26)} at
@@ -118,9 +125,11 @@ import java.math.BigDecimal;
  *                                {@code app/cpy/CVTRA06Y.cpy:L17}. Required, and shaped by
  *                                {@value #PROCESSING_TIMESTAMP_PATTERN}.
  * @param accountId               account identifier, from {@code XREF-ACCT-ID PIC 9(11)} at
- *                                {@code app/cpy/CVACT03Y.cpy:L7}. Optional, one to eleven digits,
- *                                and never a substitute for {@code cardNumber}. When supplied, it
- *                                must equal the account the card cross-reference resolves.
+ *                                {@code app/cpy/CVACT03Y.cpy:L7}. One to eleven digits. Required
+ *                                unless {@code cardNumber} arrives instead. Supplied alone it names
+ *                                the subject and the card is read from the cross-reference by it;
+ *                                supplied beside a card number it is a cross-check and must equal
+ *                                the account that card resolves.
  *                                {@link #canonicalAccountId()} returns it at its stored width.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
@@ -172,7 +181,9 @@ public record AuthorizationRequest(
         @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String merchantZip,
 
-        @NotBlank(message = IDENTIFIER_REQUIRED_MESSAGE)
+        // No @NotBlank: a request may name its subject by account identifier instead, which is
+        // the account branch of VALIDATE-INPUT-KEY-FIELDS at app/cbl/COTRN02C.cbl:L196-L209.
+        // isIdentifierSupplied() refuses a request that carries neither.
         @Pattern(regexp = CARD_NUMBER_PATTERN, message = CARD_NUMBER_NOT_NUMERIC_MESSAGE)
         String cardNumber,
 
@@ -279,6 +290,17 @@ public record AuthorizationRequest(
      */
     public static final String IDENTIFIER_REQUIRED_MESSAGE =
             "Account or Card Number must be entered...";
+
+    /**
+     * Rejection text for an account identifier that resolves no card, from the {@code NOTFND} limb
+     * of {@code READ-CXACAIX-FILE} at {@code app/cbl/COTRN02C.cbl:L591-L592}.
+     *
+     * <p>The account branch of {@code VALIDATE-INPUT-KEY-FIELDS} reads the cross-reference by the
+     * account identifier the caller supplied, and an account with no row there is an input refusal
+     * at the capture stage rather than an authorization outcome. The source answers it with this
+     * text and re-sends the screen, so no transaction is captured and no identifier is consumed.
+     */
+    public static final String ACCOUNT_ID_NOT_FOUND_MESSAGE = "Account ID NOT found...";
 
     /**
      * Rejection text for a request that carries a transaction identifier. ADDITIVE: no source
@@ -550,24 +572,39 @@ public record AuthorizationRequest(
     }
 
     /**
-     * Reports whether the request carries the card number the decision runs on.
+     * Reports whether the request names its subject, by card number or by account identifier.
      *
-     * <p>A card number is required and an account identifier does not substitute for one. The
-     * record this service reproduces carries a card number and no account identifier at all
-     * ({@code app/cpy/CVTRA06Y.cpy:L4-L18}), and the decision reads the cross-reference by that
-     * card number at {@code app/cbl/CBTRN02C.cbl:L382-L383}.
+     * <p>This is the {@code WHEN OTHER} branch of {@code VALIDATE-INPUT-KEY-FIELDS} at
+     * {@code app/cbl/COTRN02C.cbl:L224-L229}, which refuses a request carrying neither identifier
+     * and reports {@value #IDENTIFIER_REQUIRED_MESSAGE}. The two branches above it each accept one
+     * identifier and resolve the other from the cross-reference: the account branch at
+     * {@code :L196-L209} reads the alternate index and takes the card number the row carries, and
+     * the card branch at {@code :L210-L223} reads the primary key and takes the account identifier.
      *
-     * <p>{@code app/cbl/COTRN02C.cbl:L195-L230} also accepts an account identifier and resolves a
-     * card from the alternate index. That branch selects whichever card the index returns first,
-     * so a caller who names an account identifier authorizes a card the caller never held. The
-     * account branch is therefore not reproduced, and this check is what refuses it. A component
-     * that is {@code null}, empty or all whitespace counts as absent, matching the
-     * {@code NOT = SPACES AND LOW-VALUES} test at {@code app/cbl/COTRN02C.cbl:L196}, and the
-     * {@code WHEN OTHER} text at {@code app/cbl/COTRN02C.cbl:L226} reports the refusal.
+     * <p>A component that is {@code null}, empty or all whitespace counts as absent, matching the
+     * {@code NOT = SPACES AND LOW-VALUES} test at {@code app/cbl/COTRN02C.cbl:L196}.
+     *
+     * <p>Which identifier arrived decides how the card is resolved and nothing else. The decision
+     * itself always runs on a full card number, because the record it reproduces carries one and no
+     * account identifier at all ({@code app/cpy/CVTRA06Y.cpy:L4-L18}) and the cross-reference read
+     * at {@code app/cbl/CBTRN02C.cbl:L382-L383} keys on it.
+     *
+     * @return {@code true} when a card number or an account identifier arrived
+     */
+    @AssertTrue(message = IDENTIFIER_REQUIRED_MESSAGE)
+    public boolean isIdentifierSupplied() {
+        return supplied(cardNumber) || supplied(accountId);
+    }
+
+    /**
+     * Reports whether the request carries a card number.
+     *
+     * <p>A request that carries none names its subject by account identifier instead, and
+     * {@code domain/AuthorizationService} resolves the card through the account branch of
+     * {@code app/cbl/COTRN02C.cbl:L196-L209}. This method is what tells the two paths apart.
      *
      * @return {@code true} when a card number arrived
      */
-    @AssertTrue(message = IDENTIFIER_REQUIRED_MESSAGE)
     public boolean isCardNumberSupplied() {
         return supplied(cardNumber);
     }

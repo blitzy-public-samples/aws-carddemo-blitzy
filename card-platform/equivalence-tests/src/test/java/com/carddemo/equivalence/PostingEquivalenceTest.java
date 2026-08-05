@@ -20,7 +20,9 @@ import com.carddemo.ledger.LedgerApplication;
 import com.carddemo.ledger.domain.AccountBalanceUpdater;
 import com.carddemo.ledger.domain.CategoryBalanceUpdater;
 import com.carddemo.ledger.domain.PostingService;
+import com.carddemo.ledger.config.ObservabilityConfig;
 import com.carddemo.ledger.domain.RejectRecorder;
+import com.carddemo.ledger.domain.RejectRecorder.FeedTransaction;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import com.carddemo.ledger.entity.OutboxEventEntity;
 import com.carddemo.ledger.entity.ProcessedEventEntity;
@@ -41,6 +43,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Method;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -1540,10 +1543,10 @@ class PostingEquivalenceTest {
                     continue;
                 }
                 Probe probe = new Probe(accountId, zeroAmount());
-                TransactionAuthorized event = eventCarrying(accountId,
+                FeedTransaction refused = feedRecordCarrying(accountId,
                         syntheticTransactionId(FIRST_RECORD_ORDINAL), firstFeedRecord().amount());
 
-                probe.rejectRecorder().recordReject(event, reason);
+                probe.rejectRecorder().recordReject(refused, reason);
                 List<RejectedTransactionEntity> written = probe.rejects().snapshot();
 
                 assertEquals(ONE_ROW_PER_CALL, written.size(),
@@ -1942,12 +1945,16 @@ class PostingEquivalenceTest {
                             + result.getString("category_code") + ","
                             + money(result.getBigDecimal("category_balance")));
 
-            assertEquals(List.of("1", "2"), jdbc.queryForList(
+            assertEquals(List.of("1", "2", "3"), jdbc.queryForList(
                             "SELECT version FROM flyway_schema_history "
                                     + "WHERE success AND version IS NOT NULL "
                                     + "ORDER BY installed_rank",
                             String.class),
-                    "Flyway must apply both ledger migrations");
+                    "Flyway must apply every shipped ledger migration, so this comparison runs "
+                            + "against the schema the service really starts on. V3 adds the two "
+                            + "provenance columns that order a replica refresh against the change "
+                            + "the row already carries, and it must be present here even though "
+                            + "the posting path this test drives writes neither of them");
             assertEquals(expectedCount("posting", "record_count"), offset,
                     "the real path must inspect the whole feed");
             assertEquals(expectedCount("posting", "approved_count"), approvedIds.size(),
@@ -2361,6 +2368,30 @@ class PostingEquivalenceTest {
                 template.merchantId(), template.merchantName(), template.merchantCity(),
                 template.merchantZip(), PanMasker.maskCardNumber(template.cardNumber()),
                 PanMasker.cardToken(template.cardNumber()), template.originTimestamp());
+    }
+
+    /**
+     * Builds the feed record {@code 1500-VALIDATE-TRAN} refuses, from fixture record one.
+     *
+     * <p>{@code RejectRecorder} accepts this type and not {@code TransactionAuthorized}, and the
+     * distinction is the contract rather than a convenience. A feed record has reached no decision, so
+     * refusing it reproduces {@code 2500-WRITE-REJECT-REC} at {@code app/cbl/CBTRN02C.cbl:L446-L465};
+     * an authorized event carries a decision the authorization service already published, and
+     * refusing one would reverse an approval this service does not own.
+     *
+     * @param accountId     the account the cross-reference read resolved
+     * @param transactionId DALYTRAN-ID of the refused record
+     * @param amount        DALYTRAN-AMT, signed
+     * @return the record the reject path refuses
+     */
+    private static FeedTransaction feedRecordCarrying(String accountId, String transactionId,
+            BigDecimal amount) {
+        CopybookRecordParser.DailyTransactionRecord template = firstFeedRecord();
+        return new FeedTransaction(accountId, transactionId, template.typeCode(),
+                template.categoryCode(), template.source(), template.description(), amount,
+                template.merchantId(), template.merchantName(), template.merchantCity(),
+                template.merchantZip(), PanMasker.maskCardNumber(template.cardNumber()),
+                template.originTimestamp());
     }
 
     /**
@@ -2782,6 +2813,41 @@ class PostingEquivalenceTest {
         }
 
         /**
+         * Applies one account state change, ordered on the producer's clock.
+         *
+         * <p>This store reproduces the one statement the migration's upsert performs, so a run can
+         * exercise the replica path without a database. The comparison is the point of it: a change
+         * that did not occur after the stored one writes nothing, which is what keeps a redelivery
+         * from moving a cycle balance backwards.
+         *
+         * <p>The write is not logged. {@link #ACCOUNT_STAGE} names the posting write of
+         * {@code 2800-UPDATE-ACCOUNT-REC}, and a replica refresh is a different write on a different
+         * path; logging it under that stage would report an order the source never had.
+         *
+         * @param accountId        the eleven-digit account identifier
+         * @param currentBalance   ACCT-CURR-BAL, scale 2
+         * @param cycleCredit      ACCT-CURR-CYC-CREDIT, scale 2
+         * @param cycleDebit       ACCT-CURR-CYC-DEBIT, scale 2
+         * @param sourceEventId    the change that carried these values
+         * @param sourceOccurredAt when that change occurred
+         * @return 1 when the row was written, and 0 when a later change already stood
+         */
+        @Override
+        public int applyStateChange(String accountId, BigDecimal currentBalance,
+                BigDecimal cycleCredit, BigDecimal cycleDebit, UUID sourceEventId,
+                Instant sourceOccurredAt) {
+
+            AccountBalanceProjectionEntity stored = rows.get(accountId);
+            if (stored != null && stored.getSourceOccurredAt() != null
+                    && !stored.getSourceOccurredAt().isBefore(sourceOccurredAt)) {
+                return 0;
+            }
+            rows.put(accountId, new AccountBalanceProjectionEntity(accountId, currentBalance,
+                    cycleCredit, cycleDebit, sourceEventId, sourceOccurredAt));
+            return 1;
+        }
+
+        /**
          * Returns the rows this store holds.
          *
          * @return an unmodifiable view in first-write order
@@ -3091,7 +3157,8 @@ class PostingEquivalenceTest {
                     new AccountBalanceUpdater(accountBalances),
                     transactions,
                     outbox.writer());
-            this.rejectRecorder = new RejectRecorder(rejects, outbox.writer());
+            this.rejectRecorder = new RejectRecorder(rejects, outbox.writer(),
+                    new ObservabilityConfig().ledgerMeters(new SimpleMeterRegistry()));
         }
 
         /**

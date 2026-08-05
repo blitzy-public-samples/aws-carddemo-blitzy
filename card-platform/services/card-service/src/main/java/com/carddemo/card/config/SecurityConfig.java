@@ -1,5 +1,6 @@
 package com.carddemo.card.config;
 
+import com.carddemo.cobol.PanMasker;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -146,7 +147,16 @@ public class SecurityConfig {
     /** Ownership kind for a customer identifier, {@code CUST-ID PIC 9(09)}. */
     static final String CUSTOMER_SCOPE = "CUSTOMER";
 
-    /** Ownership kind for a card, named by its masked form and never by a full card number. */
+    /**
+     * Ownership kind for a card, named by its derived card token.
+     *
+     * <p>Never by a full card number, which would put a Primary Account Number in an authority
+     * list, a log line and a configuration file. Never by the masked form either: twelve mask
+     * characters and four digits name every card sharing those four digits, so an authority granted
+     * for one card would admit its holder to all of them. The token is the sixty-four hexadecimal
+     * characters {@code com.carddemo.cobol.PanMasker.cardToken} derives under the deployment's
+     * card-token key, and it names one card.
+     */
     static final String CARD_SCOPE = "CARD";
 
     /** Realm name a 401 carries, so a client knows which credential to present. */
@@ -190,9 +200,11 @@ public class SecurityConfig {
      * <p>An identity becomes one authority for its role and one authority per ownership scope, so
      * the whole entitlement of a caller travels in the authority list and no custom principal type
      * is needed. A scope reads {@code SCOPE_ACCOUNT_00000000001} or
-     * {@code SCOPE_CARD_1134636222d1a2485d20203d0e970c72124893eb01be73a5fde5fdcccc2c4ac9}:
-     * the kind, then the identifier exactly as
-     * the column holds it, leading zeros included.
+     * {@code SCOPE_CARD_<card token>}: the kind, then the identifier exactly as the column holds
+     * it, leading zeros included. A card token is the sixty-four hexadecimal characters
+     * {@code com.carddemo.cobol.PanMasker.cardToken} derives under the configured card-token key,
+     * so an authority granted for one card names that card alone and no card sharing its last four
+     * digits.
      *
      * @param identities the configured identities
      * @return one {@link UserDetails} per configured identity
@@ -400,9 +412,15 @@ public class SecurityConfig {
      * The rule for that route therefore checks the role alone, and the handler asks this predicate
      * for the ownership half once it has read the body.
      *
-     * <p>The scope is named by the masked form and never by the full number, which
-     * {@link #CARD_SCOPE} states and which the notification service's own card route already
-     * follows. A handler masks the number it read and passes the masked value here.
+     * <p>The predicate takes the full card number and derives the authority name itself, under
+     * {@link #CARD_SCOPE}. Two things follow, and both matter. The authority names one card rather
+     * than every card sharing four digits, so a caller entitled to one card cannot read another.
+     * And no caller of this interface can choose a weaker naming, because the only naming lives
+     * here, in the file that documents the scope form and grants the authorities.
+     *
+     * <p>The full number reaches this method and leaves in no other form. It is not logged, not
+     * returned and not held; the derived token is what the comparison uses, and the handler masks
+     * the number separately for its response.
      *
      * <p>The check is the one {@link #ownsPathVariable(String, String)} performs, including the
      * administrator fork: {@code ROLE_ADMIN} owns every card, which is
@@ -418,13 +436,13 @@ public class SecurityConfig {
      */
     @Bean
     public CardOwnership cardOwnership() {
-        return maskedCardNumber -> maskedCardNumber != null
+        return cardNumber -> cardNumber != null && !cardNumber.isBlank()
                 && holds(SecurityContextHolder.getContext().getAuthentication(),
-                        SCOPE_PREFIX + CARD_SCOPE + "_" + maskedCardNumber);
+                        SCOPE_PREFIX + CARD_SCOPE + "_" + PanMasker.cardToken(cardNumber));
     }
 
     /**
-     * Answers whether the caller of the current request owns one card, named by its masked form.
+     * Answers whether the caller of the current request owns one card, named by its derived token.
      *
      * <p>Declared here, next to the route rules, so that every authority this service requires is
      * stated in one file. {@code api/CardController} holds a reference to it and states no rule of
@@ -436,12 +454,20 @@ public class SecurityConfig {
         /**
          * Reports whether the caller owns the card.
          *
-         * @param maskedCardNumber the masked card number: twelve mask characters then the last four
-         *                         digits, or {@code null}
+         * <p>The argument is the full card number, and the implementation derives the token the
+         * authority names. A masked number is not accepted: twelve mask characters and four digits
+         * name every card ending in those four digits, so one authority would admit a caller to all
+         * of them. The fifty cards of {@code app/data/ASCII/carddata.txt} happen to end in fifty
+         * different groups of four, which is why the demo never showed the collision and why the
+         * refusal is asserted against a constructed card number rather than a seeded one.
+         *
+         * @param cardNumber the full card number as {@code CARD-NUM PIC X(16)} holds it, or
+         *                   {@code null}
          * @return {@code true} when the caller is an administrator or holds the ownership scope of
-         *         that card, and {@code false} for every other caller and for {@code null}
+         *         that card, and {@code false} for every other caller, for {@code null} and for a
+         *         blank value
          */
-        boolean ownsCard(String maskedCardNumber);
+        boolean ownsCard(String cardNumber);
     }
 
     /**

@@ -32,7 +32,7 @@ import org.springframework.validation.annotation.Validated;
  * <p>Decisions: {@code card-platform/docs/decision-log.md}.
  *
  * @param api    the request-body ceiling of the web surface
- * @param kafka  the topic name this service publishes to
+ * @param kafka  the topic names this service publishes to
  * @param outbox the relay sweep settings
  */
 @ConfigurationProperties(prefix = "carddemo")
@@ -60,17 +60,24 @@ public record CardProperties(
     /**
      * The broker-facing names this service uses.
      *
-     * @param topics the one topic this service publishes to
+     * @param topics the two topics this service publishes to
      */
     public record Kafka(@NotNull @Valid Topics topics) {
 
         /**
-         * The one published topic. A card list and a card read publish nothing.
+         * The two published topics. A card list and a card read publish nothing.
+         *
+         * <p>{@code deadLetter} is the shared destination of a terminal diagnostic and never of a
+         * card update. {@code outbox/OutboxRelay} publishes one governed
+         * {@code com.carddemo.events.DeadLetterEnvelope} onto it for a row it has abandoned, so an
+         * event this service gave up on is still accounted for. A blank value stops start-up, which
+         * is what keeps that path from being configured away.
          *
          * @param cardUpdated the topic a card update travels on, carrying the card after the update
          *                    with its number masked
+         * @param deadLetter  the topic a terminal diagnostic travels on, shared by every service
          */
-        public record Topics(@NotBlank String cardUpdated) {
+        public record Topics(@NotBlank String cardUpdated, @NotBlank String deadLetter) {
         }
     }
 

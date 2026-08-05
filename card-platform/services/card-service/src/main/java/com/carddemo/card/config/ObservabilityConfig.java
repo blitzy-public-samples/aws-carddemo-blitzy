@@ -10,16 +10,24 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Registers the three meters the card service measures its work through. This class records nothing;
+ * Registers the nine meters the card service measures its work through. This class records nothing;
  * each bean below is injected by name into the class that performs the work.
  *
  * <p>No COBOL program and no copybook declares a meter. The nearest source construct is
  * the job log. {@code app/cbl/CBTRN02C.cbl} holds 53 lines carrying {@code DISPLAY}, and it formats
  * a two-byte file status into four digits at {@code app/cbl/CBTRN02C.cbl:L714-L727}.
  *
- * <p>Two counters and one timer cover the published-event, processing-latency, and failure
- * families. Each counter is a bean of its own, and the timer arrives behind
+ * <p>Seven counters and two timers cover the published-event, processing-latency, failure and
+ * terminal-outcome families. Each counter is a bean of its own, and both timers arrive behind
  * {@link CardLatencyTimers}.
+ *
+ * <p>Four series describe what happens to one outbox row, and they are deliberately separate.
+ * {@link #METRIC_CARD_EVENTS_PUBLISHED} counts a row the broker took.
+ * {@link #METRIC_CARD_FAILURES} counts one attempt that failed and will be made again.
+ * {@link #METRIC_CARD_OUTBOX_ABANDONED} counts a row this service gave up on, which is a terminal
+ * outcome and not a retry. {@link #METRIC_CARD_DEAD_LETTERS_FAILED} counts a terminal diagnostic the
+ * broker refused. No increment is made twice: a retry never reaches the terminal series, and a
+ * refused diagnostic never reaches the abandoned series, because that abandonment does not commit.
  *
  * <p>This service reads no topic and registers no listener, so no meter counts a consumed event.
  * {@link #METRIC_CARD_EVENTS_PUBLISHED} is the family it reports on.
@@ -75,6 +83,35 @@ public class ObservabilityConfig {
      */
     public static final String METRIC_CARD_XREF_DIVERGENCE =
             "carddemo.card.xref.divergence";
+
+    /**
+     * Outbox rows this service gave up on, each one named by a dead letter the broker acknowledged.
+     *
+     * <p>ADDITIVE, with no card program ancestor. The source answer to a record it could not write
+     * was the abend routine at {@code app/cbl/COCRDUPC.cbl:L1531-L1537}, which ends the address
+     * space and leaves the operator a job log rather than a count.
+     *
+     * <p>One increment is one card update that will never be published. The reading is expected to
+     * stay at zero, and a non-zero reading is the one signal that an event was lost to consumers.
+     *
+     * <p>There is no companion series counting acknowledged dead letters, and that is exact rather
+     * than an omission: {@code outbox/OutboxRelay} commits the abandonment only after the broker has
+     * acknowledged the diagnostic, so this counter already reports both facts. A refused diagnostic
+     * rolls that commit back and is counted by {@link #METRIC_CARD_DEAD_LETTERS_FAILED} instead.
+     */
+    public static final String METRIC_CARD_OUTBOX_ABANDONED = "carddemo.card.outbox.abandoned";
+
+    /**
+     * Terminal diagnostics the broker refused, on the dead-letter topic.
+     *
+     * <p>ADDITIVE, with no card program ancestor. It stays separate from
+     * {@link #METRIC_CARD_FAILURES} because the two say different things to an operator: a counted
+     * failure is one attempt that will be made again on a row still in flight, while a counted
+     * refusal here means the diagnostic for a spent row did not land, so the row is offered again
+     * rather than abandoned.
+     */
+    public static final String METRIC_CARD_DEAD_LETTERS_FAILED =
+            "carddemo.card.dead.letters.failed";
 
     /** Wall time of one card update, from request entry to commit. */
     public static final String METRIC_CARD_UPDATE_LATENCY = "carddemo.card.update.latency";
@@ -177,6 +214,39 @@ public class ObservabilityConfig {
         return Counter.builder(METRIC_CARD_XREF_DIVERGENCE)
                 .description("Card updates whose row and cross-reference replica named different"
                         + " accounts")
+                .register(registry);
+    }
+
+    /**
+     * Counts outbox rows this service gave up on. {@code outbox/OutboxRelay.java} increments it once
+     * per abandoned row, after the sweep that abandoned it has committed, which happens only once
+     * the broker has acknowledged the dead letter naming that row.
+     *
+     * @param registry the meter registry Spring Boot supplies
+     * @return the registered counter, named {@link #METRIC_CARD_OUTBOX_ABANDONED}
+     */
+    @Bean
+    public Counter cardOutboxAbandonedCounter(MeterRegistry registry) {
+        Objects.requireNonNull(registry, "registry");
+        return Counter.builder(METRIC_CARD_OUTBOX_ABANDONED)
+                .description("Outbox rows this service gave up on, each named by an acknowledged"
+                        + " dead letter")
+                .register(registry);
+    }
+
+    /**
+     * Counts terminal diagnostics the broker refused. {@code outbox/OutboxRelay.java} increments it
+     * once per sweep whose dead-letter publication failed, outside the boundary that sweep rolled
+     * back.
+     *
+     * @param registry the meter registry Spring Boot supplies
+     * @return the registered counter, named {@link #METRIC_CARD_DEAD_LETTERS_FAILED}
+     */
+    @Bean
+    public Counter cardDeadLettersFailedCounter(MeterRegistry registry) {
+        Objects.requireNonNull(registry, "registry");
+        return Counter.builder(METRIC_CARD_DEAD_LETTERS_FAILED)
+                .description("Terminal diagnostics the broker refused on the dead-letter topic")
                 .register(registry);
     }
 

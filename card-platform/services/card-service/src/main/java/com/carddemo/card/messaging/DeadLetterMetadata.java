@@ -5,15 +5,24 @@ import com.carddemo.events.EventEnvelope;
 import java.util.List;
 
 /**
- * Diagnostic detail the card relay sends with an unpublishable event on the dead-letter topic.
+ * Diagnostic detail the card relay publishes for an outbox row it has given up on.
  *
  * <p>The four text components map one for one onto {@code 01 ABEND-DATA} at
  * {@code app/cpy/CSMSG02Y.cpy:L21}, in the copybook's own field order, and each constant below
  * carries its own source locator. The type is service-local.
  *
- * <p>A validation reject is not a dead-letter case: a reject answers with a Hypertext Transfer
- * Protocol (HTTP) 422 response and a declined event. Only an infrastructure failure or an
- * unpublishable row reaches the dead-letter topic.
+ * <p>Exactly one path reaches the dead-letter topic, and it is worth naming precisely because a
+ * diagnostic contract that describes a path nobody takes is worse than none.
+ * {@code outbox/OutboxRelay} builds these four components for each failed attempt, stores them
+ * joined on the row it failed, and once that row's attempts are spent it turns them into one
+ * {@link DeadLetterEnvelope} through {@link #toEnvelope} and publishes it on
+ * {@code carddemo.kafka.topics.dead-letter}. The publish is awaited, so the abandonment and the
+ * diagnostic commit together or not at all.
+ *
+ * <p>Two other kinds of failure never arrive here. A card validation refusal answers with a
+ * Hypertext Transfer Protocol (HTTP) 400 or 409 response and writes no event at all, because this
+ * service publishes on a mutation only. A consumption failure has no path either: this service
+ * registers no listener, so no record of its own is ever dead-lettered on the way in.
  *
  * <p>{@code ABEND-CULPRIT} is eight characters wide and the source fills it from the
  * eight-character {@code LIT-THISPGM} at {@code app/cbl/COCRDUPC.cbl:L219}. A Java class name runs
