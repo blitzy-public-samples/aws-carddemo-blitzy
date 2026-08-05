@@ -37,7 +37,8 @@ import java.util.Objects;
  * :purpose: Re-platformed business logic of CICS program ``CORPT00C`` (TRANID
  *   ``CR00``): resolves the requested report type, computes the report date
  *   range, validates a custom date window, applies the confirmation gate, and
- *   launches the statement/report generation job. Screen concerns
+ *   submits the TRANSACTION-DETAIL report job stream (``CBTRN03C``, the
+ *   ``TRANREPT`` proc the legacy screen wrote to TDQ ``JOBS``). Screen concerns
  *   (``SEND``/``RECEIVE MAP``, header population, PF-key dispatch) are handled by
  *   the controller and mapper; this service owns no data and performs no writes.
  * :output: A {@link ReportResponseDto} carrying the outcome message for every

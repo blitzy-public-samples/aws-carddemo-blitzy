@@ -27,7 +27,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.job.JobExecution;
-import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -94,10 +94,10 @@ class JobLaunchParameterIT {
     @Autowired
     private JobSchedulingConfig jobScheduling;
 
-    /** :purpose: The asynchronous launcher, inspected to prove its executor is bounded. */
+    /** :purpose: The asynchronous operator, inspected to prove its executor is bounded. */
     @Autowired
-    @Qualifier("asyncJobLauncher")
-    private JobLauncher asyncJobLauncher;
+    @Qualifier("asyncJobOperator")
+    private JobOperator asyncJobOperator;
 
     /** :purpose: Durable job repository, queried to prove executions are recorded. */
     @Autowired
@@ -293,9 +293,9 @@ class JobLaunchParameterIT {
      *     initiator classes.
      */
     @Test
-    @DisplayName("the async launcher's executor concurrency is bounded")
-    void asyncLauncherConcurrencyIsBounded() {
-        Object taskExecutor = ReflectionTestUtils.getField(asyncJobLauncher, "taskExecutor");
+    @DisplayName("the async operator's executor concurrency is bounded")
+    void asyncOperatorConcurrencyIsBounded() {
+        Object taskExecutor = ReflectionTestUtils.getField(asyncJobOperator, "taskExecutor");
 
         assertThat(taskExecutor).isInstanceOf(SimpleAsyncTaskExecutor.class);
         assertThat(((SimpleAsyncTaskExecutor) taskExecutor).getConcurrencyLimit())

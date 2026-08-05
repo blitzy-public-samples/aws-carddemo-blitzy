@@ -146,12 +146,45 @@ class SessionRedisRoundTripIT {
     }
 
     /**
-     * :purpose: Issue an authenticated main-menu request and return the resulting session id.
+     * :purpose: Establish the Redis-backed session a signed-on caller already owns, by
+     *   creating it through the configured {@link SessionRepository} and stamping the one
+     *   shared ``SessionContext`` attribute onto it - exactly what the sign-on handshake
+     *   leaves behind. Every protected route resolves that attribute through
+     *   ``SessionContextSupport.require``, which FAILS CLOSED rather than synthesizing a
+     *   blank context, so a request carrying only an authenticated principal and no context
+     *   is refused. Seeding through the repository (not a ``MockHttpSession``) is what keeps
+     *   the Redis round trip under test.
+     * :param userId: the signed-on user id (``SEC-USR-ID``).
+     * :param userType: the ``CDEMO-USER-TYPE`` the context carries.
+     * :returns: the ``SESSION`` cookie a caller would present, carrying the new session id.
+     */
+    private Cookie signedOnSessionCookie(String userId, SessionContext.UserType userType) {
+        Session session = sessionRepository.createSession();
+        SessionContext context = new SessionContext();
+        context.setUserId(userId);
+        context.setUserType(userType);
+        context.setProgramContext(SessionContext.ProgramContext.CDEMO_PGM_ENTER);
+        session.setAttribute(SESSION_CONTEXT_ATTR, context);
+        saveSession(session);
+        return new Cookie("SESSION", Base64.getEncoder()
+                .encodeToString(session.getId().getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /**
+     * :purpose: Issue an authenticated main-menu request on an established session and return
+     *   the resulting session id.
      * :param role: the role to authenticate with (``USER`` or ``ADMIN``).
-     * :returns: the Spring Session id carried by the response ``SESSION`` cookie.
+     * :returns: the Spring Session id the request resolved.
      */
     private String requestMainMenuAndReturnSessionId(String role) throws Exception {
-        MvcResult result = mockMvc.perform(get("/menu").with(user("USER0001").roles(role)))
+        SessionContext.UserType userType = "ADMIN".equals(role)
+                ? SessionContext.UserType.CDEMO_USRTYP_ADMIN
+                : SessionContext.UserType.CDEMO_USRTYP_USER;
+        Cookie sessionCookie = signedOnSessionCookie("USER0001", userType);
+
+        MvcResult result = mockMvc.perform(get("/menu")
+                        .cookie(sessionCookie)
+                        .with(user("USER0001").roles(role)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.tranId").value(MAIN_TRANID))
                 .andExpect(jsonPath("$.programName").value(MAIN_PROGRAM))
@@ -166,9 +199,17 @@ class SessionRedisRoundTripIT {
                 .isNotNull();
         this.csrfToken = csrfCookie.getValue();
 
-        Cookie cookie = result.getResponse().getCookie("SESSION");
-        assertThat(cookie).as("Spring Session must issue a SESSION cookie").isNotNull();
-        return decodeSessionId(cookie.getValue());
+        // Spring Session only re-issues the cookie when it MINTS a session. The request
+        // presented an established one, so the resolved id is the one that was presented;
+        // a re-issued cookie, when present, must name that same session.
+        Cookie reissued = result.getResponse().getCookie("SESSION");
+        String presentedId = decodeSessionId(sessionCookie.getValue());
+        if (reissued != null && !reissued.getValue().isEmpty()) {
+            assertThat(decodeSessionId(reissued.getValue()))
+                    .as("a re-issued SESSION cookie must name the session that was presented")
+                    .isEqualTo(presentedId);
+        }
+        return presentedId;
     }
 
     /**

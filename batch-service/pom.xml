@@ -184,6 +184,24 @@
             <scope>test</scope>
         </dependency>
 
+        <!--
+          Spring MVC test slice: supplies @WebMvcTest, which refreshes a real web
+          application context (and therefore a real RequestMappingHandlerMapping) so a
+          duplicate request mapping fails the build instead of the deployment.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Security test support: @WithMockUser and the springSecurity() MockMvc setup. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <!-- Spring Batch test utilities (JobLauncherTestUtils / JobRepositoryTestUtils). -->
         <dependency>
             <groupId>org.springframework.batch</groupId>

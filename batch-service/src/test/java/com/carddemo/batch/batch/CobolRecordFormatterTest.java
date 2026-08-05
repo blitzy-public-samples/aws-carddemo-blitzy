@@ -402,12 +402,16 @@ class CobolRecordFormatterTest {
         }
 
         @Test
-        @DisplayName("encodeSignedZonedDecimal treats null as zero and rounds HALF_UP to the field scale")
+        @DisplayName("encodeSignedZonedDecimal treats null as zero and truncates to the field scale")
         void encodeSignedZonedDecimalNormalizesTheScale() {
             assertThat(CobolRecordFormatter.encodeSignedZonedDecimal(null, 10, 2))
                     .isEqualTo("00000000000{");
+            // A COBOL MOVE into a V99 receiver carries no ROUNDED phrase, so the
+            // third fraction digit is dropped: 1.005 -> 1.00, never 1.01.
             assertThat(CobolRecordFormatter.encodeSignedZonedDecimal(new BigDecimal("1.005"), 10, 2))
-                    .isEqualTo("00000000010A");
+                    .isEqualTo("00000000010{");
+            assertThat(CobolRecordFormatter.encodeSignedZonedDecimal(new BigDecimal("-1.005"), 10, 2))
+                    .isEqualTo("00000000010}");
         }
 
         @Test

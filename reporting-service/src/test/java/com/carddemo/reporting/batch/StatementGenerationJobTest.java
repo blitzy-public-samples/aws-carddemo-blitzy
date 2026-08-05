@@ -18,9 +18,16 @@ package com.carddemo.reporting.batch;
 
 import com.carddemo.reporting.mapper.StatementMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.springframework.batch.infrastructure.item.Chunk;
+import org.springframework.batch.infrastructure.item.ExecutionContext;
+import org.springframework.core.io.FileSystemResource;
 
+import java.io.File;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -33,7 +40,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   ``COSTM01`` record layout: the numeric-edit pictures (``9(9).99-`` and
  *   ``Z(9).99-``, width 13), the 80-column plain-text statement, the 100-column
  *   HTML statement, the frozen FILLER labels/banners/color literals, the
- *   per-card emission order, and scale-2 ``HALF_UP`` ``BigDecimal`` precision.
+ *   per-card emission order, and scale-2 truncate-toward-zero ``BigDecimal``
+ *   precision.
  * :output: Assertions confirming byte-exact edited numeric fields, exact line
  *   lengths (text 80, HTML 100), the frozen literals, the emission ordering for
  *   two/one/zero transactions, and drift-free monetary values. Binds to the
@@ -179,15 +187,16 @@ public class StatementGenerationJobTest {
     }
 
     /**
-     * :purpose: Verify both numeric-edit pictures round to scale 2 using HALF_UP,
-     *   so a third fraction digit of five rounds the second digit up.
+     * :purpose: Verify both numeric-edit pictures normalize to scale 2 by truncating
+     *   toward zero, so a third fraction digit of five is dropped rather than
+     *   rounding the second digit up (COBOL ``MOVE`` without ``ROUNDED``).
      */
     @Test
-    void numericEditRoundsHalfUp() {
+    void numericEditTruncatesToScale2() {
         assertThat(StatementGenerationJob.formatSignedZeroFilled(new BigDecimal("100.005")))
-                .isEqualTo("000000100.01 ");
+                .isEqualTo("000000100.00 ");
         assertThat(StatementGenerationJob.formatSuppressed(new BigDecimal("100.005")))
-                .isEqualTo("      100.01 ");
+                .isEqualTo("      100.00 ");
     }
 
     /**
@@ -468,5 +477,43 @@ public class StatementGenerationJobTest {
         assertThat(text).anyMatch(line -> line.contains("JOSÉ MÜLLER"));
         assertThat(text).anyMatch(line -> line.contains("Café Müller ?"));
         assertThat(html).anyMatch(line -> line.contains("12 RUE DE L?ÉGLISE"));
+    }
+
+    /**
+     * :purpose: Verify the record delimiter both statement sinks emit is a single
+     *   ``LF``, so an ``STMTFILE`` record occupies exactly 81 bytes and an
+     *   ``HTMLFILE`` record exactly 101 (``LRECL`` payload plus one delimiter).
+     *   ``System.lineSeparator()`` would emit ``CRLF`` on a Windows host or under
+     *   ``-Dline.separator``, adding a byte to every record on a frozen contract
+     *   [app/jcl/CREASTMT.jcl]. Reading the files back line-by-line cannot detect
+     *   that, so the assertion is made on the raw bytes.
+     * :param tempDir: JUnit-managed directory holding the two statement sinks.
+     */
+    @Test
+    void statementSinksDelimitRecordsWithASingleLineFeed(@TempDir Path tempDir) throws Exception {
+        File textFile = tempDir.resolve("stmtfile.txt").toFile();
+        File htmlFile = tempDir.resolve("htmlfile.html").toFile();
+        StatementMapper.StatementModel model = standardModel();
+
+        StatementGenerationJob.StatementItemWriter writer =
+                new StatementGenerationJob.StatementItemWriter(
+                        new FileSystemResource(textFile), new FileSystemResource(htmlFile));
+        writer.open(new ExecutionContext());
+        try {
+            writer.write(new Chunk<>(List.of(model)));
+            writer.update(new ExecutionContext());
+        } finally {
+            writer.close();
+        }
+
+        byte[] textBytes = Files.readAllBytes(textFile.toPath());
+        byte[] htmlBytes = Files.readAllBytes(htmlFile.toPath());
+
+        assertThat(textBytes).hasSize(StatementGenerationJob.renderText(model).size() * (80 + 1));
+        assertThat(htmlBytes).hasSize(StatementGenerationJob.renderHtml(model).size() * (100 + 1));
+        assertThat(textBytes[80]).isEqualTo((byte) '\n');
+        assertThat(htmlBytes[100]).isEqualTo((byte) '\n');
+        assertThat(textBytes).doesNotContain((byte) '\r');
+        assertThat(htmlBytes).doesNotContain((byte) '\r');
     }
 }

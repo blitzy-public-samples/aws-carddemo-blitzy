@@ -93,6 +93,12 @@ public class StatementGenerationJob {
     /** :purpose: Name of the single chunk-oriented statement-generation step. */
     private static final String STEP_NAME = "statementGenerationStep";
 
+    /** :purpose: Record delimiter for both statement sinks, pinned to a single ``LF``
+     *  so an ``STMTFILE`` line stays 80 payload bytes and an ``HTMLFILE`` line 100,
+     *  each plus exactly one delimiter byte, independent of
+     *  ``System.lineSeparator()`` [app/jcl/CREASTMT.jcl LRECL=80 / LRECL=100]. */
+    private static final String RECORD_SEPARATOR = "\n";
+
     /** :purpose: Ten raised to the ninth power; the modulus that keeps the
      *  low-order nine integer digits (COBOL high-order truncation). */
     private static final BigInteger TEN_POW_9 = BigInteger.TEN.pow(9);
@@ -308,16 +314,20 @@ public class StatementGenerationJob {
             // HTMLFILE (LRECL=100) DD cards — for any text the relational store
             // can hold. Under the platform default of UTF-8 a single accented
             // customer name pushed its lines two bytes over the declared length.
+            // RECORD_SEPARATOR pins the delimiter to a single LF for the same
+            // reason: the JVM default would add a second CR byte to every line.
             this.textDelegate = new FlatFileItemWriterBuilder<String>()
                     .name("statementTextWriter")
                     .resource(textResource)
                     .encoding(StandardCharsets.ISO_8859_1.name())
+                    .lineSeparator(RECORD_SEPARATOR)
                     .lineAggregator(new PassThroughLineAggregator<>())
                     .build();
             this.htmlDelegate = new FlatFileItemWriterBuilder<String>()
                     .name("statementHtmlWriter")
                     .resource(htmlResource)
                     .encoding(StandardCharsets.ISO_8859_1.name())
+                    .lineSeparator(RECORD_SEPARATOR)
                     .lineAggregator(new PassThroughLineAggregator<>())
                     .build();
         }
@@ -673,7 +683,9 @@ public class StatementGenerationJob {
 
     /**
      * :purpose: Shared numeric-edit routine for the ``9(9).99-`` and ``Z(9).99-``
-     *  pictures: round to scale 2 (HALF_UP), then render the low-order nine integer
+     *  pictures: normalize to scale 2 by truncating toward zero (COBOL ``MOVE``
+     *  into a ``V99`` receiver carries no ``ROUNDED`` phrase), then render the
+     *  low-order nine integer
      *  digits (zero-filled or leading-zero-suppressed), the two fraction digits, and
      *  the trailing sign.
      * :param value: the amount to format; ``null`` is treated as zero.
@@ -683,7 +695,7 @@ public class StatementGenerationJob {
      */
     private static String editNumeric(BigDecimal value, boolean suppress) {
         BigDecimal amount = (value == null) ? BigDecimal.ZERO : value;
-        BigDecimal scaled = amount.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal scaled = amount.setScale(2, RoundingMode.DOWN);
         boolean negative = scaled.signum() < 0;
         BigInteger unscaled = scaled.abs().unscaledValue();
         BigInteger integerPart = unscaled.divide(ONE_HUNDRED).mod(TEN_POW_9);
@@ -748,7 +760,8 @@ public class StatementGenerationJob {
                                         StatementItemWriter statementItemWriter,
                                         FailedOutputCleanupListener statementCleanupListener) {
         return new StepBuilder(STEP_NAME, jobRepository)
-                .<CardXref, StatementMapper.StatementModel>chunk(10, transactionManager)
+                .<CardXref, StatementMapper.StatementModel>chunk(10)
+                .transactionManager(transactionManager)
                 .reader(statementCardXrefReader)
                 .processor(statementItemProcessor)
                 .writer(statementItemWriter)

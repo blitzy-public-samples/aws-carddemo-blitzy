@@ -46,7 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *  context wires cleanly with the Redis/Spring Session auto-configuration excluded,
  *  and the on-demand Spring Batch ``transactionPostingJob`` is registered yet never
  *  launched at startup (``spring.batch.job.enabled=false``; the migrated submission
- *  runs only through the ``JobLauncher``, AAP 0.4.4).
+ *  runs only through the ``JobOperator``, AAP 0.4.4).
  * :output: Two JUnit 5 assertions - a non-null application context and a present
  *  ``transactionPostingJob`` bean whose name matches its frozen identifier while
  *  reporting zero job instances at boot.
@@ -54,7 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(properties = {
         // Create the scanned entity tables not owned by transaction-service migrations.
         "spring.jpa.hibernate.ddl-auto=update"
-        // The BATCH_* metadata tables are provisioned by BatchInfrastructureConfig.
+        // The BATCH_* metadata tables are provisioned by JdbcBatchConfiguration.
         // spring.batch.jdbc.initialize-schema is NOT set here: BatchProperties in
         // Spring Boot 4.1 exposes only the `job` group, so the key was inert and the
         // JobRepository query below only passed because the repository was in-memory.
@@ -96,7 +96,7 @@ public class TransactionServiceApplicationIT {
     }
 
     /**
-     * :purpose: Verify the transaction-posting batch job bean is present but is NOT executed at startup (on-demand JobLauncher only).
+     * :purpose: Verify the transaction-posting batch job bean is present but is NOT executed at startup (on-demand JobOperator only).
      */
     @Test
     void postingJobDoesNotAutoRunAtStartup() {

@@ -36,8 +36,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   COBOL-to-Java field-mapping and monetary-precision logic of the account
  *   statement mapper: the ``firstToken`` name/address assembly re-expressing the
  *   ``CBSTM03A`` ``STRING ... DELIMITED BY ' '`` concatenations, and the scale-2
- *   ``HALF_UP`` normalization of the current balance, the per-line amount and the
- *   running total.
+ *   truncate-toward-zero normalization of the current balance, the per-line amount
+ *   and the running total.
  * :output: Assertions confirming byte-exact assembled strings and drift-free
  *   scale-2 monetary values. The test runs under Surefire as a plain POJO test
  *   with no application context, no mocking framework and no persistence layer,
@@ -151,16 +151,17 @@ class StatementMapperTest {
     }
 
     /**
-     * :purpose: Verify the current balance rounds ``HALF_UP`` (not truncation or
-     *   ``HALF_EVEN``): ``100.005`` rounds up to ``100.01`` at scale 2.
+     * :purpose: Verify the current balance truncates toward zero (not ``HALF_UP``
+     *   or ``HALF_EVEN``): ``100.005`` drops to ``100.00`` at scale 2, because the
+     *   legacy ``MOVE`` into the ``V99`` receiver carries no ``ROUNDED`` phrase.
      */
     @Test
-    void currentBalanceRoundingIsHalfUp() {
+    void currentBalanceRoundingTruncates() {
         Account account = newAccount(1000000001L, new BigDecimal("100.005"));
 
         StatementModel model = mapper.toStatement(account, null, null, List.of());
 
-        assertMoney(model.getCurrentBalance(), new BigDecimal("100.01"));
+        assertMoney(model.getCurrentBalance(), new BigDecimal("100.00"));
     }
 
     /**

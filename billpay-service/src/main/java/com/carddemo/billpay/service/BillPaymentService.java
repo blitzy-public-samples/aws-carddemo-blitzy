@@ -224,7 +224,7 @@ public class BillPaymentService {
         //     COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT (L234). Pay-in-full -> 0.00.
         BigDecimal newBalance = account.getAcctCurrBal()
                 .subtract(tran.getTranAmt())
-                .setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+                .setScale(MONEY_SCALE, RoundingMode.DOWN);
         account.setAcctCurrBal(newBalance);
 
         // 5.6 Persist the account (UPDATE-ACCTDAT-FILE / REWRITE) in the SAME transaction,
@@ -367,10 +367,11 @@ public class BillPaymentService {
      * :purpose: Normalize a monetary value to the two-decimal scale used throughout the
      *  bill-payment arithmetic.
      * :param value: the value to normalize; must not be null.
-     * :returns: the value at scale 2 using ``HALF_UP`` rounding.
+     * :returns: the value at scale 2, truncated toward zero, reproducing the
+     *  unrounded COBOL ``COMPUTE`` into a ``V99`` receiver.
      */
     private BigDecimal scale2(BigDecimal value) {
-        return value.setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+        return value.setScale(MONEY_SCALE, RoundingMode.DOWN);
     }
 
     /**

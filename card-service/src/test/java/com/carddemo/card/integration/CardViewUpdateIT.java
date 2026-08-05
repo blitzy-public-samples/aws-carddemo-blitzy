@@ -53,7 +53,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import tools.jackson.databind.ObjectMapper;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * :purpose: End-to-end integration test that boots the full ``card-service`` Spring
@@ -95,8 +95,8 @@ class CardViewUpdateIT {
      *  ``@DynamicPropertySource`` before the Spring context (and its Flyway migrations)
      *  connect to it.
      */
-    static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>("postgres:18").withDatabaseName("carddemo");
+    static final PostgreSQLContainer POSTGRES =
+            new PostgreSQLContainer("postgres:18").withDatabaseName("carddemo");
 
     static {
         POSTGRES.start();
@@ -254,19 +254,40 @@ class CardViewUpdateIT {
     }
 
     /**
-     * :purpose: A non-admin user is scoped to the account carried in its session, so
-     *  listing returns only that account's card(s) (account 1 owns exactly one card).
-     *  The full PAN is not asserted (PII); scoping is proven via the owning account id.
+     * :purpose: The browse scope is the ACCTSID the operator supplies, NOT the caller's role
+     *  or the account its session happens to carry: ``COCRDLIC 9500-FILTER-RECORDS``
+     *  (L1382-1396) filters only on the supplied account and card filters and has no
+     *  user-type branch. A non-admin with no filter therefore sees the same unfiltered first
+     *  page an administrator sees, and supplying the filter is what narrows the browse to one
+     *  account. The full PAN is never asserted (PII); scope is proven via the owning
+     *  account id.
      */
     @Test
-    void nonAdminListScopedToSessionAccount() throws Exception {
+    void listScopeFollowsTheSuppliedFilterNotTheCallerRole() throws Exception {
+        // No filter: the ordinary user gets the full-master first page, seven rows.
         mockMvc.perform(get("/cards")
                         .param("page", "1")
                         .sessionAttr(SESSION_ATTR, userSession(1L)))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cards", hasSize(7)));
+
+        // The supplied filter is the only scope, and it applies to an ordinary user exactly
+        // as it does to an administrator: account 1 owns exactly one seeded card.
+        mockMvc.perform(get("/cards")
+                        .param("page", "1")
+                        .param("accountId", "1")
+                        .sessionAttr(SESSION_ATTR, userSession(1L)))
+                .andExpect(status().isOk())
                 .andExpect(jsonPath("$.cards", hasSize(1)))
-                .andExpect(jsonPath("$.cards[0].cardAcctId").value(1))
-                .andExpect(jsonPath("$.cards[0].cardActiveStatus").value("Y"));
+                .andExpect(jsonPath("$.cards[0].cardAcctId").value(1));
+
+        mockMvc.perform(get("/cards")
+                        .param("page", "1")
+                        .param("accountId", "1")
+                        .sessionAttr(SESSION_ATTR, adminSession()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cards", hasSize(1)))
+                .andExpect(jsonPath("$.cards[0].cardAcctId").value(1));
     }
 
     /**

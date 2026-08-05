@@ -35,9 +35,10 @@ import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.parameters.JobParameter;
+import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.launch.JobExecutionAlreadyRunningException;
-import org.springframework.batch.core.launch.JobLauncher;
-import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
+import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.batch.core.launch.support.TaskExecutorJobOperator;
 import org.springframework.batch.core.step.StepExecution;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -70,7 +71,7 @@ import static org.mockito.Mockito.when;
  * :purpose: Integration test for {@link JobSchedulingConfig}, the re-platformed
  *   ``CORPT00C`` ``WIRTE-JOBSUB-TDQ`` submission
  *   (``EXEC CICS WRITEQ TD QUEUE('JOBS')`` -> asynchronous JES submission ->
- *   {@link JobLauncher}, AAP 0.4.4). Where the sibling unit test can only prove
+ *   {@link JobOperator}, AAP 0.4.4). Where the sibling unit test can only prove
  *   that a *mocked* launcher was invoked, this test boots the full reporting-service
  *   context against a real PostgreSQL carrying the committed Flyway schema, submits
  *   the report through the very same entry point the online screen uses, and then
@@ -368,17 +369,17 @@ class JobSchedulingConfigIT {
     /**
      * :purpose: Prove the submission runs the job OFF the caller thread in the running
      *   context, so an online report request never blocks for the whole statement run. The
-     *   component owns a {@link TaskExecutorJobLauncher} driven by an asynchronous, bounded
-     *   task executor; a synchronous launcher would run the job on the request thread.
+     *   component owns a {@link TaskExecutorJobOperator} driven by an asynchronous, bounded
+     *   task executor; a synchronous operator would run the job on the request thread.
      *   ``@Async`` on a ``@Configuration`` class was the superseded way of achieving this,
-     *   so the advice itself is no longer the contract - the launcher's executor is.
+     *   so the advice itself is no longer the contract - the operator's executor is.
      */
     @Test
     void submissionRunsTheJobOffTheCallerThreadSoTheOnlineCallerNeverBlocks() {
-        Object launcher = ReflectionTestUtils.getField(jobSchedulingConfig, "jobLauncher");
-        assertThat(launcher).isInstanceOf(TaskExecutorJobLauncher.class);
+        Object operator = ReflectionTestUtils.getField(jobSchedulingConfig, "jobOperator");
+        assertThat(operator).isInstanceOf(TaskExecutorJobOperator.class);
 
-        Object taskExecutor = ReflectionTestUtils.getField(launcher, "taskExecutor");
+        Object taskExecutor = ReflectionTestUtils.getField(operator, "taskExecutor");
         assertThat(taskExecutor)
                 .as("a synchronous executor would block the online caller")
                 .isInstanceOf(SimpleAsyncTaskExecutor.class);
@@ -440,23 +441,23 @@ class JobSchedulingConfigIT {
         /**
          * :purpose: A checked launch failure is translated to the frozen-message
          *   {@link CardDemoException} and delivered through the returned future.
-         * :raises Exception: propagated from the mocked launcher signature.
+         * :raises Exception: propagated from the mocked operator signature.
          */
         @Test
         void launchFailureSurfacesThroughTheFutureAsCardDemoException() throws Exception {
             JobExecutionAlreadyRunningException cause =
                     new JobExecutionAlreadyRunningException("job already running");
-            JobLauncher refusingLauncher = mock(JobLauncher.class);
-            when(refusingLauncher.run(any(), any())).thenThrow(cause);
+            JobOperator refusingOperator = mock(JobOperator.class);
+            when(refusingOperator.start(any(Job.class), any(JobParameters.class))).thenThrow(cause);
 
-            // The component builds its own asynchronous launcher from the JobRepository, so a
-            // context-level JobLauncher mock would never be consumed; the second, public
+            // The component builds its own asynchronous operator from the JobRepository, so a
+            // context-level JobOperator mock would never be consumed; the second, public
             // constructor is the seam it exposes for exactly this substitution.
             JobSchedulingConfig refusingComponent = new JobSchedulingConfig(
-                    refusingLauncher, realStatementGenerationJob,
+                    refusingOperator, realStatementGenerationJob,
                     "statements.txt", "statements.html");
 
-            // The launcher refuses the submission, so the caller learns about it
+            // The operator refuses the submission, so the caller learns about it
             // immediately instead of receiving a success message over a job that never ran.
             Throwable thrown = catchThrowable(() -> refusingComponent
                     .launchStatementGeneration("refused.txt", "refused.html"));

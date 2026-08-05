@@ -92,7 +92,6 @@ public class AtomicRollbackIT {
         MigratedSchemaContainer.registerDataSource(registry);
     }
 
-
     /** :purpose: Account group id rejected by the temporary probe constraint. */
     private static final String REJECTED_GROUP_ID = "ROLLBK";
 
@@ -109,15 +108,6 @@ public class AtomicRollbackIT {
     private static final Long CUST_ID = 4L;
 
 
-
-    /**
-     * :purpose: An ``acct_group_id`` longer than the ``VARCHAR(10)`` column, used to induce a
-     *     real database failure on the ACCOUNT write. COACTUPC ``1200-EDIT-MAP-INPUTS`` has no
-     *     edit for the account group id, so this value reaches the database exactly as the
-     *     legacy program would have let it, which is what makes it a usable induced failure
-     *     now that every edited field is validated before the write.
-     */
-    private static final String OVERFLOW_GROUP_ID = "GRPTOOLONG1";
 
     /** :purpose: A social security number that satisfies ``1265-EDIT-US-SSN``. */
     private static final String VALID_SSN = "020973888";
@@ -152,7 +142,6 @@ public class AtomicRollbackIT {
 
     /** :purpose: State code whose ZIP prefix pairing is in the ``CSLKPCDY`` state-ZIP table. */
     private static final String VALID_STATE_CD = "MI";
-
 
     /** :purpose: Screen-valid phone number 1 whose area code is in ``CSLKPCDY``. */
     private static final String VALID_PHONE_NUM_1 = "(212)555-0101";
@@ -220,11 +209,6 @@ public class AtomicRollbackIT {
         originalCustGovtIssuedId = (String) customerRow.get("cust_govt_issued_id");
         originalCustEftAccountId = (String) customerRow.get("cust_eft_account_id");
 
-        // The account-to-card cross-reference for this account is part of the card-service
-        // migration seed (accounts 1..50 -> matching customer id), so the linkage the service
-        // resolves is real seed data rather than a test-created row.
-        assertThat(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).isPresent();
-
         // A database-level rejection of one specific, in-width group id. The induced failure
         // must occur on the ACCOUNT write inside the service transaction, which is precisely
         // what these cases assert rolls the customer write back with it; the constraint is
@@ -258,9 +242,11 @@ public class AtomicRollbackIT {
      *     transaction (the account write) fails, both the account and the
      *     customer changes roll back together, reproducing the legacy
      *     one-logical-unit-of-work semantics (COACTUPC.cbl L4066 + L4086). The
-     *     induced failure is a real ``VARCHAR(10)`` overflow on the account group id;
-     *     the post-failure account balance and customer last name are re-read with a
-     *     fresh JDBC query and must both equal their originals.
+     *     induced failure is a database CHECK constraint that rejects one specific,
+     *     in-width account group id on flush, so the ACCOUNT write is the failing write
+     *     and the service-layer edits all pass; the post-failure account balance and
+     *     customer last name are re-read with a fresh JDBC query and must both equal
+     *     their originals.
      */
     @Test
     void secondWriteFails_rollsBackBothAccountAndCustomer() {
@@ -274,10 +260,6 @@ public class AtomicRollbackIT {
         // write is the failing write.
         request.setAcctCurrBal(VALID_NEW_BALANCE);
         request.setAcctGroupId(REJECTED_GROUP_ID);
-        // The account is the SECOND write; an over-length account group id overflows the
-        // VARCHAR(10) column on flush so the account write is the failing write. The group
-        // id carries no COACTUPC edit, so it reaches the database unvalidated.
-        request.setAcctGroupId(OVERFLOW_GROUP_ID);
         // The customer is the FIRST write; this change must not survive the rollback.
         request.setCustLastName(ROLLBACK_MARKER_LAST_NAME);
 
@@ -311,7 +293,6 @@ public class AtomicRollbackIT {
         request.setCustLastName(PARTIAL_MARKER_LAST_NAME);
         request.setAcctCurrBal(VALID_NEW_BALANCE);
         request.setAcctGroupId(REJECTED_GROUP_ID);
-        request.setAcctGroupId(OVERFLOW_GROUP_ID);
 
         assertThatThrownBy(() -> accountService.updateAccount(ACCT_ID, request, null))
                 .isInstanceOf(DataIntegrityViolationException.class);

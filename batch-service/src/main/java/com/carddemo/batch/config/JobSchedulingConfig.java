@@ -24,8 +24,9 @@ import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.JobExecutionException;
 import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.job.parameters.JobParametersBuilder;
-import org.springframework.batch.core.launch.JobLauncher;
-import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
+import org.springframework.batch.core.configuration.support.MapJobRegistry;
+import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.batch.core.launch.support.TaskExecutorJobOperator;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -39,10 +40,10 @@ import java.util.UUID;
 /**
  * On-demand launch orchestration for the batch-service Spring Batch jobs.
  *
- * :purpose: Expose an asynchronous {@link JobLauncher} bean (named
- *     ``asyncJobLauncher``) backed by a {@link SimpleAsyncTaskExecutor}, and one
+ * :purpose: Expose an asynchronous {@link JobOperator} bean (named
+ *     ``asyncJobOperator``) backed by a {@link SimpleAsyncTaskExecutor}, and one
  *     public ``launch*`` method per batch job that builds the job's parameters
- *     and submits it through that launcher. Each submission runs on a separate
+ *     and submits it through that operator. Each submission runs on a separate
  *     ``batch-`` thread and returns a {@link JobExecution} without waiting for
  *     the job to finish. This is the Java analogue of the ``CORPT00C`` online
  *     report-submission path, which built a JCL skeleton and wrote it to the
@@ -60,12 +61,12 @@ import java.util.UUID;
  *     identity, a ``JobInstance`` is identified by its business parameters
  *     alone, so a failed instance can be restarted and a duplicate completed
  *     instance is rejected.
- * :output: The ``asyncJobLauncher`` {@link JobLauncher} bean and nine public
+ * :output: The ``asyncJobOperator`` {@link JobOperator} bean and nine public
  *     ``launch*`` methods, each returning the submitted job's
  *     {@link JobExecution}. The {@link JobRepository} and the nine ``Job`` beans
- *     are supplied by ``BatchInfrastructureConfig`` (which provides the durable
+ *     are supplied by the shared ``JdbcBatchConfiguration`` (which provides the durable
  *     JDBC ``JobRepository``) and this configuration's collaborators; no batch
- *     infrastructure is self-instantiated beyond the launcher.
+ *     infrastructure is self-instantiated beyond the operator.
  * :note: Every ``launch*`` method that drives a file-producing or file-consuming job
  *     accepts an optional explicit path and otherwise falls back to a configured
  *     default, and validates it through {@link BatchOutputPathResolver} *before*
@@ -81,7 +82,6 @@ import java.util.UUID;
  *     job here; no launch method corresponds to it.
  */
 @Configuration
-@SuppressWarnings({"deprecation", "removal"})
 public class JobSchedulingConfig {
 
     /**
@@ -104,7 +104,7 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: Upper bound on batch jobs executing concurrently on the async
-     *     launcher. ``SimpleAsyncTaskExecutor`` pools no threads, so an unbounded
+     *     operator. ``SimpleAsyncTaskExecutor`` pools no threads, so an unbounded
      *     executor would start a new thread for every submission and let a burst of
      *     launches exhaust memory and saturate the connection pool. The legacy
      *     environment bounded this naturally through JES initiator classes.
@@ -218,11 +218,11 @@ public class JobSchedulingConfig {
 
 
     /**
-     * :purpose: Asynchronous launcher used by every ``launch*`` method; built in
+     * :purpose: Asynchronous operator used by every ``launch*`` method; built in
      *     the constructor from the injected {@link JobRepository} and exposed as
-     *     the ``asyncJobLauncher`` bean.
+     *     the ``asyncJobOperator`` bean.
      */
-    private final JobLauncher asyncJobLauncher;
+    private final JobOperator asyncJobOperator;
 
     /**
      * :purpose: Resolver that confines and validates every batch file path, used here
@@ -282,11 +282,11 @@ public class JobSchedulingConfig {
     private final Job combineTransactionsJob;
 
     /**
-     * :purpose: Build the asynchronous launcher from the batch job repository and
+     * :purpose: Build the asynchronous operator from the batch job repository and
      *     capture the nine job beans so each ``launch*`` method can submit its
      *     job.
      * :param jobRepository: batch job repository (Spring Boot auto-configured);
-     *     wired into the launcher.
+     *     wired into the operator.
      * :param interestCalculationJob: the ``interestCalculationJob`` bean.
      * :param accountReadJob: the ``accountReadJob`` bean.
      * :param cardReadJob: the ``cardReadJob`` bean.
@@ -333,8 +333,8 @@ public class JobSchedulingConfig {
             @Value("${carddemo.batch.combined-transaction-file:" + DEFAULT_COMBINED_TRANSACTION_FILE + "}") String combinedTransactionFile,
             @Value("${carddemo.batch.daily-transaction-file:" + DEFAULT_DAILY_TRANSACTION_FEED_FILE + "}") String dailyTransactionFile) {
         // Built here (not constructor-injected) because this class also defines
-        // the asyncJobLauncher bean; injecting it would be a self-referential cycle.
-        this.asyncJobLauncher = buildAsyncJobLauncher(jobRepository);
+        // the asyncJobOperator bean; injecting it would be a self-referential cycle.
+        this.asyncJobOperator = buildAsyncJobOperator(jobRepository);
         this.interestCalculationJob = interestCalculationJob;
         this.accountReadJob = accountReadJob;
         this.cardReadJob = cardReadJob;
@@ -396,18 +396,20 @@ public class JobSchedulingConfig {
     }
 
     /**
-     * :purpose: Construct a {@link TaskExecutorJobLauncher} bound to the batch job
+     * :purpose: Construct a {@link TaskExecutorJobOperator} bound to the batch job
      *     repository and a {@link SimpleAsyncTaskExecutor} whose threads are named
      *     ``batch-N``, so submitted jobs run on their own threads. The executor is
      *     decorated so the launching request's correlation id follows the job onto its
      *     worker thread; without the decorator every line a job logged rendered an
      *     empty ``correlationId`` and could not be tied back to its caller.
-     * :param jobRepository: batch job repository the launcher records executions in.
-     * :returns: a fully initialized asynchronous {@link JobLauncher}.
+     * :param jobRepository: batch job repository the operator records executions in.
+     * :returns: a fully initialized asynchronous {@link JobOperator}.
+     * :raises IllegalStateException: if the operator cannot be initialized, which would
+     *     leave all nine job streams with no reachable launch surface.
      */
-    private static JobLauncher buildAsyncJobLauncher(JobRepository jobRepository) {
-        TaskExecutorJobLauncher launcher = new TaskExecutorJobLauncher();
-        launcher.setJobRepository(jobRepository);
+    private static JobOperator buildAsyncJobOperator(JobRepository jobRepository) {
+        TaskExecutorJobOperator operator = new TaskExecutorJobOperator();
+        operator.setJobRepository(jobRepository);
         SimpleAsyncTaskExecutor taskExecutor = new SimpleAsyncTaskExecutor("batch-");
         // Carry the submitting request's observation/trace scope and correlation id onto
         // the batch- thread. This executor is built by hand, so Spring Boot's automatic
@@ -419,32 +421,39 @@ public class JobSchedulingConfig {
         // limit each submission spawns a new thread and a burst of launches can exhaust
         // memory and saturate the JDBC pool.
         taskExecutor.setConcurrencyLimit(MAX_CONCURRENT_JOBS);
-        launcher.setTaskExecutor(taskExecutor);
+        operator.setTaskExecutor(taskExecutor);
+        // TaskExecutorJobOperator requires a non-null job locator to initialize, but this
+        // operator is driven exclusively through start(Job, JobParameters), which resolves
+        // the job from the instance handed to it and never consults the locator; the
+        // name-keyed lookups (getJobNames, restart-by-id) are not part of this component's
+        // surface. An empty registry therefore satisfies the initialization contract without
+        // asserting a name-to-job mapping the component does not own.
+        operator.setJobRegistry(new MapJobRegistry());
         try {
             // afterPropertiesSet() declares a checked Exception; a failure here
-            // means the launcher can never run a job, so fail fast at startup.
-            launcher.afterPropertiesSet();
+            // means the operator can never run a job, so fail fast at startup.
+            operator.afterPropertiesSet();
         } catch (Exception ex) {
-            throw new IllegalStateException("Unable to initialize asyncJobLauncher", ex);
+            throw new IllegalStateException("Unable to initialize asyncJobOperator", ex);
         }
-        return launcher;
+        return operator;
     }
 
     /**
-     * :purpose: Expose the asynchronous launcher built in the constructor as the
-     *     ``asyncJobLauncher`` bean, kept distinct by name from the synchronous
-     *     launcher supplied by Spring Boot batch auto-configuration.
-     * :returns: the {@link JobLauncher} that runs jobs on ``batch-`` threads.
+     * :purpose: Expose the asynchronous operator built in the constructor as the
+     *     ``asyncJobOperator`` bean, kept distinct by name from the synchronous
+     *     operator supplied by Spring Boot batch auto-configuration.
+     * :returns: the {@link JobOperator} that runs jobs on ``batch-`` threads.
      */
-    @Bean("asyncJobLauncher")
-    public JobLauncher asyncJobLauncher() {
-        return this.asyncJobLauncher;
+    @Bean("asyncJobOperator")
+    public JobOperator asyncJobOperator() {
+        return this.asyncJobOperator;
     }
 
     /**
      * :purpose: Enrich a job's business parameters with observability and
      *     uniqueness parameters, then submit the job on the asynchronous
-     *     launcher. A ``correlationId`` obtained from the static
+     *     operator. A ``correlationId`` obtained from the static
      *     {@link CorrelationIdContext} is added as a non-identifying parameter
      *     (also seeded into the launching thread's MDC), as is a random ``run.id``
      *     recorded purely for traceability. Neither participates in job identity, so
@@ -454,8 +463,8 @@ public class JobSchedulingConfig {
      * :param job: the batch job to submit.
      * :param businessParameters: the job-specific parameters already assembled by
      *     the calling ``launch*`` method.
-     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :returns: the {@link JobExecution} returned by the asynchronous operator.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     private JobExecution launch(Job job, JobParameters businessParameters)
             throws JobExecutionException {
@@ -473,8 +482,8 @@ public class JobSchedulingConfig {
      *     first run [app/cbl/CORPT00C.cbl, app/proc/TRANREPT.prc].
      * :param job: the batch job to submit.
      * :param businessParameters: the parameters assembled by the calling ``launch*`` method.
-     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :returns: the {@link JobExecution} returned by the asynchronous operator.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     private JobExecution launchRepeatable(Job job, JobParameters businessParameters)
             throws JobExecutionException {
@@ -483,14 +492,14 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: Enrich the business parameters with the correlation id and the ``run.id``
-     *     uniqueness token, then submit the job on the asynchronous launcher.
+     *     uniqueness token, then submit the job on the asynchronous operator.
      * :param job: the batch job to submit.
      * :param businessParameters: the parameters assembled by the calling ``launch*`` method.
      * :param repeatable: record ``run.id`` as IDENTIFYING, so a read/print run may be
      *     repeated; ``false`` for a state-changing run, whose identity must derive from
      *     its business parameters alone.
-     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :returns: the {@link JobExecution} returned by the asynchronous operator.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     private JobExecution launch(Job job, JobParameters businessParameters, boolean repeatable)
             throws JobExecutionException {
@@ -512,7 +521,7 @@ public class JobSchedulingConfig {
                     // what the TDQ 'JOBS' hand-off does on every CORPT00C request.
                     .addString(RUN_ID_KEY, UUID.randomUUID().toString(), repeatable)
                     .toJobParameters();
-            return this.asyncJobLauncher.run(job, parameters);
+            return this.asyncJobOperator.start(job, parameters);
         } finally {
             if (previous == null || previous.isBlank()) {
                 CorrelationIdContext.clear();
@@ -522,11 +531,11 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: Launch the monthly interest-calculation job
-     *     (``interestCalculationJob``) on the asynchronous launcher.
+     *     (``interestCalculationJob``) on the asynchronous operator.
      * :param parmDate: the 10-character ``YYYYMMDDHH`` business date supplied as
      *     the ``parmDate`` job parameter (legacy ``INTCALC.jcl`` ``PARM='2022071800'``).
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchInterestCalculation(String parmDate) throws JobExecutionException {
         JobParameters businessParameters = new JobParametersBuilder()
@@ -541,7 +550,7 @@ public class JobSchedulingConfig {
      *     ({@value #DEFAULT_PARM_DATE}), so a submission that names no date runs
      *     exactly the job the mainframe operator submitted [app/jcl/INTCALC.jcl:L22].
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchInterestCalculation() throws JobExecutionException {
         return launchInterestCalculation(DEFAULT_PARM_DATE);
@@ -549,7 +558,7 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: Launch the transaction detail report job
-     *     (``transactionDetailReportJob``) on the asynchronous launcher; this is
+     *     (``transactionDetailReportJob``) on the asynchronous operator; this is
      *     the primary migration of the ``CORPT00C`` online report submission.
      * :param startDate: inclusive range start in ``YYYY-MM-DD`` form, supplied as
      *     the ``startDate`` job parameter (``TRANREPT.prc`` ``DATEPARM``
@@ -560,7 +569,7 @@ public class JobSchedulingConfig {
      * :param reportFile: the report output path, supplied as the ``reportFile``
      *     job parameter.
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchTransactionDetailReport(String startDate, String endDate, String reportFile)
             throws JobExecutionException {
@@ -582,7 +591,7 @@ public class JobSchedulingConfig {
      * :param startDate: inclusive range start in ``YYYY-MM-DD`` form.
      * :param endDate: inclusive range end in ``YYYY-MM-DD`` form.
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchTransactionDetailReport(String startDate, String endDate)
             throws JobExecutionException {
@@ -597,7 +606,7 @@ public class JobSchedulingConfig {
      *     ({@value #DEFAULT_TRANSACTION_DETAIL_REPORT_FILE}) inside the configured
      *     batch output root [app/jcl/TRANREPT.jcl, app/proc/TRANREPT.prc:L41-L42].
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchTransactionDetailReport() throws JobExecutionException {
         return launchTransactionDetailReport(DEFAULT_REPORT_START_DATE, DEFAULT_REPORT_END_DATE);
@@ -607,11 +616,11 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: Launch the transaction-category-balance report job
-     *     (``categoryBalanceReportJob``) on the asynchronous launcher.
+     *     (``categoryBalanceReportJob``) on the asynchronous operator.
      * :param outputFile: the report output path, supplied as the ``outputFile``
      *     job parameter.
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchCategoryBalanceReport(String outputFile) throws JobExecutionException {
         JobParameters businessParameters = new JobParametersBuilder()
@@ -626,7 +635,7 @@ public class JobSchedulingConfig {
      *     default report file ({@value #DEFAULT_CATEGORY_BALANCE_REPORT_FILE})
      *     inside the configured batch output root.
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchCategoryBalanceReport() throws JobExecutionException {
         return launchCategoryBalanceReport(DEFAULT_CATEGORY_BALANCE_REPORT_FILE);
@@ -635,14 +644,14 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: Launch the daily-transaction validation-read job
-     *     (``dailyTransactionValidationJob``) on the asynchronous launcher, reading
+     *     (``dailyTransactionValidationJob``) on the asynchronous operator, reading
      *     the default feed file ({@value #DEFAULT_DAILY_TRANSACTION_FEED_FILE})
      *     from the configured batch input root. The ``inputFile`` parameter is
      *     supplied explicitly because the step's reader binds it through
      *     ``#{jobParameters['inputFile']}`` and previously received ``null``, which
      *     failed the job before it read a single record.
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchDailyTransactionValidation() throws JobExecutionException {
         return launchDailyTransactionValidation(null);
@@ -652,8 +661,8 @@ public class JobSchedulingConfig {
      * :purpose: Launch ``dailyTransactionValidationJob`` writing to (or reading from) an explicit path.
      * :param file: the requested file name; when ``null`` or blank the configured
      *     default is used. The path is validated before submission.
-     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :returns: the {@link JobExecution} returned by the asynchronous operator.
+     * :throws JobExecutionException: if the operator cannot start the job.
      * :raises IllegalArgumentException: when the resulting path is unusable.
      */
     public JobExecution launchDailyTransactionValidation(String file) throws JobExecutionException {
@@ -665,13 +674,13 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: Launch the account read-and-print job (``accountReadJob``) on the
-     *     asynchronous launcher, writing the default report file
+     *     asynchronous operator, writing the default report file
      *     ({@value #DEFAULT_ACCOUNT_REPORT_FILE}) into the configured batch output
      *     root. The ``outputFile`` parameter is supplied explicitly because the
      *     step's writer binds it through ``#{jobParameters['outputFile']}`` and
      *     previously received ``null``, which failed the job at step start.
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchAccountRead() throws JobExecutionException {
         return launchAccountRead(null);
@@ -681,8 +690,8 @@ public class JobSchedulingConfig {
      * :purpose: Launch ``accountReadJob`` writing to (or reading from) an explicit path.
      * :param file: the requested file name; when ``null`` or blank the configured
      *     default is used. The path is validated before submission.
-     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :returns: the {@link JobExecution} returned by the asynchronous operator.
+     * :throws JobExecutionException: if the operator cannot start the job.
      * :raises IllegalArgumentException: when the resulting path is unusable.
      */
     public JobExecution launchAccountRead(String file) throws JobExecutionException {
@@ -694,10 +703,10 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: Launch the card read-and-print job (``cardReadJob``) on the
-     *     asynchronous launcher, writing the default report file
+     *     asynchronous operator, writing the default report file
      *     ({@value #DEFAULT_CARD_REPORT_FILE}) into the configured batch output root.
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchCardRead() throws JobExecutionException {
         return launchCardRead(null);
@@ -707,8 +716,8 @@ public class JobSchedulingConfig {
      * :purpose: Launch ``cardReadJob`` writing to (or reading from) an explicit path.
      * :param file: the requested file name; when ``null`` or blank the configured
      *     default is used. The path is validated before submission.
-     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :returns: the {@link JobExecution} returned by the asynchronous operator.
+     * :throws JobExecutionException: if the operator cannot start the job.
      * :raises IllegalArgumentException: when the resulting path is unusable.
      */
     public JobExecution launchCardRead(String file) throws JobExecutionException {
@@ -720,11 +729,11 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: Launch the card cross-reference read-and-print job
-     *     (``cardXrefReadJob``) on the asynchronous launcher, writing the default
+     *     (``cardXrefReadJob``) on the asynchronous operator, writing the default
      *     report file ({@value #DEFAULT_CARD_XREF_REPORT_FILE}) into the configured
      *     batch output root.
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchCardXrefRead() throws JobExecutionException {
         return launchCardXrefRead(null);
@@ -734,8 +743,8 @@ public class JobSchedulingConfig {
      * :purpose: Launch ``cardXrefReadJob`` writing to (or reading from) an explicit path.
      * :param file: the requested file name; when ``null`` or blank the configured
      *     default is used. The path is validated before submission.
-     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :returns: the {@link JobExecution} returned by the asynchronous operator.
+     * :throws JobExecutionException: if the operator cannot start the job.
      * :raises IllegalArgumentException: when the resulting path is unusable.
      */
     public JobExecution launchCardXrefRead(String file) throws JobExecutionException {
@@ -747,11 +756,11 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: Launch the customer read-and-print job (``customerReadJob``) on the
-     *     asynchronous launcher, writing the default report file
+     *     asynchronous operator, writing the default report file
      *     ({@value #DEFAULT_CUSTOMER_REPORT_FILE}) into the configured batch output
      *     root.
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchCustomerRead() throws JobExecutionException {
         return launchCustomerRead(null);
@@ -761,8 +770,8 @@ public class JobSchedulingConfig {
      * :purpose: Launch ``customerReadJob`` writing to (or reading from) an explicit path.
      * :param file: the requested file name; when ``null`` or blank the configured
      *     default is used. The path is validated before submission.
-     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :returns: the {@link JobExecution} returned by the asynchronous operator.
+     * :throws JobExecutionException: if the operator cannot start the job.
      * :raises IllegalArgumentException: when the resulting path is unusable.
      */
     public JobExecution launchCustomerRead(String file) throws JobExecutionException {
@@ -774,11 +783,11 @@ public class JobSchedulingConfig {
 
     /**
      * :purpose: Launch the transaction combine job (``combineTransactionsJob``) on
-     *     the asynchronous launcher, writing the default combined file
+     *     the asynchronous operator, writing the default combined file
      *     ({@value #DEFAULT_COMBINED_TRANSACTION_FILE}) into the configured batch
      *     output root.
      * :returns: the {@link JobExecution} of the submitted job.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :throws JobExecutionException: if the operator cannot start the job.
      */
     public JobExecution launchCombineTransactions() throws JobExecutionException {
         return launchCombineTransactions(null);
@@ -788,8 +797,8 @@ public class JobSchedulingConfig {
      * :purpose: Launch ``combineTransactionsJob`` writing to (or reading from) an explicit path.
      * :param file: the requested file name; when ``null`` or blank the configured
      *     default is used. The path is validated before submission.
-     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
-     * :throws JobExecutionException: if the launcher cannot start the job.
+     * :returns: the {@link JobExecution} returned by the asynchronous operator.
+     * :throws JobExecutionException: if the operator cannot start the job.
      * :raises IllegalArgumentException: when the resulting path is unusable.
      */
     public JobExecution launchCombineTransactions(String file) throws JobExecutionException {

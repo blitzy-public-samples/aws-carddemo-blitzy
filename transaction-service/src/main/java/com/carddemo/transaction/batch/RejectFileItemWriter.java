@@ -64,6 +64,13 @@ public class RejectFileItemWriter implements ItemStreamWriter<PostingItem> {
     private static final int VALIDATION_TRAILER_LENGTH = 80;
 
     /**
+     * Record delimiter for the reject sink, pinned to a single ``LF`` so the record
+     * length stays 430 payload bytes plus exactly one delimiter byte on every host,
+     * independent of ``System.lineSeparator()``.
+     */
+    private static final String RECORD_SEPARATOR = "\n";
+
+    /**
      * ASCII overpunch characters for a non-negative zoned-decimal last digit,
      * indexed by that digit (``0`` -> ``{`` .. ``9`` -> ``I``).
      */
@@ -96,21 +103,11 @@ public class RejectFileItemWriter implements ItemStreamWriter<PostingItem> {
      *     the delegate can open the file, and rejecting absolute paths, ``..``
      *     traversal and symlink escapes (CWE-22).
      * :note: The name is resolved through the shared batch root rather than opened
-     *     directly. ``FileSystemResource`` used to resolve the bare
-     *     default against the PROCESS WORKING DIRECTORY - ``/app`` inside the
-     *     container, on the read-only root filesystem - so the very first rejected
-     *     transaction would have failed the posting step with
-     *     ``java.io.IOException: No such file or directory``, losing the DALYREJS
-     *     reject records that AAP section 0.6.4 makes a frozen 430-byte contract.
-     * :note: The delegate encodes in ``ISO-8859-1``, exactly as the other
-     *     fixed-width batch writers do (``RecordDumpItemWriter``,
-     *     ``CombineTransactionsTasklet``). ``DALYREJS`` is a ``RECFM=F LRECL=430``
-     *     data set [app/jcl/POSTTRAN.jcl], so 430 is a BYTE count, not a character
-     *     count: under the platform default UTF-8 a single accented character in
-     *     ``DALYTRAN-DESC`` or ``DALYTRAN-MERCHANT-NAME`` made the record 431+ bytes
-     *     and byte-shifted every field after it, so a byte-offset downstream reader
-     *     lost the 4-digit reject reason code entirely. One character maps to exactly
-     *     one byte in ISO-8859-1, which keeps the frozen record length (AAP 0.7.6).
+     *     directly; the delegate encodes in ``ISO-8859-1`` and pins the record
+     *     delimiter to a single ``LF``. ``DALYREJS`` is a ``RECFM=F LRECL=430`` data
+     *     set [app/jcl/POSTTRAN.jcl], so its length is a BYTE contract. Rationale for
+     *     all three choices is in docs/decision-log.md, sections 9.5 (shared batch
+     *     output root) and 10.1 (encoding and record delimiter).
      */
     public RejectFileItemWriter(
             @Value("${carddemo.batch.reject-file:dalyrejs.txt}") String rejectFileName,
@@ -119,6 +116,7 @@ public class RejectFileItemWriter implements ItemStreamWriter<PostingItem> {
                 .name("rejectFileItemWriter")
                 .resource(new FileSystemResource(pathResolver.resolveOutput(rejectFileName)))
                 .encoding(StandardCharsets.ISO_8859_1.name())
+                .lineSeparator(RECORD_SEPARATOR)
                 .lineAggregator(this::toFixedWidthLine)
                 .build();
     }
@@ -285,9 +283,11 @@ public class RejectFileItemWriter implements ItemStreamWriter<PostingItem> {
      *     encodes both the final digit and the sign.
      * :param amt: the amount to encode; a ``null`` is treated as zero.
      * :returns: the 11-character zoned-decimal representation.
+     * :note: Excess fraction digits are truncated toward zero, not rounded, because
+     *     a COBOL ``MOVE`` into the ``V99`` receiver carries no ``ROUNDED`` phrase.
      */
     private static String encodeAmountZoned(BigDecimal amt) {
-        BigDecimal scaled = (amt == null ? BigDecimal.ZERO : amt).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal scaled = (amt == null ? BigDecimal.ZERO : amt).setScale(2, RoundingMode.DOWN);
         boolean negative = scaled.signum() < 0;
         BigInteger unsigned = scaled.abs().movePointRight(2).toBigInteger();
         String digits = String.format("%011d", unsigned);

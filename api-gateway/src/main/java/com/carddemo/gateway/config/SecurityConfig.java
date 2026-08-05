@@ -139,6 +139,16 @@ public class SecurityConfig {
                 // was submitted by an operator, so its route carries the administrator
                 // authority while CORPT00's own POST /reports stays open to a signed-on user.
                 .requestMatchers(HttpMethod.POST, "/reports/statements").hasRole("ADMIN")
+                // The same reasoning applied per job on the batch launch surface. The
+                // CBTRN03C / TRANREPT transaction-detail report is the one job a signed-on
+                // user reaches through a screen (main-menu option 9 is a userType 'U'
+                // option), so it keeps the user authority; INTCALC, READACCT, READCARD,
+                // READCUST, READXREF, PRTCATBL and COMBTRAN were operator-submitted JCL
+                // streams with no CICS transaction, so their launches are administrator
+                // only. The specific rule precedes the wildcard, which would claim it.
+                .requestMatchers(HttpMethod.POST, "/batch/jobs/transactionDetailReportJob")
+                        .hasAnyRole("USER", "ADMIN")
+                .requestMatchers(HttpMethod.POST, "/batch/jobs/*").hasRole("ADMIN")
                 .requestMatchers("/menu/**", "/accounts/**", "/cards/**", "/transactions/**",
                         "/billpay/**", "/reports/**", "/batch/**").hasAnyRole("USER", "ADMIN")
                 .anyRequest().authenticated())

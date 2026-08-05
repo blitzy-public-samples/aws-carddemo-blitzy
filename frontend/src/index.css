@@ -461,12 +461,6 @@ main dl dt {
   padding-inline: 1ch;
 }
 
-/* Protected fields (DFHBMPRF) drop the green entry-field treatment. */
-.cardUpdate input:read-only {
-  color: var(--term-neutral);
-  border-color: var(--term-neutral-dim);
-}
-
 /* ------------------------------------------------------------------ */
 /* Data tables (list screens)                                         */
 /* ------------------------------------------------------------------ */

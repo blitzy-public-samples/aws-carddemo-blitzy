@@ -92,7 +92,8 @@ import java.util.Map;
  *  JPA ``EntityManagerFactory`` are supplied by Spring Boot batch
  *  auto-configuration and injected as ``@Bean`` method parameters; no batch
  *  infrastructure is self-instantiated here. The durable JDBC job repository is
- *  declared once for the module, in ``BatchInfrastructureConfig``, so job
+ *  declared once for the whole application, in the shared
+ *  ``carddemo-common`` ``JdbcBatchConfiguration``, so job
  *  executions are persisted to the ``BATCH_*`` tables.
  */
 @Configuration
@@ -229,39 +230,6 @@ public class DataManagementJobConfig {
                 "START OF EXECUTION OF PROGRAM CBACT01C",
                 "END OF EXECUTION OF PROGRAM CBACT01C",
                 CobolRecordFormatter::accountDump);
-    }
-
-    /**
-     * :purpose: Build the cleanup listener for the steps whose output path arrives as the
-     *  ``outputFile`` job parameter, so a step that does not complete successfully leaves
-     *  no file behind. Without it a failed dump run left a file holding only the legacy
-     *  start and end banners - indistinguishable from a successful run over an empty
-     *  input - and a failed report run left a zero-byte report.
-     * :param pathResolver: shared resolver giving the same path the writer opens.
-     * :param outputFile: the ``outputFile`` job parameter.
-     * :returns: the cleanup listener bound to that step's output path.
-     */
-    @Bean
-    @StepScope
-    public FailedOutputCleanupListener outputFileCleanupListener(
-            BatchOutputPathResolver pathResolver,
-            @Value("#{jobParameters['outputFile']}") String outputFile) {
-        return new FailedOutputCleanupListener(pathResolver.resolveOutput(outputFile));
-    }
-
-    /**
-     * :purpose: Build the cleanup listener for the transaction-detail report step, whose
-     *  output path arrives as the ``reportFile`` job parameter.
-     * :param pathResolver: shared resolver giving the same path the writer opens.
-     * :param reportFile: the ``reportFile`` job parameter.
-     * :returns: the cleanup listener bound to the report's output path.
-     */
-    @Bean
-    @StepScope
-    public FailedOutputCleanupListener reportFileCleanupListener(
-            BatchOutputPathResolver pathResolver,
-            @Value("#{jobParameters['reportFile']}") String reportFile) {
-        return new FailedOutputCleanupListener(pathResolver.resolveOutput(reportFile));
     }
 
     /**

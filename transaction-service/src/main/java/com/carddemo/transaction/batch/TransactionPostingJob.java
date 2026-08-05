@@ -60,7 +60,7 @@ import java.util.function.LongSupplier;
  *     {@link PostingJobCompletionListener}.
  * :output: Registers the ``transactionPostingJob`` {@link Job} bean (and its
  *     reader, classifier writer, and step beans) launched on demand through the
- *     Spring Boot auto-configured ``JobLauncher``; the batch infrastructure
+ *     Spring Boot auto-configured ``JobOperator``; the batch infrastructure
  *     ({@link JobRepository}, {@link PlatformTransactionManager}) is injected
  *     from Boot auto-configuration and never self-instantiated.
  */
@@ -91,11 +91,12 @@ public class TransactionPostingJob {
      *     ``dalytranId`` order, reproducing the ``CBTRN02C`` sequential browse of
      *     the daily-transaction data set. The feed is staged in the
      *     ``daily_transactions`` table before launch, so the reader is step-scoped
-     *     and snapshots the staged rows at step-execution time (a job launched
-     *     later therefore always reads the feed as it stands at that moment).
-     * :param dailyTransactionRepository: the daily-transaction feed store whose
-     *     ``findAll`` returns the staged records sorted by ``dalytranId`` ascending.
-     * :returns: an {@link IteratorItemReader} over the ordered feed snapshot.
+     *     and opens its cursor at step-execution time (a job launched later
+     *     therefore always reads the feed as it stands at that moment).
+     * :param dataSource: the application datasource carrying the staged
+     *     ``daily_transactions`` feed.
+     * :returns: a {@link JdbcCursorItemReader} streaming the feed in ascending
+     *     ``dalytran_id`` order.
      */
     @Bean
     @StepScope
@@ -170,7 +171,8 @@ public class TransactionPostingJob {
         RejectCountingStepListener rejectCountingStepListener =
                 new RejectCountingStepListener(dailyTransactionRepository::count);
         return new StepBuilder("transactionPostingStep", jobRepository)
-                .<DailyTransaction, PostingItem>chunk(1, transactionManager)
+                .<DailyTransaction, PostingItem>chunk(1)
+                .transactionManager(transactionManager)
                 .reader(dailyTransactionReader)
                 .processor(transactionValidationProcessor)
                 .writer(postingClassifierWriter)

@@ -6,7 +6,7 @@
 # INTCALC.jcl, plus the data-management programs CBACT01C-CBACT03C,
 # CBCUS01C, CBTRN01C, CBTRN03C) and the on-demand job-submission pattern
 # of the REPROC / TRANREPT procs. The service stays resident to serve
-# Actuator HTTP; jobs are triggered on demand via JobLauncher, never at
+# Actuator HTTP; jobs are triggered on demand via JobOperator, never at
 # startup. Every connection setting is environment-driven so the same
 # artifact runs locally, under Docker Compose (SPRING_PROFILES_ACTIVE=
 # docker) and on Kubernetes; the values below are developer-workstation
@@ -44,7 +44,7 @@ spring:
       # for online traffic: a running job holds one connection for the current chunk
       # transaction plus one for the Spring Batch job-repository update, and the nine
       # jobs of JobSchedulingConfig are submitted through an asynchronous
-      # SimpleAsyncTaskExecutor-backed JobLauncher, so several may run at once. A
+      # SimpleAsyncTaskExecutor-backed JobOperator, so several may run at once. A
       # ceiling of twelve covers six genuinely concurrent jobs outright; the
       # pathological case of all nine at once queues briefly on connection-timeout
       # instead of failing. minimum-idle is 1 because the service is idle between
@@ -88,7 +88,7 @@ spring:
     locations: classpath:db/migration
     baseline-on-migrate: false
 
-  # Batch jobs run ON-DEMAND through the asyncJobLauncher (reachable over HTTP via
+  # Batch jobs run ON-DEMAND through the asyncJobOperator (reachable over HTTP via
   # BatchController, the analogue of the legacy CORPT00C TDQ/JES submission), never
   # automatically at startup.
   #
@@ -99,7 +99,7 @@ spring:
   # V5__batch_metadata.sql owns the BATCH_* tables, and carddemo-common's
   # JdbcBatchConfiguration (imported by BatchServiceApplication) supplies the
   # JDBC-backed JobRepository that reads and writes them.
-  # Batch jobs run ON-DEMAND via JobLauncher, never automatically at startup.
+  # Batch jobs run ON-DEMAND via JobOperator, never automatically at startup.
   # The JDBC job repository is declared by BatchJobRepositoryConfig
   # (@EnableBatchProcessing + @EnableJdbcJobRepository) and creates no schema of
   # its own; Flyway owns the BATCH_* metadata tables. Spring Boot 4 removed the

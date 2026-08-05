@@ -169,13 +169,13 @@ public class BillPaymentMapper {
      * Normalize the account balance to the transaction-amount scale.
      *
      * :param acctCurrBal: the current account balance being paid in full (must be non-null).
-     * :return: the balance at scale 2 using ``HALF_UP`` rounding; a value-preserving
+     * :return: the balance at scale 2, truncated toward zero; a value-preserving
      *          normalization of the already-``NUMERIC(12,2)`` balance onto the
      *          ``NUMERIC(11,2)`` transaction amount.
      */
     private BigDecimal billPaymentAmount(BigDecimal acctCurrBal) {
         Objects.requireNonNull(acctCurrBal, "acctCurrBal");
-        return acctCurrBal.setScale(AMOUNT_SCALE, RoundingMode.HALF_UP);
+        return acctCurrBal.setScale(AMOUNT_SCALE, RoundingMode.DOWN);
     }
 
     /**

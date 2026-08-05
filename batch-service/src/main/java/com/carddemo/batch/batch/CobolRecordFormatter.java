@@ -281,11 +281,14 @@ public final class CobolRecordFormatter {
      * :param scale: the number of fractional digit positions (the ``V99`` part).
      * :returns: a string of exactly ``intDigits + scale`` characters, the last of
      *  which is the sign-overpunch representation of the units digit.
+     * :note: Excess fraction digits are truncated toward zero, not rounded: a COBOL
+     *  ``MOVE`` into a ``V99`` receiver carries no ``ROUNDED`` phrase, so ``1.005``
+     *  encodes as ``1.00`` and ``-1.005`` as ``-1.00``.
      */
     static String encodeSignedZonedDecimal(BigDecimal value, int intDigits, int scale) {
         int total = intDigits + scale;
         BigDecimal scaled = (value == null ? BigDecimal.ZERO : value)
-                .setScale(scale, RoundingMode.HALF_UP);
+                .setScale(scale, RoundingMode.DOWN);
         boolean negative = scaled.signum() < 0;
         BigInteger unscaled = scaled.abs().movePointRight(scale).toBigInteger();
         String digits = zeroPad(unscaled.toString(), total);

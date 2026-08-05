@@ -18,6 +18,7 @@ import type { ReactElement } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import { invalidFieldProps } from '../components/ErrorBanner';
+import OutputField from '../components/OutputField';
 import type { PFKeyDef } from '../components/PFKeyBar';
 import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, SCREEN_NAMES } from '../types';
 
@@ -346,25 +347,29 @@ export default function CardDetailPage(): ReactElement {
       </form>
 
       <dl>
-        <div>
-          <dt className="prompt">{LABEL_NAME_ON_CARD}</dt>
-          <dd className="neutral" data-testid="crdname">
-            {cardName}
-          </dd>
-        </div>
-        <div>
-          <dt className="prompt">{LABEL_CARD_ACTIVE}</dt>
-          <dd className="neutral" data-testid="crdstcd">
-            {cardStatus}
-          </dd>
-        </div>
-        <div>
-          <dt className="prompt">{LABEL_EXPIRY_DATE}</dt>
-          <dd className="neutral" data-testid="expiry-date">
-            <span data-testid="expmon">{expiryMonth}</span>/
-            <span data-testid="expyear">{expiryYear}</span>
-          </dd>
-        </div>
+        <OutputField
+          label={LABEL_NAME_ON_CARD}
+          testId="crdname"
+          value={cardName}
+          valueClassName="neutral"
+        />
+        <OutputField
+          label={LABEL_CARD_ACTIVE}
+          testId="crdstcd"
+          value={cardStatus}
+          valueClassName="neutral"
+        />
+        <OutputField
+          label={LABEL_EXPIRY_DATE}
+          testId="expiry-date"
+          value={
+            <>
+              <span data-testid="expmon">{expiryMonth}</span>/
+              <span data-testid="expyear">{expiryYear}</span>
+            </>
+          }
+          valueClassName="neutral"
+        />
       </dl>
     </section>
   );

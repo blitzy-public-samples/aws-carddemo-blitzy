@@ -66,14 +66,10 @@
     </modules>
 
     <!--
-      NOTE: The Spring Cloud BOM (spring-cloud-dependencies) is deliberately
-      NOT imported in this parent's <dependencyManagement>. It is imported
-      only by the api-gateway module (the sole consumer of Spring Cloud
-      Gateway), using the inherited ${spring-cloud.version} property. Importing
-      it globally here would leak Spring Cloud managed versions into every
-      service and contradicts the approved gateway-only scoping recorded in
-      docs/decision-log.md. All other managed versions come from the inherited
-      Spring Boot parent BOM.
+        The Spring Cloud BOM (spring-cloud-dependencies) is deliberately NOT imported
+        here; only the api-gateway module imports it, using the inherited
+        ${spring-cloud.version} property. All other managed versions come from the
+        inherited Spring Boot parent BOM. Rationale: docs/decision-log.md, section 1.
     -->
 
     <build>
@@ -125,17 +121,12 @@
 
         <plugins>
             <!--
-              Integration-test execution is a BUILD-WIDE guarantee, not a per-module
-              opt-in. The Spring Boot parent's pluginManagement already binds the
-              maven-failsafe-plugin integration-test and verify goals (and points the
-              plugin at the module's own output directory), so declaring the plugin
-              once here activates it for every module: any class matching Failsafe's
-              default patterns (**/IT*.java, **/*IT.java, **/*ITCase.java) runs during
-              `mvn verify` in whichever module it lives. Surefire keeps the fast
-              unit-test phase and never re-runs an IT, so each integration test executes
-              exactly once per build. Version and executions are inherited; modules that
-              need extra Failsafe configuration (for example a forked-JVM system
-              property) refine it in their own POM.
+              Declared once here so integration-test execution is build-wide: any class
+              matching Failsafe's default patterns (**/IT*.java, **/*IT.java,
+              **/*ITCase.java) runs during `mvn verify` in whichever module it lives.
+              Version and executions are inherited; a module needing extra Failsafe
+              configuration refines it in its own POM. Rationale:
+              docs/decision-log.md, section 6.
             -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

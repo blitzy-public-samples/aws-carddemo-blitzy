@@ -28,9 +28,10 @@ import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.job.parameters.JobParametersBuilder;
 import org.springframework.batch.core.launch.JobExecutionAlreadyRunningException;
 import org.springframework.batch.core.launch.JobInstanceAlreadyCompleteException;
-import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.configuration.support.MapJobRegistry;
+import org.springframework.batch.core.launch.JobOperator;
 import org.springframework.batch.core.launch.JobRestartException;
-import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
+import org.springframework.batch.core.launch.support.TaskExecutorJobOperator;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -46,7 +47,7 @@ import java.util.UUID;
  *  ``WIRTE-JOBSUB-TDQ`` paragraphs, which wrote 80-byte JCL records to the
  *  extra-partition Transient Data Queue ``'JOBS'`` for the JES internal reader to
  *  run asynchronously). In the target architecture the submission becomes an
- *  on-demand, non-blocking {@link org.springframework.batch.core.launch.JobLauncher}
+ *  on-demand, non-blocking {@link org.springframework.batch.core.launch.JobOperator}
  *  invocation of the sibling ``statementGenerationJob`` batch job.
  * :output: Exposes a single parameterized, asynchronous launch entry point that
  *  the reporting-service statement endpoint calls to submit the
@@ -88,11 +89,11 @@ public class JobSchedulingConfig {
     private static final int MAX_CONCURRENT_JOBS = 4;
 
     /**
-     * :purpose: Asynchronous launcher used to submit the job. Submission is synchronous
+     * :purpose: Asynchronous operator used to submit the job. Submission is synchronous
      *  - an unusable parameter set, an instance already running or already complete is
      *  raised to the caller - while the accepted run proceeds on a bounded executor.
      */
-    private final JobLauncher jobLauncher;
+    private final JobOperator jobOperator;
 
     /** :purpose: The statement-generation job launched on each statement request. */
     private final Job statementGenerationJob;
@@ -104,9 +105,9 @@ public class JobSchedulingConfig {
     private final String statementHtmlFile;
 
     /**
-     * :purpose: Construct the scheduler with a bounded asynchronous launcher and the
+     * :purpose: Construct the scheduler with a bounded asynchronous operator and the
      *  statement-generation job resolved by bean name.
-     * :param jobRepository: batch job repository the launcher records executions in.
+     * :param jobRepository: batch job repository the operator records executions in.
      * :param statementGenerationJob: the ``statementGenerationJob`` batch job bean.
      * :param statementTextFile: configured default plain-text statement output name.
      * :param statementHtmlFile: configured default HTML statement output name.
@@ -118,61 +119,70 @@ public class JobSchedulingConfig {
                                String statementTextFile,
                                @Value("${carddemo.batch.statement-html-file:statements.html}")
                                String statementHtmlFile) {
-        this(buildAsyncJobLauncher(jobRepository), statementGenerationJob,
+        this(buildAsyncJobOperator(jobRepository), statementGenerationJob,
                 statementTextFile, statementHtmlFile);
     }
 
     /**
-     * :purpose: Construct the scheduler over an explicitly supplied launcher, so a
+     * :purpose: Construct the scheduler over an explicitly supplied operator, so a
      *  caller (or a test) can control how submitted runs are executed.
-     * :param jobLauncher: the launcher submitted runs are handed to.
+     * :param jobOperator: the operator submitted runs are handed to.
      * :param statementGenerationJob: the ``statementGenerationJob`` batch job bean.
      * :param statementTextFile: configured default plain-text statement output name.
      * :param statementHtmlFile: configured default HTML statement output name.
      */
-    public JobSchedulingConfig(JobLauncher jobLauncher,
+    public JobSchedulingConfig(JobOperator jobOperator,
                                Job statementGenerationJob,
                                String statementTextFile,
                                String statementHtmlFile) {
-        this.jobLauncher = jobLauncher;
+        this.jobOperator = jobOperator;
         this.statementGenerationJob = statementGenerationJob;
         this.statementTextFile = statementTextFile;
         this.statementHtmlFile = statementHtmlFile;
     }
 
     /**
-     * :purpose: Construct a {@link TaskExecutorJobLauncher} bound to the batch job
+     * :purpose: Construct a {@link TaskExecutorJobOperator} bound to the batch job
      *  repository and a bounded {@link SimpleAsyncTaskExecutor} whose threads are named
      *  ``statement-N``. The executor is decorated so the submitting request's correlation
      *  id follows the job onto its worker thread.
-     * :param jobRepository: batch job repository the launcher records executions in.
-     * :returns: a fully initialized asynchronous {@link JobLauncher}.
+     * :param jobRepository: batch job repository the operator records executions in.
+     * :returns: a fully initialized asynchronous {@link JobOperator}.
+     * :raises IllegalStateException: if the operator cannot be initialized, which would
+     *  leave the statement job with no reachable submission surface.
      */
-    private static JobLauncher buildAsyncJobLauncher(JobRepository jobRepository) {
-        TaskExecutorJobLauncher launcher = new TaskExecutorJobLauncher();
-        launcher.setJobRepository(jobRepository);
+    private static JobOperator buildAsyncJobOperator(JobRepository jobRepository) {
+        TaskExecutorJobOperator operator = new TaskExecutorJobOperator();
+        operator.setJobRepository(jobRepository);
         SimpleAsyncTaskExecutor taskExecutor = new SimpleAsyncTaskExecutor("statement-");
         taskExecutor.setTaskDecorator(new CorrelationIdTaskDecorator());
         // SimpleAsyncTaskExecutor pools no threads, so without a limit each submission
         // spawns a new thread and a burst of launches can exhaust memory.
         taskExecutor.setConcurrencyLimit(MAX_CONCURRENT_JOBS);
-        launcher.setTaskExecutor(taskExecutor);
+        operator.setTaskExecutor(taskExecutor);
+        // TaskExecutorJobOperator requires a non-null job locator to initialize, but this
+        // operator is driven exclusively through start(Job, JobParameters), which resolves
+        // the job from the instance handed to it and never consults the locator; the
+        // name-keyed lookups (getJobNames, restart-by-id) are not part of this component's
+        // surface. An empty registry therefore satisfies the initialization contract without
+        // asserting a name-to-job mapping the component does not own.
+        operator.setJobRegistry(new MapJobRegistry());
         try {
-            launcher.afterPropertiesSet();
+            operator.afterPropertiesSet();
         } catch (Exception ex) {
-            throw new IllegalStateException("Unable to initialize the statement job launcher", ex);
+            throw new IllegalStateException("Unable to initialize the statement job operator", ex);
         }
-        return launcher;
+        return operator;
     }
 
     /**
      * :purpose: Launch the statement-generation batch job asynchronously over the
      *  configured default output file names, re-platforming ``CORPT00C``'s TDQ
-     *  ``'JOBS'`` internal-reader submission as a non-blocking {@link JobLauncher}
+     *  ``'JOBS'`` internal-reader submission as a non-blocking {@link JobOperator}
      *  invocation.
      * :return: the accepted run's {@link JobExecution}, carrying its durable execution
      *  id so the outcome can be followed.
-     * :raises CardDemoException: when the job cannot be submitted to the launcher. The
+     * :raises CardDemoException: when the job cannot be submitted to the operator. The
      *  submission is synchronous precisely so this failure reaches the caller: the method
      *  was previously ``@Async`` on a ``@Configuration`` class and returned a
      *  ``CompletableFuture`` that the caller discarded, so neither a refused submission
@@ -189,7 +199,7 @@ public class JobSchedulingConfig {
      * :param htmlFile: HTML statement output file name; the configured default is used
      *  when blank.
      * :return: the accepted run's {@link JobExecution}.
-     * :raises CardDemoException: when the job cannot be submitted to the launcher.
+     * :raises CardDemoException: when the job cannot be submitted to the operator.
      * :note: Both file names are always passed as job parameters. They were previously
      *  omitted entirely, so the writer fell back to the working-directory-relative
      *  ``output/statements.txt``, which is unwritable in the delivered read-only
@@ -222,13 +232,13 @@ public class JobSchedulingConfig {
 
         JobExecution jobExecution;
         try {
-            jobExecution = jobLauncher.run(statementGenerationJob, jobParameters);
+            jobExecution = jobOperator.start(statementGenerationJob, jobParameters);
         } catch (JobExecutionAlreadyRunningException | JobRestartException
                  | JobInstanceAlreadyCompleteException | InvalidJobParametersException e) {
             throw new CardDemoException(SUBMIT_FAILURE_MESSAGE, e);
         }
 
-        // The launcher returns normally even when the run itself failed, so the
+        // The operator returns normally even when the run itself failed, so the
         // exit status is inspected here and an unsuccessful run is surfaced with
         // the same operator-visible message as a failed submission.
         if (jobExecution.getStatus().isUnsuccessful()) {

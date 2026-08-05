@@ -92,6 +92,7 @@ jest.unstable_mockModule('./api/client', () => ({
   },
   ApiError: MockApiError,
   isApiError: (value: unknown): boolean => value instanceof MockApiError,
+  generateCorrelationId: (): string => 'cid-app-routing-double',
   registerSessionExpiryHandler: (): (() => void) => (): void => undefined,
 }));
 

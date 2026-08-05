@@ -24,7 +24,7 @@ import io.micrometer.context.ThreadLocalAccessor;
  * :output: A ``ThreadLocalAccessor`` keyed on the MDC entry ``correlationId``. Registering it in
  *          the ``ContextRegistry`` makes every context-propagating construct — Spring's
  *          ``ContextPropagatingTaskDecorator`` (applied to the ``@Async`` executor and to the
- *          Spring Batch ``TaskExecutorJobLauncher``) and Reactor/RxJava context capture — restore
+ *          Spring Batch ``TaskExecutorJobOperator``) and Reactor/RxJava context capture — restore
  *          the id on the receiving thread and clear it afterwards.
  * :note: Without this accessor the batch and asynchronous log lines carried no ``correlationId``
  *        at all: the MDC is a plain ``ThreadLocal``, and the tracing library only propagates

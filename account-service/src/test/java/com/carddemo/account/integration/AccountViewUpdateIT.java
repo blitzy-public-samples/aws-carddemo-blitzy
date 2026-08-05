@@ -121,6 +121,13 @@ class AccountViewUpdateIT {
     private static final String CARD_HAPPY = "4111111111111111";
 
     /**
+     * :purpose: Non-sensitive 16-digit card number linking the cross-reference for
+     *  {@link #SEEDED_ACCT_WITH_PII}. ``xref_card_num`` is the primary key, so each baseline
+     *  linkage needs its own number.
+     */
+    private static final String CARD_SEEDED_WITH_PII = "4111111111111112";
+
+    /**
      * :purpose: Verbatim COACTVWC not-found message for the first ordered lookup
      *  (WORKING-STORAGE L130). The L132/L134 messages cover orphan states the migrated
      *  schema's foreign keys make unreachable, so they are asserted against the service in
@@ -240,17 +247,24 @@ class AccountViewUpdateIT {
      */
     @BeforeEach
     void setUp() {
+        // Only the ROWS are cleared. The migrated table itself — and with it
+        // fk_card_xref_cust / fk_card_xref_acct — is left exactly as the shared V1 schema
+        // declares it, because those constraints ARE the database-level referential
+        // integrity AAP 0.6.4 requires and two cases in this class
+        // (cardXref_withUnknownAccount_isRejectedByForeignKey and its customer twin)
+        // assert the database rejects an orphan. Dropping and re-creating the table
+        // without them also leaked a constraint-free card_xref into the JVM-wide shared
+        // MigratedSchemaContainer, which then failed the equivalent assertions in
+        // CardXrefRepositoryIT whenever the two classes ran in one reactor build.
         jdbcTemplate.execute("TRUNCATE TABLE card_xref");
-        // Replace the migrated card_xref with a foreign-key-free variant of the same shape so
-        // the negative cases can stage cross-reference rows that deliberately point at an
-        // absent account or customer — the very orphan conditions COACTVWC reports. The
-        // shared V1 schema declares fk_card_xref_cust / fk_card_xref_acct, which would reject
-        // those rows at insert time and prevent the service-layer path from being exercised.
-        jdbcTemplate.execute("DROP TABLE IF EXISTS card_xref");
-        jdbcTemplate.execute("CREATE TABLE card_xref ("
-                + "xref_card_num VARCHAR(16) PRIMARY KEY, "
-                + "xref_cust_id BIGINT NOT NULL, "
-                + "xref_acct_id BIGINT NOT NULL)");
+
+        // Re-stage the two baseline linkages the view and update paths need. COACTVWC reads
+        // the cross-reference FIRST and derives the customer id from it, so an account with no
+        // card_xref row is a 404 by design (asserted by getAccount_whenCardXrefMissing_returns404
+        // against ACCT_WITHOUT_XREF, which is deliberately left unlinked here).
+        cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
+        cardXrefRepository.save(
+                new CardXref(CARD_SEEDED_WITH_PII, SEEDED_ACCT_WITH_PII, SEEDED_ACCT_WITH_PII));
 
         // Restore the seed rows mutated by the update happy path and reset optimistic-lock versions.
         jdbcTemplate.update("UPDATE accounts SET acct_curr_bal = 194.00, version = 0 WHERE acct_id = ?",
@@ -455,8 +469,10 @@ class AccountViewUpdateIT {
                         .andExpect(status().isOk())
                         .andReturn(),
                 AccountViewResponseDto.class);
+        // Each regulated identifier carries its OWN mask shape: the SSN keeps the
+        // ``***-**-1234`` grouping, a government-issued id is masked as ``*****1234``.
         assertThat(current.getCustSsn()).isEqualTo(PiiMasker.maskSsn(identifierBefore));
-        assertThat(current.getCustSsn()).isEqualTo(PiiMasker.maskIdentifier(identifierBefore));
+        assertThat(current.getCustGovtIssuedId()).isEqualTo(PiiMasker.maskIdentifier(govtIdBefore));
 
         AccountUpdateRequestDto request = toUpdateRequest(current);
         request.setCustLastName("Kesslerechoed");

@@ -25,8 +25,9 @@ import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.job.parameters.JobParametersBuilder;
-import org.springframework.batch.core.launch.JobLauncher;
-import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
+import org.springframework.batch.core.configuration.support.MapJobRegistry;
+import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.batch.core.launch.support.TaskExecutorJobOperator;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.StepExecution;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -130,7 +131,7 @@ class DailyTransactionFeedPostingIT {
                 .addLong("run.id", System.nanoTime())
                 .toJobParameters();
 
-        JobExecution execution = synchronousJobLauncher().run(transactionPostingJob, parameters);
+        JobExecution execution = synchronousJobOperator().start(transactionPostingJob, parameters);
 
         assertThat(execution.getStatus().isUnsuccessful())
                 .as("posting run must not fail: %s", execution.getAllFailureExceptions())
@@ -153,17 +154,20 @@ class DailyTransactionFeedPostingIT {
     }
 
     /**
-     * :purpose: Build a synchronous {@link JobLauncher} over the context
+     * :purpose: Build a synchronous {@link JobOperator} over the context
      *  {@link JobRepository}, backed by a {@link SyncTaskExecutor} so a launched job
      *  runs on the calling thread and the launch call blocks until completion, keeping
      *  the assertions race-free.
-     * :returns: an initialized synchronous {@link JobLauncher}.
+     * :returns: an initialized synchronous {@link JobOperator}.
      */
-    private JobLauncher synchronousJobLauncher() throws Exception {
-        TaskExecutorJobLauncher launcher = new TaskExecutorJobLauncher();
-        launcher.setJobRepository(jobRepository);
-        launcher.setTaskExecutor(new SyncTaskExecutor());
-        launcher.afterPropertiesSet();
-        return launcher;
+    private JobOperator synchronousJobOperator() throws Exception {
+        TaskExecutorJobOperator operator = new TaskExecutorJobOperator();
+        operator.setJobRepository(jobRepository);
+        operator.setTaskExecutor(new SyncTaskExecutor());
+        MapJobRegistry jobRegistry = new MapJobRegistry();
+        jobRegistry.register(transactionPostingJob);
+        operator.setJobRegistry(jobRegistry);
+        operator.afterPropertiesSet();
+        return operator;
     }
 }

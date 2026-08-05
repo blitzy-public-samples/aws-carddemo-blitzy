@@ -107,7 +107,7 @@ class CombineTransactionsTaskletTest {
         JobParameters parameters = builder.toJobParameters();
         JobExecution jobExecution =
                 new JobExecution(1L, new JobInstance(1L, "combineTransactionsJob"), parameters);
-        StepExecution stepExecution = new StepExecution("combineTransactionsStep", jobExecution);
+        StepExecution stepExecution = new StepExecution(1L, "combineTransactionsStep", jobExecution);
         stepExecution.setStatus(BatchStatus.STARTED);
         return new ChunkContext(new StepContext(stepExecution));
     }
@@ -146,7 +146,7 @@ class CombineTransactionsTaskletTest {
                         transaction("0000000000000002", "-20.50")));
 
         RepeatStatus status = tasklet.execute(new StepContribution(
-                new StepExecution("combineTransactionsStep",
+                new StepExecution(1L, "combineTransactionsStep",
                         new JobExecution(1L, new JobInstance(1L, "combineTransactionsJob"),
                                 new JobParameters()))),
                 chunkContext("combined.txt"));

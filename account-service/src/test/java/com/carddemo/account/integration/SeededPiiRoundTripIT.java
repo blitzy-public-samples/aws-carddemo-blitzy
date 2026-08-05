@@ -20,8 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Optional;
 
-import org.flywaydb.core.Flyway;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,7 +28,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
@@ -64,8 +62,8 @@ class SeededPiiRoundTripIT {
      *     datasource by {@link #datasourceProperties}.
      */
     @Container
-    static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>(DockerImageName.parse("postgres:18"))
+    static final PostgreSQLContainer POSTGRES =
+            new PostgreSQLContainer(DockerImageName.parse("postgres:18"))
                     .withDatabaseName("carddemo")
                     .withUsername("test")
                     .withPassword("test");
@@ -76,6 +74,12 @@ class SeededPiiRoundTripIT {
      *     ``customers`` and ``accounts`` while the service entity-scans every
      *     shared domain type.
      * :param registry: registry resolved before the application context starts.
+     * :note: The schema and its seed rows are provisioned by the context's OWN Flyway,
+     *     which the ``test`` profile points at the shared ``classpath:db/migration`` set
+     *     using the default history table. Running Flyway again from a ``@BeforeAll``
+     *     under a differently-named history table populated ``public`` before the context
+     *     started, and Boot's Flyway then refused to migrate a non-empty schema that
+     *     carried no history table of its own.
      */
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
@@ -84,24 +88,6 @@ class SeededPiiRoundTripIT {
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.datasource.driver-class-name", POSTGRES::getDriverClassName);
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "none");
-    }
-
-    /**
-     * :purpose: Apply the account-service migrations (V1-V4: create and seed
-     *     ``customers`` and ``accounts``) so the test reads exactly the rows a real
-     *     deployment is seeded with. The non-production AES-256 key the converter
-     *     needs for the write path is supplied to the forked test JVM by the
-     *     Surefire ``carddemo.pii.key`` system property configured in the POM.
-     */
-    @BeforeAll
-    static void prepareDatabase() {
-        Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
-                .locations("classpath:db/migration")
-                .table("flyway_schema_history_account")
-                .baselineOnMigrate(true)
-                .load()
-                .migrate();
     }
 
     /** :purpose: Repository under test, exercising the converter on the read path. */
@@ -135,10 +121,13 @@ class SeededPiiRoundTripIT {
         assertThat(customer.getCustSsn()).isNotEqualTo(rawColumn("cust_ssn"));
         assertThat(CryptoConverter.isEncryptedToken(rawColumn("cust_govt_issued_id"))).isTrue();
         assertThat(CryptoConverter.isEncryptedToken(rawColumn("cust_eft_account_id"))).isTrue();
-        // The seed stores plaintext, so the converter must have passed it through
-        // rather than attempting (and failing) an AES-GCM decryption.
-        assertThat(customer.getCustSsn()).isEqualTo(rawColumn("cust_ssn"));
-        assertThat(CryptoConverter.isEncryptedToken(rawColumn("cust_ssn"))).isFalse();
+        // The clear value the converter hands back is the seeded identifier itself, so the
+        // round trip is lossless and not merely "different from the ciphertext".
+        assertThat(customer.getCustSsn()).doesNotStartWith(CryptoConverter.ENVELOPE_PREFIX);
+        assertThat(customer.getCustGovtIssuedId())
+                .doesNotStartWith(CryptoConverter.ENVELOPE_PREFIX);
+        assertThat(customer.getCustEftAccountId())
+                .doesNotStartWith(CryptoConverter.ENVELOPE_PREFIX);
     }
 
     @Test

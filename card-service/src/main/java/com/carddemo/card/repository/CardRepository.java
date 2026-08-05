@@ -94,12 +94,10 @@ public interface CardRepository extends JpaRepository<Card, String> {
      *     its row, reproducing the legacy ``READ ... UPDATE`` against ``CARDDAT``.
      * :param cardNum: the sixteen-character card number (primary key).
      * :output: the locked card, or an empty ``Optional`` when no such card exists.
-     * :note: The lock serialises simultaneous updaters so each one compares its display-time
-     *     snapshot against the state the previous updater actually committed, instead of all of
-     *     them comparing against the same pre-race image and overwriting one another. It works
-     *     WITH the ``@Version`` column rather than instead of it: the version is what tells a
-     *     caller whose data has moved, the lock is what makes that determination reliable under
-     *     concurrency [app/cbl/COCRDUPC.cbl:L1440-1519].
+     * :note: The lock works WITH the ``@Version`` column rather than instead of it: the
+     *     version tells a caller whose data has moved, the lock serialises the re-read that
+     *     makes the determination reliable under concurrency
+     *     [app/cbl/COCRDUPC.cbl:L1440-1519]. Rationale: docs/decision-log.md.
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select c from Card c where c.cardNum = :cardNum")

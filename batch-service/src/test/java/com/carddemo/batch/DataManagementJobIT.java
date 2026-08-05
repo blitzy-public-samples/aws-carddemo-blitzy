@@ -51,8 +51,9 @@ import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.job.parameters.JobParametersBuilder;
-import org.springframework.batch.core.launch.JobLauncher;
-import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
+import org.springframework.batch.core.configuration.support.MapJobRegistry;
+import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.batch.core.launch.support.TaskExecutorJobOperator;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -391,7 +392,7 @@ class DataManagementJobIT {
             builder.addString(parameterName, parameterValue);
         }
         JobParameters parameters = builder.toJobParameters();
-        JobExecution execution = synchronousJobLauncher().run(job, parameters);
+        JobExecution execution = synchronousJobOperator(job).start(job, parameters);
         assertThat(execution.getStatus())
                 .as("%s exit description: %s", job.getName(),
                         execution.getExitStatus().getExitDescription())
@@ -400,16 +401,20 @@ class DataManagementJobIT {
     }
 
     /**
-     * Builds a synchronous launcher so each launch blocks until the job finishes.
+     * Builds a synchronous operator so each launch blocks until the job finishes.
      *
-     * :output: a {@link JobLauncher} over the context job repository.
+     * :param job: the job registered with the operator's registry.
+     * :output: a {@link JobOperator} over the context job repository.
      */
-    private JobLauncher synchronousJobLauncher() throws Exception {
-        TaskExecutorJobLauncher launcher = new TaskExecutorJobLauncher();
-        launcher.setJobRepository(jobRepository);
-        launcher.setTaskExecutor(new SyncTaskExecutor());
-        launcher.afterPropertiesSet();
-        return launcher;
+    private JobOperator synchronousJobOperator(Job job) throws Exception {
+        TaskExecutorJobOperator operator = new TaskExecutorJobOperator();
+        operator.setJobRepository(jobRepository);
+        operator.setTaskExecutor(new SyncTaskExecutor());
+        MapJobRegistry jobRegistry = new MapJobRegistry();
+        jobRegistry.register(job);
+        operator.setJobRegistry(jobRegistry);
+        operator.afterPropertiesSet();
+        return operator;
     }
 
     /**

@@ -45,7 +45,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  *     job, wiring shared carddemo-common entities, observability, and
  *     exception handling.
  * :output: A running stateless REST service exposing transaction endpoints
- *     plus a JobLauncher-driven posting job.
+ *     plus a JobOperator-driven posting job.
  * :note: {@link BatchPathConfig} is imported from ``carddemo-common`` to supply the
  *     shared ``BatchOutputPathResolver``, which confines the ``DALYREJS`` reject
  *     file the posting job writes to the configured, writable

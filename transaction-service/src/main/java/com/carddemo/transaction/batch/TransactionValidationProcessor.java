@@ -124,7 +124,7 @@ public class TransactionValidationProcessor implements ItemProcessor<DailyTransa
         BigDecimal tempBal = account.getAcctCurrCycCredit()
                 .subtract(account.getAcctCurrCycDebit())
                 .add(item.getDalytranAmt())
-                .setScale(2, RoundingMode.HALF_UP);
+                .setScale(2, RoundingMode.DOWN);
         if (account.getAcctCreditLimit().compareTo(tempBal) < 0) {
             rejectCode = TransactionRejectException.OVER_LIMIT;
             rejectDescription = TransactionRejectException.MSG_OVER_LIMIT;

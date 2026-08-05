@@ -127,14 +127,14 @@ public class TransactionPostingItemWriter implements ItemWriter<PostingItem> {
         TranCatBalId id = new TranCatBalId(acctId, dt.getDalytranTypeCd(), dt.getDalytranCatCd());
         Optional<TranCatBal> existing = tranCatBalRepository.findById(id);
         if (existing.isEmpty()) {
-            BigDecimal balance = dt.getDalytranAmt().setScale(2, RoundingMode.HALF_UP);
+            BigDecimal balance = dt.getDalytranAmt().setScale(2, RoundingMode.DOWN);
             TranCatBal created = new TranCatBal(acctId, dt.getDalytranTypeCd(),
                     dt.getDalytranCatCd(), balance);
             tranCatBalRepository.save(created);
         } else {
             TranCatBal row = existing.get();
             row.setTranCatBal(row.getTranCatBal().add(dt.getDalytranAmt())
-                    .setScale(2, RoundingMode.HALF_UP));
+                    .setScale(2, RoundingMode.DOWN));
             tranCatBalRepository.save(row);
         }
     }
@@ -149,13 +149,13 @@ public class TransactionPostingItemWriter implements ItemWriter<PostingItem> {
      */
     private void updateAccount(Account account, DailyTransaction dt) {
         BigDecimal amt = dt.getDalytranAmt();
-        account.setAcctCurrBal(account.getAcctCurrBal().add(amt).setScale(2, RoundingMode.HALF_UP));
+        account.setAcctCurrBal(account.getAcctCurrBal().add(amt).setScale(2, RoundingMode.DOWN));
         if (amt.signum() >= 0) {
             account.setAcctCurrCycCredit(account.getAcctCurrCycCredit().add(amt)
-                    .setScale(2, RoundingMode.HALF_UP));
+                    .setScale(2, RoundingMode.DOWN));
         } else {
             account.setAcctCurrCycDebit(account.getAcctCurrCycDebit().add(amt)
-                    .setScale(2, RoundingMode.HALF_UP));
+                    .setScale(2, RoundingMode.DOWN));
         }
         accountRepository.save(account);
     }
@@ -174,7 +174,7 @@ public class TransactionPostingItemWriter implements ItemWriter<PostingItem> {
         tran.setTranCatCd(dt.getDalytranCatCd());
         tran.setTranSource(dt.getDalytranSource());
         tran.setTranDesc(dt.getDalytranDesc());
-        tran.setTranAmt(dt.getDalytranAmt().setScale(2, RoundingMode.HALF_UP));
+        tran.setTranAmt(dt.getDalytranAmt().setScale(2, RoundingMode.DOWN));
         tran.setTranMerchantId(dt.getDalytranMerchantId());
         tran.setTranMerchantName(dt.getDalytranMerchantName());
         tran.setTranMerchantCity(dt.getDalytranMerchantCity());

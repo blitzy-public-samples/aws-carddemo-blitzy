@@ -17,7 +17,7 @@
 package com.carddemo.common.testsupport;
 
 import org.springframework.test.context.DynamicPropertyRegistry;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 /**
@@ -43,10 +43,10 @@ public final class MigratedSchemaContainer {
     private static final DockerImageName IMAGE = DockerImageName.parse("postgres:18");
 
     /** :purpose: The shared, already-migrated container for this JVM. */
-    private static final PostgreSQLContainer<?> CONTAINER;
+    private static final PostgreSQLContainer CONTAINER;
 
     static {
-        CONTAINER = new PostgreSQLContainer<>(IMAGE).withDatabaseName("carddemo");
+        CONTAINER = new PostgreSQLContainer(IMAGE).withDatabaseName("carddemo");
         CONTAINER.start();
         CardDemoSchemaMigrations.migrateAll(
                 CONTAINER.getJdbcUrl(), CONTAINER.getUsername(), CONTAINER.getPassword());
@@ -64,7 +64,7 @@ public final class MigratedSchemaContainer {
      *
      * :output: the running :java:class:`PostgreSQLContainer`.
      */
-    public static PostgreSQLContainer<?> container() {
+    public static PostgreSQLContainer container() {
         return CONTAINER;
     }
 

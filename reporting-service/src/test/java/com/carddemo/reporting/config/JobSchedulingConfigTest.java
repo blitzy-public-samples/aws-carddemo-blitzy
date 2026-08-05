@@ -29,7 +29,7 @@ import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.parameters.JobParameter;
 import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.launch.JobExecutionAlreadyRunningException;
-import org.springframework.batch.core.launch.JobLauncher;
+import org.springframework.batch.core.launch.JobOperator;
 
 import java.util.List;
 
@@ -49,28 +49,28 @@ import static org.mockito.Mockito.when;
  *   file names carried as identifying {@link JobParameters} — the ``STMTFILE`` and
  *   ``HTMLFILE`` DD names of ``CREASTMT``, which takes no ``PARM`` — that each
  *   submission records a distinct identifying ``run.id`` so a repeat print request is
- *   never refused as an already-completed instance, and that a launcher
+ *   never refused as an already-completed instance, and that an operator
  *   failure is surfaced as a {@link CardDemoException} carrying the frozen legacy
  *   operator message.
  */
 @ExtendWith(MockitoExtension.class)
 class JobSchedulingConfigTest {
 
-    /** Mocked auto-configured Spring Batch launcher. */
+    /** Mocked auto-configured Spring Batch operator. */
     @Mock
-    private JobLauncher jobLauncher;
+    private JobOperator jobOperator;
 
     /** Mocked ``statementGenerationJob`` job bean injected by name. */
     @Mock
     private Job statementGenerationJob;
 
     /**
-     * :purpose: Construct the system under test over the mocked launcher and job with
+     * :purpose: Construct the system under test over the mocked operator and job with
      *   the configured default ``STMTFILE``/``HTMLFILE`` output names.
      * :returns: the configured {@link JobSchedulingConfig}.
      */
     private JobSchedulingConfig newConfig() {
-        return new JobSchedulingConfig(jobLauncher, statementGenerationJob,
+        return new JobSchedulingConfig(jobOperator, statementGenerationJob,
                 "statements.txt", "statements.html");
     }
 
@@ -95,7 +95,7 @@ class JobSchedulingConfigTest {
     @Test
     void launchStatementGenerationSubmitsJobWithReportParameters() throws Exception {
         JobExecution execution = completedExecution();
-        when(jobLauncher.run(eq(statementGenerationJob), any(JobParameters.class)))
+        when(jobOperator.start(eq(statementGenerationJob), any(JobParameters.class)))
                 .thenReturn(execution);
         JobSchedulingConfig config = newConfig();
 
@@ -104,7 +104,7 @@ class JobSchedulingConfigTest {
         assertThat(future).isSameAs(execution);
 
         ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
-        verify(jobLauncher).run(eq(statementGenerationJob), captor.capture());
+        verify(jobOperator).start(eq(statementGenerationJob), captor.capture());
         JobParameters params = captor.getValue();
         assertThat(params.getString("stmtFile")).isEqualTo("cycle.txt");
         assertThat(params.getString("htmlFile")).isEqualTo("cycle.html");
@@ -130,14 +130,14 @@ class JobSchedulingConfigTest {
     @Test
     void launchStatementGenerationFallsBackToTheConfiguredFileNames() throws Exception {
         JobExecution execution = completedExecution();
-        when(jobLauncher.run(eq(statementGenerationJob), any(JobParameters.class)))
+        when(jobOperator.start(eq(statementGenerationJob), any(JobParameters.class)))
                 .thenReturn(execution);
         JobSchedulingConfig config = newConfig();
 
         config.launchStatementGeneration();
 
         ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
-        verify(jobLauncher).run(eq(statementGenerationJob), captor.capture());
+        verify(jobOperator).start(eq(statementGenerationJob), captor.capture());
         assertThat(captor.getValue().getString("stmtFile")).isEqualTo("statements.txt");
         assertThat(captor.getValue().getString("htmlFile")).isEqualTo("statements.html");
     }
@@ -153,7 +153,7 @@ class JobSchedulingConfigTest {
     void launchStatementGenerationSurfacesFrozenMessageOnLaunchFailure() throws Exception {
         JobExecutionAlreadyRunningException cause =
                 new JobExecutionAlreadyRunningException("job already running");
-        when(jobLauncher.run(eq(statementGenerationJob), any(JobParameters.class)))
+        when(jobOperator.start(eq(statementGenerationJob), any(JobParameters.class)))
                 .thenThrow(cause);
         JobSchedulingConfig config = newConfig();
 
@@ -174,7 +174,7 @@ class JobSchedulingConfigTest {
     @Test
     void repeatSubmissionsUseDistinctRunId() throws Exception {
         JobExecution execution = completedExecution();
-        when(jobLauncher.run(eq(statementGenerationJob), any(JobParameters.class)))
+        when(jobOperator.start(eq(statementGenerationJob), any(JobParameters.class)))
                 .thenReturn(execution);
         JobSchedulingConfig config = newConfig();
 
@@ -182,7 +182,7 @@ class JobSchedulingConfigTest {
         config.launchStatementGeneration("cycle.txt", "cycle.html");
 
         ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
-        verify(jobLauncher, times(2)).run(eq(statementGenerationJob), captor.capture());
+        verify(jobOperator, times(2)).start(eq(statementGenerationJob), captor.capture());
         List<JobParameters> submissions = captor.getAllValues();
         assertThat(submissions).hasSize(2);
         assertThat(submissions.get(0).getString("run.id"))

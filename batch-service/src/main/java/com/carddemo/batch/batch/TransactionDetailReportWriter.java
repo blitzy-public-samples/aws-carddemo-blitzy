@@ -446,8 +446,9 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
      * :purpose: Render an amount with the ``CVTRA07Y`` edit mask into a
      *  fixed-width, 15-character field: a single sign column followed by the
      *  14-character magnitude ``ZZZ,ZZZ,ZZZ.ZZ`` (comma grouping, two decimals,
-     *  leading-zero suppression to spaces). Display rounding is HALF_UP and does
-     *  not alter any stored amount.
+     *  leading-zero suppression to spaces). Display normalization truncates toward
+     *  zero, matching the COBOL ``MOVE`` into the edit picture, and does not alter
+     *  any stored amount.
      * :param value: the amount to render; ``null`` is treated as zero.
      * :param totalMask: ``true`` for a total field (``+ZZZ,ZZZ,ZZZ.ZZ``, sign
      *  column '+' when non-negative); ``false`` for a detail field
@@ -472,7 +473,7 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
             // Full zero-suppression renders an all-zero magnitude as blanks.
             magnitude = " ".repeat(AMOUNT_MAGNITUDE_WIDTH);
         } else {
-            String formatted = amountFormat.format(amount.abs().setScale(2, RoundingMode.HALF_UP));
+            String formatted = amountFormat.format(amount.abs().setScale(2, RoundingMode.DOWN));
             magnitude = padLeft(formatted, AMOUNT_MAGNITUDE_WIDTH);
         }
 

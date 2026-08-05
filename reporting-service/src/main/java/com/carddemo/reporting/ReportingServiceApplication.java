@@ -46,7 +46,7 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  *     carddemo-common entities, repositories, observability, and
  *     exception handling.
  * :output: A running stateless REST service exposing report endpoints
- *     plus a JobLauncher-driven statement-generation job.
+ *     plus a JobOperator-driven statement-generation job.
  * :note: {@link BatchPathConfig} is imported from ``carddemo-common`` to supply
  *     the shared ``BatchOutputPathResolver``. The statement writer previously
  *     opened a path relative to the process working directory, which is inside

@@ -36,8 +36,9 @@ import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.job.parameters.JobParametersBuilder;
-import org.springframework.batch.core.launch.JobLauncher;
-import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
+import org.springframework.batch.core.configuration.support.MapJobRegistry;
+import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.batch.core.launch.support.TaskExecutorJobOperator;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -70,9 +71,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *     transaction and rolls its balance forward, and a zero-rate account that posts none
  *     yet still has its cycle figures zeroed — with all money compared via
  *     ``isEqualByComparingTo``.
- * :note: The job is launched through a dedicated synchronous {@link TaskExecutorJobLauncher}
+ * :note: The job is launched through a dedicated synchronous {@link TaskExecutorJobOperator}
  *     (a {@link SyncTaskExecutor} over the context {@link JobRepository}) so the launch
- *     blocks until the job finishes; the asynchronous ``asyncJobLauncher`` bean is never
+ *     blocks until the job finishes; the asynchronous ``asyncJobOperator`` bean is never
  *     used. Schema provisioning inherits the production ``application.yml`` settings unchanged —
  *     batch-service is the single Flyway migration owner, so its own configuration applies the
  *     shared migration set from ``carddemo-common`` (``classpath:db/migration``) and builds the
@@ -275,22 +276,25 @@ class InterestCalculationJobIT {
                 .addString("parmDate", parmDate)
                 .addLong("run.id", System.nanoTime())
                 .toJobParameters();
-        return synchronousJobLauncher().run(interestCalculationJob, parameters);
+        return synchronousJobOperator().start(interestCalculationJob, parameters);
     }
 
     /**
-     * :purpose: Build a synchronous {@link JobLauncher} over the context
+     * :purpose: Build a synchronous {@link JobOperator} over the context
      *     {@link JobRepository}, backed by a {@link SyncTaskExecutor} so a launched job runs
      *     on the calling thread and the launch call blocks until completion. This keeps the
-     *     assertions race-free and never uses the asynchronous ``asyncJobLauncher`` bean.
-     * :returns: an initialized synchronous {@link JobLauncher}.
+     *     assertions race-free and never uses the asynchronous ``asyncJobOperator`` bean.
+     * :returns: an initialized synchronous {@link JobOperator}.
      */
-    private JobLauncher synchronousJobLauncher() throws Exception {
-        TaskExecutorJobLauncher launcher = new TaskExecutorJobLauncher();
-        launcher.setJobRepository(jobRepository);
-        launcher.setTaskExecutor(new SyncTaskExecutor());
-        launcher.afterPropertiesSet();
-        return launcher;
+    private JobOperator synchronousJobOperator() throws Exception {
+        TaskExecutorJobOperator operator = new TaskExecutorJobOperator();
+        operator.setJobRepository(jobRepository);
+        operator.setTaskExecutor(new SyncTaskExecutor());
+        MapJobRegistry jobRegistry = new MapJobRegistry();
+        jobRegistry.register(interestCalculationJob);
+        operator.setJobRegistry(jobRegistry);
+        operator.afterPropertiesSet();
+        return operator;
     }
 
     /**
@@ -306,7 +310,6 @@ class InterestCalculationJobIT {
         jdbcTemplate.update(INSERT_CUSTOMER_SQL, custId, "Test", "T", "Customer",
                 "Addr line 1", "Addr line 2", "Addr line 3", "NC", "USA", "00000",
                 "(000)000-0000", "(000)000-0000", "", "", "1970-01-01", "", "Y", 750, 0L);
-        jdbcTemplate.update(INSERT_CUSTOMER_SQL, custId, 750, 0L);
     }
 
     /**

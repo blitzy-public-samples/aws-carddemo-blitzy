@@ -7,10 +7,8 @@
  *     jsx-a11y accessibility rules, and the security rules for the node/browser
  *     surface. Every plugin version is pinned exactly in ``package.json``.
  * :output: The flat config array consumed by ``npm run lint``.
- * :note: ``react-hooks/exhaustive-deps`` is escalated to an error on purpose. The
- *     screens publish their function-key handlers from inside an effect, so a handler
- *     missing from that effect's dependency array leaves the shell holding a
- *     superseded closure - a defect that neither ``tsc`` nor the test suite observes.
+ * :note: ``react-hooks/exhaustive-deps`` is escalated to an error, and two rules are
+ *     switched off. Rationale for each: docs/decision-log.md, section 19.2.
  * :note: Generated and vendored trees are excluded rather than linted: ``dist`` is
  *     build output and ``coverage`` is a report.
  */
@@ -58,30 +56,15 @@ export default tseslint.config(
       ...jsxA11y.flatConfigs.recommended.rules,
       ...security.configs.recommended.rules,
 
-      // The guard against the stale-closure class of defect: a handler referenced by
-      // an effect must appear in that effect's dependency array.
+      // A handler referenced by an effect must appear in that effect's dependency
+      // array. Rationale: docs/decision-log.md, section 19.2.
       'react-hooks/exhaustive-deps': 'error',
 
-      /*
-       * React Compiler readiness rule, not a correctness rule. The screens seed a
-       * controlled entry field from a route parameter on the CICS "entry with a
-       * pre-selected id" branch, and fold a server error into the single line-23
-       * message slot that client-side edits also write. Both are guarded, terminate
-       * in one pass, and are the behaviour the legacy programs specify; converting
-       * them into render-time derivations would restructure the message model and
-       * the entry sequence of eight screens, which AAP 0.7.1 and 0.7.6 forbid.
-       * `rules-of-hooks`, `exhaustive-deps` and `refs` stay errors - those report
-       * real defects.
-       */
+      // Off; `rules-of-hooks`, `exhaustive-deps` and `refs` stay errors.
+      // Rationale: docs/decision-log.md, section 19.2.
       'react-hooks/set-state-in-effect': 'off',
 
-      /*
-       * Every occurrence in this codebase is a lookup into a `Readonly<Record<...>>`
-       * or an array whose key is a literal union or a loop index, so TypeScript
-       * already proves the key domain. The rule targets untyped JavaScript, where a
-       * caller-supplied key could reach `__proto__`; satisfying it here would mean
-       * discarding the type-level guarantee in favour of a runtime guard.
-       */
+      // Off. Rationale: docs/decision-log.md, section 19.2.
       'security/detect-object-injection': 'off',
 
       // A floating promise in an event handler silently swallows a rejected request,

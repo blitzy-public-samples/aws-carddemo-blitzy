@@ -137,7 +137,7 @@ class TransactionPostingStepListenerTest {
     private static StepExecution stepExecution(BatchStatus status, long readCount) {
         JobExecution jobExecution =
                 new JobExecution(1L, new JobInstance(1L, JOB_NAME), new JobParameters());
-        StepExecution stepExecution = new StepExecution(STEP_NAME, jobExecution);
+        StepExecution stepExecution = new StepExecution(1L, STEP_NAME, jobExecution);
         jobExecution.addStepExecution(stepExecution);
         stepExecution.setStatus(status);
         stepExecution.setReadCount(readCount);

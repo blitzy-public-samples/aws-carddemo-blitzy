@@ -134,7 +134,7 @@ public class ObservabilityConfig {
      *           auto-configured application task executor, which is what backs ``@Async`` — this is
      *           how the asynchronous report launch in reporting-service stays attached to its
      *           caller's trace instead of starting an orphan with no ``traceId``/``spanId``.
-     * :note: Executors built by hand (for example the batch ``TaskExecutorJobLauncher``) are not
+     * :note: Executors built by hand (for example the batch ``TaskExecutorJobOperator``) are not
      *        reached by that auto-configuration and set this decorator on themselves.
      * :returns: a context-propagating task decorator shared by every service.
      */

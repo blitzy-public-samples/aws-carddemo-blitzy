@@ -27,6 +27,7 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -287,6 +288,33 @@ class CardServiceTest {
         ArgumentCaptor<List<Card>> pageCaptor = ArgumentCaptor.forClass(List.class);
         verify(cardMapper).toListResponse(pageCaptor.capture());
         assertThat(pageCaptor.getValue()).hasSize(7);
+    }
+
+    /**
+     * :purpose: Pin the browse window's arithmetic: each screen reads
+     *     ``WS-MAX-SCREEN-LINES`` display rows plus ONE lookahead record, and screens advance
+     *     by seven rows - not by the eight-row window size. ``COCRDLIC`` fills seven rows and
+     *     then issues one further ``READNEXT`` only to set ``CA-NEXT-PAGE-EXISTS``
+     *     (L1191-1215); that record is never displayed and the next screen resumes AT it, so
+     *     page 8 of fifty cards must start at row 50, not row 57.
+     */
+    @Test
+    void listCards_windowAdvancesBySevenRowsWithOneLookahead() {
+        ArgumentCaptor<Pageable> windowCaptor = ArgumentCaptor.forClass(Pageable.class);
+        when(cardRepository.findAllByOrderByCardNumAsc(any(Pageable.class)))
+                .thenReturn(cards(0));
+        when(cardMapper.toListResponse(any())).thenReturn(mock(CardListResponseDto.class));
+
+        cardService.listCards(null, null, 1, null);
+        cardService.listCards(null, null, 2, null);
+        cardService.listCards(null, null, 8, null);
+
+        verify(cardRepository, times(3)).findAllByOrderByCardNumAsc(windowCaptor.capture());
+        List<Pageable> windows = windowCaptor.getAllValues();
+        assertThat(windows).extracting(Pageable::getOffset)
+                .containsExactly(0L, 7L, 49L);
+        assertThat(windows).extracting(Pageable::getPageSize)
+                .containsExactly(8, 8, 8);
     }
 
     /**

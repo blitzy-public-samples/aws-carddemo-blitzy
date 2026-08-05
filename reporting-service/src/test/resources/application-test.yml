@@ -28,7 +28,7 @@ spring:
   # entity tables and/or the canonical Spring Batch BATCH_* DDL.
   flyway:
     enabled: false
-  # Statement/report jobs run on demand via JobLauncher (CICS TDQ 'JOBS' -> JES async submission), never at startup.
+  # Statement/report jobs run on demand via JobOperator (CICS TDQ 'JOBS' -> JES async submission), never at startup.
   batch:
     job:
       enabled: false

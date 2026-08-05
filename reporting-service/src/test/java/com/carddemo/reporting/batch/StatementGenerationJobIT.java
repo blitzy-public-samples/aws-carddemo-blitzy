@@ -28,12 +28,11 @@ import com.carddemo.reporting.repository.TransactionRepository;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.io.TempDir;
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.job.parameters.JobParametersBuilder;
-import org.springframework.batch.test.JobLauncherTestUtils;
+import org.springframework.batch.test.JobOperatorTestUtils;
 import org.springframework.batch.test.context.SpringBatchTest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -59,7 +58,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
  *   PostgreSQL (the shared ``postgres:18`` container carrying the schema the
  *   committed Flyway migrations produce), seeds a deterministic minimal dataset through the
  *   shared ``carddemo-common`` repositories, launches the on-demand
- *   ``statementGenerationJob`` through {@link JobLauncherTestUtils}, and asserts
+ *   ``statementGenerationJob`` through {@link JobOperatorTestUtils}, and asserts
  *   the produced plain-text (80-column) and HTML (100-column) statement files are
  *   byte-for-byte faithful to the legacy ``CBSTM03A``/``CBSTM03B`` engine
  *   (``CREASTMT.JCL`` DD ``STMTFILE`` LRECL=80 / ``HTMLFILE`` LRECL=100).
@@ -77,7 +76,7 @@ class StatementGenerationJobIT {
     private static final String SYNTHETIC_CARD = "0000000000000000";
 
     @Autowired
-    private JobLauncherTestUtils jobLauncherTestUtils;
+    private JobOperatorTestUtils jobOperatorTestUtils;
 
     @Autowired
     private CustomerRepository customerRepository;
@@ -96,35 +95,26 @@ class StatementGenerationJobIT {
     private JdbcTemplate jdbcTemplate;
 
     /**
-     * :purpose: Provision the schema the throwaway ``postgres:18`` container lacks.
-     *   The ``test`` profile disables Flyway and sets ``ddl-auto: none``, so this
-     *   override lets Hibernate auto-create the shared ``com.carddemo.common.domain``
-     *   entity tables (``create-drop``). The Spring Batch ``BATCH_*`` metadata schema
-     *   is NOT provisioned here: ``BatchInfrastructureConfig`` creates it when absent,
-     *   exactly as it does in production, so running the DDL again from
-     *   ``spring.sql.init`` would fail on "relation already exists".
+     * :purpose: Bind the context to the shared, already-migrated ``postgres:18`` container
+     *   and point the batch output root at this class's throwaway directory.
      * :param registry: the dynamic property registry supplied by the test context.
+     * :note: ``ddl-auto`` stays at ``validate``: the container's schema is produced
+     *   exclusively by the committed Flyway migrations, so validation asserts the
+     *   entity-to-migration contract instead of letting Hibernate create whatever the
+     *   entities imply.
+     * :note: The Spring Batch ``BATCH_*`` metadata schema is NOT provisioned here.
+     *   ``JdbcBatchConfiguration`` creates it when absent, exactly as it does in
+     *   production, so applying the same DDL from ``spring.sql.init`` would fail on
+     *   "relation already exists".
+     * :note: Every batch path is resolved through the shared ``BatchOutputPathResolver``,
+     *   which refuses a path escaping ``carddemo.batch.output-dir`` (CWE-22). Declaring
+     *   {@link #BATCH_OUTPUT_ROOT} as that root keeps the containment check in force
+     *   while the statement artifacts land somewhere writable.
      */
     @DynamicPropertySource
     static void provisionSchema(DynamicPropertyRegistry registry) {
         MigratedSchemaContainer.registerDataSource(registry);
         registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
-        // Every batch path is resolved inside carddemo.batch.output-dir and a path escaping
-        // it is refused (CWE-22). The per-test ``@TempDir`` lives under the JVM temporary
-        // directory, so that directory is declared as the root: the containment check stays
-        // in force and the statement artifacts still land in a JUnit-managed directory.
-        registry.add("carddemo.batch.output-dir", () -> System.getProperty("java.io.tmpdir"));
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
-        // The statement writer resolves every output name through the shared
-        // BatchOutputPathResolver, which confines writes to this root (CWE-22). The
-        // root is pointed at the test's temporary directory so the job writes there.
-        registry.add("carddemo.batch.output-dir", () -> outputRoot.toAbsolutePath().toString());
-        registry.add("spring.sql.init.mode", () -> "always");
-        registry.add("spring.sql.init.schema-locations",
-                () -> "classpath:org/springframework/batch/core/schema-postgresql.sql");
-        // Point the shared BatchOutputPathResolver at this class's throwaway root so
-        // the statement files land somewhere writable and the containment rule the
-        // resolver enforces is exercised end to end.
         registry.add("carddemo.batch.output-dir", BATCH_OUTPUT_ROOT::toString);
     }
 
@@ -133,7 +123,8 @@ class StatementGenerationJobIT {
      *   static initializer because {@link DynamicPropertySource} is evaluated while
      *   the application context is built - before any JUnit ``@TempDir`` field or
      *   parameter is resolved - and the resolver canonicalizes its roots at bean
-     *   construction time.
+     *   construction time. It is therefore the ONE root both the job and the
+     *   assertions address.
      */
     private static final Path BATCH_OUTPUT_ROOT = createBatchOutputRoot();
 
@@ -149,10 +140,6 @@ class StatementGenerationJobIT {
             throw new UncheckedIOException("Unable to create the batch output root for the test", e);
         }
     }
-
-    /** Batch output root for this class, used as the resolver's allowlisted root. */
-    @TempDir
-    static Path outputRoot;
 
     /**
      * :purpose: Seed a deterministic, PII-safe dataset through the shared
@@ -268,16 +255,14 @@ class StatementGenerationJobIT {
      */
     @Test
     void statementJobGeneratesByteExactTextAndHtmlStatements() throws Exception {
-        File textFile = new File(outputRoot.toFile(), "statements.txt");
-        File htmlFile = new File(outputRoot.toFile(), "statements.html");
+        File textFile = new File(BATCH_OUTPUT_ROOT.toFile(), "statements.txt");
+        File htmlFile = new File(BATCH_OUTPUT_ROOT.toFile(), "statements.html");
 
         JobParameters params = new JobParametersBuilder()
                 // The two output file names are the whole parameter set: CREASTMT
-                // carries no PARM and the job reads no date window.
-                .addString("stmtFile", textFile.getAbsolutePath())
-                .addString("htmlFile", htmlFile.getAbsolutePath())
-                // Names relative to the configured output root; an absolute path outside
-                // that root is refused by the resolver, which is the intended behaviour.
+                // carries no PARM and the job reads no date window. The names are
+                // relative to the configured output root; an absolute path outside that
+                // root is refused by the resolver, which is the intended behaviour.
                 .addString("stmtFile", "statements.txt")
                 .addString("htmlFile", "statements.html")
                 .addString("reportType", "Monthly")
@@ -286,7 +271,7 @@ class StatementGenerationJobIT {
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 
-        JobExecution jobExecution = jobLauncherTestUtils.launchJob(params);
+        JobExecution jobExecution = jobOperatorTestUtils.startJob(params);
 
         assertThat(jobExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
         assertThat(jobExecution.getExitStatus().getExitCode()).isEqualTo("COMPLETED");

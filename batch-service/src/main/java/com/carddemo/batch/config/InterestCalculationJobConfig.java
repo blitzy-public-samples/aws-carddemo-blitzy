@@ -60,7 +60,9 @@ import java.util.Map;
  *     assembles beans from the reader built here, the ``@StepScope``
  *     {@link InterestItemProcessor}, and the {@link InterestTransactionWriter} in
  *     ``com.carddemo.batch.batch``; the monthly-interest arithmetic
- *     ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200`` at scale 2 with ``HALF_UP``, the
+ *     ``(TRAN-CAT-BAL * DIS-INT-RATE) / 1200`` at scale 2 truncated toward zero
+ *     ({@link java.math.RoundingMode#DOWN}, reproducing the COBOL ``COMPUTE``
+ *     without a ``ROUNDED`` phrase), the
  *     disclosure-group ``DEFAULT`` fallback, the one-interest-transaction-per
  *     non-zero-rate-category emission, and the per-account balance update that
  *     adds accumulated interest to ``ACCT-CURR-BAL`` and zeroes
@@ -102,15 +104,12 @@ public class InterestCalculationJobConfig {
      *     ``tran_cat_bal`` table supplying category-balance rows.
      * :returns: a ``SingleItemPeekableItemReader`` over {@link TranCatBal} rows in
      *     ascending ``(trancatAcctId, trancatTypeCd, trancatCd)`` order.
-     * :note: ``@StepScope`` is required for correctness, not merely convenience. This
-     *     reader is an ``ItemStream`` carrying the run's page cursor and peeked row; as
-     *     a singleton it was shared by every concurrent step execution, so two
-     *     simultaneous interest runs consumed one another's rows, opened and closed the
-     *     same stream twice, and produced colliding interest transaction ids. Step
-     *     scoping gives each ``StepExecution`` its own reader, delegate, cursor and
-     *     ``ExecutionContext`` entry. The step and the control-break completion policy
-     *     hold the scoped proxy, so every read and peek resolves to the reader belonging
-     *     to the execution that issued it.
+     * :note: ``@StepScope`` is required for correctness, not convenience: the reader is
+     *     an ``ItemStream`` carrying the run's page cursor and peeked row, so each
+     *     ``StepExecution`` must own its own instance. The step and the control-break
+     *     completion policy hold the scoped proxy, so every read and peek resolves to
+     *     the reader belonging to the execution that issued it. Rationale is in
+     *     docs/decision-log.md (batch beans holding per-run state).
      */
     @Bean
     @StepScope
@@ -143,7 +142,7 @@ public class InterestCalculationJobConfig {
      *     ``correlationId`` job parameter to the logging MDC for the duration of a
      *     job run, so every log line emitted by the job's step, reader, processor,
      *     and writer carries a single correlation id even though the async
-     *     ``JobLauncher`` runs the job on a different thread than the launcher; a
+     *     ``JobOperator`` runs the job on a different thread than the launching thread; a
      *     job launched without a correlation id is assigned a generated one.
      * :returns: a ``JobExecutionListener`` whose ``beforeJob`` seeds the
      *     correlation id from the ``correlationId`` job parameter (or generates one
@@ -193,6 +192,14 @@ public class InterestCalculationJobConfig {
      *     belonging to the calling ``StepExecution``; the policy itself keeps no
      *     cross-execution state, deriving each chunk's account from a fresh
      *     ``AccountChunkContext``.
+     * :note: The suppression covers exactly one call —
+     *     ``StepBuilder.chunk(CompletionPolicy, PlatformTransactionManager)``, which
+     *     Spring Batch 6 deprecates for removal. Spring Batch 6.0.4 offers no
+     *     non-deprecated replacement that accepts a ``CompletionPolicy``:
+     *     ``StepBuilder.chunk(int)`` yields a ``ChunkOrientedStepBuilder`` whose
+     *     ``ChunkOrientedStep`` carries a fixed integer chunk size, so the per-account
+     *     control break this step requires cannot be expressed through it. Retention is
+     *     therefore deliberate and recorded in docs/decision-log.md, section 39.3.
      */
     @Bean
     @SuppressWarnings({"deprecation", "removal"})

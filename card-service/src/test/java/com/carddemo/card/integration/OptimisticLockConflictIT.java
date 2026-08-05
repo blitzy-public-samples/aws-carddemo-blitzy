@@ -45,7 +45,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * :purpose: Mandatory optimistic-lock (HTTP 409) integration test for the card-update
@@ -81,8 +81,8 @@ class OptimisticLockConflictIT {
      *     ``@DynamicPropertySource`` before the Spring context refreshes and the shared
      *     carddemo-common Flyway migration set creates and seeds every table.
      */
-    private static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>("postgres:18")
+    private static final PostgreSQLContainer POSTGRES =
+            new PostgreSQLContainer("postgres:18")
                     .withDatabaseName("carddemo")
                     .withUsername("test")
                     .withPassword("test");
@@ -265,9 +265,9 @@ class OptimisticLockConflictIT {
 
         // Submit a real change carrying the observable snapshot only (no CVV on either side).
         String requestBody = updateJson("Aniya Vonn", SEED_STATUS, SEED_EXPIRY,
-                displayed.get("cardEmbossedName").asText(),
-                displayed.get("cardActiveStatus").asText(),
-                displayed.get("cardExpiraionDate").asText());
+                displayed.get("cardEmbossedName").asString(),
+                displayed.get("cardActiveStatus").asString(),
+                displayed.get("cardExpiraionDate").asString());
         mockMvc.perform(put("/cards/{cardNumber}", TARGET_CARD_NUM)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(requestBody)
@@ -351,9 +351,9 @@ class OptimisticLockConflictIT {
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
         JsonNode displayed = objectMapper.readTree(body);
-        String displayName = displayed.get("cardEmbossedName").asText();
-        String displayExpiry = displayed.get("cardExpiraionDate").asText();
-        String displayStatus = displayed.get("cardActiveStatus").asText();
+        String displayName = displayed.get("cardEmbossedName").asString();
+        String displayExpiry = displayed.get("cardExpiraionDate").asString();
+        String displayStatus = displayed.get("cardActiveStatus").asString();
         assertEquals(SEED_STATUS, displayStatus);
 
         // 2. Out-of-band committed modification by "someone else": flip the active status.

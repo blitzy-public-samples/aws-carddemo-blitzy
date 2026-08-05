@@ -34,8 +34,8 @@ import java.util.List;
 import java.util.Locale;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -265,7 +265,7 @@ public class CardService {
             // VSAM primary-key browse order, so the store never materialises more than the
             // screen needs however large the card base grows. The lookahead row is the
             // WS-MAX-SCREEN-LINES + 1 record COBOL reads to learn a further page exists.
-            Pageable window = PageRequest.of(page - 1, MAX_SCREEN_LINES + 1);
+            Pageable window = screenWindow(page);
             windowRows = acctIdFilter != null
                     ? cardRepository.findByCardAcctIdOrderByCardNumAsc(acctIdFilter, window)
                     : cardRepository.findAllByOrderByCardNumAsc(window);
@@ -304,6 +304,87 @@ public class CardService {
                     page, pageRows.size(), morePagesExist);
         }
         return response;
+    }
+
+    /**
+     * :purpose: Build the browse window for one card-list screen: ``MAX_SCREEN_LINES`` display
+     *  rows plus the single lookahead record, positioned at the first row the requested page
+     *  shows.
+     * :param page: the one-based screen number (``WS-CA-SCREEN-NUM``).
+     * :returns: a {@link Pageable} whose offset is ``(page - 1) * MAX_SCREEN_LINES`` and whose
+     *  limit is ``MAX_SCREEN_LINES + 1``.
+     * :note: Screens advance by ``MAX_SCREEN_LINES``, NOT by the window size. ``COCRDLIC``
+     *  fills seven rows and then issues one further ``READNEXT`` solely to set
+     *  ``CA-NEXT-PAGE-EXISTS`` (L1191-1215); that eighth record is never displayed, and the
+     *  next screen's browse resumes AT it. A ``PageRequest`` cannot express this, because its
+     *  offset is always ``pageNumber * pageSize``: sizing the request at
+     *  ``MAX_SCREEN_LINES + 1`` therefore stepped eight rows per screen and silently dropped
+     *  every eighth card from the listing.
+     */
+    private static Pageable screenWindow(int page) {
+        return new ScreenWindow((long) (page - 1) * MAX_SCREEN_LINES, MAX_SCREEN_LINES + 1);
+    }
+
+    /**
+     * One card-list browse window.
+     *
+     * :purpose: Express an explicit offset and limit for a Spring Data derived query, which
+     *  {@link PageRequest} cannot do because it derives the offset from the page size. Only
+     *  the offset, the limit and the (method-name-derived) sort are consulted by the query
+     *  translator, so the navigation methods are unreachable and reject use.
+     * :param offset: zero-based index of the first row to read.
+     * :param limit: maximum number of rows to read.
+     */
+    private record ScreenWindow(long offset, int limit) implements Pageable {
+
+        @Override
+        public int getPageNumber() {
+            // Zero-based SCREEN index. Screens step by MAX_SCREEN_LINES, so the index is
+            // derived from that stride and not from the window size, keeping this consistent
+            // with withPage / next / previousOrFirst.
+            return (int) (offset / MAX_SCREEN_LINES);
+        }
+
+        @Override
+        public int getPageSize() {
+            return limit;
+        }
+
+        @Override
+        public long getOffset() {
+            return offset;
+        }
+
+        @Override
+        public Sort getSort() {
+            // Ordering comes from the repository method name (``OrderByCardNumAsc``).
+            return Sort.unsorted();
+        }
+
+        @Override
+        public Pageable next() {
+            return new ScreenWindow(offset + MAX_SCREEN_LINES, limit);
+        }
+
+        @Override
+        public Pageable previousOrFirst() {
+            return hasPrevious() ? new ScreenWindow(offset - MAX_SCREEN_LINES, limit) : first();
+        }
+
+        @Override
+        public Pageable first() {
+            return new ScreenWindow(0L, limit);
+        }
+
+        @Override
+        public Pageable withPage(int pageNumber) {
+            return new ScreenWindow((long) pageNumber * MAX_SCREEN_LINES, limit);
+        }
+
+        @Override
+        public boolean hasPrevious() {
+            return offset >= MAX_SCREEN_LINES;
+        }
     }
 
     /**

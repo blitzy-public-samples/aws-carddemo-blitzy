@@ -215,17 +215,10 @@ CREATE TABLE IF NOT EXISTS transactions (
 -- the posting job rejects with code 100 rather than refusing at insert time.
 -- -----------------------------------------------------------------------------
 -- Every field CBTRN02C dereferences while validating a feed record is NOT NULL, and
--- the origination timestamp additionally carries at least its ten date characters
---. DALYTRAN is a fixed-width 350-byte sequential data set: a record
--- physically cannot be missing DALYTRAN-AMT or hold a five-character
--- DALYTRAN-ORIG-TS, so a staged row that does is not a DALYTRAN record at all.
--- Leaving the columns nullable let such a row reach 1500-VALIDATE-TRAN, where it
--- aborted the posting step with a raw NullPointerException /
--- StringIndexOutOfBoundsException on every rerun - blocking every later record in the
--- feed and never producing a reject record. The constraints refuse the row at
--- ingestion instead, where the loader can still fix it. DALYTRAN-PROC-TS stays
--- nullable: 2000-POST-TRANSACTION stamps it at posting time, so an unposted feed
--- record legitimately carries none.
+-- the origination timestamp additionally carries at least its ten date characters.
+-- DALYTRAN-PROC-TS stays nullable: CBTRN02C opens DALYTRAN with OPEN INPUT and never
+-- rewrites the feed, so the column carries only whatever the upstream feed delivered.
+-- Rationale: docs/decision-log.md.
 CREATE TABLE IF NOT EXISTS daily_transactions (
     dalytran_id             VARCHAR(16)   PRIMARY KEY,   -- DALYTRAN-ID            PIC X(16)
     dalytran_type_cd        VARCHAR(2)    NOT NULL,      -- DALYTRAN-TYPE-CD       PIC X(02)

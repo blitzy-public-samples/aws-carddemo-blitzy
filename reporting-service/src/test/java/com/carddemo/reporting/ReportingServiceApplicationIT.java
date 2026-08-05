@@ -47,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *  auto-configuration excluded and Flyway disabled, and the on-demand Spring Batch
  *  ``statementGenerationJob`` is registered yet never launched at startup
  *  (``spring.batch.job.enabled=false``; the migrated submission runs only through
- *  the ``JobLauncher``, AAP 0.4.4).
+ *  the ``JobOperator``, AAP 0.4.4).
  * :output: Two JUnit 5 assertions - a non-null application context and a present
  *  ``statementGenerationJob`` bean whose name matches its frozen identifier while
  *  reporting zero job instances at boot.
@@ -62,6 +62,11 @@ class ReportingServiceApplicationIT {
      *  context - including the JDBC-backed ``JobRepository`` reading the ``BATCH_*`` metadata
      *  tables - boots against the schema the committed Flyway migrations produce.
      * :param registry: the dynamic property registry supplied by the Spring Test context.
+     * :note: The Spring Batch ``BATCH_*`` metadata tables are NOT provisioned here.
+     *   The shared container's schema is produced by the committed Flyway migrations,
+     *   and the shared ``JdbcBatchConfiguration`` provisions the metadata schema when
+     *   it is still absent - exactly as it does in production - so no ``spring.sql.init``
+     *   override and no per-class container are needed.
      */
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
@@ -81,29 +86,6 @@ class ReportingServiceApplicationIT {
     private JobRepository jobRepository;
 
     /**
-     * :purpose: Provision the Spring Batch metadata schema this test's throwaway
-     *   PostgreSQL needs. The deployed service reads and writes job/step
-     *   bookkeeping through a JDBC-backed ``JobRepository`` whose ``BATCH_*``
-     *   tables are owned by the shared ``carddemo-common`` Flyway migration
-     *   ``V4__batch_metadata.sql``; the ``test`` profile disables Flyway, so the
-     *   canonical Spring Batch PostgreSQL DDL is applied here instead.
-     *
-     *   A dedicated database name is registered so this class gets its OWN
-     *   throwaway container: ``ContainerDatabaseDriver`` caches one container per
-     *   JDBC URL for the whole JVM, and the sibling ``StatementGenerationJobIT``
-     *   applies the very same create-only DDL, so sharing one container would make
-     *   whichever context started second fail on already-existing tables.
-     * :param registry: the dynamic property registry supplied by the test context.
-     */
-    @DynamicPropertySource
-    static void provisionBatchMetadataSchema(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", () -> "jdbc:tc:postgresql:18:///carddemo_reporting_appit");
-        registry.add("spring.sql.init.mode", () -> "always");
-        registry.add("spring.sql.init.schema-locations",
-                () -> "classpath:org/springframework/batch/core/schema-postgresql.sql");
-    }
-
-    /**
      * :purpose: Verify the reporting-service Spring context boots against a real PostgreSQL container.
      */
     @Test
@@ -112,7 +94,7 @@ class ReportingServiceApplicationIT {
     }
 
     /**
-     * :purpose: Verify the statement batch job bean is present but is NOT executed at startup (on-demand JobLauncher only).
+     * :purpose: Verify the statement batch job bean is present but is NOT executed at startup (on-demand JobOperator only).
      */
     @Test
     void statementGenerationJobDoesNotAutoRunAtStartup() {

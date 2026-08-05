@@ -39,7 +39,7 @@ import java.util.List;
  *   address line 3) and the per-account ``WS-TOTAL-AMT`` accumulation.
  * :output: The field-level source-of-truth ``StatementModel`` consumed by the
  *   plain-text and HTML statement renderers in ``batch/StatementGenerationJob``;
- *   monetary figures are normalized to scale 2 (``RoundingMode.HALF_UP``).
+ *   monetary figures are normalized to scale 2 (``RoundingMode.DOWN``).
  *   Performs no persistence, I/O, rendering, logging or date reformatting.
  */
 @Component
@@ -110,7 +110,7 @@ public class StatementMapper {
 
         // Transaction lines and running total: WS-TOTAL-AMT reset to zero per
         // account (L325), then ADD TRNX-AMT TO WS-TOTAL-AMT per line (L429).
-        BigDecimal total = BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP);
+        BigDecimal total = BigDecimal.ZERO.setScale(2, RoundingMode.DOWN);
         List<StatementTransaction> lines = new ArrayList<>();
         if (transactions != null) {
             for (Transaction transaction : transactions) {
@@ -125,7 +125,7 @@ public class StatementMapper {
             }
         }
         model.setTransactions(lines);
-        model.setTotalAmount(total.setScale(2, RoundingMode.HALF_UP));
+        model.setTotalAmount(total.setScale(2, RoundingMode.DOWN));
 
         return model;
     }
@@ -135,7 +135,7 @@ public class StatementMapper {
      *   the ``6000-WRITE-TRANS`` moves (``TRNX-ID`` / ``TRNX-DESC`` / ``TRNX-AMT``)
      *   plus the full ``TRNX-RECORD`` field carry so the model is a complete
      *   field source-of-truth. The amount is normalized to scale 2
-     *   (``RoundingMode.HALF_UP``); the 26-character origination and processing
+     *   (``RoundingMode.DOWN``); the 26-character origination and processing
      *   timestamps are copied verbatim as strings without reformatting.
      * :param transaction: the posted transaction to map; may be ``null``.
      * :returns: the populated ``StatementTransaction`` with a scale-2 amount, or
@@ -163,13 +163,14 @@ public class StatementMapper {
     }
 
     /**
-     * :purpose: Normalize a monetary value to scale 2 using ``RoundingMode.HALF_UP``
-     *   so that migrated financial figures preserve the COBOL packed-decimal scale.
+     * :purpose: Normalize a monetary value to scale 2 using ``RoundingMode.DOWN``
+     *   so that migrated financial figures preserve the COBOL packed-decimal scale
+     *   and its truncate-toward-zero receiver semantics (no ``ROUNDED`` phrase).
      * :param value: the monetary value to normalize; may be ``null``.
      * :returns: the value at scale 2, or ``null`` when ``value`` is ``null``.
      */
     private static BigDecimal scale2(BigDecimal value) {
-        return value == null ? null : value.setScale(2, RoundingMode.HALF_UP);
+        return value == null ? null : value.setScale(2, RoundingMode.DOWN);
     }
 
     /**

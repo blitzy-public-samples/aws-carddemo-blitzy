@@ -32,7 +32,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import java.util.List;
@@ -78,8 +78,8 @@ class PiiAtRestSweepIT {
      *     it the Flyway migration of this container) loads.
      */
     @SuppressWarnings("resource")
-    private static final PostgreSQLContainer<?> POSTGRES =
-            new PostgreSQLContainer<>(DockerImageName.parse("postgres:18"));
+    private static final PostgreSQLContainer POSTGRES =
+            new PostgreSQLContainer(DockerImageName.parse("postgres:18"));
 
     static {
         POSTGRES.start();
@@ -163,14 +163,19 @@ class PiiAtRestSweepIT {
 
         assertThat(thrown).isNotNull();
         // The domain type on the cause chain is what PersistenceExceptionHandler keys on to
-        // answer with the frozen non-disclosing message; the exception's own message carries
-        // the operator-facing detail and is never returned, so only the type and the absence
-        // of the protected value are asserted here.
-        assertThat(rootPiiFailure(thrown)).isNotNull();
+        // answer the CALLER with the frozen non-disclosing PiiEncryptionException.MESSAGE.
+        // The exception's own message is the two-argument constructor's operator-facing
+        // detail, which is logged and never returned, so it is that detail - not MESSAGE -
+        // that the raised exception carries here.
         assertThat(thrown).hasMessageNotContaining(PLAINTEXT_SSN);
         assertThat(rootPiiFailure(thrown))
                 .isNotNull()
-                .hasMessage(PiiEncryptionException.MESSAGE);
+                .hasMessage("Unable to decrypt sensitive attribute from persistence");
+        // Whatever the operator detail says, it must never disclose the protected value.
+        assertThat(rootPiiFailure(thrown).getMessage()).doesNotContain(PLAINTEXT_SSN);
+        // The caller-facing substitution is the non-disclosing frozen text.
+        assertThat(PiiEncryptionException.MESSAGE)
+                .isEqualTo("Unable to process protected customer data");
     }
 
     /**

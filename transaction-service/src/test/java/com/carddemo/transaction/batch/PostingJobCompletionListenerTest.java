@@ -112,7 +112,7 @@ class PostingJobCompletionListenerTest {
      */
     private static StepExecution step(JobExecution jobExecution, BatchStatus status,
                                       long readCount, long rejectCount) {
-        StepExecution stepExecution = new StepExecution(STEP_NAME, jobExecution);
+        StepExecution stepExecution = new StepExecution(1L, STEP_NAME, jobExecution);
         if (!jobExecution.getStepExecutions().contains(stepExecution)) {
             jobExecution.addStepExecution(stepExecution);
         }
@@ -223,7 +223,7 @@ class PostingJobCompletionListenerTest {
         @DisplayName("a non-COMPLETED step execution is excluded from both tallies")
         void incompleteStepExecutionsAreNotTallied() {
             JobExecution execution = jobExecution(BatchStatus.COMPLETED);
-            StepExecution failed = new StepExecution(STEP_NAME, execution);
+            StepExecution failed = new StepExecution(1L, STEP_NAME, execution);
             if (!execution.getStepExecutions().contains(failed)) {
                 execution.addStepExecution(failed);
             }
@@ -265,8 +265,8 @@ class PostingJobCompletionListenerTest {
         @DisplayName("tallies sum across every completed step execution of the run")
         void talliesSumAcrossCompletedSteps() {
             JobExecution execution = jobExecution(BatchStatus.COMPLETED);
-            StepExecution first = new StepExecution(STEP_NAME, execution);
-            StepExecution second = new StepExecution(STEP_NAME + "Restart", execution);
+            StepExecution first = new StepExecution(1L, STEP_NAME, execution);
+            StepExecution second = new StepExecution(2L, STEP_NAME + "Restart", execution);
             for (StepExecution stepExecution : List.of(first, second)) {
                 if (!execution.getStepExecutions().contains(stepExecution)) {
                     execution.addStepExecution(stepExecution);
@@ -293,7 +293,7 @@ class PostingJobCompletionListenerTest {
         @DisplayName("a step that published no reject count contributes zero rejects")
         void missingRejectCountKeyDefaultsToZero() {
             JobExecution execution = jobExecution(BatchStatus.COMPLETED);
-            StepExecution stepExecution = new StepExecution(STEP_NAME, execution);
+            StepExecution stepExecution = new StepExecution(1L, STEP_NAME, execution);
             if (!execution.getStepExecutions().contains(stepExecution)) {
                 execution.addStepExecution(stepExecution);
             }

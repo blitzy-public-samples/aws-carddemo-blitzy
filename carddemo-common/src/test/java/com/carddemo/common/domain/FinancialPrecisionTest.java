@@ -94,10 +94,18 @@ final class FinancialPrecisionTest {
     @DisplayName("NUMERIC(p,2) storage normalizes any monetary input to scale 2")
     void scaleNormalizationMatchesNumericColumn() {
         // A NUMERIC(p,2) column (every monetary @Column(scale = 2) in the domain) coerces
-        // stored values to exactly two fractional digits; setScale(2, HALF_UP) mirrors that.
-        assertThat(new BigDecimal("100.1").setScale(2, RoundingMode.HALF_UP).toPlainString())
+        // stored values to exactly two fractional digits; setScale(2, DOWN) mirrors that.
+        // These two inputs only PAD, so no digit is discarded and the mode is immaterial;
+        // DOWN is used because it is the project-wide monetary normalization mode.
+        assertThat(new BigDecimal("100.1").setScale(2, RoundingMode.DOWN).toPlainString())
                 .isEqualTo("100.10");
-        assertThat(new BigDecimal("100").setScale(2, RoundingMode.HALF_UP).toPlainString())
+        assertThat(new BigDecimal("100").setScale(2, RoundingMode.DOWN).toPlainString())
                 .isEqualTo("100.00");
+        // Where a digit IS discarded, the direction is toward zero, matching the
+        // unrounded COBOL MOVE into a V99 receiver.
+        assertThat(new BigDecimal("100.119").setScale(2, RoundingMode.DOWN).toPlainString())
+                .isEqualTo("100.11");
+        assertThat(new BigDecimal("-100.119").setScale(2, RoundingMode.DOWN).toPlainString())
+                .isEqualTo("-100.11");
     }
 }

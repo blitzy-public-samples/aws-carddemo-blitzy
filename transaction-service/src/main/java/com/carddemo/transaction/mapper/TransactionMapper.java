@@ -168,12 +168,14 @@ public class TransactionMapper {
 
     /**
      * :purpose: Normalize a monetary value to the COBOL ``S9(09)V99`` fixed scale of
-     *   two decimal places using {@link RoundingMode#HALF_UP}.
+     *   two decimal places using {@link RoundingMode#DOWN}, so excess fraction
+     *   digits are truncated toward zero exactly as an unrounded COBOL ``MOVE``
+     *   into a ``V99`` receiver drops them.
      * :param value: the amount to normalize; may be ``null``.
      * :returns: the value at scale 2, or ``null`` when ``value`` is ``null``.
      */
     private static BigDecimal scale2(BigDecimal value) {
-        return value == null ? null : value.setScale(2, RoundingMode.HALF_UP);
+        return value == null ? null : value.setScale(2, RoundingMode.DOWN);
     }
 
     /**

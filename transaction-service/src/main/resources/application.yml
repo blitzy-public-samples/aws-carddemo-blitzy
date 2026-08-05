@@ -79,7 +79,7 @@ spring:
     baseline-on-migrate: false
 
   # The transaction-posting batch job (CBTRN02C -> TransactionPostingJob)
-  # runs ON-DEMAND via JobLauncher, never automatically at startup.
+  # runs ON-DEMAND via JobOperator, never automatically at startup.
   batch:
     job:
       enabled: false

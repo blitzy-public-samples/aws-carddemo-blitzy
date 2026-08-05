@@ -261,16 +261,24 @@ class TransactionValidationProcessorTest {
         }
 
         @Test
-        @DisplayName("WS-TEMP-BAL is evaluated at scale 2 (PIC S9(09)V99)")
+        @DisplayName("WS-TEMP-BAL is evaluated at scale 2 (PIC S9(09)V99), truncating toward zero")
         void tempBalanceIsEvaluatedAtScaleTwo() {
-            // 0.005 rounds HALF_UP to 0.01 at scale 2, taking tempBal one cent over the limit.
-            DailyTransaction dt = dailyTransaction("1000.005");
             when(cardXrefRepository.findByXrefCardNum(CARD_NUM))
                     .thenReturn(Optional.of(new CardXref(CARD_NUM, CUST_ID, ACCT_ID)));
             when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(
                     account("1000.00", "0.00", "0.00", "2025-01-01")));
 
-            assertThat(processor.process(dt).getRejectCode()).isEqualTo(102);
+            // WS-TEMP-BAL is a PIC S9(09)V99 receiver and the COBOL COMPUTE carries no
+            // ROUNDED phrase, so the third fraction digit is DROPPED: 1000.005 becomes
+            // 1000.00, exactly AT the limit, which passes. Comparing the unnormalized
+            // 1000.005 would reject, and HALF_UP would give 1000.01 and also reject,
+            // so a code of 0 here is what pins truncation at scale 2.
+            assertThat(processor.process(dailyTransaction("1000.005")).getRejectCode()).isZero();
+
+            // The truncation is not a clamp: a third digit that still leaves the
+            // truncated value above the limit rejects. 1000.015 -> 1000.01 -> 102.
+            assertThat(processor.process(dailyTransaction("1000.015")).getRejectCode())
+                    .isEqualTo(102);
         }
     }
 

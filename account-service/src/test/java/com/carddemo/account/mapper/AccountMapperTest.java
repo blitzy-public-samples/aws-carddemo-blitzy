@@ -39,7 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatNoException;
  * :purpose: Pure JUnit 5 + AssertJ unit test for the hand-written
  *   {@link AccountMapper}. It locks the two highest-risk fidelity contracts of
  *   the account service: (1) the five monetary fields are normalized to
- *   {@link BigDecimal} scale 2 with ``HALF_UP`` rounding, and (2) the frozen
+ *   {@link BigDecimal} scale 2 by truncation toward zero, and (2) the frozen
  *   misspelled ``AcctExpiraionDate`` accessor is preserved verbatim while the
  *   correctly-spelled date token never surfaces on any accessor. It also
  *   verifies full ``toViewResponse`` field mapping (non-sensitive fields only,
@@ -333,12 +333,12 @@ class AccountMapperTest {
 
     /**
      * :purpose: Prove {@code applyUpdate} normalizes all five monetary fields to
-     *   {@link BigDecimal} scale 2 with ``HALF_UP`` rounding, exercising the
-     *   pad-up, midpoint-round-up and integer-pad cases across the fields.
+     *   {@link BigDecimal} scale 2 by truncating toward zero, exercising the
+     *   pad-up, midpoint-truncate and integer-pad cases across the fields.
      */
     @Test
-    @DisplayName("applyUpdate normalizes all five money fields to scale 2 with HALF_UP rounding")
-    void applyUpdateNormalizesAllFiveMoneyFieldsToScale2HalfUp() {
+    @DisplayName("applyUpdate normalizes all five money fields to scale 2 by truncation")
+    void applyUpdateNormalizesAllFiveMoneyFieldsToScale2Truncated() {
         Account account = new Account();
         Customer customer = new Customer();
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
@@ -352,27 +352,28 @@ class AccountMapperTest {
 
         assertThat(account.getAcctCurrBal()).isEqualByComparingTo("100.10");
         assertThat(account.getAcctCurrBal().scale()).isEqualTo(2);
-        assertThat(account.getAcctCreditLimit()).isEqualByComparingTo("100.01");
+        assertThat(account.getAcctCreditLimit()).isEqualByComparingTo("100.00");
         assertThat(account.getAcctCreditLimit().scale()).isEqualTo(2);
         assertThat(account.getAcctCashCreditLimit()).isEqualByComparingTo("100.00");
         assertThat(account.getAcctCashCreditLimit().scale()).isEqualTo(2);
         assertThat(account.getAcctCurrCycCredit()).isEqualByComparingTo("100.10");
         assertThat(account.getAcctCurrCycCredit().scale()).isEqualTo(2);
-        assertThat(account.getAcctCurrCycDebit()).isEqualByComparingTo("100.01");
+        assertThat(account.getAcctCurrCycDebit()).isEqualByComparingTo("100.00");
         assertThat(account.getAcctCurrCycDebit().scale()).isEqualTo(2);
     }
 
     /**
-     * :purpose: Prove the ``HALF_UP`` rounding mode and scale-2 padding across a
-     *   set of representative inputs, including the classic binary-float trap
-     *   value ``2.675`` (correct only because the {@link BigDecimal} string
-     *   constructor is used).
+     * :purpose: Prove the truncate-toward-zero normalization and scale-2 padding
+     *   across a set of representative inputs, including the classic binary-float
+     *   trap value ``2.675`` (correct only because the {@link BigDecimal} string
+     *   constructor is used). A COBOL ``MOVE`` into a ``V99`` receiver carries no
+     *   ``ROUNDED`` phrase, so a ``.005`` midpoint drops rather than rounds up.
      */
     @Test
-    @DisplayName("applyUpdate applies HALF_UP rounding and scale-2 padding across representative inputs")
-    void applyUpdateAppliesHalfUpRoundingToBalance() {
-        assertCurrBalNormalizes("100.005", "100.01");
-        assertCurrBalNormalizes("2.675", "2.68");
+    @DisplayName("applyUpdate truncates to scale 2 and pads across representative inputs")
+    void applyUpdateTruncatesBalanceToScale2() {
+        assertCurrBalNormalizes("100.005", "100.00");
+        assertCurrBalNormalizes("2.675", "2.67");
         assertCurrBalNormalizes("100.004", "100.00");
         assertCurrBalNormalizes("100", "100.00");
         assertCurrBalNormalizes("100.1", "100.10");
@@ -380,7 +381,7 @@ class AccountMapperTest {
 
     /**
      * :purpose: Secondary financial-precision path — prove the money fields are
-     *   also normalized to scale 2 with ``HALF_UP`` rounding when surfaced
+     *   also normalized to scale 2 by truncation toward zero when surfaced
      *   through {@code toViewResponse} onto the {@link AccountViewResponseDto}
      *   (whose money fields are {@link BigDecimal}).
      */
@@ -398,13 +399,13 @@ class AccountMapperTest {
 
         assertThat(dto.getAcctCurrBal()).isEqualByComparingTo("100.10");
         assertThat(dto.getAcctCurrBal().scale()).isEqualTo(2);
-        assertThat(dto.getAcctCreditLimit()).isEqualByComparingTo("100.01");
+        assertThat(dto.getAcctCreditLimit()).isEqualByComparingTo("100.00");
         assertThat(dto.getAcctCreditLimit().scale()).isEqualTo(2);
         assertThat(dto.getAcctCashCreditLimit()).isEqualByComparingTo("100.00");
         assertThat(dto.getAcctCashCreditLimit().scale()).isEqualTo(2);
         assertThat(dto.getAcctCurrCycCredit()).isEqualByComparingTo("100.00");
         assertThat(dto.getAcctCurrCycCredit().scale()).isEqualTo(2);
-        assertThat(dto.getAcctCurrCycDebit()).isEqualByComparingTo("2.68");
+        assertThat(dto.getAcctCurrCycDebit()).isEqualByComparingTo("2.67");
         assertThat(dto.getAcctCurrCycDebit().scale()).isEqualTo(2);
     }
 

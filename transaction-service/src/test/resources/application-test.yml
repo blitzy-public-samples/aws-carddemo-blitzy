@@ -28,7 +28,7 @@ spring:
     # history table applies and no baseline is needed.
     enabled: true
     locations: classpath:db/migration
-  # The transaction-posting batch job runs on demand via JobLauncher, never at startup.
+  # The transaction-posting batch job runs on demand via JobOperator, never at startup.
   batch:
     job:
       enabled: false

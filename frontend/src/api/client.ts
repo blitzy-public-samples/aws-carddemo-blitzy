@@ -12,9 +12,11 @@
  *   ``app/cbl/COACTUPC.cbl``) as axios request and response interceptors.
  * :output: The default export ``apiClient`` (a configured ``AxiosInstance``), the
  *   named exports ``ApiError`` (the normalized error type carrying a safe
- *   ``correlationId`` support reference) and ``isApiError`` (its type-guard), and
+ *   ``correlationId`` support reference) and ``isApiError`` (its type-guard),
  *   ``registerSessionExpiryHandler`` used by the session store to drop local
- *   authority exactly once per expiry.
+ *   authority exactly once per expiry, and ``generateCorrelationId``, the one
+ *   correlation-id source the request interceptor and the SPA's uncaught-error
+ *   telemetry both draw from.
  * :note: This module never reads the Vite build-time environment directly; the
  *   base URL is obtained only through ``getApiBaseUrl`` from ``./config``, so the
  *   module is evaluable under Jest (jsdom) without any Vite environment injection.
@@ -203,11 +205,13 @@ function handleSessionRejected(config: InternalAxiosRequestConfig | undefined): 
 }
 
 /**
- * :purpose: Produce a correlation id for the ``X-Correlation-Id`` header.
+ * :purpose: Produce a correlation id for the ``X-Correlation-Id`` header, and for a
+ *   client-side fault that never reached the server and so was never stamped with
+ *   one by the gateway.
  * :returns: An RFC-4122 v4 UUID when the Web Crypto API is available, otherwise
  *   a timestamp-based fallback id that remains unique per request.
  */
-function generateCorrelationId(): string {
+export function generateCorrelationId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return crypto.randomUUID();
   }

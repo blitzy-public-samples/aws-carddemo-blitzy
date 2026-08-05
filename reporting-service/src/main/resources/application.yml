@@ -86,7 +86,7 @@ spring:
     baseline-on-migrate: false
 
   # The statement-generation and transaction-report jobs run ON-DEMAND
-  # via JobLauncher, never automatically at startup.
+  # via JobOperator, never automatically at startup.
   batch:
     job:
       enabled: false

@@ -37,6 +37,7 @@ does **not** duplicate that rationale inline.
 - [Data and Database Migrations](#data-and-database-migrations)
 - [Observability](#observability)
 - [Testing](#testing)
+- [Performance and Non-Functional Verification](#performance-and-non-functional-verification)
 - [Documentation](#documentation)
 - [Legacy Mainframe Reference](#legacy-mainframe-reference)
 - [License](#license)
@@ -205,7 +206,8 @@ Each service module follows the package layout
 with shared code under `com.carddemo.common.*`. Every service module carries its
 own `src/main/resources/application.yml`, `logback-spring.xml`, `src/test/java`
 suite, and `Dockerfile`. The Flyway `db/migration/` scripts are **not** per-service:
-they live once in `carddemo-common` and are applied by a single migration owner (see
+they live once in `carddemo-common`, are carried by every service, and are applied
+first-writer-wins (see
 [Data and Database Migrations](#data-and-database-migrations)).
 
 ---
@@ -366,10 +368,12 @@ Container health checks use a curl-free probe (bash `/dev/tcp` against
 `curl` nor `wget`. The frontend image is multi-stage too (`node:24` build stage →
 `nginx:alpine` runtime).
 
-On first start, `batch-service` — the single migration owner — applies the schema
+On first start, `batch-service` — the designated first starter — applies the schema
 and seed migrations against the PostgreSQL container automatically, and every other
-service waits for it to report healthy before validating its own mappings. To stop
-and remove the stack:
+service waits for it to report healthy before validating its own mappings. Every
+service carries the same migration set, so the schema is provisioned by whichever
+starts first and the later starters find nothing left to apply. To stop and remove
+the stack:
 
 ```bash
 docker compose down
@@ -455,16 +459,29 @@ indexes, and application-enforced integrity becomes declarative foreign-key
 constraints.
 
 The whole set lives in one place — `carddemo-common/src/main/resources/db/migration`
-— and is applied by a **single migration owner**, `batch-service`, through one
-`flyway_schema_history` table. Every other service runs with
-`spring.flyway.enabled: false` and `spring.jpa.hibernate.ddl-auto: validate`, so it
-verifies the schema it was given but never mutates it. This is required rather than
-merely tidy: every service scans the shared `com.carddemo.common.domain` package, so
-every service validates against the *whole* schema, and two Flyway instances cannot
-share one `public` schema. Startup order is enforced by the Compose `depends_on:
-batch-service: service_healthy` gate (and the Kubernetes `await-schema`
-initContainer), so bringing up any single service transitively provisions the
-database first. See the [decision log](./docs/decision-log.md) for the full
+— and is applied **first-writer-wins**. All eight business services carry the same
+consolidated set on their classpath and all eight run `spring.flyway.enabled: true`
+with `baseline-on-migrate: false`: whichever service starts first provisions the
+schema and records it in the one shared `flyway_schema_history` table, and every
+later starter finds the version line already satisfied and applies nothing. Every
+service runs `spring.jpa.hibernate.ddl-auto: validate`, so once the schema exists
+each service verifies the mappings it was given rather than mutating them.
+
+Sharing one `public` schema between several Flyway instances is safe because Flyway
+takes an exclusive lock on its history table for the duration of a migration run: a
+service starting concurrently blocks until the first commits, then reads a complete
+version line. Shipping the set everywhere is deliberate — it removes the single point
+of failure a designated owner would create, where removing or failing that one
+service would leave nothing to provision the database. The consequence, accepted
+knowingly, is that the shared group role holds `CREATE ON SCHEMA public` rather than
+`USAGE` alone.
+
+`batch-service` remains the **designated first starter**: it is the service gated on
+by the Compose `depends_on: batch-service: service_healthy` condition and by the
+Kubernetes `await-schema` initContainer, so bringing up any single service
+transitively provisions the database first. Ordering still matters, but for
+validation rather than for exclusivity — a service must not validate its mappings
+before the schema exists. See the [decision log](./docs/decision-log.md) for the full
 rationale.
 
 | Migration | Purpose |
@@ -568,6 +585,216 @@ Run the frontend suite:
 cd frontend
 npm test
 ```
+
+---
+
+## Performance and Non-Functional Verification
+
+The non-functional targets are verified by a committed load-test harness, not by
+dashboard configuration. `perf/carddemo-online-load.js` is a [k6](https://k6.io)
+script that drives all 17 screens of the application through the api-gateway on the
+same session-cookie and CSRF contract the SPA uses, so what it measures is the
+deployed request path (gateway route, Redis session lookup, downstream service,
+PostgreSQL). It is outside the Maven and npm builds and is run explicitly.
+
+```bash
+# 150 concurrent signed-on users for two minutes, against a running stack
+BASE_URL=http://localhost:8080 VUS=150 WRITE_VUS=5 ADMIN_VUS=5 DURATION=2m \
+    k6 run --summary-export perf-summary.json perf/carddemo-online-load.js
+```
+
+`VUS` is the TOTAL user count and the three mixes are carved out of it, so the run
+holds exactly the concurrency figure the target names. The script declares the
+target as a k6 threshold, so a run that misses it exits non-zero: `p(95) < 200`
+overall, per scenario and per endpoint, plus `http_req_failed < 1%`.
+
+The three mixes together cover every screen: the inquiry mix drives sign-on, the
+main menu, account view, card list, card detail, transaction list and transaction
+view plus the administrator user list; the update mix drives card update and account
+update; and the administration mix drives the administrator menu, add/update/delete
+user, bill payment, add transaction and the report request. Bill payment and the
+report request are driven on their confirmation-gate path — the first-ENTER
+behaviour of `COBIL00C` and `CORPT00C`, which redisplay with a prompt and mutate
+nothing — because a confirmed bill payment zeroes a balance and a confirmed report
+request launches a batch job per call, neither of which can be sustained for minutes
+without destroying the fixture being measured against. Add transaction IS driven
+confirmed, so the sequence-backed id generation of AAP 0.6.5 is measured under
+concurrency.
+
+### Measured results
+
+Measured on the Docker Compose stack described above (all nine backend services,
+PostgreSQL 18.4 and Redis 8 on one host), against the seeded fixture, with every
+image built from this revision.
+
+**Online response time — AAP 0.7.1 target: p95 < 200 ms at 150 concurrent users.**
+Exactly 150 virtual users (140 inquiry, 5 update, 5 administration) sustained
+**271.4 requests/second** for two minutes: 33,912 requests, **0 failed**, and all
+33,212 checks passing.
+
+| Endpoint | p95 (ms) | avg (ms) | median (ms) |
+|----------|---------:|---------:|------------:|
+| `POST /users` | **280.20** | 129.53 | 90.49 |
+| `POST /auth/signon` | 197.28 | 113.95 | 90.15 |
+| `PUT /users/{id}` | 195.06 | 106.95 | 88.42 |
+| `GET /admin/menu` | 95.42 | 16.68 | 2.08 |
+| `PUT /cards/{cardNumber}` | 92.23 | 22.26 | 8.83 |
+| `POST /transactions` | 84.70 | 22.34 | 11.02 |
+| `POST /billpay` | 81.00 | 22.50 | 14.11 |
+| `POST /reports` | 76.44 | 25.35 | 13.06 |
+| `GET /users/{id}` | 72.17 | 16.62 | 7.66 |
+| `DELETE /users/{id}` | 70.82 | 21.82 | 11.04 |
+| `PUT /accounts/{id}` | 70.29 | 23.81 | 12.02 |
+| `GET /users` | 69.38 | 18.39 | 7.99 |
+| `GET /transactions` | 68.62 | 16.37 | 6.21 |
+| `GET /accounts/{id}` | 65.85 | 16.83 | 6.93 |
+| `GET /cards/{cardNumber}` | 64.77 | 15.55 | 5.83 |
+| `GET /transactions/last` | 64.19 | 13.68 | 5.92 |
+| `GET /cards` | 64.11 | 15.64 | 5.81 |
+| `GET /transactions/{id}` | 63.82 | 15.35 | 5.57 |
+| `POST /admin/menu/select` | 51.80 | 8.23 | 2.16 |
+| `POST /menu/select` | 50.72 | 9.87 | 2.09 |
+| `GET /menu` | 46.88 | 9.26 | 1.94 |
+| `GET /session` (anonymous probe) | 5.33 | 2.95 | 2.27 |
+| **Overall** | **73.44** | **15.69** | **5.74** |
+
+Per scenario: inquiry p95 65.78 ms, update p95 73.05 ms, administration p95
+121.58 ms.
+
+**21 of the 22 endpoints meet the target.** Every screen that does not hash a
+password is at or below 95 ms — a margin of more than 2x. The one exceedance,
+`POST /users` at 280 ms, is reported rather than excused, and its cause is
+identified rather than assumed:
+
+- The three slowest endpoints are exactly the three that run the password encoder,
+  and all three share a median of 88-90 ms. Measured in isolation on an idle stack,
+  `POST /users` completes in **85-91 ms**, and it encodes exactly once
+  (`UserService` line 413) — there is no duplicated hash, and no N+1 query.
+- The excess above that baseline is contention for CPU between concurrent adaptive
+  hashes. That work factor is deliberate: it is the property that makes the stored
+  credential resistant to offline attack, and it is the reason the plaintext
+  comparison of `COSGN00C` was replaced (AAP 0.6.7). Reducing it would trade a
+  security guarantee for a latency figure.
+- The harness over-drives this path by design in order to obtain samples: it creates,
+  reads, updates and deletes a user on **every** iteration of the administration mix,
+  roughly two provisioned users per second sustained. Real administrator provisioning
+  happens a handful of times a day, at which rate the endpoint costs its isolated
+  85-91 ms. `POST /auth/signon` — the credential path every real user actually
+  traverses, and which hashes just as expensively — stays inside the budget at
+  197 ms even while being driven far harder than a real sign-on rate.
+
+The gateway's `RateLimitFilter` bounds requests **per client address** at 600 per
+minute. A load generator on one host presents a single address, so the budget must
+be raised for the duration of a measurement run
+(`carddemo.rate-limit.gateway-requests-per-minute`); 150 real users arrive from 150
+addresses and each carries its own budget. The committed value is restored
+afterwards, and was verified enforcing again: request 601 in a burst answered `429`.
+
+**Fixture impact of a run**, verified against the database afterwards: the security
+table returns to its seeded 10 rows with no harness user left behind, because the
+add/update/delete cycle is self-cleaning; exactly `WRITE_VUS` customer records (5)
+carry the normalised address, phone and FICO values the account-update screen
+requires; the confirmed add-transaction path appended 115 rows, leaving the seeded
+300 untouched; and **no batch job was launched**, confirming the report request
+never passed its confirmation gate. Re-seed the database to restore the fixture
+byte-for-byte.
+
+A finding in its own right: **no seeded account can be rewritten through the
+account-update screen unchanged.** All 50 are refused — 21 for a FICO score outside
+300-850, 22 for a telephone area code absent from the North American lookup table,
+and the remainder for a state code or state/zip pair the cross-edit rejects. The
+seeded fixture is faithful to the legacy customer file, and that file simply carries
+values `COACTUPC` itself does not accept, so an operator arriving at any of these
+accounts must correct the flagged field before the rewrite is taken. This is
+preserved behaviour, not a defect, and it is why the harness submits five corrected
+customer fields on the accounts its update mix owns.
+
+The gateway's `RateLimitFilter` bounds requests **per client address** at 600 per
+minute. A load generator on one host presents a single address, so the budget must
+be raised for the duration of a measurement run
+(`carddemo.rate-limit.gateway-requests-per-minute`); 150 real users arrive from 150
+addresses and each carries its own budget. The committed value is restored
+afterwards, and was verified enforcing again: request 601 in a burst answered `429`.
+
+**Batch window — AAP 0.7.1 target: completion within a 4-hour window.** The two
+job streams that carry the batch workload — transaction posting (`CBTRN02C` /
+`POSTTRAN`) and monthly interest calculation (`CBACT04C` / `INTCALC`) — were each
+run against a staged volume of roughly 50,000 driving records and timed from
+their own Spring Batch metadata (`batch_job_execution` joined to
+`batch_step_execution`), not from wall-clock observation:
+
+| Job | Run | Records | Outcome | Elapsed | Throughput |
+|-----|-----|--------:|---------|--------:|-----------:|
+| `transactionPostingJob` | All records posted | 50,000 | `COMPLETED` | 89.5 s | 558 records/s |
+| `transactionPostingJob` | All records rejected (code 103) | 50,000 | `COMPLETED_WITH_REJECTS` | 95.5 s | 524 records/s |
+| `interestCalculationJob` | Shipped seed | 50 | `COMPLETED` | 0.6 s | — |
+| `interestCalculationJob` | Staged volume | 50,050 | `COMPLETED` | 192.0 s | 261 records/s |
+
+At 558 records/second the 4-hour window admits roughly **8.0 million** postings;
+the 50,000-record run consumed 0.6% of it. Interest calculation is the heavier of
+the two per record because each record drives a disclosure-group lookup, a card
+cross-reference read, an interest transaction insert and an account roll-up: at
+261 records/second the window admits roughly **3.75 million** category balances,
+and the 50,050-record run consumed 5.3% of it. Both jobs therefore clear the
+window by two orders of magnitude at these volumes.
+
+The rejected-record posting run also confirms the frozen reject-file contract at
+runtime: 50,000 rejects produced a `dalyrejs.txt` of exactly 21,550,000 bytes,
+i.e. **431 bytes per record** — the 430-byte `DALYREJS` record plus its single
+`LF`.
+
+The interest run doubles as a runtime check of the COBOL truncation semantics.
+Each staged category balance was `1000.40` against a disclosure rate of `15.00`,
+so `(1000.40 * 15.00) / 1200 = 12.5050` — a value whose third decimal forces the
+rounding mode to show itself. All 50,000 interest transactions were written as
+`12.50` (total `625,000.00`), which is truncation toward zero; half-up rounding
+would have produced `12.51` and a total of `625,500.00`. Every staged account was
+rolled up to `acct_curr_bal = 12.50` with its cycle figures zeroed, matching
+`CBACT04C` paragraph `1050-UPDATE-ACCOUNT`. The category balances themselves are
+left untouched, because that program's only `REWRITE` targets the account file.
+
+**Memory footprint.** Resident set size per container immediately after the
+150-user run, and JVM heap actually in use:
+
+| Component | Container RSS | JVM heap used |
+|-----------|--------------:|--------------:|
+| api-gateway | 990 MiB | 155 MiB |
+| reporting-service | 952 MiB | 93 MiB |
+| transaction-service | 924 MiB | 101 MiB |
+| billpay-service | 855 MiB | 90 MiB |
+| card-service | 818 MiB | 133 MiB |
+| auth-service | 814 MiB | 161 MiB |
+| account-service | 744 MiB | 67 MiB |
+| user-service | 738 MiB | 47 MiB |
+| batch-service | 736 MiB | 77 MiB |
+| PostgreSQL / Redis / frontend | 84 / 6 / 91 MiB | n/a |
+
+The AAP's "under 10% increase" target is expressed relative to the mainframe
+region it replaces. That baseline cannot be measured in this environment, so the
+absolute figures above are reported instead of a percentage; see the decision log.
+
+**Exactly-once posting.** `tran_id` is the feed record's own `DALYTRAN-ID`
+(`MOVE DALYTRAN-ID TO TRAN-ID`), so the primary key makes double-posting
+structurally impossible rather than merely unlikely. Demonstrated end to end:
+
+1. A 1,000-record feed posted cleanly — 1,000 rows written.
+2. The identical feed resubmitted under a different posting date — refused by
+   `transactions_pkey`; the posted count stayed at 1,000 with **0 duplicate
+   `tran_id` values**.
+3. A 50,000-record run interrupted by `SIGKILL` at 3,171 records left the
+   execution non-terminal; the naive resubmission was **refused synchronously**
+   (HTTP 400, "A job execution for this job is already running"), so a crash can
+   neither double-post nor be mistaken for a clean run.
+4. After an operator marks the interrupted execution `FAILED` — the restartable
+   terminal status; `ABANDONED` is deliberately not restartable — the instance is
+   accepted for restart.
+
+Resuming an interrupted run additionally requires the batch working directory to be
+durable, because the step re-opens the reject file it was streaming to. Both
+delivered topologies use ephemeral storage there by design (a Compose `tmpfs`, a
+Kubernetes `emptyDir`), and the manifests record that a durable deployment
+substitutes a `PersistentVolumeClaim`; on ephemeral storage the restart fails
+loudly instead of silently re-posting.
 
 ---
 

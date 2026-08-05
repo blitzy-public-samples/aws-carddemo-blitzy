@@ -135,21 +135,7 @@ class RejectFileItemWriterTest {
      * :output: one byte array per written record, line separators removed.
      */
     private List<byte[]> writeAndReadBytes(PostingItem... items) throws Exception {
-        RejectFileItemWriter writer = new RejectFileItemWriter(
-                "dalyrejs.txt",
-                new BatchOutputPathResolver(tempDir.toString(), tempDir.toString()));
-        writer.open(new ExecutionContext());
-        try {
-            Chunk<PostingItem> chunk = new Chunk<>();
-            for (PostingItem item : items) {
-                chunk.add(item);
-            }
-            writer.write(chunk);
-            writer.update(new ExecutionContext());
-        } finally {
-            writer.close();
-        }
-        byte[] all = Files.readAllBytes(tempDir.resolve("dalyrejs.txt"));
+        byte[] all = writeAndReadRawBytes(items);
         List<byte[]> records = new ArrayList<>();
         int start = 0;
         for (int i = 0; i < all.length; i++) {
@@ -164,6 +150,31 @@ class RejectFileItemWriterTest {
             records.add(Arrays.copyOfRange(all, start, all.length));
         }
         return records;
+    }
+
+    /**
+     * Runs the writer over a chunk and returns the reject file's bytes UNSPLIT, so the
+     * record delimiter itself can be asserted.
+     *
+     * :param items: the posting items handed to the writer.
+     * :output: every byte the writer emitted, delimiters included.
+     */
+    private byte[] writeAndReadRawBytes(PostingItem... items) throws Exception {
+        RejectFileItemWriter writer = new RejectFileItemWriter(
+                "dalyrejs.txt",
+                new BatchOutputPathResolver(tempDir.toString(), tempDir.toString()));
+        writer.open(new ExecutionContext());
+        try {
+            Chunk<PostingItem> chunk = new Chunk<>();
+            for (PostingItem item : items) {
+                chunk.add(item);
+            }
+            writer.write(chunk);
+            writer.update(new ExecutionContext());
+        } finally {
+            writer.close();
+        }
+        return Files.readAllBytes(tempDir.resolve("dalyrejs.txt"));
     }
 
     @Nested
@@ -217,6 +228,32 @@ class RejectFileItemWriterTest {
             assertThat(records.get(0)).hasSize(RECORD_LENGTH);
             assertThat(new String(Arrays.copyOfRange(records.get(0), IMAGE_LENGTH, IMAGE_LENGTH + 4),
                     StandardCharsets.ISO_8859_1)).isEqualTo("0103");
+        }
+
+        /**
+         * :purpose: The record delimiter is pinned to a single ``LF``, so a stream of
+         *     ``n`` reject records occupies exactly ``n * (430 + 1)`` bytes. The
+         *     ``System.lineSeparator()`` default would emit ``CRLF`` on a Windows host
+         *     or under ``-Dline.separator``, adding a byte to every record; the
+         *     record-splitting helper tolerates either delimiter, so only a raw byte
+         *     assertion can detect that regression.
+         */
+        @Test
+        @DisplayName("the record delimiter is exactly one LF byte, never CRLF")
+        void recordDelimiterIsASingleLineFeed() throws Exception {
+            PostingItem first = PostingItem.rejected(dailyTransaction("10.00"),
+                    TransactionRejectException.INVALID_CARD_NUMBER,
+                    TransactionRejectException.MSG_INVALID_CARD_NUMBER, null, null);
+            PostingItem second = PostingItem.rejected(dailyTransaction("20.00"),
+                    TransactionRejectException.ACCOUNT_NOT_FOUND,
+                    TransactionRejectException.MSG_ACCOUNT_NOT_FOUND, null, null);
+
+            byte[] all = writeAndReadRawBytes(first, second);
+
+            assertThat(all).hasSize(2 * (RECORD_LENGTH + 1));
+            assertThat(all[RECORD_LENGTH]).isEqualTo((byte) '\n');
+            assertThat(all[2 * RECORD_LENGTH + 1]).isEqualTo((byte) '\n');
+            assertThat(all).doesNotContain((byte) '\r');
         }
     }
 

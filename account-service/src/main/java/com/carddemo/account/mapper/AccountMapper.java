@@ -38,8 +38,8 @@ import java.math.RoundingMode;
  *   entity fields into the read-only view response and post-update echo; writes
  *   apply the inbound update-request fields onto the caller-supplied managed
  *   entities so JPA ``@Version`` optimistic locking is preserved. The five
- *   monetary account fields are normalized to ``BigDecimal`` scale 2 with
- *   ``HALF_UP`` rounding. Performs a pure field copy only: no validation, no
+ *   monetary account fields are normalized to ``BigDecimal`` scale 2 by
+ *   truncation toward zero. Performs a pure field copy only: no validation, no
  *   persistence, no reformatting, no logging, and no other business logic
  *   (those responsibilities belong to ``AccountService`` and the DTO layer).
  */
@@ -295,13 +295,15 @@ public class AccountMapper {
     }
 
     /**
-     * :purpose: Normalize a monetary value to scale 2 with ``HALF_UP`` rounding,
-     *   preserving the legacy COBOL ``PIC S9(10)V99`` fixed-scale semantics.
+     * :purpose: Normalize a monetary value to scale 2 by truncating toward zero,
+     *   preserving the legacy COBOL ``PIC S9(10)V99`` fixed-scale semantics: a
+     *   COBOL ``MOVE`` into a ``V99`` receiver carries no ``ROUNDED`` phrase, so
+     *   excess fraction digits are dropped rather than rounded.
      * :param value: the monetary amount to normalize; may be {@code null}.
      * :returns: the value scaled to two fraction digits, or {@code null} when the
      *   input is {@code null}.
      */
     private static BigDecimal scale2(BigDecimal value) {
-        return value == null ? null : value.setScale(2, RoundingMode.HALF_UP);
+        return value == null ? null : value.setScale(2, RoundingMode.DOWN);
     }
 }

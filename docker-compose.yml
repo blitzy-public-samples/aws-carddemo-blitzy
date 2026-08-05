@@ -149,13 +149,17 @@ x-backend-service: &backend-service
     start_period: 60s
   # Runtime hardening. The read-only root filesystem forces all writable
   # state onto the tmpfs mount; a Spring Boot fat-jar only needs /tmp.
+  # Every tmpfs pins mode=1777 explicitly: left implicit, Docker mounts it 1777 when
+  # the container is CREATED but root-owned 0755 when the same container is RESTARTED,
+  # which locks the non-root runtime user (1000:1000) out of its own writable state.
+  # Rationale: docs/decision-log.md, section 9.5.
   security_opt:
     - no-new-privileges:true
   cap_drop:
     - ALL
   read_only: true
   tmpfs:
-    - /tmp
+    - /tmp:mode=1777
   user: "1000:1000"
   networks:
     - carddemo-net
@@ -414,8 +418,8 @@ services:
       CARDDEMO_BATCH_OUTPUT_DIR: /var/carddemo/batch/output
       CARDDEMO_BATCH_INPUT_DIR: /var/carddemo/batch/input
     tmpfs:
-      - /tmp
-      - /var/carddemo/batch
+      - /tmp:mode=1777
+      - /var/carddemo/batch:mode=1777
     build:
       context: ./transaction-service
     # Tag the built image exactly as k8s/deployment-transaction-service.yaml references it, so
@@ -476,8 +480,8 @@ services:
       CARDDEMO_BATCH_OUTPUT_DIR: /var/carddemo/batch/output
       CARDDEMO_BATCH_INPUT_DIR: /var/carddemo/batch/input
     tmpfs:
-      - /tmp
-      - /var/carddemo/batch
+      - /tmp:mode=1777
+      - /var/carddemo/batch:mode=1777
     # Waits for the shared schema: this service does not migrate, it validates
     # (see x-schema-dependencies above).
     depends_on: *schema-dependencies
@@ -509,8 +513,8 @@ services:
     volumes:
       - ./app/data/ASCII:/var/carddemo/batch/input:ro
     tmpfs:
-      - /tmp
-      - /var/carddemo/batch/output
+      - /tmp:mode=1777
+      - /var/carddemo/batch/output:mode=1777
 
   # =========================================================================
   # Frontend (React 19 SPA served by nginx). The bundle talks to the backend
@@ -554,9 +558,9 @@ services:
       - no-new-privileges:true
     read_only: true
     tmpfs:
-      - /tmp
-      - /var/cache/nginx
-      - /var/run
+      - /tmp:mode=1777
+      - /var/cache/nginx:mode=1777
+      - /var/run:mode=1777
     networks:
       - carddemo-net
     restart: unless-stopped

@@ -23,6 +23,7 @@ import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.web.SecurityFilterChain;
@@ -48,6 +49,8 @@ import org.springframework.security.web.SecurityFilterChain;
  * :note: CSRF is enforced once, at the api-gateway (the only browser-facing surface);
  *     enforcing it again here would demand a token this service never issues. The
  *     single coherent model is recorded in docs/decision-log.md.
+ * :note: The job-launch surface is authorized PER JOB, not as one group. Rationale:
+ *     docs/decision-log.md.
  */
 @Configuration
 @EnableWebSecurity
@@ -55,11 +58,29 @@ import org.springframework.security.web.SecurityFilterChain;
 public class SecurityConfig {
 
     /**
+     * :purpose: The one launchable job an ordinary signed-on user may submit: the
+     *     ``CBTRN03C`` / ``TRANREPT`` transaction-detail report a ``CORPT00C`` report
+     *     request hands off, reachable from main-menu option 9 (a ``userType 'U'``
+     *     option).
+     */
+    private static final String USER_LAUNCHABLE_JOB_PATH =
+            "/batch/jobs/transactionDetailReportJob";
+
+    /**
+     * :purpose: Any other single-segment job name under the launch surface. Every job it
+     *     matches re-platforms an operator-submitted JCL stream that had no CICS
+     *     transaction at all, so it carries the administrator authority.
+     */
+    private static final String ANY_JOB_PATH = "/batch/jobs/*";
+
+    /**
      * :purpose: Builds the stateless REST security filter chain: applies the shared
      *     hardening (session-derived principal, no persisted security context, no
      *     saved-request cache, hardened response headers, ``401`` entry point,
      *     audited denials), permits the anonymous health endpoints and the container
-     *     ``ERROR`` dispatch, and requires an authenticated principal for every other request.
+     *     ``ERROR`` dispatch, restricts each job launch to the authority its legacy
+     *     submission path carried, and requires an authenticated principal for every
+     *     other request.
      * :param http: the Spring Security ``HttpSecurity`` builder.
      * :returns: the configured ``SecurityFilterChain``.
      * :raises Exception: if the filter chain cannot be built.
@@ -76,6 +97,12 @@ public class SecurityConfig {
                     "/actuator/health",
                     "/actuator/health/**",
                     "/actuator/info").permitAll()
+                // The transaction-detail report is the ONE job a signed-on user reaches
+                // through a legacy screen, so it keeps the user authority. It is matched
+                // first: the wildcard rule below would otherwise claim it.
+                .requestMatchers(HttpMethod.POST, USER_LAUNCHABLE_JOB_PATH)
+                    .hasAnyRole("USER", "ADMIN")
+                .requestMatchers(HttpMethod.POST, ANY_JOB_PATH).hasRole("ADMIN")
                 .anyRequest().authenticated())
             .httpBasic(httpBasic -> httpBasic.disable())
             .formLogin(formLogin -> formLogin.disable());

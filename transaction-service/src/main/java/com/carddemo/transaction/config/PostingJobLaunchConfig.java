@@ -27,10 +27,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.JobExecutionException;
+import org.springframework.batch.core.configuration.support.MapJobRegistry;
 import org.springframework.batch.core.job.parameters.JobParameters;
 import org.springframework.batch.core.job.parameters.JobParametersBuilder;
-import org.springframework.batch.core.launch.JobLauncher;
-import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
+import org.springframework.batch.core.launch.JobOperator;
+import org.springframework.batch.core.launch.support.TaskExecutorJobOperator;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
@@ -41,11 +42,11 @@ import org.springframework.core.task.support.ContextPropagatingTaskDecorator;
 /**
  * :purpose: Give the daily transaction-posting job stream (``app/jcl/POSTTRAN.jcl`` +
  *     ``CBTRN02C``, AAP 0.4.4) the operator entry point the mainframe had. It exposes
- *     an asynchronous {@link JobLauncher} and one ``launch`` method that assembles the
+ *     an asynchronous {@link JobOperator} and one ``launch`` method that assembles the
  *     job parameters and submits ``transactionPostingJob``, which is the Java analogue
  *     of an operator submitting POSTTRAN to JES; the job then runs on a bounded
  *     ``posting-`` thread while the submission returns a durable execution handle.
- * :output: The ``postingJobLauncher`` {@link JobLauncher} bean and
+ * :output: The ``postingJobOperator`` {@link JobOperator} bean and
  *     {@link #launchTransactionPosting(String)}, which returns the submitted
  *     {@link JobExecution}.
  * :note: Before this configuration existed the job had NO launch surface in any
@@ -58,7 +59,7 @@ import org.springframework.core.task.support.ContextPropagatingTaskDecorator;
  *     ``spring.batch.job.enabled=true`` so Spring Boot's ``JobLauncherApplicationRunner``
  *     executes the same job bean and the pod exits with its outcome.
  * :note: ``@EnableBatchProcessing`` is intentionally absent so Spring Boot's batch
- *     auto-configuration stays active; only the asynchronous launcher is built here,
+ *     auto-configuration stays active; only the asynchronous operator is built here,
  *     exactly as batch-service does for its nine job streams.
  */
 @Configuration
@@ -94,37 +95,39 @@ public class PostingJobLaunchConfig {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(PostingJobLaunchConfig.class);
 
-    /** Asynchronous launcher used by {@link #launchTransactionPosting(String)}. */
-    private final JobLauncher postingJobLauncher;
+    /** Asynchronous operator used by {@link #launchTransactionPosting(String)}. */
+    private final JobOperator postingJobOperator;
 
     /** The daily transaction-posting job (``POSTTRAN`` / ``CBTRN02C``). */
     private final Job transactionPostingJob;
 
     /**
-     * :purpose: Build the asynchronous launcher over the batch job repository and
+     * :purpose: Build the asynchronous operator over the batch job repository and
      *     capture the posting job bean.
      * :param jobRepository: batch job repository (Spring Boot auto-configured), wired
-     *     into the launcher so every run is recorded in the durable ``BATCH_*`` tables.
+     *     into the operator so every run is recorded in the durable ``BATCH_*`` tables.
      * :param transactionPostingJob: the ``transactionPostingJob`` bean.
      */
     public PostingJobLaunchConfig(JobRepository jobRepository,
                                   @Qualifier("transactionPostingJob") Job transactionPostingJob) {
         // Built here (not constructor-injected) because this class also defines the
-        // postingJobLauncher bean; injecting it would be a self-referential cycle.
-        this.postingJobLauncher = buildAsyncJobLauncher(jobRepository);
+        // postingJobOperator bean; injecting it would be a self-referential cycle.
+        this.postingJobOperator = buildAsyncJobOperator(jobRepository);
         this.transactionPostingJob = transactionPostingJob;
     }
 
     /**
-     * :purpose: Construct a {@link TaskExecutorJobLauncher} bound to the batch job
+     * :purpose: Construct a {@link TaskExecutorJobOperator} bound to the batch job
      *     repository and a {@link SimpleAsyncTaskExecutor} whose threads are named
      *     ``posting-``, so a submitted run executes off the request thread.
-     * :param jobRepository: batch job repository the launcher records executions in.
-     * :returns: a fully initialized asynchronous {@link JobLauncher}.
+     * :param jobRepository: batch job repository the operator records executions in.
+     * :returns: a fully initialized asynchronous {@link JobOperator}.
+     * :raises IllegalStateException: if the operator cannot be initialized, which would
+     *     leave the posting job with no reachable launch surface.
      */
-    private static JobLauncher buildAsyncJobLauncher(JobRepository jobRepository) {
-        TaskExecutorJobLauncher launcher = new TaskExecutorJobLauncher();
-        launcher.setJobRepository(jobRepository);
+    private static JobOperator buildAsyncJobOperator(JobRepository jobRepository) {
+        TaskExecutorJobOperator operator = new TaskExecutorJobOperator();
+        operator.setJobRepository(jobRepository);
         SimpleAsyncTaskExecutor taskExecutor = new SimpleAsyncTaskExecutor("posting-");
         // Carry the submitting request's observation/trace scope and correlation id onto
         // the worker thread: this executor is built by hand, so Boot's automatic
@@ -133,26 +136,33 @@ public class PostingJobLaunchConfig {
         // the request that launched it (AAP 0.7.5).
         taskExecutor.setTaskDecorator(new ContextPropagatingTaskDecorator());
         taskExecutor.setConcurrencyLimit(MAX_CONCURRENT_JOBS);
-        launcher.setTaskExecutor(taskExecutor);
+        operator.setTaskExecutor(taskExecutor);
+        // TaskExecutorJobOperator requires a non-null job locator to initialize, but this
+        // operator is driven exclusively through start(Job, JobParameters), which resolves
+        // the job from the instance handed to it and never consults the locator; the
+        // name-keyed lookups (getJobNames, restart-by-id) are not part of this component's
+        // surface. An empty registry therefore satisfies the initialization contract without
+        // asserting a name-to-job mapping the component does not own.
+        operator.setJobRegistry(new MapJobRegistry());
         try {
             // afterPropertiesSet() declares a checked Exception; a failure here means the
-            // launcher can never run the job, so fail fast at startup.
-            launcher.afterPropertiesSet();
+            // operator can never run the job, so fail fast at startup.
+            operator.afterPropertiesSet();
         } catch (Exception ex) {
-            throw new IllegalStateException("Unable to initialize postingJobLauncher", ex);
+            throw new IllegalStateException("Unable to initialize postingJobOperator", ex);
         }
-        return launcher;
+        return operator;
     }
 
     /**
-     * :purpose: Expose the asynchronous launcher built in the constructor as the
-     *     ``postingJobLauncher`` bean, kept distinct by name from the synchronous
-     *     launcher supplied by Spring Boot batch auto-configuration.
-     * :returns: the {@link JobLauncher} that runs the posting job on ``posting-`` threads.
+     * :purpose: Expose the asynchronous operator built in the constructor as the
+     *     ``postingJobOperator`` bean, kept distinct by name from the synchronous
+     *     operator supplied by Spring Boot batch auto-configuration.
+     * :returns: the {@link JobOperator} that runs the posting job on ``posting-`` threads.
      */
-    @Bean("postingJobLauncher")
-    public JobLauncher postingJobLauncher() {
-        return this.postingJobLauncher;
+    @Bean("postingJobOperator")
+    public JobOperator postingJobOperator() {
+        return this.postingJobOperator;
     }
 
     /**
@@ -160,8 +170,8 @@ public class PostingJobLaunchConfig {
      * :param postingDate: the posting cycle's business date in ``YYYY-MM-DD`` form;
      *     when ``null`` or blank the current date is used, so an operator submission
      *     that names no date posts today's feed exactly as the daily job stream did.
-     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
-     * :raises JobExecutionException: if the launcher refuses the submission — an
+     * :returns: the {@link JobExecution} returned by the asynchronous operator.
+     * :raises JobExecutionException: if the operator refuses the submission — an
      *     already-running instance, an already-completed instance (the day's feed has
      *     been posted) or a restart violation — so a refused submission is never
      *     reported as an accepted one.
@@ -185,7 +195,7 @@ public class PostingJobLaunchConfig {
                     .addString(RUN_ID_KEY, UUID.randomUUID().toString(), false)
                     .toJobParameters();
             LOGGER.info("Submitting transactionPostingJob (postingDate={})", effectiveDate);
-            return this.postingJobLauncher.run(transactionPostingJob, parameters);
+            return this.postingJobOperator.start(transactionPostingJob, parameters);
         } finally {
             if (previous == null || previous.isBlank()) {
                 CorrelationIdContext.clear();
