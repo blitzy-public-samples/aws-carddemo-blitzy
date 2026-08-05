@@ -374,6 +374,9 @@ export default function TranListPage(): ReactElement {
                 return (
                   <tr key={fieldName} className={flag.trim() === '' ? undefined : 'selected'}>
                     <td>
+                      {/* BLITZY [A11Y]: one-character field per the BMS ``SEL000n``
+                          ``PIC X(01)`` layout; its target is below the WCAG 2.5.8
+                          minimum. Flagged for designer review. */}
                       <input
                         className="field"
                         data-testid={`tran-select-${String(index + 1)}`}

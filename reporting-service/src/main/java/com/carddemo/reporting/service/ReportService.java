@@ -310,8 +310,9 @@ public class ReportService {
             return withMessage(response, CONFIRM_PROMPT_PREFIX + reportName + CONFIRM_PROMPT_SUFFIX);
         }
         if (confirmValue.equals("Y") || confirmValue.equals("y")) {
-            // The hand-off is synchronous: a failed submission raises the frozen
-            // ``Unable to Write TDQ (JOBS)...`` message rather than a success text.
+            // The hand-off is synchronous and its outcome is kept, not discarded: a
+            // refused submission raises the frozen ``Unable to Write TDQ (JOBS)...``
+            // message instead of returning the success text over a job that never ran.
             BatchJobExecutionDto submitted =
                     batchJobClient.submitTransactionDetailReport(startDate, endDate);
             LOGGER.info("{} report submitted as {} execution {}", reportName,

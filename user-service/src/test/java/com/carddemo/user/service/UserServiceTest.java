@@ -717,6 +717,7 @@ class UserServiceTest {
         when(passwordEncoder.matches("samePass", "$2a$storedHash")).thenReturn(true);
         when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
 
+
         userService.updateUser("USER0001", withPwd(request, "samePass"));
 
         verify(sessionPrincipalIndex).revokeSessions("USER0001", "ROLE_CHANGED");
@@ -732,6 +733,7 @@ class UserServiceTest {
         when(passwordEncoder.matches("newRaw", "$2a$storedHash")).thenReturn(false);
         when(passwordEncoder.encode("newRaw")).thenReturn("$2a$new");
         when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
+
 
         userService.updateUser("USER0001", withPwd(request, "newRaw"));
 
@@ -749,6 +751,7 @@ class UserServiceTest {
         when(passwordEncoder.encode("newRaw")).thenReturn("$2a$new");
         when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
 
+
         userService.updateUser("USER0001", withPwd(request, "newRaw"));
 
         verify(sessionPrincipalIndex).revokeSessions("USER0001", "ROLE_CHANGED");
@@ -764,6 +767,7 @@ class UserServiceTest {
         when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
         when(passwordEncoder.matches("samePass", "$2a$storedHash")).thenReturn(true);
         when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
+
 
         userService.updateUser("USER0001", withPwd(request, "samePass"));
 
@@ -794,6 +798,7 @@ class UserServiceTest {
         when(userMapper.toEntity(request)).thenReturn(user("USER0009", "New", "User", "U", null));
         when(passwordEncoder.encode("rawPass")).thenReturn("$2a$new");
         when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
+
 
         userService.addUser(withPwd(request, "rawPass"));
 

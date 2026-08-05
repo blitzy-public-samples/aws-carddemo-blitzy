@@ -22,6 +22,7 @@ import com.carddemo.account.repository.CardXrefRepository;
 import com.carddemo.account.repository.CustomerRepository;
 import com.carddemo.common.domain.Account;
 import com.carddemo.common.domain.CardXref;
+import com.carddemo.common.crypto.CryptoConverter;
 import com.carddemo.common.domain.Customer;
 import com.carddemo.common.dto.AccountUpdateRequestDto;
 import com.carddemo.common.dto.AccountUpdateResponseDto;
@@ -29,20 +30,26 @@ import com.carddemo.common.dto.AccountViewResponseDto;
 import com.carddemo.common.dto.ErrorResponse;
 import com.carddemo.common.testsupport.MigratedSchemaContainer;
 import com.carddemo.common.crypto.PiiMasker;
+import com.carddemo.common.dto.SessionContext;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.jdbc.Sql;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -52,6 +59,8 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -68,10 +77,19 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *  chain against a seeded ``postgres:18`` container, proving functional equivalence with the
  *  two legacy CICS programs.
  * :output: Verifies the view and update happy paths (byte-identical scale-2 money and the
- *  preserved ``ACCT-EXPIRAION-DATE`` misspelling), the three verbatim not-found (HTTP 404)
- *  outcomes, the invalid-account-id edit (HTTP 400), and a lightweight correlation-id
+ *  preserved ``ACCT-EXPIRAION-DATE`` misspelling), the reachable verbatim not-found (HTTP 404)
+ *  outcome, the invalid-account-id edit (HTTP 400), and a lightweight correlation-id
  *  observability smoke check. Regulated PII fields (SSN, government id, card number) are
  *  never asserted.
+ * :note: The schema and its fixtures come from the shared production migration set in
+ *  carddemo-common (``classpath:db/migration``, enabled for the ``test`` profile), so the
+ *  context boots against the real schema under Hibernate ``ddl-auto: validate`` and the seeded
+ *  PII columns already hold the ciphertext the JPA converter expects. The two remaining
+ *  ordered-lookup misses of ``COACTVWC`` - a cross-reference pointing at an absent account
+ *  (L132) and at an absent customer (L134) - are unreachable against this schema by design:
+ *  ``card_xref`` carries real foreign keys to ``accounts`` and ``customers`` (AAP 0.6.4), so
+ *  such a row cannot exist. Those two service branches are covered with mocked repositories in
+ *  {@code AccountServiceTest}.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -103,10 +121,47 @@ class AccountViewUpdateIT {
      *  schema's foreign keys make unreachable, so they are asserted against the service in
      *  ``AccountServiceTest`` rather than through HTTP here.
      */
+    /** :purpose: Seeded account carrying no cross-reference row (missing-xref negative case). */
+    private static final long ACCT_WITHOUT_XREF = 3L;
+
+    /** :purpose: Non-sensitive 16-digit card number linking the happy-path cross-reference. */
+    private static final String CARD_HAPPY = "4111111111111111";
+
+    /** :purpose: Verbatim COACTVWC not-found message (WORKING-STORAGE L130). */
     private static final String MSG_ACCT_NOT_IN_XREF = "Did not find this account in account card xref file";
 
     /** :purpose: Verbatim COACTVWC/COACTUPC account-id edit message (``2210-EDIT-ACCOUNT``). */
     private static final String MSG_INVALID_ACCT_ID = "Account number must be a non zero 11 digit number";
+
+    /** :purpose: A social security number that satisfies ``1265-EDIT-US-SSN``. */
+    private static final String VALID_SSN = "020973888";
+
+    /** :purpose: A government issued id that satisfies the alphanumeric column width. */
+    private static final String VALID_GOVT_ID = "00000000000049368437";
+
+    /** :purpose: An EFT account id that satisfies ``1245-EDIT-NUM-REQD``. */
+    private static final String VALID_EFT_ACCOUNT_ID = "0053581756";
+
+    /** :purpose: A FICO score inside the ``1275-EDIT-FICO-SCORE`` 300-850 range. */
+    private static final int VALID_FICO_SCORE = 700;
+
+    /**
+     * Single shared PostgreSQL container started eagerly at class initialization so its mapped
+     * port is available to ``@DynamicPropertySource`` before the application context loads and
+     * the shared carddemo-common Flyway migration set (``V1`` schema, ``V2`` reference data,
+     * ``V3`` test data, ``V4`` batch metadata) creates and seeds every table this class reads.
+     */
+    private static final String VALID_ZIP = "48226";
+
+    /**
+     * :purpose: Phone numbers whose area codes are North America general purpose codes
+     *     (``1260-EDIT-US-PHONE-NUM``); the seeded ``(373)`` is not one.
+     */
+    private static final String VALID_PHONE_1 = "(908)119-8310";
+    private static final String VALID_PHONE_2 = "(801)693-8684";
+
+    /** :purpose: COACTUPC ``NO-SEARCH-CRITERIA-RECEIVED`` (L490). */
+    private static final String MSG_NO_INPUT = "No input received";
 
     /**
      * Points the datasource at the shared, already-migrated ``postgres:18`` container from
@@ -123,9 +178,34 @@ class AccountViewUpdateIT {
         MigratedSchemaContainer.registerDataSource(registry);
     }
 
+    /**
+     * :purpose: Build a signed-on session carrying the ADMIN ``SessionContext`` under the
+     *     canonical attribute name, so a request passes the session-derived
+     *     authentication filter exactly as it does after ``POST /auth/signon``.
+     * :returns: a ``MockHttpSession`` holding an administrator session context.
+     */
+    private static MockHttpSession signedOnSession() {
+        MockHttpSession session = new MockHttpSession();
+        SessionContext context = new SessionContext();
+        context.setUserId("ADMIN001");
+        context.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        session.setAttribute(SessionContext.SESSION_ATTRIBUTE_NAME, context);
+        return session;
+    }
+
     @Autowired
     private WebApplicationContext webApplicationContext;
 
+    /**
+     * Registration of the SHARED carddemo-common correlation-id filter, contributed by
+     * ``WebObservabilityConfig`` through ``META-INF/spring/...AutoConfiguration.imports``.
+     * Injecting the registration (rather than instantiating the filter) also asserts that the
+     * shared filter really is wired into this service's context, which is the defect QA Issue 7
+     * reported: the shared filter was never registered and five services carried divergent local
+     * copies that ignored the ``traceparent`` fallback.
+     */
+    @Autowired
+    private FilterRegistrationBean<CorrelationIdFilter> correlationIdFilterRegistration;
     // The correlation filter is a shared carddemo-common component registered
     // through a FilterRegistrationBean, so the standalone MockMvc setup below
     // instantiates it directly rather than injecting it.
@@ -149,24 +229,58 @@ class AccountViewUpdateIT {
     private MockMvc mockMvc;
 
     /**
-     * Prepares a clean, deterministic fixture before each test: restores the mutable seed
-     * rows and assembles a ``MockMvc`` wired with the correlation-id filter. The seeded
-     * customer PII columns are left EXACTLY as the migration wrote them - the read path
-     * must cope with the committed seed as deployed - and the ``card_xref`` rows come from
-     * the card-service migration seed (accounts 1..50).
+     * Prepares a clean, deterministic fixture before each test: empties the migrated
+     * ``card_xref`` table, restores the mutable seed rows, and assembles a ``MockMvc`` wired with
+     * the correlation-id filter.
      *
      * :output: an isolated per-test starting state and an initialized ``mockMvc``.
+     * :note: ``card_xref`` is created and seeded by the shared migration set; emptying it keeps
+     *  each case independent of the seeded linkage while leaving the accounts and customers the
+     *  cases assert on in place. The seeded PII columns hold real AES-256-GCM tokens (written by
+     *  the migration set's version-4 Java migration under the test key), so the customer record
+     *  hydrates through the JPA converter with no fixture patching.
      */
     @BeforeEach
     void setUp() {
+        jdbcTemplate.execute("TRUNCATE TABLE card_xref");
+        // Replace the migrated card_xref with a foreign-key-free variant of the same shape so
+        // the negative cases can stage cross-reference rows that deliberately point at an
+        // absent account or customer — the very orphan conditions COACTVWC reports. The
+        // shared V1 schema declares fk_card_xref_cust / fk_card_xref_acct, which would reject
+        // those rows at insert time and prevent the service-layer path from being exercised.
+        jdbcTemplate.execute("DROP TABLE IF EXISTS card_xref");
+        jdbcTemplate.execute("CREATE TABLE card_xref ("
+                + "xref_card_num VARCHAR(16) PRIMARY KEY, "
+                + "xref_cust_id BIGINT NOT NULL, "
+                + "xref_acct_id BIGINT NOT NULL)");
+
         // Restore the seed rows mutated by the update happy path and reset optimistic-lock versions.
         jdbcTemplate.update("UPDATE accounts SET acct_curr_bal = 194.00, version = 0 WHERE acct_id = ?",
                 HAPPY_ACCT_ID);
         jdbcTemplate.update("UPDATE customers SET cust_last_name = 'Kessler', version = 0 WHERE cust_id = ?",
                 HAPPY_CUST_ID);
 
+        // Restore the sensitive customer columns as the AES-GCM ciphertext the JPA
+        // CryptoConverter expects. The Flyway seed inserts them as plaintext with raw SQL,
+        // which bypasses the converter and is exactly the defect QA F3 reported; writing the
+        // ciphertext here reproduces the corrected at-rest contract that
+        // PiiAtRestInitializer establishes at service start (proved by PiiAtRestSweepIT).
+        CryptoConverter converter = new CryptoConverter();
+        jdbcTemplate.update("UPDATE customers SET cust_ssn = ?, cust_govt_issued_id = ?, "
+                        + "cust_eft_account_id = ? WHERE cust_id = ?",
+                converter.convertToDatabaseColumn(VALID_SSN),
+                converter.convertToDatabaseColumn(VALID_GOVT_ID),
+                converter.convertToDatabaseColumn(VALID_EFT_ACCOUNT_ID),
+                HAPPY_CUST_ID);
+
+        // The shared correlation filter is registered in production by
+        // carddemo-common WebObservabilityConfig (a FilterRegistrationBean over a
+        // non-bean instance, so it is registered exactly once); a standalone
+        // MockMvc setup does not pick up servlet registrations, so the same filter
+        // type is composed into the chain explicitly here.
         mockMvc = MockMvcBuilders.webAppContextSetup(webApplicationContext)
-                .addFilters(correlationIdFilter)
+                .addFilters(new CorrelationIdFilter())
+                .addFilters(correlationIdFilterRegistration.getFilter())
                 .build();
     }
 
@@ -184,14 +298,20 @@ class AccountViewUpdateIT {
      * Assembles a fully-populated update request from a view response; the mapper copies every
      * editable field unconditionally, so all NOT NULL columns must be supplied.
      *
+     * The submission must additionally satisfy every ``COACTUPC 1200-EDIT-MAP-INPUTS`` edit,
+     * exactly as the 3270 screen's ENTER key would. Three seeded values do not satisfy those
+     * edits and are therefore corrected here, as an operator would have to correct them on the
+     * screen before saving: the FICO score (seeded 274, below the 300-850 range enforced by
+     * ``1275-EDIT-FICO-SCORE``), the zip and second phone number (whose seeded values are not
+     * in the ``CSLKPCDY`` lookup tables), and the three sensitive identifiers, which the
+     * response masks per AAP 0.6.7 and so cannot be echoed back.
+     *
      * :param view: the current account/customer view whose editable fields seed the request.
      * :returns: an ``AccountUpdateRequestDto`` mirroring the supplied view.
      */
     /** :purpose: State code whose ZIP prefix pairing is in the ``CSLKPCDY`` state-ZIP table. */
     private static final String VALID_STATE_CD = "MI";
 
-    /** :purpose: ZIP whose first two digits pair with {@link #VALID_STATE_CD}. */
-    private static final String VALID_ZIP = "48226";
 
     /** :purpose: Screen-valid phone number 1 whose area code is in ``CSLKPCDY``. */
     private static final String VALID_PHONE_NUM_1 = "(212)555-0101";
@@ -199,11 +319,12 @@ class AccountViewUpdateIT {
     /** :purpose: Screen-valid phone number 2 whose area code is in ``CSLKPCDY``. */
     private static final String VALID_PHONE_NUM_2 = "(801)555-0102";
 
-    /** :purpose: FICO score inside the ``1275-EDIT-US-FICO-SCORE`` 300..850 range. */
-    private static final Integer VALID_FICO_SCORE = 700;
 
     private AccountUpdateRequestDto toUpdateRequest(AccountViewResponseDto view) {
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        // Echo the optimistic-lock snapshot exactly as a client does: the server compares it
+        // against the stored record before rewriting (read-snapshot-compare-rewrite).
+        request.setVersion(view.getVersion());
         request.setAcctActiveStatus(view.getAcctActiveStatus());
         request.setAcctCurrBal(view.getAcctCurrBal());
         request.setAcctCreditLimit(view.getAcctCreditLimit());
@@ -235,8 +356,9 @@ class AccountViewUpdateIT {
         request.setCustSsn(view.getCustSsn());
         request.setCustGovtIssuedId(view.getCustGovtIssuedId());
         request.setCustDobYyyyMmDd(view.getCustDobYyyyMmDd());
-        request.setCustEftAccountId(view.getCustEftAccountId());
+        request.setCustEftAccountId(VALID_EFT_ACCOUNT_ID);
         request.setCustPriCardHolderInd(view.getCustPriCardHolderInd());
+        // 1275-EDIT-FICO-SCORE: the seeded 274 is outside the legacy 300-850 range.
         request.setCustFicoCreditScore(VALID_FICO_SCORE);
         return request;
     }
@@ -344,6 +466,7 @@ class AccountViewUpdateIT {
                         .andReturn(),
                 AccountViewResponseDto.class);
         assertThat(current.getCustSsn()).isEqualTo(PiiMasker.maskSsn(identifierBefore));
+        assertThat(current.getCustSsn()).isEqualTo(PiiMasker.maskIdentifier(identifierBefore));
 
         AccountUpdateRequestDto request = toUpdateRequest(current);
         request.setCustLastName("Kesslerechoed");
@@ -379,7 +502,9 @@ class AccountViewUpdateIT {
      */
     @Test
     void getAccount_returns200WithAccountAndCustomerFields() throws Exception {
-        MvcResult result = mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID))
+        cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
+
+        MvcResult result = mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andReturn();
 
@@ -425,7 +550,7 @@ class AccountViewUpdateIT {
     @Test
     void putAccount_updatesAndPersistsWithScale2Precision() throws Exception {
         AccountViewResponseDto current = parse(
-                mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID))
+                mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession()))
                         .andExpect(status().isOk())
                         .andReturn(),
                 AccountViewResponseDto.class);
@@ -434,7 +559,7 @@ class AccountViewUpdateIT {
         request.setAcctCurrBal(new BigDecimal("250.00"));
         request.setCustLastName("Kesslerupd");
 
-        MvcResult result = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID)
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
@@ -460,7 +585,7 @@ class AccountViewUpdateIT {
      */
     @Test
     void getAccount_whenCardXrefMissing_returns404() throws Exception {
-        MvcResult result = mockMvc.perform(get("/accounts/{id}", UNSEEDED_ACCT_ID))
+        MvcResult result = mockMvc.perform(get("/accounts/{id}", ACCT_WITHOUT_XREF).session(signedOnSession()))
                 .andExpect(status().isNotFound())
                 .andReturn();
 
@@ -485,7 +610,6 @@ class AccountViewUpdateIT {
 
         assertThatThrownBy(() -> cardXrefRepository.saveAndFlush(orphan))
                 .isInstanceOf(DataIntegrityViolationException.class);
-
         assertThat(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(UNSEEDED_ACCT_ID)).isEmpty();
     }
 
@@ -504,7 +628,6 @@ class AccountViewUpdateIT {
 
         assertThatThrownBy(() -> cardXrefRepository.saveAndFlush(orphan))
                 .isInstanceOf(DataIntegrityViolationException.class);
-
         assertThat(jdbcTemplate.queryForObject(
                 "SELECT count(*) FROM card_xref WHERE xref_card_num = ?", Integer.class,
                 ORPHAN_CARD_MISSING_CUST)).isZero();
@@ -519,7 +642,7 @@ class AccountViewUpdateIT {
     @ParameterizedTest
     @ValueSource(strings = {"00000000000", "abc", "123456789012"})
     void getAccount_whenAccountIdInvalid_returns400(String invalidId) throws Exception {
-        MvcResult result = mockMvc.perform(get("/accounts/{id}", invalidId))
+        MvcResult result = mockMvc.perform(get("/accounts/{id}", invalidId).session(signedOnSession()))
                 .andExpect(status().isBadRequest())
                 .andReturn();
 
@@ -535,7 +658,7 @@ class AccountViewUpdateIT {
      */
     @Test
     void putAccount_whenAccountIdInvalid_returns400() throws Exception {
-        MvcResult result = mockMvc.perform(put("/accounts/{id}", "00000000000")
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", "00000000000").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
                 .andExpect(status().isBadRequest())
@@ -547,6 +670,218 @@ class AccountViewUpdateIT {
     }
 
     /**
+     * :purpose: COACTUPC ``NO-SEARCH-CRITERIA-RECEIVED`` (L490): an empty JSON body carries no
+     *  field at all, so the edit sequence rejects it before any record is read (QA F19 — this
+     *  previously returned HTTP 500 with the Spring Boot default body).
+     * :output: HTTP 400 carrying the verbatim ``'No input received'`` message.
+     */
+    @Test
+    void putAccount_withEmptyBody_returns400NoInputReceived() throws Exception {
+        cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
+
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        ErrorResponse error = parse(result, ErrorResponse.class);
+        assertThat(error.getStatus()).isEqualTo(400);
+        assertThat(error.getMessage()).isEqualTo(MSG_NO_INPUT);
+
+        // Nothing was written: the seeded balance and last name are intact.
+        assertMoney(accountRepository.findById(HAPPY_ACCT_ID).orElseThrow().getAcctCurrBal(), "194.00");
+        assertThat(customerRepository.findById(HAPPY_CUST_ID).orElseThrow().getCustLastName())
+                .isEqualTo("Kessler");
+    }
+
+    /**
+     * :purpose: COACTUPC ``1200-EDIT-MAP-INPUTS`` field edits (QA F18): every invalid field value
+     *  is rejected with the verbatim legacy message and nothing is persisted.
+     * :param mutation: the field mutation applied to an otherwise valid submission.
+     * :param expectedMessage: the verbatim COACTUPC message the edit must report.
+     * :output: HTTP 400 with the expected message and an unchanged database.
+     */
+    @ParameterizedTest(name = "[{index}] {1}")
+    @MethodSource("invalidUpdateSubmissions")
+    void putAccount_invalidFieldValue_returns400WithVerbatimMessage(
+            Consumer<AccountUpdateRequestDto> mutation, String expectedMessage) throws Exception {
+        cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
+
+        AccountViewResponseDto current = parse(
+                mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID)).andExpect(status().isOk()).andReturn(),
+                AccountViewResponseDto.class);
+
+        AccountUpdateRequestDto request = toUpdateRequest(current);
+        request.setCustLastName("Changed");
+        mutation.accept(request);
+
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        assertThat(parse(result, ErrorResponse.class).getMessage()).isEqualTo(expectedMessage);
+
+        // The rejected submission never reached the record.
+        assertThat(customerRepository.findById(HAPPY_CUST_ID).orElseThrow().getCustLastName())
+                .isEqualTo("Kessler");
+        assertMoney(accountRepository.findById(HAPPY_ACCT_ID).orElseThrow().getAcctCurrBal(), "194.00");
+    }
+
+    /**
+     * :purpose: Supply the invalid-field cases exercised above, covering every COACTUPC edit the
+     *  QA report found missing plus the out-of-scale money case (QA F21).
+     * :returns: a stream of (mutation, verbatim message) pairs.
+     */
+    private static Stream<Arguments> invalidUpdateSubmissions() {
+        return Stream.of(
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setAcctActiveStatus("Z"),
+                        "Account Active Status must be Y or N"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setAcctCreditLimit(null),
+                        "Credit Limit must be supplied"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
+                        r.setAcctCreditLimit(new BigDecimal("100.005")),
+                        "Credit Limit is not valid"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
+                        r.setAcctExpiraionDate("2030-13-15"),
+                        "Card expiry month must be between 1 and 12"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
+                        r.setAcctExpiraionDate("1849-05-20"),
+                        "Invalid card expiry year"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
+                        r.setCustFirstName("<script>alert(1)</script>"),
+                        "Name can only contain alphabets and spaces"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setCustLastName(null),
+                        "Last name not provided"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
+                        r.setCustFicoCreditScore(9999),
+                        "FICO Score: should be between 300 and 850"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setCustSsn("900010001"),
+                        "SSN: First 3 chars: should not be 000, 666, or between 900 and 999"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
+                        r.setAcctCurrBal(new BigDecimal("300.005")),
+                        "Current Balance is not valid"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
+                        r.setAcctOpenDate("2014-02-30"),
+                        "Open Date:day must be a number between 1 and 31."),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
+                        r.setCustAddrStateCd("NCX"),
+                        "State: is not a valid state code"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
+                        r.setCustPhoneNum1("(000)119-8310"),
+                        "Phone Number 1: Area code cannot be zero"),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
+                        r.setCustEftAccountId("EFT900001ACC"),
+                        "EFT Account Id must be all numeric."),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
+                        r.setCustPriCardHolderInd("X"),
+                        "Primary Card Holder must be Y or N."));
+    }
+
+    /**
+     * :purpose: COACTUPC ``1205-COMPARE-OLD-NEW`` (L1681+): a submission whose values match the
+     *  display-time snapshot reports ``NO-CHANGES-DETECTED`` and rewrites nothing.
+     * :output: HTTP 400 carrying the verbatim no-change message.
+     */
+    @Test
+    void putAccount_noChangeAgainstSnapshot_returns400NoChangeDetected() throws Exception {
+        cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
+
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setAcctActiveStatus("Y");
+        request.setOldAcctActiveStatus("Y");
+
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest())
+                .andReturn();
+
+        assertThat(parse(result, ErrorResponse.class).getMessage())
+                .isEqualTo("No change detected with respect to values fetched.");
+    }
+
+    /**
+     * :purpose: AAP 0.6.2 read-snapshot-compare-rewrite (QA F20 lost update): user A displays the
+     *  record, user B commits a change, then user A saves its stale snapshot. The stale save is
+     *  refused with the verbatim COACTUPC conflict message and user B's committed value survives.
+     * :output: HTTP 409 for user A and a database still holding user B's 999.99.
+     */
+    @Test
+    void putAccount_staleSnapshot_returns409AndPreservesTheOtherUsersCommit() throws Exception {
+        cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
+
+        // User A displays the record.
+        AccountViewResponseDto displayed = parse(
+                mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID)).andExpect(status().isOk()).andReturn(),
+                AccountViewResponseDto.class);
+        assertMoney(displayed.getAcctCurrBal(), "194.00");
+
+        // User B commits 999.99 out of band.
+        jdbcTemplate.update("UPDATE accounts SET acct_curr_bal = 999.99, version = version + 1 "
+                + "WHERE acct_id = ?", HAPPY_ACCT_ID);
+
+        // User A saves its stale snapshot.
+        AccountUpdateRequestDto stale = toUpdateRequest(displayed);
+        stale.setOldAcctCurrBal(displayed.getAcctCurrBal());
+        stale.setAcctCurrBal(new BigDecimal("111.00"));
+
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(stale)))
+                .andExpect(status().isConflict())
+                .andReturn();
+
+        assertThat(parse(result, ErrorResponse.class).getMessage())
+                .isEqualTo("Record changed by some one else. Please review");
+
+        // User B's committed change survived.
+        assertMoney(accountRepository.findById(HAPPY_ACCT_ID).orElseThrow().getAcctCurrBal(), "999.99");
+    }
+
+    /**
+     * :purpose: AAP 0.6.7 (QA F8): the three sensitive customer identifiers never leave the
+     *  service in clear text, on either the view or the post-update echo.
+     * :output: masked values on the wire and the clear-text values absent from both bodies.
+     */
+    @Test
+    void accountResponses_maskSensitiveCustomerIdentifiers() throws Exception {
+        cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
+
+        MvcResult viewResult = mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID))
+                .andExpect(status().isOk())
+                .andReturn();
+        String viewBody = viewResult.getResponse().getContentAsString();
+
+        assertThat(viewBody).doesNotContain(VALID_SSN);
+        assertThat(viewBody).doesNotContain(VALID_GOVT_ID);
+        assertThat(viewBody).doesNotContain(VALID_EFT_ACCOUNT_ID);
+
+        AccountViewResponseDto view = parse(viewResult, AccountViewResponseDto.class);
+        assertThat(view.getCustSsn()).startsWith("***-**-");
+        assertThat(view.getCustGovtIssuedId()).startsWith("*");
+        assertThat(view.getCustEftAccountId()).startsWith("*");
+
+        AccountUpdateRequestDto request = toUpdateRequest(view);
+        request.setCustLastName("Masktest");
+
+        MvcResult updateResult = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String updateBody = updateResult.getResponse().getContentAsString();
+
+        assertThat(updateBody).doesNotContain(VALID_SSN);
+        assertThat(updateBody).doesNotContain(VALID_GOVT_ID);
+        assertThat(updateBody).doesNotContain(VALID_EFT_ACCOUNT_ID);
+        assertThat(parse(updateResult, AccountUpdateResponseDto.class).getCustSsn())
+                .isEqualTo("***-**-3888");
+    }
+
+    /**
      * :purpose: Correlation-id observability smoke check: the filter supplies an
      *  ``X-Correlation-Id`` response header, generating one when absent and echoing an inbound
      *  value when present. This is non-load-bearing and does not alter business behavior.
@@ -554,13 +889,15 @@ class AccountViewUpdateIT {
      */
     @Test
     void observability_correlationIdHeader_generatedWhenAbsentAndEchoedWhenPresent() throws Exception {
-        MvcResult generated = mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID))
+        cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
+
+        MvcResult generated = mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andReturn();
         assertThat(generated.getResponse().getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER))
                 .isNotBlank();
 
-        MvcResult echoed = mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID)
+        MvcResult echoed = mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())
                         .header(CorrelationIdFilter.CORRELATION_ID_HEADER, "test-123"))
                 .andExpect(status().isOk())
                 .andReturn();

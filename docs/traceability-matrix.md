@@ -138,7 +138,6 @@ coverage gap by construction.
 | `CSSTRPFY` `[app/cpy/CSSTRPFY.cpy]` | `frontend` `components/PFKeyBar.tsx` (PF-key semantics) | `source → target` |
 | `UNUSED1Y` `[app/cpy/UNUSED1Y.cpy]` | EXCLUDED (out of scope, AAP 0.2.2 — unused copybook, not transformed) | `source → target` |
 
-
 ## 5. BMS Mapsets (17) → React Pages
 
 | Source Construct | Target Implementation | Direction |
@@ -184,7 +183,6 @@ coverage gap by construction.
 | `COUSR03.CPY` `[app/cpy-bms/COUSR03.CPY]` | User-delete `*RequestDto` / `*ResponseDto` + `frontend/src/types` (UserDeletePage field contract) | `source → target` |
 | `CSSTRPFY.cpy` + `CSSETATY.cpy` + general screen shell | `frontend/src/components/Layout.tsx`, `Header.tsx`, `PFKeyBar.tsx`, `ErrorBanner.tsx` (shared shell; PF-key + attribute semantics) | `source → target` |
 | COMMAREA-carried SCREEN context — `CDEMO-LAST-MAP` / `CDEMO-LAST-MAPSET` `PIC X(7)`, the `TRNNAME` / `PGMNAME` / `TITLE01` / `TITLE02` header fields, the line-23 `ERRMSG` `X(78)` region and the line-24 key legend `[app/cpy/COCOM01Y.cpy:L18-L45; app/bms/COSGN00.bms]` | `frontend/src/components/Layout.tsx` `useScreenChrome` context. `ScreenChrome` carries `transactionId`, `programName`, `title01`, `title02`, `currentDate`, `currentTime`, `captionStyle`, `appId`, `sysId`, `errorMessage`, `infoMessage`, `pfKeys`, `busy` and `plainText`; `ScreenChromeActions` exposes `setChrome`, which REPLACES the published value outright (a send paints a whole map, it does not merge into the previous one), and `resetChrome`, which returns the frame to its published-nothing state and is called on a route change and from a page's own cleanup. `usePublishedChrome` reads the current value. This is the per-screen half of the COMMAREA, held per mount, while the identity half stays in `SessionContext` (row above in §5) | `source → target` |
-
 
 ## 7. JCL Job Streams (29) + Procs (2) → Spring Batch Configuration
 
@@ -238,7 +236,6 @@ coverage gap by construction.
 | `app/data/ASCII/custdata.txt`, `acctdata.txt`, `carddata.txt`, `cardxref.txt`, `tcatbal.txt`, `dailytran.txt` | `carddemo-common` `db/migration/V3__seed_test_data.sql` (10 `security_users`, 50 customers / accounts / cards / xrefs, **50** `tran_cat_bal` rows — the fixture's exact distinct-key count, reconciled against the "100" in AAP §0.4.5 in decision-log §2 — 300 `daily_transactions`, and the `transactions` history derived as the posted image of the feed) | `source → target` |
 | `COSGN00C` `[app/cbl/COSGN00C.cbl]` + `CSUSR01Y` `[app/cpy/CSUSR01Y.cpy]` | `auth-service` `security/UserDetailsServiceImpl.java` + `PasswordEncoderConfig` (RACF / USRSEC → BCrypt; `SEC-USR-TYPE` 'A' / 'U' → `ROLE_ADMIN` / `ROLE_USER`) | `source → target` |
 | `app/data/EBCDIC/AWS.M2.CARDDEMO.*` (12 binaries) | EXCLUDED (out of scope, AAP 0.2.2 — ASCII fixtures drive seeding) | `source → target` |
-
 
 ## 9. Derived Targets (No 1:1 Legacy Field)
 
@@ -327,7 +324,8 @@ tranche. They are listed here explicitly so the reverse direction is verifiable 
 > `carddemo-common/src/main/resources/db/migration` and are applied by the single
 > migration owner (`batch-service`). The remaining per-screen `*RequestDto` /
 > `*ResponseDto` classes, `frontend/src/api`, `frontend/src/types/*`, the 17 page
-> components, and the outstanding services / controllers / repositories are mapped
+> components and the screen layer are delivered and enumerated in §21 and §22 onwards;
+> every remaining construct is mapped above in the end-state design.
 ## 12. Security, Session & Observability Remediation — Present-on-Disk Targets
 
 Delivered while closing the runtime security-gate findings. Every artifact below is
@@ -350,18 +348,24 @@ Observability); this table records only the source-or-mandate linkage.
 | `carddemo-common` `security/SensitiveDataMasker.java` | PAN never retained in a log; AAP 0.6.7 sensitive-field handling `[app/cbl/COCRDSLC.cbl; app/cbl/COTRN01C.cbl]` | `target → source (derived)` |
 | `carddemo-common` `config/RequestSizeLimitFilter.java`, `config/LimitedRequestWrapper.java`, `config/WebHardeningConfig.java` | Fixed-width 3270 screen fields bound every legacy input; the REST equivalent is an explicit body cap (CWE-770) plus uniform hardened headers `[app/cpy-bms/]` | `target → source (derived)` |
 | `carddemo-common` `exception/PiiEncryptionException.java`, `crypto/SeededPiiEncryptionMigrator.java`, `crypto/PiiEncryptionConfig.java` | At-rest protection of `CUST-SSN`, `CUST-GOVT-ISSUED-ID`, `CUST-EFT-ACCOUNT-ID`, `CARD-CVV-CD` (AAP 0.6.7) `[app/cpy/CVCUS01Y.cpy; app/cpy/CVACT02Y.cpy]` | `target → source (derived)` |
-| `auth-service` `db/migration/V2__seed_security_users.sql` `{bcrypt}` identifier prefix | `USRSEC` seeded credentials — data set defined by the load job, layout by the copybook `[app/jcl/DUSRSECJ.jcl; app/cpy/CSUSR01Y.cpy]` | `source → target` |
+| `carddemo-common` `db/migration/V3__seed_test_data.sql` `{bcrypt}` identifier prefix | `USRSEC` seeded credentials — data set defined by the load job, layout by the copybook `[app/jcl/DUSRSECJ.jcl; app/cpy/CSUSR01Y.cpy]` | `source → target` |
 | `account-service`, `card-service`, `transaction-service`, `billpay-service`, `reporting-service`, `batch-service` `config/SecurityConfig.java` | CICS transaction security for `CAVW`/`CAUP`/`CCLI`/`CCDL`/`CCUP`/`CT00`–`CT02`/`CB00`/`CR00` `[app/csd/CARDDEMO.CSD]` | `source → target` |
 | `carddemo-common` `config/GlobalExceptionHandler` unreadable-body (`413`/`400`) and catch-all handlers | CICS `RESP`/file-status outcome mapping + Observability rule (a trace id on every error payload) | `target → source (derived)` |
 | `carddemo-common` tests `security/{SecurityAuditConfigTest,AuditingAccessDeniedHandlerTest,RateLimitFilterTest,SessionPrincipalIndexTest,SessionContextAuthenticationFilterTest,SensitiveDataMaskerTest}`, `crypto/{CryptoConverterTest,SeededPiiEncryptionMigratorTest}`, `config/{RequestSizeLimitFilterTest,GlobalExceptionHandlerLoggingTest,GlobalExceptionHandlerUnreadableBodyTest,GlobalExceptionHandlerUnhandledTest}` | AAP 0.7.1 test obligation for the controls above | `target → rule` |
 | `auth-service` `security/LoginAttemptServiceTest`; `account-service`, `billpay-service`, `reporting-service`, `transaction-service` `SecurityContractIT`; `card-service` `CardViewUpdateIT.SecurityContract` (nested) | AAP 0.7.1 test obligation — each freezes "an anonymous request to this service port never reaches business logic" | `target → rule` |
 | `.gitignore` `blitzy/` + cookie-jar patterns | Respecting-.gitignore rule (AAP 0.7.2) — QA evidence holds live session ids and must never be staged | `target → rule` |
+| `carddemo-common` `crypto/SensitiveDataCryptoException.java`, `crypto/SeededPiiEncryptionMigrator.java`, `crypto/PiiEncryptionConfig.java` | At-rest protection of `CUST-SSN`, `CUST-GOVT-ISSUED-ID`, `CUST-EFT-ACCOUNT-ID`, `CARD-CVV-CD` (AAP 0.6.7) `[app/cpy/CVCUS01Y.cpy; app/cpy/CVACT02Y.cpy]` | `target → source (derived)` |
 
-> The per-screen `*RequestDto` / `*ResponseDto` classes, `frontend/src/api`,
-> `frontend/src/types/*`, the 17 page components, the business-schema migrations
-> (`V1__create_schema`, `V2__seed_reference_data`, `V3__seed_test_data`), the
-> services / controllers / repositories, and the per-service `Dockerfile`s are mapped
-> above in the end-state design and are **delivered in later tranches**.
+> The business-schema and seed migrations are delivered as ONE shared set in
+> `carddemo-common/src/main/resources/db/migration` — `V1__create_schema.sql`,
+> `V2__seed_reference_data.sql`, `V3__seed_test_data.sql` (which also seeds the ten
+> `USRSEC` users with `{bcrypt}` hashes), the Java migration `SeededPiiEncryptionMigration`
+> (version `4`), `V5__batch_metadata.sql`, `V6__security_users_optimistic_lock.sql`,
+> `V7__cards_optimistic_lock.sql` and `V8__transactions_card_fk.sql` — applied by the single
+> migration owner (`batch-service`), because three services run Spring Batch jobs and every
+> service validates its mappings against the one database. All ten `Dockerfile`s, the Vite
+> entry point (`frontend/src/main.tsx`), the route table (`frontend/src/App.tsx`) and the 17
+> page components under `frontend/src/pages/` are **present on disk** and mapped above.
 
 ## 13. QA-Remediation Targets (runtime checkpoint) — Present on Disk
 
@@ -380,7 +384,7 @@ a user-specified rule. Rationale for each is in `docs/decision-log.md` §7.
 | `carddemo-common` `config/PersistenceExceptionHandler.java` | `WRITE` DUPKEY → `'Tran ID already exist...'`; `REWRITE` conflict → `'Record changed by some one else. Please review'` `[app/cbl/COTRN02C.cbl; app/cbl/COACTUPC.cbl:L4131-L4189]` | `source → target` |
 | `carddemo-common` `crypto/CryptoConverter.java` (AES-GCM JPA `@Converter` on SSN, government id, EFT account id, CVV; fails closed) | Sensitive-field protection with no legacy field-level analogue — `CVCUS01Y` `CUST-SSN` / `CUST-GOVT-ISSUED-ID` / `CUST-EFT-ACCOUNT-ID` and `CVACT02Y` `CARD-CVV-CD` were stored in the clear on VSAM `[app/cpy/CVCUS01Y.cpy; app/cpy/CVACT02Y.cpy]` | `target → rule` |
 | `carddemo-common` `crypto/PiiMasker.java` | 3270 masked display of sensitive fields (`***-**-<last 4>` SSN; identifiers fully masked) | `target → source (derived)` |
-| `carddemo-common` `migration/SeededPiiEncryptionMigration.java` + `crypto/SeededPiiEncryptionMigrator.java` | At-rest normalization of ASCII-fixture seed data to the `CryptoConverter` format `[app/data/ASCII/custdata.txt; app/data/ASCII/carddata.txt]` | `target → rule` |
+| `carddemo-common` `crypto/PiiAtRestInitializer.java` + `account-service` / `card-service` `config/PiiAtRestConfig.java` | At-rest normalization of ASCII-fixture seed data to the `CryptoConverter` format `[app/data/ASCII/custdata.txt; app/data/ASCII/carddata.txt]` | `target → rule` |
 | `carddemo-common` `exception/PiiEncryptionException.java` | Fail-closed outcome of the converter (never surfaces plaintext or an opaque 500) | `target → rule` |
 | `carddemo-common` `security/SessionContextAuthenticationFilter.java` | COMMAREA `CDEMO-USER-TYPE` 88-levels → Spring Security authorities on every request `[app/cpy/COCOM01Y.cpy:L26-L30]` | `source → target` |
 | `carddemo-common` `dto/SessionAttributes.java` | Single COMMAREA-equivalent session attribute name shared by every service `[app/cpy/COCOM01Y.cpy:L18-L45]` | `source → target` |
@@ -390,7 +394,10 @@ a user-specified rule. Rationale for each is in `docs/decision-log.md` §7.
 | `account-service` `service/AccountUpdateValidator.java` | `COACTUPC` `1200-EDIT-MAP-INPUTS` 25-field edit sequence + `1280` state/zip cross-field edit + `CSLKPCDY` lookup sets `[app/cbl/COACTUPC.cbl; app/cpy/CSLKPCDY.cpy]` | `source → target` |
 | `carddemo-common` `domain/Transaction.java` implementing `Persistable<String>` | `COTRN02C` / `COBIL00C` `WRITE` semantics — an existing transaction is never overwritten `[app/cbl/COTRN02C.cbl:L444-L451]` | `target → source (derived)` |
 | `reporting-service` `config/StatementOutputResolver.java` | `CREASTMT` / `CBSTM03A` statement destination, confined to a configured root `[app/jcl/CREASTMT.JCL; app/cbl/CBSTM03A.CBL]` | `source → target` |
+| `reporting-service` / `batch-service` `config/BatchJobRepositoryConfig.java` (`@EnableBatchProcessing` + `@EnableJdbcJobRepository`) | JES job accounting — every submitted job recorded in `BATCH_JOB_INSTANCE` / `BATCH_JOB_EXECUTION` `[app/cbl/CORPT00C.cbl]` | `target → source (derived)` |
 | `docker-compose.yml` `jaeger` service + `management.opentelemetry.tracing.export.otlp.endpoint` (docker profile) | Observability rule (AAP 0.7.5) — distributed tracing verifiable in the local environment | `target → rule` |
+| `carddemo-common` `migration/SeededPiiEncryptionMigration.java` + `crypto/SeededPiiEncryptionMigrator.java` | At-rest normalization of ASCII-fixture seed data to the `CryptoConverter` format `[app/data/ASCII/custdata.txt; app/data/ASCII/carddata.txt]` | `target → rule` |
+
 ## 14. QA Remediation — Runtime-Verified Batch, Security & Integration Targets
 
 Targets added or corrected while resolving the runtime findings raised by end-to-end QA of the integrated backend. Every row was verified against the running application, not only against the source.
@@ -402,7 +409,7 @@ Targets added or corrected while resolving the runtime findings raised by end-to
 | `CBTRN02C` daily-transaction feed read `[app/cbl/CBTRN02C.cbl:L371-L397]` | `transaction-service` `batch/TransactionPostingJob.java` → `JdbcCursorItemReader` over `daily_transactions` (`DALYTRAN_FEED_SQL`, ordered by `dalytran_id`) + `batch/DailyTransactionRowMapper.java` | `source → target` |
 | `CBTRN02C` reject file `DALYREJS` (430B = 350B image + 80B trailer) `[app/cbl/CBTRN02C.cbl:L176-L182]` | `transaction-service` `batch/RejectFileItemWriter.java`, path resolved through `carddemo-common` `batch/BatchOutputPathResolver.java` | `source → target` |
 | `CBTRN02C` result-code tally 0 / 4 / 12 `[app/cbl/CBTRN02C.cbl:L228]` | `transaction-service` `batch/PostingJobCompletionListener.java` (`COMPLETED_WITH_REJECTS` / `FAILED_EMPTY_FEED`) | `source → target` |
-| `COTRN02C` transaction-id assignment `[app/cbl/COTRN02C.cbl:L444-L451]` | `transaction-service` `service/TransactionService.java#nextUnusedTransactionId` over Flyway `V4__create_transaction_id_sequence.sql` | `source → target` |
+| `COTRN02C` transaction-id assignment `[app/cbl/COTRN02C.cbl:L444-L451]` | `transaction-service` `service/TransactionService.java#nextUnusedTransactionId` over the `transaction_id_seq` sequence created by `V1__create_schema.sql` | `source → target` |
 | `CBTRN03C` / `TRANREPT` transaction-detail report `[app/cbl/CBTRN03C.cbl]` | `batch-service` `transactionDetailReportJob` + `batch/TransactionDetailReportWriter.java`, launched by `controller/BatchController.java` | `source → target` |
 | `CORPT00C` `SUBMIT-JOB-TO-INTRDR` write to TDQ `'JOBS'` `[app/cbl/CORPT00C.cbl]` | `reporting-service` `client/BatchJobClient.java#submitTransactionDetailReport` (frozen `Unable to Write TDQ (JOBS)...` on refusal) | `source → target` |
 | `CREASTMT` / `CBSTM03A` statement generation `[app/jcl/CREASTMT.JCL; app/cbl/CBSTM03A.CBL]` | `reporting-service` `batch/StatementGenerationJob.java`, launched by `controller/ReportController.java#generateStatements` (`POST /reports/statements`) | `source → target` |
@@ -416,6 +423,9 @@ Targets added or corrected while resolving the runtime findings raised by end-to
 | Batch launch acknowledgement and outcome readback | `carddemo-common` `dto/BatchJobExecutionDto.java` (no legacy analogue — the TDQ write was fire-and-forget) | `target → source (derived from TDQ submission)` |
 | Unreachable routed upstream service | `api-gateway` `config/UpstreamFailureHandler.java` → `503` + `Retry-After` (no legacy analogue — CICS returned an abend code) | `target → source (derived from CICS routing failure)` |
 | Generated batch artefacts must never be committed (Respecting .gitignore rule) | `.gitignore` — generated batch artefact names, batch output root, and local run evidence, with `app/data/**` re-included by negation | `target → rule` |
+| `CREASTMT` / `CBSTM03A` statement generation `[app/jcl/CREASTMT.jcl; app/cbl/CBSTM03A.CBL]` | `reporting-service` `batch/StatementGenerationJob.java`, launched by `controller/ReportController.java#generateStatements` (`POST /reports/statements`) | `source → target` |
+| JCL `DD` data-set allocation for generated report / dump / statement files `[app/jcl/]` | `carddemo-common` `batch/BatchOutputPathResolver.java` + `config/BatchOutputConfig.java` (allowlisted, writable output and input roots) | `source → target` |
+| `BATCH_*` job metadata tables and restartability | `batch-service` / `transaction-service` / `reporting-service` `config/BatchInfrastructureConfig.java` + Flyway `V5__batch_metadata.sql` (no legacy analogue — JES held run history) | `target → source (derived from JES job history)` |
 ## 15. Targets Added While Remediating Runtime Findings
 
 Every target file created or relocated while making the delivered stack run, be observable
@@ -442,6 +452,8 @@ direction stays complete for these files too. The rationale for each choice is i
 | `k8s/deployment-jaeger.yaml`, `k8s/service-jaeger.yaml` | Observability rule (distributed tracing) — the OTLP collector spans are exported to | `target → rule` |
 | `.dockerignore` (repository root) + `auth-service`, `user-service`, `account-service`, `card-service`, `transaction-service`, `billpay-service`, `batch-service`, `api-gateway` `.dockerignore` | Build hygiene for the containerization mandate (AAP 0.2.1): minimal, cache-correct build contexts. One per Docker CONTEXT, because Docker resolves the file relative to the context root | `target → rule` |
 | `carddemo-common` `src/test/.../batch/BatchOutputPathResolverTest.java`, `.../config/*`, `.../crypto/*`, `.../security/*`; `batch-service` `BatchJobControllerTest`; `transaction-service` `TransactionControllerSessionTest` | AAP 0.7.1 test mandate (50+ unit-test scenarios) applied to the components added above | `target → rule` |
+| `carddemo-common` `config/LettuceMetricsAutoConfiguration.java` | Observability rule — publishes the `lettuce_command_*` series the Redis dashboard panels query | `target → rule` |
+| `batch-service` `controller/BatchJobController.java` | `app/cbl/CORPT00C.cbl` TDQ `'JOBS'` → JES asynchronous submission (AAP 0.4.4): submit-and-poll over HTTP for the nine migrated job streams, replacing the unreachable `launch*` methods | `source → target` |
 
 ## 16. Offline Batch Compensator — QA-Remediation Targets (Present on Disk)
 
@@ -481,6 +493,7 @@ Targets created or changed while resolving the twenty-one runtime findings of th
 online checkpoint. Each row names the legacy construct or rule it serves, so the reverse
 direction stays complete for these artifacts too; the rationale for every choice is in
 `docs/decision-log.md` §11 (finding numbers in parentheses are the QA report's).
+`docs/decision-log.md` §8 (finding numbers in parentheses are the QA report's).
 
 | Target Implementation (delivered) | Source Construct / Mandate | Direction |
 |-----------------------------------|----------------------------|-----------|
@@ -618,13 +631,13 @@ granularity: no frontend file exists without a named source or an explicit rule 
 | `frontend/src/types/messages.ts` | `app/cpy/CSMSG01Y.cpy` + `app/cpy/CSMSG02Y.cpy` (`CCDA-MSG-*` literals, `PIC X(50)` trailing blanks preserved) | `target → source` |
 | `frontend/src/types/titles.ts` | `app/cpy/COTTL01Y.cpy` (`CCDA-TITLE01` / `CCDA-TITLE02`) | `target → source` |
 | `frontend/src/types/common.ts` | Shared wire scalars + the `ErrorResponse` envelope | `target → source` |
-| `frontend/src/types/index.ts` | — | Module barrel; no legacy analogue | `target → rule` |
+| `frontend/src/types/index.ts` | — Module barrel; no legacy analogue | `target → rule` |
 
 ### 21.5 Shared components and hooks
 
 | Target (on disk) | Source construct | Direction |
 |---|---|---|
-| `frontend/src/main.tsx` | — | SPA entry point; no legacy analogue (standalone-operation requirement) | `target → rule` |
+| `frontend/src/main.tsx` | — SPA entry point; no legacy analogue (standalone-operation requirement) | `target → rule` |
 | `frontend/src/App.tsx` | The CICS transaction table and `XCTL` transfer graph `[app/csd/CARDDEMO.CSD]`, plus the `SEC-USR-TYPE` role gate `[app/cbl/COSGN00C.cbl:L227-L237]` — expressed as the route table with `RequireAuth` / `RequireAdmin` | `target → source` |
 | `frontend/src/components/Layout.tsx` | The 24×80 3270 frame and COMMAREA per-screen half (see §6 chrome row) | `target → source` |
 | `frontend/src/components/Header.tsx` | Rows 1–2 of every mapset: `TRNNAME`, `PGMNAME`, `TITLE01`/`TITLE02`, `CURDATE`, `CURTIME`, and `COSGN00`'s `APPLID`/`SYSID` | `target → source` |
@@ -635,13 +648,13 @@ granularity: no frontend file exists without a named source or an explicit rule 
 | `frontend/src/hooks/useApi.ts` | The CICS request/response turnaround: one in-flight task per terminal, with abort-and-generation handling replacing task cancellation | `target → source` |
 | `frontend/src/hooks/useSession.ts` | `app/cpy/COCOM01Y.cpy` COMMAREA identity half + `COSGN00C` sign-on/sign-off lifecycle | `target → source` |
 | `frontend/src/hooks/useScreenFocus.ts` | `ATTRB=IC` insert-cursor placement and every `MOVE -1 TO <field>L` cursor override, honoured on each send | `target → source` |
-| `frontend/src/hooks/index.ts` | — | Module barrel; no legacy analogue | `target → rule` |
+| `frontend/src/hooks/index.ts` | — Module barrel; no legacy analogue | `target → rule` |
 | `frontend/src/index.css` | The 24×80 character grid, `DFHBLUE`/`DFHGREEN`/`DFHRED`/`DFHTURQ`/`DFHYELLO`/`DFHNEUTR` attribute colours, and per-mapset field geometry | `target → source` |
-| `frontend/src/setupTests.ts` | — | Jest environment shim (`TextEncoder`/`TextDecoder` for the router's ESM build); no legacy analogue, recorded in the decision log | `target → rule` |
-| `frontend/eslint.config.js` | — | Mandatory lint gate; no legacy analogue (tooling requirement) | `target → rule` |
+| `frontend/src/setupTests.ts` | — Jest environment shim (`TextEncoder`/`TextDecoder` for the router's ESM build); no legacy analogue, recorded in the decision log | `target → rule` |
+| `frontend/eslint.config.js` | — Mandatory lint gate; no legacy analogue (tooling requirement) | `target → rule` |
 | `frontend/src/pages/cardSelection.ts` | `CDEMO-CC00-CARD-SELECTED` + `CDEMO-CC00-ACCT-SELECTED` carried in the COMMAREA between `COCRDLIC` and `COCRDSLC`/`COCRDUPC` `[app/cpy/COCOM01Y.cpy]` — the composite hand-over, held in router location state so no card number reaches the address bar, history, a bookmark or a `Referer` header | `target → source` |
-| `frontend/src/vite-env.d.ts` | — | Build-tool ambient type declarations; no legacy analogue | `target → rule` |
-| `frontend/src/__mocks__/fileMock.ts` | — | Jest static-asset stub; no legacy analogue (test-harness requirement) | `target → rule` |
+| `frontend/src/vite-env.d.ts` | — Build-tool ambient type declarations; no legacy analogue | `target → rule` |
+| `frontend/src/__mocks__/fileMock.ts` | — Jest static-asset stub; no legacy analogue (test-harness requirement) | `target → rule` |
 
 ### 21.6 Backend controllers — reverse direction
 
@@ -649,7 +662,7 @@ granularity: no frontend file exists without a named source or an explicit rule 
 |---|---|---|
 | `auth-service/.../AuthenticationController.java` | `app/cbl/COSGN00C.cbl` (`CC00`) | `target → source` |
 | `auth-service/.../SessionController.java` | `app/cpy/COCOM01Y.cpy` COMMAREA identity probe — replaces client-held session authority | `target → source` |
-| `auth-service/.../CsrfController.java` | — | CSRF double-submit token issue; no legacy analogue (the 3270 link needed none) | `target → rule` |
+| `auth-service/.../CsrfController.java` | — CSRF double-submit token issue; no legacy analogue (the 3270 link needed none) | `target → rule` |
 | `api-gateway/.../MenuController.java` | `app/cbl/COMEN01C.cbl` + `app/cbl/COADM01C.cbl` | `target → source` |
 | `account-service/.../AccountController.java` | `app/cbl/COACTVWC.cbl` + `app/cbl/COACTUPC.cbl` | `target → source` |
 | `card-service/.../CardController.java` | `app/cbl/COCRDLIC.cbl`, `COCRDSLC.cbl`, `COCRDUPC.cbl` | `target → source` |
@@ -678,16 +691,263 @@ granularity: no frontend file exists without a named source or an explicit rule 
 | `frontend/src/hooks/useScreenFocus.test.tsx` | `ATTRB=IC` placement on every send, including after a disabled control is re-enabled | `target → source` |
 | `frontend/src/pages/programRoutes.test.ts` | `XCTL` program-to-route resolution | `target → source` |
 | `frontend/src/pages/tranAddFormat.test.ts` | `PIC +99999999.99` and `PIC X(10)` field edits | `target → source` |
+## 22. Sign-On Screen Parity Suite (`COSGN00` / `CC00` / `COSGN00C`) — Present on Disk
 
+| Source Construct | Target Implementation | Direction |
+|------------------|-----------------------|-----------|
+| `COSGN00` mapset body and legend — the `POS=(17,16)` prompt `Type your User ID and Password, then press ENTER:`, `USERID` `LENGTH=8`, `PASSWD` `ATTRB=(DRK,FSET,UNPROT)` `LENGTH=8`, the two `(8 Char)` hints, `ERRMSG` `X(78)` at line 23 and the line-24 legend `ENTER=Sign-on  F3=Exit` `[app/bms/COSGN00.bms:L145-L205]` | `frontend/src/pages/SignonPage.test.tsx` — "COSGN00 map rendering" group (7 scenarios: prompt, both fields with `maxlength` 8, masked password, both width hints, submit control, enabled legend keys inside the `Function keys` toolbar, transaction id / program name / titles chrome, empty initial message region) | `source → target` |
+| `COSGN00.CPY` symbolic-map widths `USERIDI PIC X(8)` and `PASSWDI PIC X(8)` `[app/cpy-bms/COSGN00.CPY:L72, L78]` | "entry-field behavior" group (4 scenarios) — both entry fields bounded to 8 characters with over-length entry truncated, and the password retained verbatim | `source → target` |
+| `COSGN00C` `PROCESS-ENTER-KEY` `EVALUATE TRUE` edit order emitting exactly one message — `Please enter User ID ...` then `Please enter Password ...` `[app/cbl/COSGN00C.cbl:L117-L131]` | "required-field validation" group (5 scenarios) — both verbatim texts, whitespace-only user id treated as blank, user-id message winning when both are blank, message cleared on a later success, and zero `signon` calls on every rejection | `source → target` |
+| `COSGN00C` `MOVE FUNCTION UPPER-CASE(USERIDI OF COSGN0AI)` with the password left un-folded on the wire `[app/cbl/COSGN00C.cbl:L132-L136]` | The upper-cases-as-typed scenario plus the request-payload assertion `{ userId: 'ADMIN001', password: 'fakePw01' }`, locking the decision-logged case-sensitivity deviation | `source → target` |
+| `COSGN00C` success routing — `MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE` then `XCTL PROGRAM('COADM01C')` / `PROGRAM('COMEN01C')` `[app/cbl/COSGN00C.cbl:L227-L238]` | "successful sign-on routing" group (6 scenarios) — role `'A'` resolving `/admin`, role `'U'` resolving `/menu`, both branches re-driven with the raw verbatim wire codes, exactly one call, and the established session surfaced on the frame | `source → target` |
+| `COSGN00C` `READ-USER-SEC-FILE` outcomes — `Wrong Password. Try again ...`, `User not found. Try again ...` (RESP 13) and the `WHEN OTHER` `Unable to verify the User ...` `[app/cbl/COSGN00C.cbl:L219-L257]` | "rejected sign-on" group (5 scenarios) — both verbatim `401` texts, the fallback for a bodyless `401` and for a non-`ApiError` failure, and staying signed out on the sign-on route with the entries retained | `source → target` |
+| `COSGN00C` `EVALUATE EIBAID` `WHEN DFHENTER` / `WHEN DFHPF3` AID dispatch `[app/cbl/COSGN00C.cbl:L85-L94]` plus PF-key legend semantics `[app/cpy/CSSTRPFY.cpy]` | "PF-key wiring" group (7 scenarios) driving the real `PFKeyBar` document keydown listener — ENTER AID, implicit form submission, `ENTER=Sign-on` activation, PF3 AID clearing the screen, `F3=Exit` activation, sign-out of an established session, and an undeclared key ignored | `source → target` |
+| `PASSWD` non-display attribute `ATTRB=(DRK, ...)` `[app/bms/COSGN00.bms:L175-L180]` | "password confidentiality" group (3 scenarios) — the field stays `type="password"`, the value never appears in rendered text, never in any `console` call, and never in the persisted session blob | `source → target` |
+| `frontend/src/pages/SignonPage.test.tsx` `jest.unstable_mockModule('../api')` with `beforeAll` dynamic imports | (no legacy analogue — native-ESM test isolation keeping axios and the Vite `import.meta.env` read out of the suite; see decision log §19) | `target → rule` |
+| `frontend/src/pages/SignonPage.test.tsx` `MemoryRouter` with `useLocation` probe routes | (no legacy analogue — CICS `XCTL` program transfer has no client-side router transition to observe; see decision log §19) | `target → rule` |
+## 23. Main-Menu Screen Suite (`MainMenuPage.test.tsx` checkpoint) — Present on Disk
+
+| Source Construct | Target Implementation | Direction |
+|------------------|-----------------------|-----------|
+| `COMEN01` mapset body — the `Main Menu` heading, the twelve option slots `OPTN001`..`OPTN012` `PIC X(40)`, the `Please select an option :` prompt, the `OPTION` field `ATTRB=(FSET,IC,NORM,NUM,UNPROT) LENGTH=2`, the line-23 `ERRMSG PIC X(78)` and the line-24 legend `ENTER=Continue  F3=Exit` `[app/bms/COMEN01.bms:L75-L162; app/cpy-bms/COMEN01.CPY]` | `frontend/src/pages/MainMenuPage.test.tsx` — the heading, the option lines, the twelve-slot truncation, the two-character numeric `OPTION` field and the two legend buttons are each asserted on the rendered screen | `source → target` |
+| `COMEN01C` `PROCESS-ENTER-KEY` — the invalid / zero / out-of-range check raising `Please enter a valid option number...`, the `CDEMO-USRTYP-USER` + USRTYPE `'A'` check raising `No access - Admin Only option... `, the `XCTL` to `CDEMO-MENU-OPT-PGMNAME`, and `RETURN-TO-SIGNON-SCREEN` `[app/cbl/COMEN01C.cbl:L118-L177]` | `MainMenuPage.test.tsx` — both literals asserted character-for-character (raw `textContent`, so the admin literal's trailing blank is verified), the ten option → route navigations asserted through a router location probe, and PF3 asserted to clear the session and reach `/signon` | `source → target` |
+| `CDEMO-MENU-OPTIONS` — ten rows, `CDEMO-MENU-OPT-COUNT 10`, `OCCURS 12`, names `PIC X(35)`, every row USRTYPE `'U'` `[app/cpy/COMEN02Y.cpy]` | `MainMenuPage.test.tsx` fixtures — the ten rows in copybook order with wire-shaped padded labels, a role-filtered subset, a withheld-option refusal, and the negative assertion that no standard-user option is refused as admin-only | `source → target` |
+| Jest native-ESM module mocking and the `CM00` menu wire contract — rule-mandated test infrastructure, no legacy analogue | `MainMenuPage.test.tsx` — `jest.unstable_mockModule('../api', …)` with a passthrough-shaped `ApiError`, the `__setSession` session seam, and the real `Layout` shell, delivering 27 of the scenarios AAP 0.7.1 requires without evaluating the Vite build-time environment | `target → rule` |
+## 24. Admin-Menu Screen Test Suite (`AdminMenuPage.test.tsx`) — Present on Disk
+
+Targets delivered with the colocated admin-menu suite. Each row names the legacy construct or
+mandate it verifies, so the reverse direction stays complete; the rationale for every choice is in
+`docs/decision-log.md` §19.
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `frontend/src/pages/AdminMenuPage.test.tsx` — fourteen cases over the admin-menu workflow (load, option entry, four-route dispatch, rejection, PF legend) | `COADM01` mapset + `COADM01` symbolic map + `COADM01C` under CICS `CA00`, and AAP §0.7.1 "at least 50 unit-test scenarios must pass" / "all 17 UI workflows must behave identically" `[app/bms/COADM01.bms; app/cpy-bms/COADM01.CPY; app/cbl/COADM01C.cbl]` | `source → target` |
+| `AdminMenuPage.test.tsx` heading and option-slot cases — level-3 `Admin Menu` plus one row per served option as `<num>. <name>` | Row-4 `DFHMDF INITIAL='Admin Menu'` and the `OPTN001`-`OPTN012` `X(40)` slots filled by `BUILD-MENU-OPTIONS` `[app/bms/COADM01.bms:L75-L139; app/cbl/COADM01C.cbl:L226-L250]` | `source → target` |
+| `AdminMenuPage.test.tsx` `ADMIN_MENU_RESPONSE` fixture — `CA00` / `COADM01C` and the four `PIC X(35)` space-padded option names mapped to `COUSR00C`-`COUSR03C` | `CDEMO-ADMIN-OPT-COUNT` = 4 and `CDEMO-ADMIN-OPTIONS-DATA` `[app/cpy/COADM02Y.cpy:L20-L42]` | `source → target` |
+| `AdminMenuPage.test.tsx` `OPTION`-field case — `maxLength` 2, `inputMode` numeric, digits-only entry | `OPTION DFHMDF ATTRB=(…,NUM,UNPROT) LENGTH=2` and `OPTIONI PIC X(2)` `[app/bms/COADM01.bms:L145-L149; app/cpy-bms/COADM01.CPY:L132]` | `source → target` |
+| `AdminMenuPage.test.tsx` four dispatch cases — `/users`, `/users/add`, `/users/update`, `/users/delete` asserted through the navigate spy | `PROCESS-ENTER-KEY` `XCTL PROGRAM(CDEMO-ADMIN-OPT-PGMNAME(WS-OPTION))` `[app/cbl/COADM01C.cbl:L138-L145]` | `source → target` |
+| `AdminMenuPage.test.tsx` three rejection cases — out-of-range, zeros and blank each yield exactly `Please enter a valid option number...` in the line-23 region with no navigation | `IF WS-OPTION IS NOT NUMERIC OR WS-OPTION > CDEMO-ADMIN-OPT-COUNT OR WS-OPTION = ZEROS` and its frozen `WS-MESSAGE` literal, shown through `ERRMSG` `X(78)` `[app/cbl/COADM01C.cbl:L127-L134; app/bms/COADM01.bms:L154-L157]` | `source → target` |
+| `AdminMenuPage.test.tsx` PF-legend cases — exactly the `ENTER=Continue` and `F3=Exit` buttons, with the F3 button and the physical F3 key both reaching `/menu` | Line-24 `DFHMDF INITIAL='ENTER=Continue  F3=Exit'` and the `EVALUATE EIBAID` `DFHENTER` / `DFHPF3` branches `[app/bms/COADM01.bms:L158-L162; app/cbl/COADM01C.cbl:L93-L103]` | `source → target` |
+| `AdminMenuPage.test.tsx` `jest.unstable_mockModule` registrations for `../api` and `react-router-dom`, and the `ApiError` passthrough case | No legacy analogue — native-ESM test isolation for the AAP §0.2.1 Jest + React Testing Library deliverable `[frontend/package.json jest.preset]` | `target → rule` |
+
+## 25. Card-Detail Screen Test Suite — Present-on-Disk Target
+
+The Jest + React Testing Library suite for the card-detail workflow. Every case names the legacy
+construct or rule it verifies, so the reverse direction stays complete for this artifact too; the
+rationale for each choice is in `docs/decision-log.md` §19.
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `frontend/src/pages/CardDetailPage.test.tsx` (19 cases) | `COCRDSL` mapset + `CCRDSLA` symbolic map + `COCRDSLC` screen behavior, verified through `CardDetailPage` `[app/bms/COCRDSL.bms; app/cpy-bms/COCRDSL.CPY; app/cbl/COCRDSLC.cbl]` | `source → target` |
+| Load-by-route-parameter cases — `getCard` receives the route `cardNumber` as a 16-character `string`, and `CCDL` / `COCRDSLC` reach the shared header | `9100-GETCARD-BYACCTCARD` single-record read keyed on `CC-CARD-NUM`, plus `LIT-THISTRANID` / `LIT-THISPGM` `[app/cbl/COCRDSLC.cbl:L162-L170]` | `source → target` |
+| Field-width cases — `ACCTSID` `maxLength` 11, `CARDSID` `maxLength` 16, `CRDNAME` clipped to 50, `CRDSTCD` clipped to 1 | `ACCTSIDI PIC X(11)`, `CARDSIDI PIC X(16)`, `CRDNAMEI PIC X(50)`, `CRDSTCDI PIC X(1)` `[app/cpy-bms/COCRDSL.CPY:L60-L78; app/bms/COCRDSL.bms:L84-L119]` | `source → target` |
+| Caption cases asserted with an identity normalizer — `Account Number    :` / `Card Number       :` / `Name on card      :` / `Card Active Y/N   :` / `Expiry Date       :` | The TURQUOISE `DFHMDF INITIAL` literals on lines 7, 8, 11, 13, 15 `[app/bms/COCRDSL.bms:L79-L125]` | `source → target` |
+| Expiry cases — `MM/YYYY` rendered around the mapset separator, driven by the DTO member `cardExpiraionDate` (misspelling preserved) | `CARD-EXPIRAION-DATE-X` redefined by `CARD-EXPIRY-YEAR` / `CARD-EXPIRY-MONTH`, moved to `EXPMONO` / `EXPYEARO` around the `INITIAL='/'` field `[app/cbl/COCRDSLC.cbl:L84-L92; app/bms/COCRDSL.bms:L126-L136]` | `source → target` |
+| Filter-edit cases — `Account number must be a non zero 11 digit number`, `Card number if supplied must be a 16 digit number`, and the account-before-card first-message-wins order | The `WS-RETURN-MSG` 88-levels `SEARCHED-ACCT-ZEROES` / `SEARCHED-ACCT-NOT-NUMERIC` / `SEARCHED-CARD-NOT-NUMERIC` and the `2210-EDIT-ACCOUNT` → `2220-EDIT-CARD` sequence `[app/cbl/COCRDSLC.cbl:L143-L149, L646-L720]` | `source → target` |
+| Function-key cases — exactly two legend entries `ENTER=Search Cards` and `F3=Exit`, each wired to both its button and its physical AID key | The line-24 `FKEYS` literal `ENTER=Search Cards  F3=Exit` and the `CSSTRPFY` AID mapping `[app/bms/COCRDSL.bms:L148-L152; app/cpy/CSSTRPFY.cpy]` | `source → target` |
+| Failed-read cases — the service `ApiError` message surfaced verbatim, blank display fields, and a plain `Error` normalized through the passthrough `ApiError` | `DID-NOT-FIND-ACCTCARD-COMBO` / `XREF-READ-ERROR` `WS-RETURN-MSG` values moved to `ERRMSGO`, and the unfilled-field behavior when `FOUND-CARDS-FOR-ACCOUNT` is false `[app/cbl/COCRDSLC.cbl:L150-L157, L474-L494]` | `source → target` |
+| Card fixtures `0500024453765740` / `Aniya Von` / `2023-03-09` and `0683586198171516` / `Ward Jones` / `2025-07-13` | Rows 1-2 of the legacy ASCII seed, joined through the `CXACAIX` cross-reference `[app/data/ASCII/carddata.txt; app/data/ASCII/cardxref.txt]` | `source → target` |
+| `jest.unstable_mockModule('../api', …)` harness with a passthrough `ApiError` and no `import.meta` evaluation | AAP §0.7.1 "at least 50 unit-test scenarios must pass" and "all 17 UI workflows must behave identically" — rule-mandated test infrastructure with no legacy analogue | `target → rule` |
+## 26. Card-Update Screen Test Suite (`CardUpdatePage.test.tsx`) — Present on Disk
+
+The colocated Jest / React Testing Library suite for the card-update screen. Each row names the
+legacy construct the cases assert, so the reverse direction stays complete for the test artifact
+too; the rationale is in `docs/decision-log.md` §19.
+
+| Source Construct | Target Implementation | Direction |
+|------------------|-----------------------|-----------|
+| `COCRDUP` mapset field grid and the `CCRDUPAI` symbolic-map widths — `ACCTSID` `X(11)` and `CARDSID` `X(16)` protected, `CRDNAME` `X(50)`, `CRDSTCD` `X(01)`, `EXPMON` `X(02)`, `EXPYEAR` `X(04)`, plus the padded captions `Account Number    :` / `Card Number       :` / `Name on card      :` / `Card Active Y/N   :` / `Expiry Date       :` `[app/bms/COCRDUP.bms; app/cpy-bms/COCRDUP.CPY]` | `CardUpdatePage.test.tsx` — the entry-read cases asserting `readonly` on both keys, `maxlength` 11/16/50/1/2/4, the captions byte-exactly through their `label[for]` association, and that all four unprotected fields accept input | `source → target` |
+| `COCRDUPC` edit literals `Card number if supplied must be a 16 digit number`, `Card Active Status must be Y or N`, `Card expiry month must be between 1 and 12`, `Invalid card expiry year`, with the `IF WS-RETURN-MSG-OFF` first-error-wins guard over the `1220`/`1240`/`1250`/`1260` edit order `[app/cbl/COCRDUPC.cbl:L194-L200]` | `CardUpdatePage.test.tsx` — the ten map-input edit cases, including the boundary values (month `13`, month `0`, blank month, year `1949`, non-numeric year), the non-16-digit route key that issues NO read, and the precedence case proving only the first failing edit publishes | `source → target` |
+| `COCRDUPC` info-message state machine `FOUND-CARDS-FOR-ACCOUNT` / `PROMPT-FOR-CONFIRMATION` / `CONFIRM-UPDATE-SUCCESS` / `INFORM-FAILURE`, and `DATA-WAS-CHANGED-BEFORE-UPDATE` for the concurrent-change outcome `[app/cbl/COCRDUPC.cbl:L161-L171, L208]` | `CardUpdatePage.test.tsx` — the confirmation-prompt cases asserting `Changes validated.Press F5 to save` byte-exactly (no space after the period) and the rewrite cases asserting `Changes committed to database`, `Changes unsuccessful. Please try again` for both an `ApiError` and a transport failure, and `Record changed by some one else. Please review` from a 409 carrying a different raw message | `source → target` |
+| `CARD-EXPIRAION-DATE-X` `X(10)` redefined year / month / day, with the day carried over unchanged because the map never presents it, and `JUSTIFY=(RIGHT)` one-or-two-digit `EXPMON` `[app/cbl/COCRDUPC.cbl:L115-L123, L1124-L1126]` | `CardUpdatePage.test.tsx` — the request-shape cases asserting `updateCard` receives the card number as a `string` and a `cardExpiraionDate` of `2023-03-09` untouched, or `2023-07-09` after the month is typed as `7`, together with the echoed optimistic-lock `version` | `source → target` |
+| `COCRDUP` line-24 legend literals `ENTER=Process F3=Exit` (`FKEYS`) and `F5=Save F12=Cancel` (`FKEYSC`), and the `COCRDUPC` PF-key routing to the card list and back to the card detail `[app/bms/COCRDUP.bms; app/cpy/CSSTRPFY.cpy]` | `CardUpdatePage.test.tsx` — the function-key cases asserting the legend order `ENTER=Process` / `F3=Exit` / `F5=Save` / `F12=Cancel`, F12 to `/cards/{cardNumber}`, F3 to `/cards`, and the same four outcomes from the physical `Enter` / `F3` / `F5` / `F12` AID keys | `source → target` |
+| AAP 0.7.1 — at least 50 unit-test scenarios pass and all 17 UI workflows behave identically; the Jest + React Testing Library frontend test mandate (AAP 0.2.1) | `frontend/src/pages/CardUpdatePage.test.tsx` — 37 cases across five groups, mocking `../api` (`getCard`, `updateCard`, passthrough `ApiError`) so no network, axios or Vite `import.meta` is evaluated | `target → rule` |
+| `app/data/ASCII/carddata.txt` row 1 and its `app/data/ASCII/cardxref.txt` cross-reference row — card `0500024453765740`, account `00000000050`, customer `000000050`, `Aniya Von`, expiry `2023-03-09`, status `Y` | `CardUpdatePage.test.tsx` fixture `cardRecord` / `updatedRecord`, so the suite exercises the same values the Flyway seed loads | `source → target` |
+
+Section 21 records the test artifact for a construct already enumerated in the forward direction
+(section 20); it refines coverage of that construct rather than adding a new legacy source, so the
+forward enumeration remains one row per legacy construct.
+## 27. Add-Transaction Screen Test Suite (`TranAddPage.test.tsx` checkpoint) — Present on Disk
+
+| Source Construct | Target Implementation | Direction |
+|------------------|-----------------------|-----------|
+| `COTRN02` mapset body — the `COTRN2A` caption grid (`Enter Acct #:`, `(or)`, `Card #:`, the `X(70)` rule, `Type CD:`, `Category CD:`, `Source:`, `Description:`, `Amount:`, `Orig Date:`, `Proc Date:`, `Merchant ID:`, `Merchant Name:`, `Merchant City:`, `Merchant Zip:`) and the `COTRN2AI` field widths `ACTIDINI X(11)` / `CARDNINI X(16)` / `TTYPCDI X(2)` / `TCATCDI X(4)` / `TRNSRCI X(10)` / `TDESCI X(60)` / `TRNAMTI X(12)` / `TORIGDTI X(10)` / `TPROCDTI X(10)` / `MIDI X(9)` / `MNAMEI X(30)` / `MCITYI X(25)` / `MZIPI X(10)` / `CONFIRMI X(1)` `[app/bms/COTRN02.bms; app/cpy-bms/COTRN02.CPY]` | `frontend/src/pages/TranAddPage.test.tsx` — the `LABELS` table resolves all fourteen fields by their verbatim caption through `getByLabelText`, and `VALID_ENTRY` supplies a value of legal width for each in `COTRN2AI` order | `source → target` |
+| BMS line-15 hints `(-99999999.99)` at `POS=(15,13)` and `(YYYY-MM-DD)` at `POS=(15,41)` and `POS=(15,67)` `[app/bms/COTRN02.bms:L208-L222]` | `TranAddPage.test.tsx` — `getByText('(-99999999.99)')`, `getAllByText('(YYYY-MM-DD)')` asserted at length two, and `toHaveAccessibleDescription` binding each hint to its own field through `aria-describedby` | `source → target` |
+| `COTRN02C` `VALIDATE-INPUT-KEY-FIELDS` / `VALIDATE-INPUT-DATA-FIELDS` first-failure-wins edit order and its literals `Account or Card Number must be entered...`, `Category CD can NOT be empty...`, `Description can NOT be empty...`, `Amount can NOT be empty...`, `Merchant City can NOT be empty...` `[app/cbl/COTRN02C.cbl:L193-L232, L235-L320]` | `TranAddPage.test.tsx` `REQUIRED_FIELD_CASES` — five cases that fill the leading `0` / `2` / `4` / `5` / `10` fields to land on each stop point, comparing the line-23 region on `textContent` character-for-character and asserting that no request is issued | `source → target` |
+| `COTRN02C` `PROCESS-ENTER-KEY` `EVALUATE CONFIRMI` — `'Y'`/`'y'` adds, `'N'`/`'n'`/`SPACES`/`LOW-VALUES` publishes `Confirm to add this transaction...`, `WHEN OTHER` publishes `Invalid value. Valid values are (Y/N)...` `[app/cbl/COTRN02C.cbl:L168-L187]` | `TranAddPage.test.tsx` "(Y/N) confirmation gate" and "cancelling the add" — the two-press flow, `y` forwarded verbatim, `X` rejected with the invalid literal, `N` and `n` cancelling without a request while the entered fields stay on screen | `source → target` |
+| BMS line-21 confirmation caption `You are about to add this transaction. Please confirm :` with its `CONFIRM` `X(1)` field and `(Y/N)` legend `[app/bms/COTRN02.bms:L275-L292]` | `TranAddPage.test.tsx` — the caption is the `LABELS.confirm` accessor for the field, and `(Y/N)` is asserted as the field's accessible description | `source → target` |
+| `COTRN02C` `ADD-TRANSACTION` id assignment — `MOVE HIGH-VALUES TO TRAN-ID` / `STARTBR` / `READPREV` / `ENDBR` / `ADD 1 TO WS-TRAN-ID-N` `[app/cbl/COTRN02C.cbl:L444-L451; AAP 0.6.5]` | `TranAddPage.test.tsx` "server-generated transaction id" — the posted request is asserted to carry NO `tranId` (`not.toHaveProperty`, an `Object.keys` check and `toStrictEqual`), and the compile-time guards on `keyof TranAddRequestDto` / `keyof TranAddResponseDto` fail `tsc` if the id ever moves back to the client | `source → target` |
+| `COTRN02C` success `STRING 'Transaction added successfully. '` + `' Your Tran ID is '` + `TRAN-ID` + `'.'`, followed by `INITIALIZE-ALL-FIELDS` `[app/cbl/COTRN02C.cbl:L723-L733, L762]` | `TranAddPage.test.tsx` — the server-assigned `0000000000000123` surfaced as `Transaction added successfully.  Your Tran ID is 0000000000000123.` (double space preserved, compared on `textContent`) with every field asserted empty afterwards | `source → target` |
+| `COTRN02C` `WRITE-TRANSACT-FILE` failure paths (`Unable to Add Transaction...`) reached through `RESP` checks `[app/cbl/COTRN02C.cbl:L711, L736-L746]` | `TranAddPage.test.tsx` — a rejected `addTransaction` carrying an `ApiError` body message is asserted on the line-23 error region while the entered values remain on screen | `source → target` |
+| `COTRN02C` `TRAN-AMT` handling — `FUNCTION NUMVAL-C` into `PIC S9(09)V99` and the `X(10)` date portions moved into `TORIGDTI` / `TPROCDTI` `[app/cbl/COTRN02C.cbl:L442-L466; app/cpy/CVTRA05Y.cpy]` | `TranAddPage.test.tsx` — `tranAmt` asserted as the STRING `'-00000100.00'` with an explicit `typeof` check, and both timestamps asserted as `YYYY-MM-DD` strings, so the `NUMERIC(11,2)` scale can never be coerced to a `number` | `source → target` |
+| BMS line-24 legend and `COTRN02C` `RETURN-TO-PREV-SCREEN` / `CLEAR-CURRENT-SCREEN` AID handling `[app/bms/COTRN02.bms:L297-L302; app/cbl/COTRN02C.cbl:L133-L147, L500, L754]` | `TranAddPage.test.tsx` "line-24 function keys" — exactly three buttons `ENTER=Add`, `F3=Exit`, `F4=Clear`; the F3 button and the physical `F3` key both reach `/transactions`; F4 empties every field and the line-23 region; the physical `Enter` key drives the confirmed add | `source → target` |
+| CICS `SEND MAP` header fields `TRNNAME` / `PGMNAME` / `TITLE01` / `TITLE02` `[app/bms/COTRN02.bms:L34-L64]` | `TranAddPage.test.tsx` — chrome assertions on the shell test ids `tran-id` (`CT02`), `pgm-name` (`COTRN02C`), `title01` (`CardDemo`) and `title02` (`Add Transaction`) | `source → target` |
+| Native-ESM Jest test-runtime gap (a body-level `jest.mock` cannot intercept a linked ES-module import, and the real `../api` barrel evaluates `import.meta`) — rule-mandated test infrastructure, no legacy analogue | `TranAddPage.test.tsx` — `jest.unstable_mockModule('../api', …)` with a `beforeAll` dynamic import, a structural `ApiError` passed through the synthetic namespace, and `signon` exported to satisfy ESM linking (decision log Section 19) | `target → rule` |
+## 28. Bill-Payment Screen Test Suite (`BillPayPage.test.tsx` checkpoint) — Present on Disk
+
+| Source Construct | Target Implementation | Direction |
+|------------------|-----------------------|-----------|
+| `COBIL00` symbolic-map field widths — `ACTIDIN` `X(11)` unprotected with the `IC` cursor, `CURBAL` `X(14)` `ASKIP`, `CONFIRM` `X(01)` unprotected, and the captions `Enter Acct ID:` / `Your current balance is: ` / `Do you want to pay your balance now. Please confirm: ` / `(Y/N)` `[app/bms/COBIL00.bms:L80-L126; app/cpy-bms/COBIL00.CPY:L55-L72]` | `frontend/src/pages/BillPayPage.test.tsx` — "screen fields and widths": `maxLength=11` / `size=11` on `ACTIDIN`, `readonly` + `tabindex=-1` + `size=14` on `CURBAL`, `maxLength=1` on `CONFIRM`, each resolved through its `label[for]`, plus the `(Y/N)` legend | `source → target` |
+| `COBIL00C` `PROCESS-ENTER-KEY` empty-id guard `WHEN ACTIDINI OF COBIL0AI = SPACES OR LOW-VALUES` with `Acct ID can NOT be empty...` and the cursor returned to `ACTIDINL` `[app/cbl/COBIL00C.cbl:L157-L165]` | `BillPayPage.test.tsx` — "account-id validation": the blank and the all-spaces entries both surface the literal by `textContent` equality, `payBill` is never called, and focus returns to the account-id field | `source → target` |
+| `COBIL00C` confirm dispatch `EVALUATE CONFIRMI` — `WHEN 'Y' WHEN 'y'` pays, `WHEN 'N' WHEN 'n'` performs `CLEAR-CURRENT-SCREEN`, `WHEN SPACES`/`LOW-VALUES` reads the account for the balance preview, `WHEN OTHER` raises `Invalid value. Valid values are (Y/N)...` `[app/cbl/COBIL00C.cbl:L167-L189]` | `BillPayPage.test.tsx` — "confirmation gate" and "cancellation": blank confirm issues `payBill({accountId, confirm: ''})` and shows the balance; `Y` and `y` post the payment; `N` and `n` blank the screen without any call; `X` surfaces the invalid-value literal without any call | `source → target` |
+| `COBIL00C` confirm prompt `Confirm to make a bill payment...` with the cursor moved to `CONFIRML`, and the balance moved into `CURBALI` `[app/cbl/COBIL00C.cbl:L192-L193, L235-L239]` | `BillPayPage.test.tsx` — the first ENTER asserts the prompt on line 23, the server balance string in `CURBAL` (`1234.56`, and `1000.00` byte-for-byte to prove money is never re-formatted), and focus on the confirm field | `source → target` |
+| `COBIL00C` `WRITE-TRANSACT-FILE` `DFHRESP(NORMAL)` branch — `INITIALIZE-ALL-FIELDS` then `STRING 'Payment successful. ' ' Your Transaction ID is ' TRAN-ID '.'` `[app/cbl/COBIL00C.cbl:L521-L533]` | `BillPayPage.test.tsx` — "successful payment": `payBill` called once with `confirm: 'Y'`, the banner asserted byte-exactly (raw `textContent`, `startsWith('Payment successful. ')`, two-space substring) both for the server-supplied message and for the page-composed fallback, and every entry field blank afterwards | `source → target` |
+| `COBIL00C` `WRITE-TRANSACT-FILE` `DFHRESP(DUPKEY)`/`DFHRESP(DUPREC)` branch — `Tran ID already exist...` `[app/cbl/COBIL00C.cbl:L534-L540]` | `BillPayPage.test.tsx` — "duplicate transaction id": a rejected `ApiError` carrying the `billpay-service` body message surfaces the literal on line 23 and no success banner is rendered | `source → target` |
+| `COBIL00C` `READ-ACCTDAT-FILE` / `READ-CXACAIX-FILE` `NOTFND` branches — `Account ID NOT found...` `[app/cbl/COBIL00C.cbl:L355-L365, L419-L427]` | `BillPayPage.test.tsx` — a rejected `ApiError` with HTTP `404` and the standardized body surfaces the literal verbatim while `CURBAL` stays blank | `source → target` |
+| `COBIL00.bms` line-24 `FKEYS` literal `ENTER=Continue  F3=Back  F4=Clear` (`LENGTH=33`) and `COBIL00C` `RETURN-TO-PREV-SCREEN` (`XCTL` to `COMEN01C`) / `CLEAR-CURRENT-SCREEN` `[app/bms/COBIL00.bms:L131-L135; app/cbl/COBIL00C.cbl:L118-L131, L549-L553]` | `BillPayPage.test.tsx` — "line-24 function keys": the three captions asserted in mapset order inside the `Function keys` toolbar, F3 by click and by physical `F3` keydown both landing on the `/menu` route, F4 blanking every field, and the physical `Enter` key submitting | `source → target` |
+| `COCOM01Y` COMMAREA identity fields `CDEMO-USER-ID` / `CDEMO-USER-TYPE` (`88 CDEMO-USRTYP-USER VALUE 'U'`) carried into the screen `[app/cpy/COCOM01Y.cpy:L18-L30]` | `BillPayPage.test.tsx` — the suite seeds the externalized session with `__setSession('USER0001', 'U')` before every render and asserts the shell's `data-authenticated` reflects it | `source → target` |
+| `COBIL00C` `LIT-THISTRANID` `CB00` / `LIT-THISPGM` `COBIL00C` and the `TITLE01` / `TITLE02` header lines `[app/cbl/COBIL00C.cbl; app/bms/COBIL00.bms:L34-L79]` | `BillPayPage.test.tsx` — the published chrome asserted as `CB00`, `COBIL00C`, `CardDemo`, `Bill Payment`, with the line-23 region empty on entry | `source → target` |
+| Native-ESM Jest module-mocking gap (`jest.mock` is inert under `--experimental-vm-modules`) — rule-mandated test infrastructure, no legacy analogue | `BillPayPage.test.tsx` — `jest.unstable_mockModule('../api', …)` with the mocked graph bound by dynamic `await import()` in `beforeAll`, so `payBill` is a jest mock, `ApiError` is the constructor every consumer sees, and `api/config.ts`'s `import.meta` is never evaluated | `target → rule` |
+## 29. Report-Request Screen Test Suite — Present-on-Disk Target
+
+The report-request screen's verification surface. The suite is rule-mandated test infrastructure, so
+each row names the legacy construct or rule it serves and the reverse direction stays complete; the
+## 30. User-List Screen Suite (`UserListPage.test.tsx`) — Present on Disk
+
+Targets delivered with the colocated suite for the administrator user-list screen. Each row names
+the legacy construct or rule the assertion serves, so the reverse direction stays complete; the
+rationale for every choice is in `docs/decision-log.md` §19.
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `frontend/src/pages/ReportPage.test.tsx` — 49 cases over six groups: screen and report-window selection (including the two `(MM/DD/YYYY)` hints and the Custom reveal), the report-window-required edit, the six emptiness edits, the six numeric/range plus two calendar edits, the confirmation gate, the asynchronous `POST /reports` launch, and the line-24 keys | AAP 0.7.1 "at least 50 unit-test scenarios must pass" and "all 17 UI workflows must behave identically" — the CORPT00 workflow of the seventeen. Every asserted literal is the mapset caption `[app/bms/CORPT00.bms:L75-226]` or the program message `[app/cbl/CORPT00C.cbl:L261-L490]`, compared byte-for-byte against the rendered `textContent` | `target → rule` |
+| `ReportPage.test.tsx` — the `jest.unstable_mockModule('../api', …)` factory (mocked `requestReport` / `signon`, working `ApiError`) and the `jest.isMockFunction` harness guard | Rule-mandated test isolation, no legacy analogue — the suite must exercise the screen without the Vite build-time environment (`import.meta`) or a live axios client, under the project's native-ESM Jest runtime `[frontend/package.json; frontend/src/api/config.ts]` | `target → rule` |
+| `ReportPage.test.tsx` — the confirmation-gate cases (blank prompt per window, non-`Y`/`N` quoted rejection, `N`/`n` cancellation, `Y`/`y` launch) and the in-flight ENTER lock | `CORPT00C` `SUBMIT-JOB-TO-INTRDR` confirmation gate and its TDQ `'JOBS'` write, reached once per confirmed request `[app/cbl/CORPT00C.cbl:L462-L497]` | `source → target` |
+| `frontend/src/pages/UserListPage.test.tsx` — 28 cases over the `COUSR00` browse, colocated with the screen | `COUSR00` mapset + `COUSR0AI` symbolic map + `COUSR00C` browse, paging and selection logic `[app/bms/COUSR00.bms; app/cpy-bms/COUSR00.CPY; app/cbl/COUSR00C.cbl]`; AAP 0.7.1 "at least 50 unit-test scenarios must pass" and "all 17 UI workflows must behave identically" | `source → target` |
+| Ten-rows-per-page assertion — exactly 10 data rows rendered from a 23-row response, checked against the literal `10` and against the `USER_LIST_PAGE_SIZE` constant | `USER-REC OCCURS 10 TIMES` fixing the user list at ten rows, and the `SEL0001`/`USRID01` .. `SEL0010`/`USRID10` row fields of the mapset `[app/cbl/COUSR00C.cbl:L57; app/bms/COUSR00.bms:L153-L438]` | `source → target` |
+| Row-select field naming assertion — each displayed row's input carries `id` and `name` `SEL0001`..`SEL0010` with `maxlength` 1 | The ten `DFHMDF ATTRB=(FSET,NORM,UNPROT) LENGTH=1` select fields and their `SEL000nI PIC X(1)` symbolic-map members `[app/bms/COUSR00.bms:L153-L158; app/cpy-bms/COUSR00.CPY:L67-L72]` | `source → target` |
+| Column-heading and filter assertions — headings exactly `Sel` / `User ID` / `First Name` / `Last Name` / `Type`, and `Search User ID:` bound to `USRIDIN` with `maxlength` 8 | The row-8 heading literals and the `USRIDIN` `LENGTH=8` search field `[app/bms/COUSR00.bms:L90-L127]`; `SEC-USR-ID X(08)` `[app/cpy/CSUSR01Y.cpy]` | `source → target` |
+| PF7 / PF8 paging assertions — F8 advances to rows 11-20 and F7 returns, F7 reports `enabled: false` on page 1, F8 reports `enabled: false` on the final (three-row) page, and a server-reported further page re-requests `page: 2` | `PROCESS-PF7-KEY` / `PROCESS-PF8-KEY`, the `CDEMO-CU00-PAGE-NUM` counter and the `NEXT-PAGE-YES` / `NEXT-PAGE-NO` 88-levels that gate forward paging `[app/cbl/COUSR00C.cbl:L70-L73, L128-L131, L237-L327]` | `source → target` |
+| Selection-validation assertion — any `Sel` value other than `U` / `D` publishes the verbatim line-23 text `Invalid selection. Valid values are U and D` and performs no navigation | The `WHEN OTHER` branch of the `CDEMO-CU00-USR-SEL-FLG` evaluate, which moves that literal to `WS-MESSAGE` `[app/cbl/COUSR00C.cbl:L210-L213]` | `source → target` |
+| `U` / `D` navigation assertions — `/users/update` and `/users/delete` reached carrying router state `{ userId }`, with lower-case `u` / `d` accepted and a row selected on page 2 carrying its own id | `WHEN 'U'` / `WHEN 'u'` → `XCTL` `COUSR02C` and `WHEN 'D'` / `WHEN 'd'` → `XCTL` `COUSR03C`, with the selected id carried in the COMMAREA `[app/cbl/COUSR00C.cbl:L189-L210]` | `source → target` |
+| Function-key assertions — the published legend is exactly `F3=Exit`, `F7=Backward`, `F8=Forward` with callable handlers, and F3 navigates to `/admin` | `EVALUATE EIBAID` mapping `DFHPF3` to `COADM01C`, `DFHPF7` to backward paging and `DFHPF8` to forward paging `[app/cbl/COUSR00C.cbl:L125-L131]`; PF-key legend semantics `[app/cpy/CSSTRPFY.cpy]` | `source → target` |
+| Chrome-payload assertion — `transactionId` `CU00`, `programName` `COUSR00C`, titles `CardDemo` / `List Users` | `WS-TRANID` / `WS-PGMNAME` and the `List Users` row-4 title literal `[app/cbl/COUSR00C.cbl; app/bms/COUSR00.bms:L75-L79]` | `source → target` |
+| Administrator-session assertion — the browse renders with the session seeded to role `'A'` and `isAdmin` true | `CDEMO-USER-TYPE` administrator gating, `88 CDEMO-USRTYP-ADMIN VALUE 'A'` `[app/cpy/COCOM01Y.cpy:L26-L30]`; the administrator-only `CU00` transaction `[app/csd/CARDDEMO.CSD]` | `source → target` |
+| Failed-browse assertions — a real `ApiError` carrying a body publishes `error.body.message`, and one without a body publishes `error.message` | No legacy analogue for the HTTP error contract itself; it stands in for the `RESP` / file-status branches `COUSR00C` reports on line 23, and preserves the AAP 0.7.1 requirement that surfaced outcomes are never masked `[app/cbl/COUSR00C.cbl]` | `target → source (derived)` |
+| `../api` and `../components/Layout` test doubles registered with `jest.unstable_mockModule`, and the chrome-capture spy that makes the published legend and message assertable | No legacy analogue — Jest native-ESM test infrastructure required to exercise the screen without a network call, matching the `jest.unstable_mockModule` pattern already used by `frontend/src/hooks/useSession.test.ts` (decision log §19) | `target → rule` |
+| Route-recorder navigation spy over `MemoryRouter` / `Routes`, driven by the real `useNavigate` / `useLocation` | No legacy analogue — asserts the SPA replacement for `XCTL` program transfer, including the row identity the COMMAREA used to carry (decision log §19) `[app/cpy/COCOM01Y.cpy:L18-L45]` | `target → rule` |
+
+## 31. Add-User Screen Suite (`UserAddPage.test.tsx`) — Present on Disk
+
+Reverse rows for the colocated add-user suite, so the target added in this checkpoint traces back to
+its legacy construct or mandate; the rationale for each choice is in `docs/decision-log.md` §19.
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `frontend/src/pages/UserAddPage.test.tsx` — field cases asserting the five entry fields by caption at `maxlength` `20` / `20` / `8` / `8` / `1`, the `(8 Char)` hints and the `(A=Admin, U=User)` hint | `COUSR1A` map fields `FNAME` / `LNAME` / `USERID` / `PASSWD` / `USRTYPE` with their `LENGTH=` and `INITIAL=` hint literals, and the `COUSR1AI` symbolic-map picture clauses `[app/bms/COUSR01.bms:L80-L150; app/cpy-bms/COUSR01.CPY:L55-L84]` | `target → source` |
+| `frontend/src/pages/UserAddPage.test.tsx` — masking case asserting the password input is `type="password"` and the other four are `type="text"` | `PASSWD DFHMDF ATTRB=(DRK,FSET,UNPROT)` — the non-display attribute of the 3270 password field `[app/bms/COUSR01.bms:L126]` | `target → source` |
+| `frontend/src/pages/UserAddPage.test.tsx` — blank-field case asserting the five verbatim messages in first-blank-wins order and that no write is issued | `COUSR01C PROCESS-ENTER-KEY` `EVALUATE TRUE` chain over `FNAMEI` / `LNAMEI` / `USERIDI` / `PASSWDI` / `USRTYPEI` with `WS-ERR-FLG` suppressing `WRITE-USER-SEC-FILE` `[app/cbl/COUSR01C.cbl:L108-L159]` | `target → source` |
+| `frontend/src/pages/UserAddPage.test.tsx` — add case asserting one `addUser` call carrying the entered fields verbatim (including the `SEC-USR-PWD` value) and the confirmation `User NEWUSER1 has been added ...` with the fields reinitialized | `WRITE-USER-SEC-FILE` `DFHRESP(NORMAL)` branch: `MOVE` of the five map fields into `SEC-USER-DATA`, `STRING 'User ' SEC-USR-ID ' has been added ...'`, then `INITIALIZE-ALL-FIELDS` `[app/cbl/COUSR01C.cbl:L153-L159, L250-L258, L285-L295]` | `target → source` |
+| `frontend/src/pages/UserAddPage.test.tsx` — duplicate case asserting `User ID already exist...` from the backend error body with the entered fields retained | `WRITE-USER-SEC-FILE` `DFHRESP(DUPKEY)` / `DFHRESP(DUPREC)` branch, reproduced by `UserService` as `CardDemoException('User ID already exist...')` `[app/cbl/COUSR01C.cbl:L261-L266]` | `target → source` |
+| `frontend/src/pages/UserAddPage.test.tsx` — function-key cases asserting the `ENTER=Add User` / `F3=Back` / `F4=Clear` legend, the `/admin` exit and the clear-to-empty behavior | `COUSR01` line-24 legend literal, `RETURN-TO-PREV-SCREEN` `XCTL` back to the administrator menu, and `CLEAR-CURRENT-SCREEN` → `INITIALIZE-ALL-FIELDS` `[app/bms/COUSR01.bms:L155-L159; app/cbl/COUSR01C.cbl:L162-L180, L276-L295]` | `target → source` |
+| `frontend/src/pages/UserAddPage.test.tsx` — the native-ESM `../api` double (`unstable_mockModule`, `ApiError` stand-in) and the `__setSession(user, 'A')` admin seeding | AAP 0.7.1 unit-test mandate for the 17 UI workflows — rule-mandated test infrastructure with no legacy analogue; the screen is administrator-only per `CDEMO-USRTYP-ADMIN` `[app/cpy/COCOM01Y.cpy:L26-L30]` | `target → rule` |
+## 32. Update-User Screen Test Suite (`COUSR02` / `CU02` / `COUSR02C`) — Present on Disk
+
+| Source Construct | Target Implementation | Direction |
+|------------------|-----------------------|-----------|
+| `COUSR02C` `PROCESS-ENTER-KEY` keyed read plus the `CDEMO-CU02-USR-SELECTED` hand-over, and the `UPDATE-USER-INFO` edit order `USRIDIN` → `FNAME` → `LNAME` → `PASSWD` → `USRTYPE` `[app/cbl/COUSR02C.cbl:L99-L104, L143-L172, L177-L212]` | `frontend/src/pages/UserUpdatePage.test.tsx` — the `fetch then edit` cases (router-state and query-string hand-over, ENTER lookup) and the six `required field validation` cases, each asserting `updateUser` was not called | `source → target` |
+| `COUSR02C` message literals `User ID can NOT be empty...`, `First Name can NOT be empty...`, `Last Name can NOT be empty...`, `Password can NOT be empty...`, `User Type can NOT be empty...`, `User ID NOT found...`, `Please modify to update ...`, `Press PF5 key to save your updates ...` and `STRING 'User ' SEC-USR-ID ' has been updated ...'` `[app/cbl/COUSR02C.cbl:L148, L188-L206, L239, L336, L342, L372-L374]` | `frontend/src/pages/UserUpdatePage.test.tsx` — every literal asserted character-for-character against the line-23 region (`role="alert"` / `role="status"`); the no-change literal arrives as the `user-service` `400` body and is surfaced unchanged | `source → target` |
+| `COUSR02.bms` masked `PASSWD` field (`ATTRB=(DRK,FSET,UNPROT)`, `LENGTH=8`), the `(8 Char)` and `(A=Admin, U=User)` hints, and the line-24 legend `ENTER=Fetch  F3=Save&Exit  F4=Clear  F5=Save` with `DFHPF3` returning to `COADM01C` `[app/bms/COUSR02.bms:L130-L154, L159-L164; app/cbl/COUSR02C.cbl:L108-L125]` | `frontend/src/pages/UserUpdatePage.test.tsx` — `type="password"` masking asserted before and after typing, both hints asserted, and the `line-24 function keys` cases covering the four-button legend, the physical ENTER / F4 / F5 keys, and F3 saving then landing on `/admin` | `source → target` |
+| AAP 0.7.1 "at least 50 unit-test scenarios must pass" and "all 17 UI workflows must behave identically" — rule-mandated verification, no legacy analogue | `frontend/src/pages/UserUpdatePage.test.tsx` — 18 cases pinning UI workflow 16 (admin update user); the whole frontend suite runs 89 cases | `target → rule` |
+| Jest native-ESM `../api` mock seam (`jest.unstable_mockModule` with a passthrough `ApiError`, so no axios instance and no `import.meta` are evaluated) — test infrastructure, no legacy analogue | `frontend/src/pages/UserUpdatePage.test.tsx` — module-scope mock registration plus `beforeAll` dynamic import of the page, the `Layout` shell and the `__setSession` seam | `target → rule` |
+
+## 33. SPA Route Table (`App.tsx` checkpoint) — Present on Disk
+
+Targets delivered while building the client-side route table and its colocated suite. Each row
+names the legacy construct or rule it serves, so the reverse direction stays complete; the
+rationale for every choice is in `docs/decision-log.md` Section 19.
+
+| Source Construct | Target Implementation | Direction |
+|------------------|-----------------------|-----------|
+| CICS menu navigation and `XCTL` program transfer under COMMAREA control — `COMEN01C` / `COADM01C` dispatching to the fifteen feature programs, and `RETURN-TO-PREV-SCREEN` transferring back `[app/cbl/COMEN01C.cbl:L146-L155; app/cbl/COADM01C.cbl; app/cpy/COCOM01Y.cpy:L18-L45]` | `frontend/src/App.tsx` — the `<Routes>` tree: twenty-four `<Route path>` entries resolving the seventeen screens, declared with literal segments ahead of their parameterised siblings | `source → target` |
+| `CDEMO-USER-TYPE PIC X(01)` with `88 CDEMO-USRTYP-ADMIN VALUE 'A'` / `88 CDEMO-USRTYP-USER VALUE 'U'`, and the admin-only guard fronting `COADM01C` and `COUSR00C`-`COUSR03C` `[app/cpy/COCOM01Y.cpy:L26-L30; app/cbl/COMEN01C.cbl]` | `frontend/src/App.tsx` — `RequireAdmin`, gating `/admin`, `/users`, `/users/add`, `/users/update`, `/users/delete` on `useSession().isAdmin` (`role === CDEMO_USRTYP_ADMIN`); a signed-in non-administrator is returned to `/menu` | `source → target` |
+| `COSGN00C` sign-on transfer — `XCTL PROGRAM('COADM01C')` for user type `'A'`, `XCTL PROGRAM('COMEN01C')` otherwise `[app/cbl/COSGN00C.cbl:L227, L231-L237]` | `frontend/src/App.tsx` — `homeRouteForRole(role)` and `HomeRedirect`, resolving `/` to `/admin` for an administrator, `/menu` for a standard user, `/signon` when signed out | `source → target` |
+| The CICS rule that every transaction other than `CC00` required a completed sign-on `[app/cbl/COSGN00C.cbl; app/csd/CARDDEMO.CSD]` | `frontend/src/App.tsx` — `RequireAuth`, redirecting an unauthenticated visitor to `/signon` with the attempted location carried in `state.from`; `/signon` is the only route outside both guards | `source → target` |
+| The fixed BMS mapset frame every screen inherits — `DFHMDI SIZE=(24,80)` header rows, the line-23 message region and the line-24 function-key legend `[app/bms/COSGN00.bms:L26-L74; app/cpy/CSSTRPFY.cpy; app/cpy/CSSETATY.cpy]` | `frontend/src/App.tsx` — the single pathless parent route `element={<Layout><Outlet /></Layout>}`, so `Header` / `ErrorBanner` / `PFKeyBar` frame all twenty-four route entries including `/signon` | `source → target` |
+| The 3270 having no not-found state: an unrecognised transaction returned the operator to a menu | `frontend/src/App.tsx` — the catch-all `<Route path="*">` redirecting to `/`, which re-resolves by role through `HomeRedirect`; both hops use `replace`, so no intermediate entry is left in history | `target → source (derived)` |
+| The blank-key entry screens the legacy menu transferred into — `COACTVWC`, `COACTUPC`, `COCRDSLC`, `COCRDUPC` and `COTRN01C` each prompt for their own identifier, so the `XCTL` carried no key `[app/cbl/COMEN01C.cbl:L146-L155]` | `frontend/src/App.tsx` — the entry routes `/accounts`, `/accounts/update`, `/cards/view`, `/cards/update`, `/transactions/view`, declared alongside their deep-linked `:accountId` / `:cardNumber` / `:transactionId` counterparts and matching the option table ratified in `docs/decision-log.md` Section 14 | `source → target` |
+| No legacy analogue — the SPA needs a single browser-history root; `<BrowserRouter>` is owned by `frontend/src/main.tsx` | `frontend/src/App.tsx` declares only `<Routes>` / `<Route>` and creates no router of its own, so the SPA has exactly one history binding | `target → rule` |
+| AAP Section 0.7.1 "all 17 UI workflows must behave identically" and "at least 50 unit-test scenarios must pass"; AAP Section 0.2.1 frontend Jest deliverable | `frontend/src/App.test.tsx` — 77 cases pinning: every protected route redirecting an unauthenticated visitor to `/signon` (with the `state.from` breadcrumb), a standard user refused all five administrator screens, an administrator admitted to all five plus every shared screen, all seventeen pages mounting under their own legacy program name, role-sensitive resolution of `/` and of the catch-all, and literal segments outranking route parameters | `target → rule` |
+## 34. Delete-User Screen Suite (`COUSR03` / `CU03`) — Present on Disk
+
+Targets delivered with the colocated suite for the administrator delete-user screen. The rationale
+for every choice is in `docs/decision-log.md` §19.
+
+| Source Construct | Target Implementation | Direction |
+|------------------|-----------------------|-----------|
+| `COUSR03` mapset body — the line-4 heading `Delete User`, the captions `Enter User ID:`, `First Name:`, `Last Name:`, `User Type: ` (trailing space verbatim) and `(A=Admin, U=User)`, with `USRIDIN` the only `UNPROT` field and `FNAME` / `LNAME` / `USRTYPE` `ASKIP` `[app/bms/COUSR03.bms:L75-L139]` | `frontend/src/pages/UserDeletePage.test.tsx` — the caption cases, which match `User Type: ` WITHOUT whitespace normalization and assert `readonly` on the three display fields while the key field stays enterable | `source → target` |
+| `COUSR3AI` / `COUSR3AO` symbolic-map widths `USRIDINI PIC X(8)`, `FNAMEI` / `LNAMEI PIC X(20)`, `USRTYPEI PIC X(1)` `[app/cpy-bms/COUSR03.CPY:L55-L78]` | `UserDeletePage.test.tsx` — the `maxlength` case pinning 8 / 20 / 20 / 1 on `USRIDIN`, `FNAME`, `LNAME`, `USRTYPE` | `source → target` |
+| `COUSR03C` line-23 literals `User ID can NOT be empty...`, `User ID NOT found...`, `Press PF5 key to delete this user ...` and `STRING 'User ' SEC-USR-ID ' has been deleted ...'` `[app/cbl/COUSR03C.cbl:L147-L148, L179-L180, L283-L284, L289-L290, L318-L321, L325-L326]` | `UserDeletePage.test.tsx` — the verbatim message cases, asserted through the shell's line-23 region (`role="alert"` for an error, `role="status"` for the prompt and the confirmation) | `source → target` |
+| `COUSR03C` control flow — `DELETE-USER-SEC-FILE` is reachable ONLY through `DELETE-USER-INFO` on the `DFHPF5` branch, never from `PROCESS-ENTER-KEY` / `READ-USER-SEC-FILE` `[app/cbl/COUSR03C.cbl:L109-L122, L142-L172, L174-L204, L267-L303, L305-L339]` | `UserDeletePage.test.tsx` — the deliberate-delete cases: `deleteUser` is asserted NOT called by the read, then called exactly once with the keyed id by the explicit delete action and by the F5 key, after which every field is cleared | `source → target` |
+| `COUSR03C` entry path — `CDEMO-CU03-USR-SELECTED` moved into `USRIDINI` followed by `PROCESS-ENTER-KEY` before the first `SEND MAP` `[app/cbl/COUSR03C.cbl:L99-L105]` | `UserDeletePage.test.tsx` — the entry cases supplying the target id as `MemoryRouter` location state and as the `userId` query parameter, each asserting the read fires once and the record is displayed | `source → target` |
+| `COUSR03C` AID branches `DFHENTER` → `PROCESS-ENTER-KEY`, `DFHPF3` → `COADM01C`, `DFHPF4` → `CLEAR-CURRENT-SCREEN`, `DFHPF5` → `DELETE-USER-INFO`, legended on BMS line 24 as `ENTER=Fetch  F3=Back  F4=Clear  F5=Delete` `[app/cbl/COUSR03C.cbl:L109-L122; app/bms/COUSR03.bms:L144-L148]` | `UserDeletePage.test.tsx` — the line-24 cases: exactly four legend captions in order, ENTER reads, F4 clears field / display / message, and F3 resolves the `/admin` probe route | `source → target` |
+| `CDEMO-USER-TYPE` administrator gating, `88 CDEMO-USRTYP-ADMIN VALUE 'A'` `[app/cpy/COCOM01Y.cpy:L26-L30; app/cbl/COSGN00C.cbl:L227]` | `UserDeletePage.test.tsx` — `__setSession(ADMIN_USER_ID, 'A')` seeded per case and asserted through the shell's `data-authenticated="true"`, so the admin-only screen is exercised as an authenticated administrator | `target → source (derived)` |
+| AAP 0.7.1 — "at least 50 unit-test scenarios must pass" and "all 17 UI workflows must behave identically"; no legacy analogue | `UserDeletePage.test.tsx` — 15 cases covering the `CU03` workflow end to end (chrome and captions, field widths, read-and-display by three entry routes, empty-key and miss messages for both the read and the delete, the deliberate delete, and the four function keys) | `target → rule` |
+| Jest native-ESM module-mock seam (no hoisted `jest.mock`, no `import.meta` evaluation permitted in a unit suite); no legacy analogue | `UserDeletePage.test.tsx` — `jest.unstable_mockModule('../api', …)` publishing `getUser`, `deleteUser`, `signon` and a constructor-compatible `ApiError` stand-in, with the screen and shell imported dynamically after registration | `target → rule` |
+
+## 35. Transaction-List Screen Test Suite — Present on Disk
+
+Targets delivered with the colocated transaction-list suite. Each row names the legacy construct or
+rule it serves, so the reverse direction stays complete for these artifacts too; the rationale for
+every choice is in `docs/decision-log.md` §19.
+
+| Source Construct | Target Implementation | Direction |
+|------------------|-----------------------|-----------|
+| `COTRN00` mapset row grid — the ten row groups `SEL0001`..`SEL0010` / `TRNID01`..`TRNID10` `X(16)` / `TDATE01`..`TDATE10` `X(08)` / `TDESC01`..`TDESC10` `X(26)` / `TAMT001`..`TAMT010` `X(12)` on screen lines 10-19, the `Search Tran ID:` prompt with `TRNIDIN` `X(16)`, the `Sel` / `Transaction ID` / `Date` / `Description` / `Amount` captions, the line-21 hint `Type 'S' to View Transaction details from the list` and the line-24 `F7=Backward` / `F8=Forward` legend `[app/bms/COTRN00.bms:L90-L99, L103-L127, L153-L442, L444-L449, L454-L459; app/cpy-bms/COTRN00.CPY:L61-L96]` | `frontend/src/pages/TranListPage.test.tsx` — asserts EXACTLY ten data rows on page 1 out of 22 mocked rows against the literal `10` and `TRANSACTION_LIST_PAGE_SIZE`, the ten `SEL000n` one-character flag fields, the 16-character `TRNIDIN` filter, the five column captions, and the three-key legend | `source → target` |
+| `COTRN00C` browse and validation behaviour — the `EVALUATE` that acts on the first flagged row and accepts only `'S'` / `'s'` before `XCTL` to `COTRN01C`, the rejection literal `Invalid selection. Valid value is S`, the `IS NUMERIC` class test on `TRNIDINI` with `Tran ID must be Numeric ...`, the read-failure literal `Unable to lookup transaction...` and the boundary literal `You are at the top of the page...` `[app/cbl/COTRN00C.cbl:L148-L215, L602-L616]` | `frontend/src/pages/TranListPage.test.tsx` — asserts the drill-through to `/transactions/{16-digit id}` for `S` and `s`, the first-flagged-row precedence, both rejection literals verbatim with no request issued, and the surfaced failure / informational banner text | `source → target` |
+| AAP 0.7.1 "at least 50 unit-test scenarios must pass" and "all 17 UI workflows must behave identically" — rule-mandated coverage of the `CT00` workflow, no legacy analogue for the harness itself | `frontend/src/pages/TranListPage.test.tsx` — 28 cases across screen frame, ten-rows-per-page, PF7/PF8 paging and its disabled boundaries, the `TRNIDIN` filter, row-selection validation, the line-24 legend and the request outcomes; `../api` is mocked so no network, axios or `import.meta` is evaluated | `target → rule` |
+
+## 36. Transaction-View Screen Suite (`TranViewPage.test.tsx`) — Present on Disk
+
+| Target Implementation (delivered) | Source Construct / Mandate | Direction |
+|-----------------------------------|----------------------------|-----------|
+| `frontend/src/pages/TranViewPage.test.tsx` — sixteen cases over the `COTRN01` workflow: the `/transactions/:transactionId` drill-through lookup (16-character id), all thirteen protected detail fields rendered read-only under their exact BMS captions including the `X(26)` -> `X(10)` timestamp slice, the `TRNIDIN` entry field at `maxLength=16`, the verbatim `Tran ID can NOT be empty...` and `Transaction ID NOT found...` messages, and the `ENTER=Search` / `F3=Exit` legend with F3 returning to `/transactions` | `COTRN01` mapset + symbolic map + `COTRN01C` `PROCESS-ENTER-KEY` / `READ-TRANSACT-FILE` / `EIBAID` handling `[app/bms/COTRN01.bms; app/cpy-bms/COTRN01.CPY; app/cbl/COTRN01C.cbl:L112-L131, L142-L155, L266-L296]`; AAP 0.7.1 "at least 50 unit-test scenarios" and "all 17 UI workflows behaving identically" | `source -> target` |
 
 ## Coverage Assertion
 
-Sections 12 through 18 additionally record the targets added or corrected during successive
-QA-remediation and delivery passes; their rows refine behaviors within constructs already
+Sections 12 through 36 additionally record the targets added or corrected during successive
+QA-remediation and screen-delivery passes; their rows refine behaviors within constructs already
 enumerated above rather than adding new sources, so the forward enumeration remains one row per
 legacy construct.
 
-QA-remediation and screen-delivery passes; their rows refine behaviors within constructs already enumerated above
+This matrix enumerates the COMPLETE legacy inventory and maps it to the target design.
+It does **not** assert that every target file is already present on disk — the migration
+lands across multiple tranches (see *Scope of this matrix* above; Section 11 lists what
+this tranche delivers):
 
-QA-remediation passes; their rows refine behaviors within constructs already enumerated above
-rather than adding new sources, so the forward enumeration remains one row per legacy construct.
+- **Forward (`source → target`):** every legacy source construct appears exactly once as a
+  Source Construct — all 28 COBOL programs (17 online + 10 batch + `CSUTLDTC`), all 28
+  `app/cpy` copybooks (27 active + `UNUSED1Y.cpy` flagged excluded), all 17 BMS mapsets,
+  all 17 `app/cpy-bms` symbolic-map copybooks, all 29 JCL job streams + 2 procs, and every
+  configuration, catalog, control, and ASCII seed artifact.
+- **Reverse (`target → source (derived)` / `target → rule`):** every target implementation
+  either appears as a Target Implementation in a forward row, or is recorded in Section 9
+  (derived from a legacy behavioral pattern with no 1:1 field), Section 10 (rule-mandated
+  or standalone-operation infrastructure with no legacy analogue), Section 11 (foundation
+  artifacts present on disk), or one of the QA-remediation sections — Section 12 (security,
+  session and observability artifacts, including their tests), Section 13 (runtime-checkpoint
+  targets, including the shared error-envelope handlers and the PII encryption/masking chain),
+  Section 14 (runtime-verified batch, security and integration targets), Section 15 (targets
+  added while making the delivered stack run, be observable and be deployable), and Section 16
+  (offline batch compensator targets).
+- **No row claims coverage the runtime does not deliver.** Where an earlier revision credited
+  a component that was present but never activated, the row now names the registration or
+  dependency that makes it active and states the observed evidence; the two such rows were
+  the distributed-tracing row (Section 10) and the correlation-id row (Section 11). The same
+  correction was applied again in Section 16: `FailedOutputCleanupListener` was present on disk
+  and registered on NO step, so the row now names the nine steps that register it and the
+  observed evidence that a failed step leaves no artifact behind.
+- **Excluded items, recorded for audit completeness:** `app/cpy/UNUSED1Y.cpy` (unused
+  copybook) and `app/data/EBCDIC/AWS.M2.CARDDEMO.*` (12 binary data sets; the ASCII
+  fixtures in `app/data/ASCII` drive seeding). The developer-only CICS artifacts
+  `COCRDSEC` (program) and transaction `CDV1` defined in `app/csd/CARDDEMO.CSD` are
+  outside the 17-program online scope and are not transformed.
+- **Path assertions resolve:** every migration script named anywhere in this matrix —
+  `V1__create_schema.sql`, `V2__seed_reference_data.sql`, `V3__seed_test_data.sql`,
+  `V5__batch_metadata.sql`, `V6__security_users_optimistic_lock.sql`,
+  `V7__cards_optimistic_lock.sql`, `V8__transactions_card_fk.sql`, plus the Java migration
+  `SeededPiiEncryptionMigration` (version `4`) — exists at the single path
+  `carddemo-common/src/main/resources/db/migration` (the Java migration under
+  `carddemo-common/src/main/java/com/carddemo/common/migration`). No row asserts a
+  file that is not on disk, so the mapping is checkable by inspection rather than
+  taken on trust.

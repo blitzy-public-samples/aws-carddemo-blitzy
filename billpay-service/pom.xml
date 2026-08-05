@@ -144,21 +144,6 @@
             <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
         </dependency>
 
-        <!--
-          Spring Boot 4 extracted tracing auto-configuration out of spring-boot-actuator into
-          dedicated modules. Without BOTH of the modules below the bridge above is completely
-          inert: no io.micrometer.tracing.Tracer bean is created, no spans are produced, the
-          management.tracing.sampling.probability setting is ignored, and the traceId/spanId
-          fields of the logback-spring.xml pattern stay permanently empty.
-            * spring-boot-micrometer-tracing               -> MicrometerTracingAutoConfiguration
-                                                              (span-producing observation handlers)
-            * spring-boot-micrometer-tracing-opentelemetry -> OpenTelemetryTracingAutoConfiguration
-                                                              (SdkTracerProvider + OtelTracer +
-                                                               W3C context propagators)
-          No OTLP/Zipkin exporter artifact is declared, so spans are created and correlated into
-          the MDC but not shipped off-box; adding an exporter is a deployment-time choice.
-        -->
-
         <!-- PostgreSQL JDBC driver (runtime only). -->
         <dependency>
             <groupId>org.postgresql</groupId>
@@ -244,9 +229,12 @@
             </plugin>
 
             <!--
-              Failsafe runs the *IT integration tests in the integration-test/verify phases; the
-              plugin is declared build-wide in the parent POM and refined here only to hand the
-              forked JVM the non-production PII key.
+              Failsafe runs the *IT integration tests in the integration-test/verify phases,
+              matching every other service module: without the binding the *IT classes compile
+              but never execute, so the security contract they freeze (an unauthenticated
+              POST /billpay must never reach the payment service) would not be enforced by the
+              build. The forked JVM is also handed the non-production PII key. Plugin version
+              inherited from the parent BOM.
             -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

@@ -425,6 +425,7 @@ class TransactionServiceTest {
                     .isInstanceOf(CardDemoException.class)
                     .hasMessage(expectedMessage);
             verify(transactionRepository, never()).saveAndFlush(any(Transaction.class));
+            verify(transactionRepository, never()).save(any(Transaction.class));
         }
 
         @Test

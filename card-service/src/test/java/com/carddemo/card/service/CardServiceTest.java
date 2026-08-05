@@ -358,6 +358,44 @@ class CardServiceTest {
         verify(cardRepository).findByCardAcctIdOrderByCardNumAsc(eq(OTHER_ACCT_ID), any(Pageable.class));
         verify(cardRepository, never()).findByCardAcctIdOrderByCardNumAsc(eq(ACCT_ID), any(Pageable.class));
         verify(cardRepository, never()).findAllByOrderByCardNumAsc(any(Pageable.class));
+        verify(cardRepository, never()).findAll();
+    }
+
+    /**
+     * :purpose: A non-admin user with no account pinned in its session and no filter must not
+     *     receive the entire card base; the browse yields no rows instead of every PAN.
+     */
+    @Test
+    void listCards_nonAdminUnpinnedNoFilter_doesNotWidenToFindAll() {
+        SessionContext user = mock(SessionContext.class);
+        CardListResponseDto expected = mock(CardListResponseDto.class);
+        when(cardMapper.toListResponse(any())).thenReturn(expected);
+
+        CardListResponseDto result = cardService.listCards(null, null, 1, user);
+
+        assertThat(result).isSameAs(expected);
+        verify(cardRepository, never()).findAll();
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<Card>> rowsCaptor = ArgumentCaptor.forClass(List.class);
+        verify(cardMapper).toListResponse(rowsCaptor.capture());
+        assertThat(rowsCaptor.getValue()).isEmpty();
+    }
+
+    /**
+     * :purpose: A non-admin user supplying its OWN account id as the filter reads exactly that
+     *     account (the filter is honoured, not discarded).
+     */
+    @Test
+    void listCards_nonAdminOwnAcctFilter_isHonoured() {
+        SessionContext user = mock(SessionContext.class);
+        CardListResponseDto expected = mock(CardListResponseDto.class);
+        stubAccountWindow(ACCT_ID, 2, false);
+        when(cardMapper.toListResponse(any())).thenReturn(expected);
+
+        cardService.listCards(ACCT_ID, null, 1, user);
+
+        verify(cardRepository).findByCardAcctIdOrderByCardNumAsc(eq(ACCT_ID), any(Pageable.class));
+        verify(cardRepository, never()).findAll();
     }
 
     /**

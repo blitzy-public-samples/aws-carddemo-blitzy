@@ -84,6 +84,8 @@ class CorrelationIdFilterTest {
 
         filter.doFilter(request, response, chain);
 
+        assertEquals("test-correlation-123", chain.contextCorrelationId,
+                "correlation id must be in the context while the chain runs");
         assertEquals("test-correlation-123", chain.mdcCorrelationId,
                 "correlation id must be in the MDC while the chain runs");
         assertEquals("test-correlation-123",
@@ -249,6 +251,10 @@ class CorrelationIdFilterTest {
      */
     private static final class CapturingFilterChain implements FilterChain {
 
+        /** :purpose: Correlation id visible via CorrelationIdContext inside the chain. */
+        private String contextCorrelationId;
+
+        /** :purpose: Correlation id visible via the SLF4J MDC inside the chain. */
         private String mdcCorrelationId;
 
         /**
@@ -258,7 +264,75 @@ class CorrelationIdFilterTest {
          */
         @Override
         public void doFilter(ServletRequest request, ServletResponse response) {
+            this.contextCorrelationId = CorrelationIdContext.getCorrelationId();
             this.mdcCorrelationId = MDC.get(CorrelationIdContext.CORRELATION_ID_KEY);
         }
     }
+    /**
+     * :purpose: With no ``X-Correlation-Id`` present, a W3C ``traceparent`` header
+     *     supplies the correlation id from its trace-id field, so a correlated trace
+     *     entering from an upstream hop is not replaced by an unrelated random id.
+     * :raises ServletException: if the filter raises a servlet error.
+     * :raises IOException: if the filter raises an I/O error.
+     */
+    @Test
+    @DisplayName("traceparent trace-id is used when X-Correlation-Id is absent")
+    void traceparentTraceIdUsedWhenHeaderAbsent() throws ServletException, IOException {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader(CorrelationIdFilter.TRACEPARENT_HEADER,
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertEquals("4bf92f3577b34da6a3ce929d0e0e4736",
+                response.getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER));
+    }
+
+    /**
+     * :purpose: An all-zero (invalid) W3C trace-id is rejected, so the filter falls
+     *     through to a freshly generated correlation id rather than propagating a
+     *     meaningless one.
+     * :raises ServletException: if the filter raises a servlet error.
+     * :raises IOException: if the filter raises an I/O error.
+     */
+    @Test
+    @DisplayName("all-zero traceparent trace-id is rejected in favor of a generated id")
+    void allZeroTraceIdIsRejected() throws ServletException, IOException {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader(CorrelationIdFilter.TRACEPARENT_HEADER,
+                "00-00000000000000000000000000000000-00f067aa0ba902b7-01");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        String echoed = response.getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER);
+        assertNotNull(echoed);
+        assertFalse(echoed.chars().allMatch(c -> c == '0'));
+    }
+
+    /**
+     * :purpose: An inbound header carrying control characters or exceeding the length
+     *     bound is sanitized, and the echoed header matches the sanitized value that
+     *     reached the MDC, so the log stream and the response never disagree.
+     * :raises ServletException: if the filter raises a servlet error.
+     * :raises IOException: if the filter raises an I/O error.
+     */
+    @Test
+    @DisplayName("an unsafe inbound header is sanitized and the echo matches the MDC value")
+    void unsafeInboundHeaderIsSanitizedAndEchoMatchesMdc() throws ServletException, IOException {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, "bad value " + "x".repeat(200));
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        String[] seenInChain = new String[1];
+
+        filter.doFilter(request, response, (req, res) ->
+                seenInChain[0] = CorrelationIdContext.getCorrelationId());
+
+        String echoed = response.getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER);
+        assertNotNull(echoed);
+        assertEquals(seenInChain[0], echoed);
+        assertEquals(echoed, CorrelationIdContext.sanitize(echoed));
+    }
+
 }

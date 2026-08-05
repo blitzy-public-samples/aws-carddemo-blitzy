@@ -79,6 +79,20 @@ spring:
   # no manual DB work (QA Issue 1). baseline-on-migrate stays FALSE because the
   # database is greenfield: V1 must run on an empty schema rather than being
   # skipped past a synthetic baseline. Rationale: docs/decision-log.md.
+  # Flyway is DISABLED here. The shared CardDemo migration set lives in
+  # carddemo-common (classpath:db/migration) and is applied by ONE owner,
+  # batch-service, against the shared 'public' schema under ONE
+  # flyway_schema_history table: V1 schema, V2 reference data, V3 test data,
+  # V4 (Java) seeded-PII encryption, V5 Spring Batch metadata. A single ordered
+  # owner is what makes the cross-table foreign keys (cards -> accounts,
+  # card_xref -> customers/accounts, tran_cat_bal -> accounts) creatable without
+  # an inter-service ordering race, and it keeps exactly one deterministic schema
+  # history in the shared schema instead of several colliding ones. Startup order
+  # is gated on the owner in docker-compose.yml and by an init container in k8s.
+  # Rationale: docs/decision-log.md.
+  # This service therefore only validates its entity mapping (ddl-auto: validate);
+  # its Testcontainers integration tests re-enable Flyway against the very same
+  # migration set so they run on the production schema.
   flyway:
     enabled: true
     locations: classpath:db/migration
@@ -108,10 +122,16 @@ spring:
   # but carry no value, so the shared namespace below was silently ignored and
   # every service fell back to the default 'spring:session' prefix. Canonical Boot
   # 4.1 keys are used here so the namespace is genuinely applied. Session tuning;
+  # and is inert (QA CR-15). Session tuning lives under spring.session.data.redis.*
+  # (the spring.session.redis.* prefix was removed in Boot 4.0 and is IGNORED);
   # the Redis connection uses spring.data.redis.* declared above. A shared
   # namespace lets every service read/write the same COMMAREA-equivalent session.
   session:
     timeout: ${SPRING_SESSION_TIMEOUT:30m}
+    # Boot 4 renamed the Redis session properties: spring.session.redis.* is
+    # deprecated at ERROR level and inert, so the namespace/flush-mode below MUST
+    # sit under spring.session.data.redis.* to take effect. Every service must
+    # declare the SAME namespace or the shared COMMAREA-equivalent session breaks.
     data:
       redis:
         namespace: ${SPRING_SESSION_REDIS_NAMESPACE:carddemo:session}
@@ -148,6 +168,13 @@ management:
     health:
       probes:
         enabled: true
+      # The readiness group must reflect the datastore: a service whose database is
+      # unreachable cannot serve a single business request, so it must report
+      # not-ready and be pulled out of the load-balancer / Service endpoints instead
+      # of continuing to receive traffic it can only answer with HTTP 500. Without
+      # this the group contains readinessState alone and stays UP while the database
+      # is down. Liveness deliberately stays state-only so a transient datastore
+      # outage never triggers a container restart.
       # Health detail is disclosed only to authenticated principals so an
       # anonymous caller cannot enumerate datastore/dependency internals
       # (QA MJ-16). Liveness/readiness aggregate status stays public for probes.
@@ -189,11 +216,19 @@ management:
   # canonical Boot 4.1 key is used here, and the default now points at the OTLP HTTP
   # receiver of the 'jaeger' collector declared in docker-compose.yml / k8s rather than
   # at the container's own loopback.
+  # Distributed tracing export (QA CR-12). The OTLP endpoint and the sampling
+  # probability are environment-driven (QA MN-03): 100% capture is unsafe for
+  # p95/memory NFRs in production, so the default is a 10% sample that each
+  # environment overrides (e.g. 1.0 in dev, lower under load).
+  # NOTE: Spring Boot 4 RELOCATED this key. The pre-4.0 form
+  # management.otlp.tracing.endpoint was removed in 4.0.0 and is now silently
+  # ignored, so the endpoint must be declared under
+  # management.opentelemetry.tracing.export.otlp.* to take effect.
   opentelemetry:
     tracing:
       export:
         otlp:
-          endpoint: ${MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+          endpoint: ${MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT:${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}}
   tracing:
     sampling:
       probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0.1}

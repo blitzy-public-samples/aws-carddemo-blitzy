@@ -2,14 +2,17 @@ package com.carddemo.gateway.controller;
 
 import com.carddemo.common.constant.MenuOptions;
 import com.carddemo.common.constant.Messages;
+import com.carddemo.common.dto.SessionAttributes;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.security.SessionContextAuthenticationFilter;
 
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 
 import java.util.List;
@@ -58,9 +61,11 @@ public class MenuController {
 
     /**
      * :purpose: ``HttpSession`` attribute key under which the pseudo-conversational
-     *  :java:type:`SessionContext` is stored. It is the canonical constant published by
-     *  :java:type:`SessionContext`, the single key written by sign-on and read by every
-     *  service, so the admin-only menu gate always sees the signed-on role.
+     *  :java:type:`SessionContext` is stored. Bound to the single frozen constant
+     *  :java:field:`SessionContext.SESSION_ATTRIBUTE_NAME` that ``auth-service``
+     *  writes on sign-on and every downstream controller reads, so the menu hop
+     *  updates the authenticated COMMAREA-equivalent context in place instead of
+     *  creating a second, anonymous one.
      */
     private static final String SESSION_CONTEXT_ATTR = SessionContext.SESSION_ATTRIBUTE_NAME;
 
@@ -121,18 +126,18 @@ public class MenuController {
     /**
      * Return the role-filtered main menu (legacy ``COMEN01C``, transaction ``CM00``).
      *
-     * :param session: the servlet HTTP session carrying the pseudo-conversational
-     *  :java:type:`SessionContext`.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: a :java:type:`MenuResponse` listing the visible main-menu options and
      *  their downstream target routes.
      */
     @GetMapping("/menu")
-    public MenuResponse mainMenu(HttpSession session) {
-        SessionContext ctx = getOrCreateSessionContext(session);
+    public MenuResponse mainMenu(HttpServletRequest httpRequest) {
+        SessionContext ctx = resolveSessionContext(httpRequest);
         ctx.setFromTranid(MAIN_TRANID);
         ctx.setFromProgram(MAIN_PROGRAM);
         ctx.setProgramContext(SessionContext.ProgramContext.CDEMO_PGM_ENTER);
-        session.setAttribute(SESSION_CONTEXT_ATTR, ctx);
+        storeSessionContext(httpRequest, ctx);
 
         boolean regularUser = isRegularUser(ctx);
         List<MenuOptionView> options = MenuOptions.MAIN_MENU_OPTIONS.stream()
@@ -149,18 +154,18 @@ public class MenuController {
     /**
      * Return the admin menu (legacy ``COADM01C``, transaction ``CA00``).
      *
-     * :param session: the servlet HTTP session carrying the pseudo-conversational
-     *  :java:type:`SessionContext`.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: a :java:type:`MenuResponse` listing all admin-menu options and their
      *  downstream target routes; no role filtering is applied.
      */
     @GetMapping("/admin/menu")
-    public MenuResponse adminMenu(HttpSession session) {
-        SessionContext ctx = getOrCreateSessionContext(session);
+    public MenuResponse adminMenu(HttpServletRequest httpRequest) {
+        SessionContext ctx = resolveSessionContext(httpRequest);
         ctx.setFromTranid(ADMIN_TRANID);
         ctx.setFromProgram(ADMIN_PROGRAM);
         ctx.setProgramContext(SessionContext.ProgramContext.CDEMO_PGM_ENTER);
-        session.setAttribute(SESSION_CONTEXT_ATTR, ctx);
+        storeSessionContext(httpRequest, ctx);
 
         List<MenuOptionView> options = MenuOptions.ADMIN_MENU_OPTIONS.stream()
                 .map(option -> new MenuOptionView(
@@ -177,16 +182,17 @@ public class MenuController {
      * ``CM00``).
      *
      * :param request: the inbound selection carrying the entered option and action key.
-     * :param session: the servlet HTTP session carrying the pseudo-conversational
-     *  :java:type:`SessionContext`.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: a :java:type:`MenuSelectionResponse` describing the dispatch target, the
      *  PF3 back navigation, or an informational coming-soon message.
      */
     @PostMapping("/menu/select")
-    public MenuSelectionResponse selectMainMenu(@RequestBody MenuSelectionRequest request, HttpSession session) {
+    public MenuSelectionResponse selectMainMenu(@RequestBody MenuSelectionRequest request,
+                                                HttpServletRequest httpRequest) {
         return processSelection(
                 request,
-                session,
+                httpRequest,
                 MenuOptions.MAIN_MENU_OPTIONS,
                 MenuOptions.CDEMO_MENU_OPT_COUNT,
                 MAIN_TRANID,
@@ -200,16 +206,17 @@ public class MenuController {
      * ``CA00``).
      *
      * :param request: the inbound selection carrying the entered option and action key.
-     * :param session: the servlet HTTP session carrying the pseudo-conversational
-     *  :java:type:`SessionContext`.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: a :java:type:`MenuSelectionResponse` describing the dispatch target, the
      *  PF3 back navigation, or an informational coming-soon message.
      */
     @PostMapping("/admin/menu/select")
-    public MenuSelectionResponse selectAdminMenu(@RequestBody MenuSelectionRequest request, HttpSession session) {
+    public MenuSelectionResponse selectAdminMenu(@RequestBody MenuSelectionRequest request,
+                                                 HttpServletRequest httpRequest) {
         return processSelection(
                 request,
-                session,
+                httpRequest,
                 MenuOptions.ADMIN_MENU_OPTIONS,
                 MenuOptions.CDEMO_ADMIN_OPT_COUNT,
                 ADMIN_TRANID,
@@ -224,8 +231,8 @@ public class MenuController {
      *
      * :param request: the inbound selection (may be ``null``); supplies the entered
      *  option and the action key.
-     * :param session: the servlet HTTP session carrying the pseudo-conversational
-     *  :java:type:`SessionContext`.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :param table: the option table to select from (main or admin).
      * :param count: the declared option count used to bound-check the entered option.
      * :param tranid: the originating transaction id recorded on the session context.
@@ -240,7 +247,7 @@ public class MenuController {
      */
     private MenuSelectionResponse processSelection(
             MenuSelectionRequest request,
-            HttpSession session,
+            HttpServletRequest httpRequest,
             List<MenuOptions.MenuOption> table,
             int count,
             String tranid,
@@ -248,7 +255,7 @@ public class MenuController {
             boolean roleGate,
             boolean includeNameInComingSoon) {
 
-        SessionContext ctx = getOrCreateSessionContext(session);
+        SessionContext ctx = resolveSessionContext(httpRequest);
         ctx.setFromTranid(tranid);
         ctx.setFromProgram(program);
         ctx.setProgramContext(SessionContext.ProgramContext.CDEMO_PGM_ENTER);
@@ -257,15 +264,15 @@ public class MenuController {
         if (AID_PF3.equals(aid)) {
             ctx.setToProgram(SIGNON_PROGRAM);
             ctx.setToTranid(SIGNON_TRANID);
-            session.setAttribute(SESSION_CONTEXT_ATTR, ctx);
+            storeSessionContext(httpRequest, ctx);
             return new MenuSelectionResponse(true, null, SIGNON_ROUTE, null);
         }
         if (!AID_ENTER.equals(aid)) {
-            session.setAttribute(SESSION_CONTEXT_ATTR, ctx);
+            storeSessionContext(httpRequest, ctx);
             throw new CardDemoException(Messages.CCDA_MSG_INVALID_KEY);
         }
 
-        session.setAttribute(SESSION_CONTEXT_ATTR, ctx);
+        storeSessionContext(httpRequest, ctx);
 
         int optionNumber = normalizeOption(request == null ? null : request.option(), count);
         MenuOptions.MenuOption selected = table.get(optionNumber - 1);
@@ -336,20 +343,38 @@ public class MenuController {
     }
 
     /**
-     * Fetch the session-scoped :java:type:`SessionContext`, creating and storing a fresh
-     * one when absent.
+     * Fetch the session-scoped :java:type:`SessionContext` established at sign-on.
      *
      * :param session: the servlet HTTP session.
-     * :returns: the existing or newly created session context.
+     * :returns: the authenticated session context carried by the session.
+     * :raises IllegalStateException: when the session carries no context. Every menu
+     *  endpoint is role-gated, so the request cannot reach this point without a
+     *  signed-on session; fabricating an empty context here would silently drop the
+     *  signed-on identity (and its ``CDEMO-USER-TYPE``) at the menu hop.
      */
-    private SessionContext getOrCreateSessionContext(HttpSession session) {
+    private SessionContext resolveSessionContext(HttpServletRequest httpRequest) {
+        HttpSession session = httpRequest.getSession(false);
+        if (session == null) {
+            return new SessionContext();
+        }
         Object attr = session.getAttribute(SESSION_CONTEXT_ATTR);
         if (attr instanceof SessionContext ctx) {
             return ctx;
         }
-        SessionContext ctx = new SessionContext();
-        session.setAttribute(SESSION_CONTEXT_ATTR, ctx);
-        return ctx;
+        return new SessionContext();
+    }
+
+    /**
+     * Store the pseudo-conversational context back on an EXISTING session.
+     *
+     * :param httpRequest: the current servlet request.
+     * :param ctx: the context to publish for the next interaction.
+     */
+    private void storeSessionContext(HttpServletRequest httpRequest, SessionContext ctx) {
+        HttpSession session = httpRequest.getSession(false);
+        if (session != null) {
+            session.setAttribute(SESSION_CONTEXT_ATTR, ctx);
+        }
     }
 
     /**

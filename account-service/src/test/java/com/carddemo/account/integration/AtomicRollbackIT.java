@@ -28,8 +28,10 @@ import com.carddemo.common.domain.Customer;
 import com.carddemo.common.dto.AccountUpdateRequestDto;
 import com.carddemo.common.dto.AccountUpdateResponseDto;
 import com.carddemo.common.testsupport.MigratedSchemaContainer;
+import com.carddemo.common.domain.CardXref;
 
 import java.math.BigDecimal;
+import java.util.Base64;
 import java.util.Map;
 
 import org.junit.jupiter.api.AfterEach;
@@ -55,7 +57,7 @@ import org.springframework.test.context.DynamicPropertySource;
  *     account and the customer changes roll back together, so the atomicity
  *     boundary is never broken.
  * :output: JUnit 5 test cases executed against an ephemeral Testcontainers
- *     PostgreSQL instance seeded by the account-service Flyway migrations. The
+ *     PostgreSQL instance provisioned and seeded by the shared Flyway migration set. The
  *     second-write failure is induced with a genuine database constraint
  *     violation (a monetary value exceeding ``NUMERIC(12,2)`` on the account),
  *     and the post-failure state is asserted through cache-bypassing JDBC reads
@@ -65,14 +67,23 @@ import org.springframework.test.context.DynamicPropertySource;
 @ActiveProfiles("test")
 public class AtomicRollbackIT {
 
+    static {
+        // The customer PII columns are encrypted at rest by a JPA AttributeConverter
+        // that resolves its AES-256 key from the ``carddemo.pii.key`` system property and
+        // fails closed when none is configured. The ``test`` profile configures no key, so
+        // a throwaway all-zero test key (never a real secret) is installed before any
+        // entity conversion runs, exactly as OptimisticLockConflictIT does.
+        System.setProperty("carddemo.pii.key", Base64.getEncoder().encodeToString(new byte[32]));
+    }
+
     /**
-     * :purpose: Bind the Spring datasource to the shared, already-migrated ``postgres:18``
-     *     container from
-     *     :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`. Its schema
-     *     and seed data are produced exclusively by the committed Flyway migrations of every
-     *     owning module, so the ``test`` profile's ``ddl-auto: validate`` verifies all
-     *     entity-scanned mappings (``@EntityScan("com.carddemo.common.domain")``) against the
-     *     schema a deployment gets. No table is redefined in the test tree.
+     * :purpose: Bind the running container's JDBC coordinates to the Spring datasource. Schema
+     *     provisioning needs no test-side handling: the ``test`` profile enables Flyway against
+     *     the shared production migration set in carddemo-common
+     *     (``classpath:db/migration``), which creates every table the account-service
+     *     {@code @EntityScan("com.carddemo.common.domain")} registers - including the
+     *     ``card_xref`` linkage used below - and seeds them, so the context boots under the
+     *     production ``ddl-auto: validate`` with no schema redefined in the test tree.
      * :param registry: the dynamic property registry populated before the
      *     application context starts.
      */
@@ -81,6 +92,16 @@ public class AtomicRollbackIT {
         MigratedSchemaContainer.registerDataSource(registry);
     }
 
+
+    /** :purpose: Account group id rejected by the temporary probe constraint. */
+    private static final String REJECTED_GROUP_ID = "ROLLBK";
+
+    /** :purpose: Name of the temporary CHECK constraint used to force the write to fail. */
+    private static final String ROLLBACK_PROBE_CONSTRAINT = "tmp_atomic_rollback_probe";
+
+    /** :purpose: Card number of the cross-reference row written by the rollback probe. */
+    private static final String TEST_CARD_NUM = "4000000000000004";
+
     /** :purpose: Seeded account identifier under test (``ACCT-ID PIC 9(11)``). */
     private static final Long ACCT_ID = 4L;
 
@@ -88,21 +109,34 @@ public class AtomicRollbackIT {
     private static final Long CUST_ID = 4L;
 
 
-    /**
-     * :purpose: Account group id that a test-scoped ``CHECK`` constraint rejects, forcing the
-     *     account write of the single transaction to fail on flush. ``ACCT-GROUP-ID`` remains
-     *     the lever because COACTUPC does not edit its CONTENT, so an in-width value reaches
-     *     the column, whereas every monetary field is first screened by ``1250-EDIT-SIGNED-9V2``
-     *     (nine integer digits) and can therefore never be made to overflow ``NUMERIC(12,2)``
-     *     through the service. An over-LENGTH value is no longer usable as the lever: the
-     *     service now edits every legacy field width (``ACCT-GROUP-ID X(10)``) and rejects it
-     *     before any write, which is a validation outcome and not the mid-transaction database
-     *     failure these cases exist to induce.
-     */
-    private static final String REJECTED_GROUP_ID = "ROLLBK";
 
-    /** :purpose: Test-scoped constraint that makes {@link #REJECTED_GROUP_ID} fail on flush. */
-    private static final String ROLLBACK_PROBE_CONSTRAINT = "tmp_atomic_rollback_probe";
+    /**
+     * :purpose: An ``acct_group_id`` longer than the ``VARCHAR(10)`` column, used to induce a
+     *     real database failure on the ACCOUNT write. COACTUPC ``1200-EDIT-MAP-INPUTS`` has no
+     *     edit for the account group id, so this value reaches the database exactly as the
+     *     legacy program would have let it, which is what makes it a usable induced failure
+     *     now that every edited field is validated before the write.
+     */
+    private static final String OVERFLOW_GROUP_ID = "GRPTOOLONG1";
+
+    /** :purpose: A social security number that satisfies ``1265-EDIT-US-SSN``. */
+    private static final String VALID_SSN = "020973888";
+
+    /** :purpose: A government issued id that fits the column width. */
+    private static final String VALID_GOVT_ID = "00000000000049368437";
+
+    /** :purpose: An EFT account id that satisfies ``1245-EDIT-NUM-REQD``. */
+    private static final String VALID_EFT_ACCOUNT_ID = "0053581756";
+
+    /** :purpose: A FICO score inside the ``1275-EDIT-FICO-SCORE`` 300-850 range. */
+    private static final int VALID_FICO_SCORE = 700;
+
+    /** :purpose: A zip forming a known combination with the seeded ``MI`` state code. */
+    private static final String VALID_ZIP = "48035";
+
+    /** :purpose: Phone numbers carrying North America general purpose area codes. */
+    private static final String VALID_PHONE_1 = "(801)603-4121";
+    private static final String VALID_PHONE_2 = "(908)074-6837";
 
     /** :purpose: Valid scale-2 balance used by the success control case. */
     private static final BigDecimal VALID_NEW_BALANCE = new BigDecimal("123.45");
@@ -119,8 +153,6 @@ public class AtomicRollbackIT {
     /** :purpose: State code whose ZIP prefix pairing is in the ``CSLKPCDY`` state-ZIP table. */
     private static final String VALID_STATE_CD = "MI";
 
-    /** :purpose: ZIP whose first two digits pair with {@link #VALID_STATE_CD}. */
-    private static final String VALID_ZIP = "48226";
 
     /** :purpose: Screen-valid phone number 1 whose area code is in ``CSLKPCDY``. */
     private static final String VALID_PHONE_NUM_1 = "(212)555-0101";
@@ -164,16 +196,14 @@ public class AtomicRollbackIT {
     private String originalCustEftAccountId;
 
     /**
-     * :purpose: Prepare the fixture before each test: capture the seeded account and
-     *     customer originals so the ``@AfterEach`` can restore them, and assert the
-     *     account-to-customer cross-reference linkage the update flow resolves is
-     *     present, so a scenario reaching the write step is exercising real seed data.
-     * :note: No DDL is issued here. ``card_xref`` — like every other table this test
-     *     touches — is created by the owning module's committed Flyway migration, with
-     *     its foreign keys to ``customers`` and ``accounts`` intact; the fixture would
-     *     otherwise silently substitute a constraint-free table and hide referential
-     *     defects. The customer PII columns are read for restoration but never edited,
-     *     so the assertions run against the committed seed exactly as deployed.
+     * :purpose: Prepare the fixture before each test: capture the seeded account and customer
+     *     originals and seed the account-to-customer cross-reference linkage so the update flow
+     *     reaches the write step rather than short-circuiting on a missing reference.
+     * :note: The migrated ``card_xref`` table carries real foreign keys to ``accounts`` and
+     *     ``customers``, so the linkage is seeded against the seeded rows. The customer PII
+     *     columns hold genuine AES-256-GCM tokens written by the migration set's version-4 Java
+     *     migration under the test key, so the encrypted-attribute converter reads them directly
+     *     and the captured originals are restored verbatim on teardown.
      */
     @BeforeEach
     void setUp() {
@@ -201,6 +231,9 @@ public class AtomicRollbackIT {
         // dropped again in tearDown so it never leaks into another class.
         jdbcTemplate.execute("ALTER TABLE accounts ADD CONSTRAINT " + ROLLBACK_PROBE_CONSTRAINT
                 + " CHECK (acct_group_id IS NULL OR acct_group_id <> '" + REJECTED_GROUP_ID + "')");
+        cardXrefRepository.deleteAll();
+        cardXrefRepository.save(new CardXref(TEST_CARD_NUM, CUST_ID, ACCT_ID));
+        assertThat(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).isPresent();
     }
 
     /**
@@ -241,6 +274,10 @@ public class AtomicRollbackIT {
         // write is the failing write.
         request.setAcctCurrBal(VALID_NEW_BALANCE);
         request.setAcctGroupId(REJECTED_GROUP_ID);
+        // The account is the SECOND write; an over-length account group id overflows the
+        // VARCHAR(10) column on flush so the account write is the failing write. The group
+        // id carries no COACTUPC edit, so it reaches the database unvalidated.
+        request.setAcctGroupId(OVERFLOW_GROUP_ID);
         // The customer is the FIRST write; this change must not survive the rollback.
         request.setCustLastName(ROLLBACK_MARKER_LAST_NAME);
 
@@ -274,6 +311,7 @@ public class AtomicRollbackIT {
         request.setCustLastName(PARTIAL_MARKER_LAST_NAME);
         request.setAcctCurrBal(VALID_NEW_BALANCE);
         request.setAcctGroupId(REJECTED_GROUP_ID);
+        request.setAcctGroupId(OVERFLOW_GROUP_ID);
 
         assertThatThrownBy(() -> accountService.updateAccount(ACCT_ID, request, null))
                 .isInstanceOf(DataIntegrityViolationException.class);
@@ -327,6 +365,9 @@ public class AtomicRollbackIT {
      */
     private AccountUpdateRequestDto fullRequestFrom(Account account, Customer customer) {
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        // Carry the account's current optimistic-lock version, as a client echoes back the
+        // snapshot it read; the server compares it before rewriting either record.
+        request.setVersion(account.getVersion());
         request.setAcctActiveStatus(account.getAcctActiveStatus());
         request.setAcctCurrBal(account.getAcctCurrBal());
         request.setAcctCreditLimit(account.getAcctCreditLimit());
@@ -349,20 +390,22 @@ public class AtomicRollbackIT {
         // refuses, so a table-valid pair is submitted.
         request.setCustAddrStateCd(VALID_STATE_CD);
         request.setCustAddrCountryCd(customer.getCustAddrCountryCd());
+        // The seeded zip (ZIP+4 whose leading digits are not a known MI combination) and the
+        // seeded second phone area code are not accepted by the CSLKPCDY lookup tables the
+        // legacy edits consult, so screen-valid values are supplied instead.
         request.setCustAddrZip(VALID_ZIP);
-        // The randomly generated fixture in app/data/ASCII/custdata.txt carries area codes
-        // that are absent from the CSLKPCDY general-purpose table (customer 4 stores
-        // "(156)..."), which COACTUPC's EDIT-AREA-CODE rejects on any update. A screen-valid
-        // number is therefore submitted: this class asserts transaction atomicity, and the
-        // area-code edit itself is covered by the validator's own tests.
-        request.setCustPhoneNum1(VALID_PHONE_NUM_1);
-        request.setCustPhoneNum2(VALID_PHONE_NUM_2);
-        request.setCustSsn(customer.getCustSsn());
-        request.setCustGovtIssuedId(customer.getCustGovtIssuedId());
+        request.setCustPhoneNum1(VALID_PHONE_1);
+        request.setCustPhoneNum2(VALID_PHONE_2);
+        // The persisted PII columns are blanked by setUp so the record hydrates without a
+        // decryptable value; the COACTUPC edits require real values, which an operator would
+        // supply on the screen. The seeded FICO score (274) is likewise outside the legacy
+        // 300-850 range enforced by 1275-EDIT-FICO-SCORE.
+        request.setCustSsn(VALID_SSN);
+        request.setCustGovtIssuedId(VALID_GOVT_ID);
         request.setCustDobYyyyMmDd(customer.getCustDobYyyyMmDd());
-        request.setCustEftAccountId(customer.getCustEftAccountId());
+        request.setCustEftAccountId(VALID_EFT_ACCOUNT_ID);
         request.setCustPriCardHolderInd(customer.getCustPriCardHolderInd());
-        request.setCustFicoCreditScore(customer.getCustFicoCreditScore());
+        request.setCustFicoCreditScore(VALID_FICO_SCORE);
         return request;
     }
 }

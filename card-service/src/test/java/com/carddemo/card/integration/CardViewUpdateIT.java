@@ -34,6 +34,9 @@ import com.carddemo.common.testsupport.MigratedSchemaContainer;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
 
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.sql.Statement;
 
 
 import org.junit.jupiter.api.AfterEach;
@@ -53,6 +56,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import tools.jackson.databind.ObjectMapper;
+import org.testcontainers.containers.PostgreSQLContainer;
 
 /**
  * :purpose: End-to-end integration test that boots the full ``card-service`` Spring
@@ -89,21 +93,37 @@ class CardViewUpdateIT {
     private static final String UNSEEDED_CARD = "9999999999999999";
 
     /**
-     * :purpose: Bind the application datasource to the shared, already-migrated
-     *  ``postgres:18`` container from
-     *  :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`. Its schema is
-     *  produced exclusively by the committed Flyway migrations of every owning module
-     *  (auth, account, card, transaction, batch), so nothing is hand-written here and
-     *  Hibernate ``ddl-auto: validate`` (from the ``test`` profile) verifies every entity
-     *  mapping against the schema a deployment actually gets. The card migrations are
-     *  recorded under the service's own history table, so the Spring-managed Flyway run
-     *  during context refresh finds them applied and is a no-op.
+     * :purpose: Manually-managed ``postgres:18`` Testcontainer shared by every test in
+     *  this class. Started in the static initializer so its mapped port is available to
+     *  ``@DynamicPropertySource`` before the Spring context (and its Flyway migrations)
+     *  connect to it.
+     */
+    static final PostgreSQLContainer<?> POSTGRES =
+            new PostgreSQLContainer<>("postgres:18").withDatabaseName("carddemo");
+
+    static {
+        POSTGRES.start();
+    }
+
+    /**
+     * :purpose: Point the application datasource at the manually-managed container. The
+     *  Testcontainers JDBC driver configured by the ``test`` profile is replaced with the
+     *  plain PostgreSQL driver so exactly one container backs the whole test class.
+     * :note: The context's Flyway auto-configuration applies the shared carddemo-common
+     *  migration set (``V1`` schema, ``V2`` reference data, ``V3`` test data, ``V4`` batch
+     *  metadata) to the empty container before Hibernate runs, so every entity-scanned
+     *  table — including the 50 seeded cards and cross-references this class asserts on —
+     *  exists and Hibernate ``ddl-auto: validate`` confirms the mapping.
      * :param registry: the dynamic property registry supplied by the Spring Test context.
      */
     @DynamicPropertySource
     static void datasourceProps(DynamicPropertyRegistry registry) {
         MigratedSchemaContainer.registerDataSource(registry);
         registry.add("spring.flyway.baseline-version", () -> "0");
+        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.username", POSTGRES::getUsername);
+        registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
     }
 
     /** :purpose: MVC entry point exercised end-to-end (no mocked collaborators). */
@@ -144,9 +164,11 @@ class CardViewUpdateIT {
 
     /**
      * :purpose: Snapshot the mutation-target card for deterministic restoration in
-     *  ``tearDown``. The seeded ``card_cvv_cd`` column is left EXACTLY as
-     *  ``V3__seed_cards.sql`` wrote it - the read path must hydrate the committed seed as
-     *  deployed - and the CVV is never asserted or echoed to a client (AAP 0.6.7).
+     *  ``tearDown``.
+     * :note: The seeded ``card_cvv_cd`` column holds a genuine AES-256-GCM token, written by
+     *  the shared migration set's version-4 Java migration under the test key, so every card
+     *  read hydrates through the at-rest ``CryptoConverter`` unchanged - no fixture patching
+     *  is required and the snapshot round-trips the real value.
      */
     @BeforeEach
     void setUp() {

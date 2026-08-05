@@ -92,7 +92,7 @@ public class SecurityConfig {
             .authorizeHttpRequests(authorize -> authorize
                 // The container ERROR dispatch must not be re-authorized: doing so
                 // masks a genuine 4xx/5xx as an authorization failure.
-                .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
+                .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC).permitAll()
                 // Same probe set as every other service: the aggregate health endpoint, the
                 // liveness/readiness groups underneath it, and the build identity. The
                 // metrics scrape stays authenticated through ManagementSecurityConfig.

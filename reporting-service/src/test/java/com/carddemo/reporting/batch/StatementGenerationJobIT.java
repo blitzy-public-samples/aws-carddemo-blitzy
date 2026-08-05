@@ -43,6 +43,8 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -94,12 +96,13 @@ class StatementGenerationJobIT {
     private JdbcTemplate jdbcTemplate;
 
     /**
-     * :purpose: Bind the datasource to the shared, already-migrated ``postgres:18`` container
-     *   from :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`. Both the
-     *   business tables and the Spring Batch metadata schema (``BATCH_*`` tables and
-     *   sequences, created by the shared migration ``V5__batch_metadata.sql``) come
-     *   from the owning modules' committed migrations, so nothing is generated from the
-     *   entities and Hibernate only validates the mapping.
+     * :purpose: Provision the schema the throwaway ``postgres:18`` container lacks.
+     *   The ``test`` profile disables Flyway and sets ``ddl-auto: none``, so this
+     *   override lets Hibernate auto-create the shared ``com.carddemo.common.domain``
+     *   entity tables (``create-drop``). The Spring Batch ``BATCH_*`` metadata schema
+     *   is NOT provisioned here: ``BatchInfrastructureConfig`` creates it when absent,
+     *   exactly as it does in production, so running the DDL again from
+     *   ``spring.sql.init`` would fail on "relation already exists".
      * :param registry: the dynamic property registry supplied by the test context.
      */
     @DynamicPropertySource
@@ -111,7 +114,45 @@ class StatementGenerationJobIT {
         // directory, so that directory is declared as the root: the containment check stays
         // in force and the statement artifacts still land in a JUnit-managed directory.
         registry.add("carddemo.batch.output-dir", () -> System.getProperty("java.io.tmpdir"));
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create-drop");
+        // The statement writer resolves every output name through the shared
+        // BatchOutputPathResolver, which confines writes to this root (CWE-22). The
+        // root is pointed at the test's temporary directory so the job writes there.
+        registry.add("carddemo.batch.output-dir", () -> outputRoot.toAbsolutePath().toString());
+        registry.add("spring.sql.init.mode", () -> "always");
+        registry.add("spring.sql.init.schema-locations",
+                () -> "classpath:org/springframework/batch/core/schema-postgresql.sql");
+        // Point the shared BatchOutputPathResolver at this class's throwaway root so
+        // the statement files land somewhere writable and the containment rule the
+        // resolver enforces is exercised end to end (QA Issue 21).
+        registry.add("carddemo.batch.output-dir", BATCH_OUTPUT_ROOT::toString);
     }
+
+    /**
+     * :purpose: Throwaway batch output root for this test class, created eagerly in a
+     *   static initializer because {@link DynamicPropertySource} is evaluated while
+     *   the application context is built - before any JUnit ``@TempDir`` field or
+     *   parameter is resolved - and the resolver canonicalizes its roots at bean
+     *   construction time.
+     */
+    private static final Path BATCH_OUTPUT_ROOT = createBatchOutputRoot();
+
+    /**
+     * :purpose: Create the throwaway batch output root.
+     * :returns: the created directory.
+     * :raises UncheckedIOException: when the directory cannot be created.
+     */
+    private static Path createBatchOutputRoot() {
+        try {
+            return Files.createTempDirectory("carddemo-statement-it-");
+        } catch (IOException e) {
+            throw new UncheckedIOException("Unable to create the batch output root for the test", e);
+        }
+    }
+
+    /** Batch output root for this class, used as the resolver's allowlisted root. */
+    @TempDir
+    static Path outputRoot;
 
     /**
      * :purpose: Seed a deterministic, PII-safe dataset through the shared
@@ -217,24 +258,31 @@ class StatementGenerationJobIT {
 
     /**
      * :purpose: Launch the whole ``statementGenerationJob`` against the seeded data
-     *   with the text and HTML output paths redirected under a temporary directory,
+     *   with the text and HTML output files resolved inside the configured batch
+     *   output root,
      *   then assert the job completes and both produced files are byte-for-byte
      *   faithful to the legacy engine: every text line is exactly 80 characters and
      *   every HTML line exactly 100, the frozen labels/banners/color literals are
      *   present verbatim, and the balance and transaction amounts render with exact
      *   scale-2 precision and no drift.
-     * :param tempDir: the JUnit-managed temporary directory for the output files.
      */
     @Test
-    void statementJobGeneratesByteExactTextAndHtmlStatements(@TempDir Path tempDir) throws Exception {
-        File textFile = new File(tempDir.toFile(), "statements.txt");
-        File htmlFile = new File(tempDir.toFile(), "statements.html");
+    void statementJobGeneratesByteExactTextAndHtmlStatements() throws Exception {
+        File textFile = new File(outputRoot.toFile(), "statements.txt");
+        File htmlFile = new File(outputRoot.toFile(), "statements.html");
 
         JobParameters params = new JobParametersBuilder()
                 // The two output file names are the whole parameter set: CREASTMT
                 // carries no PARM and the job reads no date window.
                 .addString("stmtFile", textFile.getAbsolutePath())
                 .addString("htmlFile", htmlFile.getAbsolutePath())
+                // Names relative to the configured output root; an absolute path outside
+                // that root is refused by the resolver, which is the intended behaviour.
+                .addString("stmtFile", "statements.txt")
+                .addString("htmlFile", "statements.html")
+                .addString("reportType", "Monthly")
+                .addString("startDate", "2024-01-01")
+                .addString("endDate", "2024-01-31")
                 .addLong("run.id", System.currentTimeMillis())
                 .toJobParameters();
 

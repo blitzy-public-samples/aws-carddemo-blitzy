@@ -25,10 +25,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.test.context.TestPropertySource;
 
 import com.carddemo.auth.AbstractIntegrationTest;
 import com.carddemo.common.domain.SecurityUser;
+import com.carddemo.common.security.PasswordEncoderFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,22 +39,31 @@ import static org.assertj.core.api.Assertions.assertThat;
  *     against shared ``postgres:18`` + ``redis:8`` containers under the
  *     ``test`` profile; Flyway applies ``V1__create_security_users_table.sql``
  *     then ``V2__seed_security_users.sql`` against the container database, and
- *     the {@link SecurityUser} mapping is exercised through the repository. The
+ *     the {@link SecurityUser} mapping is exercised through the repository under the
+ *     ``test`` profile's ``ddl-auto: validate`` - the mapping of every entity-scanned
+ *     table is therefore asserted against the migrated schema, never neutralised. The
  *     test asserts the ``findBySecUsrId`` keyed lookup, the ten-user seed (five
- *     admin plus five user) with frozen names, and the stored-credential contract:
- *     a ``{bcrypt}``-prefixed hash that the wired ``DelegatingPasswordEncoder`` can
- *     verify, including the documented case-sensitivity behavior.
+ *     admin plus five user) with frozen names, and the prefixed-BCrypt password
+ *     contract — the ``{bcrypt}`` algorithm identifier that
+ *     ``DelegatingPasswordEncoder`` requires, the cost factor declared by
+ *     ``PasswordEncoderFactory.BCRYPT_STRENGTH``, and the documented
+ *     case-sensitivity behavior.
  */
-@TestPropertySource(properties = "spring.jpa.hibernate.ddl-auto=none")
 class SecurityUserRepositoryTest extends AbstractIntegrationTest {
 
     /**
-     * :purpose: Seeded credential for all users: BCrypt hash of ``PASSWORD`` in
-     *     Spring Security storage format, i.e. carrying the ``{bcrypt}`` algorithm
-     *     identifier the wired ``DelegatingPasswordEncoder`` requires.
+     * :purpose: Algorithm-identifier prefix that ``DelegatingPasswordEncoder``
+     *     requires on every stored hash; without it ``matches`` throws and no user
+     *     can sign on.
      */
+    private static final String BCRYPT_PREFIX = "{bcrypt}";
+
+    /** :purpose: Bare 60-char BCrypt hash of ``PASSWORD`` seeded for all users. */
     private static final String EXPECTED_BCRYPT_HASH =
-            "{bcrypt}$2a$10$ucIRth.iIafhA4MgE1RXZ.0whYamgfRIpJebWmPswpnxmLKA/peYm";
+            "$2a$10$ucIRth.iIafhA4MgE1RXZ.0whYamgfRIpJebWmPswpnxmLKA/peYm";
+
+    /** :purpose: Stored credential exactly as the seed migration writes it. */
+    private static final String EXPECTED_STORED_PASSWORD = BCRYPT_PREFIX + EXPECTED_BCRYPT_HASH;
 
     /**
      * :purpose: Repository under test; the Spring Data JPA re-platforming of the
@@ -71,8 +80,8 @@ class SecurityUserRepositoryTest extends AbstractIntegrationTest {
     private PasswordEncoder passwordEncoder;
 
     /**
-     * :purpose: BCrypt encoder used to verify the bare ``$2a$`` seeded hash and
-     *     its case-sensitive matching.
+     * :purpose: Plain BCrypt encoder used to verify the seeded hash with its
+     *     ``{bcrypt}`` identifier stripped, and its case-sensitive matching.
      */
     private final BCryptPasswordEncoder bcryptPasswordEncoder = new BCryptPasswordEncoder();
 
@@ -137,37 +146,54 @@ class SecurityUserRepositoryTest extends AbstractIntegrationTest {
     }
 
     /**
-     * :purpose: Verify the seeded credential is a ``{bcrypt}``-prefixed BCrypt hash in
-     *     Spring Security storage format, that the WIRED delegating encoder (the one the
-     *     sign-on service injects) verifies it against ``PASSWORD`` and rejects
-     *     ``password``, and that the same holds for every seeded row. The prefix is the
-     *     contract: without it the delegating encoder raises
-     *     ``IllegalArgumentException`` and no seeded user can sign on at all.
+     * :purpose: Verify the seeded credential is a ``{bcrypt}``-prefixed BCrypt hash
+     *     that the WIRED delegating encoder can verify against ``PASSWORD`` and
+     *     rejects for ``password``, that the hash carries the cost factor declared
+     *     by {@link PasswordEncoderFactory#BCRYPT_STRENGTH}, and that every one of
+     *     the ten seeded rows stores the same credential. The prefix is what makes
+     *     sign-on possible at all: ``DelegatingPasswordEncoder`` throws
+     *     ``IllegalArgumentException`` for an unprefixed hash.
      */
     @Test
-    @DisplayName("Seeded password is a {bcrypt}-prefixed hash the wired encoder verifies (case-sensitive)")
+    @DisplayName("Seeded password is a {bcrypt}-prefixed BCrypt hash verifiable by the wired encoder")
     void seededPasswordIsPrefixedBcryptAndCaseSensitive() {
         SecurityUser admin = securityUserRepository.findBySecUsrId("ADMIN001").orElseThrow();
-        String storedHash = admin.getSecUsrPwd();
+        String storedCredential = admin.getSecUsrPwd();
 
-        assertThat(storedHash).isEqualTo(EXPECTED_BCRYPT_HASH);
-        assertThat(storedHash).startsWith("{bcrypt}$2a$");
-        assertThat(storedHash).hasSize("{bcrypt}".length() + 60);
+        assertThat(storedCredential).isEqualTo(EXPECTED_STORED_PASSWORD);
+        assertThat(storedCredential).startsWith(BCRYPT_PREFIX + "$2a$");
+        assertThat(storedCredential).hasSize(BCRYPT_PREFIX.length() + 60);
 
-        assertThat(bcryptPasswordEncoder.matches("PASSWORD", storedHash.substring("{bcrypt}".length()))).isTrue();
-        assertThat(bcryptPasswordEncoder.matches("password", storedHash.substring("{bcrypt}".length()))).isFalse();
+        // The cost factor must match the encoding policy, otherwise a rehash is
+        // silently triggered on every successful sign-on.
+        assertThat(storedCredential.substring(BCRYPT_PREFIX.length() + 4, BCRYPT_PREFIX.length() + 6))
+                .isEqualTo(String.format("%02d", PasswordEncoderFactory.BCRYPT_STRENGTH));
 
-        // The wired encoder must verify the seeded hash as stored: this is exactly what
-        // sign-on does, and it is what an unprefixed hash made impossible.
-        assertThat(passwordEncoder.matches("PASSWORD", storedHash)).isTrue();
-        assertThat(passwordEncoder.matches("password", storedHash)).isFalse();
+        // The WIRED encoder (the one the service actually injects) must verify the
+        // stored credential; this is the assertion that catches a prefix mismatch.
+        assertThat(passwordEncoder.matches("PASSWORD", storedCredential)).isTrue();
+        assertThat(passwordEncoder.matches("password", storedCredential)).isFalse();
+        assertThat(passwordEncoder.upgradeEncoding(storedCredential)).isFalse();
+
+        assertThat(storedCredential).startsWith("{bcrypt}$2a$");
+        assertThat(storedCredential).hasSize("{bcrypt}".length() + 60);
+
+        // The encoder the service is wired with must verify the stored credential directly.
+        assertThat(passwordEncoder.matches("PASSWORD", storedCredential)).isTrue();
+        assertThat(passwordEncoder.matches("password", storedCredential)).isFalse();
+
+        // The hash itself is an unchanged BCrypt hash of PASSWORD.
+        assertThat(bcryptPasswordEncoder.matches("PASSWORD", EXPECTED_BCRYPT_HASH)).isTrue();
+        assertThat(bcryptPasswordEncoder.matches("password", EXPECTED_BCRYPT_HASH)).isFalse();
 
         String encoded = passwordEncoder.encode("PASSWORD");
+        assertThat(encoded).startsWith(BCRYPT_PREFIX);
         assertThat(encoded).startsWith("{bcrypt}");
         assertThat(passwordEncoder.matches("PASSWORD", encoded)).isTrue();
         assertThat(passwordEncoder.matches("password", encoded)).isFalse();
 
         assertThat(securityUserRepository.findAll())
-                .allSatisfy(u -> assertThat(u.getSecUsrPwd()).isEqualTo(EXPECTED_BCRYPT_HASH));
+                .allSatisfy(u -> assertThat(u.getSecUsrPwd()).isEqualTo(EXPECTED_STORED_PASSWORD))
+                .allSatisfy(u -> assertThat(passwordEncoder.matches("PASSWORD", u.getSecUsrPwd())).isTrue());
     }
 }

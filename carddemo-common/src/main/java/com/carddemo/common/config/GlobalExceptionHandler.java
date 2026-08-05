@@ -16,6 +16,7 @@
 package com.carddemo.common.config;
 
 import com.carddemo.common.dto.ErrorResponse;
+import com.carddemo.common.crypto.SensitiveDataCryptoException;
 import com.carddemo.common.security.SensitiveDataMasker;
 import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.OptimisticLockConflictException;
@@ -31,6 +32,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.slf4j.MDC;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
@@ -52,7 +55,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-import java.util.Set;
+
 
 /**
  * :purpose: Centralized ``@RestControllerAdvice`` that translates the CardDemo
@@ -105,6 +108,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     private static final String MSG_UNEXPECTED = "An unexpected error occurred";
 
     /**
+     * :purpose: MDC key under which Micrometer Tracing publishes the current distributed-trace id;
+     *     the same key the structured log encoder renders.
+     */
+    private static final String TRACE_ID_MDC_KEY = "traceId";
+
+    /**
      * :purpose: Assemble a populated {@link ErrorResponse} body for a handled failure.
      * :param status: the HTTP status mapped for the failure.
      * :param message: the non-sensitive detail message surfaced to the caller.
@@ -146,6 +155,8 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     private String loggedMessage(String message) {
         return SensitiveDataMasker.maskPan(message);
     }
+
+
 
     /**
      * :purpose: Map a not-found lookup (legacy CICS ``RESP(NOTFND)``) to HTTP 404.
@@ -193,6 +204,24 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
+     * :purpose: Map a failure to protect or recover a regulated attribute to HTTP 500.
+     *     This is a data-at-rest or key-configuration fault, never a caller error, so it
+     *     must not be reported as ``400``; the response carries a generic message while
+     *     the operator-facing detail goes to the log.
+     * :param ex: the crypto exception; its message names the fault category and never
+     *     contains the protected value.
+     * :param request: the current web request.
+     * :returns: a ``500 Internal Server Error`` {@link ResponseEntity} wrapping the error body.
+     */
+    @ExceptionHandler(SensitiveDataCryptoException.class)
+    public ResponseEntity<ErrorResponse> handleSensitiveDataCrypto(SensitiveDataCryptoException ex, WebRequest request) {
+        HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
+        log.error("Sensitive attribute could not be processed at {}: {}", loggedPath(request), loggedMessage(ex.getMessage()), ex);
+        return ResponseEntity.status(status)
+                .body(buildBody(status, "Sensitive data could not be processed", request));
+    }
+
+    /**
      * :purpose: Map an uncategorized base {@link CardDemoException} (or any subtype without a more specific handler) to HTTP 400.
      * :param ex: the domain exception carrying the detail message.
      * :param request: the current web request.
@@ -214,6 +243,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
         // The cause carries the cryptographic detail; it is logged, never returned.
         log.error("Protected-data conversion failed at {}", loggedPath(request), ex);
+        log.error("Protected-data conversion failed at {}", extractPath(request), ex);
         return ResponseEntity.status(status)
                 .body(buildBody(status, PiiEncryptionException.MESSAGE, request));
     }
@@ -318,6 +348,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         }
         log.warn("Constraint validation failed at {}: reporting '{}' ({} violation(s) evaluated)",
                 loggedPath(request), loggedMessage(message), ex.getConstraintViolations().size());
+        log.warn("Constraint validation failed at {}: {} violation(s)", loggedPath(request), ex.getConstraintViolations().size());
         return ResponseEntity.status(status).body(body);
     }
 
@@ -493,6 +524,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                                                                        WebRequest request) {
         HttpStatus status = HttpStatus.CONFLICT;
         log.warn("Optimistic-locking failure at {}: {}", loggedPath(request), loggedMessage(ex.getMessage()));
+        log.warn("Optimistic-locking failure at {}: {}", extractPath(request), ex.getMessage());
         return ResponseEntity.status(status)
                 .body(buildBody(status, OptimisticLockConflictException.MESSAGE, request));
     }

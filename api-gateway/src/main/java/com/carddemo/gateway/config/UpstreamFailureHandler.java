@@ -73,6 +73,11 @@ public class UpstreamFailureHandler {
         String redactedPath = SensitiveDataMasker.maskPan(path);
         LOGGER.error("Upstream service unavailable for {}: {}",
                 redactedPath, exception.getMessage());
+        // here, never placed in the response body.
+        // Masked for the LOG only: a card path embeds the PAN and must not be retained in a
+        // log file; the response body keeps the URI the caller supplied.
+        LOGGER.error("Upstream service unavailable for {}: {}",
+                SensitiveDataMasker.maskPan(path), exception.getMessage());
         ErrorResponse body = new ErrorResponse(
                 HttpStatus.SERVICE_UNAVAILABLE.value(),
                 HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase(),

@@ -71,7 +71,7 @@ public class SecurityConfig {
             .authorizeHttpRequests(authorize -> authorize
                 // The container ERROR dispatch must not be re-authorized: doing so
                 // masks a genuine 4xx/5xx as an authorization failure.
-                .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
+                .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC).permitAll()
                 .requestMatchers(
                     "/actuator/health",
                     "/actuator/health/**",

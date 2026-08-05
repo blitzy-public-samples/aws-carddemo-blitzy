@@ -84,17 +84,18 @@ public class TransactionPostingJob {
     /** :purpose: JDBC fetch size for the feed cursor, keeping memory bounded. */
     private static final int FEED_FETCH_SIZE = 100;
 
+
+
     /**
      * :purpose: Read the ``DALYTRAN`` feed one record at a time in ascending
-     *     ``dalytran_id`` order, reproducing the ``CBTRN02C`` sequential browse of the
-     *     daily-transaction data set. The reader streams the real
-     *     ``daily_transactions`` table over a JDBC cursor: the job previously read a
-     *     hand-written in-memory ``ConcurrentHashMap`` that nothing ever populated, so
-     *     every run reported ``read=0 write=0`` and finished COMPLETED while the
-     *     persisted feed sat unread - a silent false success in which no transaction was
-     *     ever posted and no record was ever rejected.
-     * :param dataSource: the application datasource holding the persisted feed.
-     * :returns: a step-scoped {@link JdbcCursorItemReader} over the ordered feed.
+     *     ``dalytranId`` order, reproducing the ``CBTRN02C`` sequential browse of
+     *     the daily-transaction data set. The feed is staged in the
+     *     ``daily_transactions`` table before launch, so the reader is step-scoped
+     *     and snapshots the staged rows at step-execution time (a job launched
+     *     later therefore always reads the feed as it stands at that moment).
+     * :param dailyTransactionRepository: the daily-transaction feed store whose
+     *     ``findAll`` returns the staged records sorted by ``dalytranId`` ascending.
+     * :returns: an {@link IteratorItemReader} over the ordered feed snapshot.
      */
     @Bean
     @StepScope

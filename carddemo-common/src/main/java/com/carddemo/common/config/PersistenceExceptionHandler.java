@@ -16,11 +16,14 @@
 package com.carddemo.common.config;
 
 import com.carddemo.common.dto.ErrorResponse;
+import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.PiiEncryptionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.core.annotation.Order;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -29,42 +32,66 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 
 /**
- * :purpose: Translate the persistence-layer failures that need Spring ORM on the
- *     classpath into the CardDemo error envelope. A value that is not valid ciphertext
- *     in a column mapped with ``CryptoConverter`` fails CLOSED: Hibernate wraps the
- *     converter's {@code PiiEncryptionException} in a {@link JpaSystemException}, which
- *     would otherwise be reported by the generic ``DataAccessException`` mapping and
- *     disclose a persistence-layer message instead of the frozen text (AAP 0.6.7).
- * :output: HTTP 500 carrying the standard {@code ErrorResponse} envelope with the frozen
- *     non-disclosing message, for every service whose classpath includes Spring's ORM
+ * :purpose: Translate persistence-layer concurrency failures that escape a service's
+ *     own catch block into the legacy CICS concurrency outcome. ``COACTUPC``
+ *     implements a read-snapshot-compare-rewrite pattern whose
+ *     ``DATA-WAS-CHANGED-BEFORE-UPDATE`` condition reports
+ *     ``'Record changed by some one else. Please review'``
+ *     (``app/cbl/COACTUPC.cbl`` L522); the migrated services express that with JPA
+ *     ``@Version`` optimistic locking (AAP 0.6.2). When the version mismatch is only
+ *     detected at transaction commit — after the service method has returned — the
+ *     resulting {@link OptimisticLockingFailureException} would otherwise surface as
+ *     an unexpected HTTP 500 instead of that outcome.
+ * :output: HTTP 409 carrying the standard {@code ErrorResponse} envelope with the
+ *     frozen COBOL message, for every service whose classpath includes Spring's ORM
  *     support.
  * :note: Declared separately from {@link GlobalExceptionHandler} and guarded by
  *     {@link ConditionalOnClass} because the API gateway carries no persistence
  *     dependencies; loading a handler whose signature references a Spring ORM type
- *     there would fail context initialization. {@code @Order(0)} places this advice
- *     ahead of the generic mapping, which would otherwise match the same throwable
- *     through {@code DataAccessException}. The optimistic-locking outcome is mapped by
- *     {@link GlobalExceptionHandler}, whose ``org.springframework.dao`` signature loads
- *     in every service, so exactly one advice owns it.
+ *     there would fail context initialization.
  */
 @RestControllerAdvice
 @ConditionalOnClass(name = "org.springframework.orm.ObjectOptimisticLockingFailureException")
 @Order(0)
 public class PersistenceExceptionHandler {
 
-    /** :purpose: Logger for protected-data conversion failures. */
+    /** :purpose: Logger for persistence-layer concurrency failures. */
     private static final Logger log = LoggerFactory.getLogger(PersistenceExceptionHandler.class);
 
     /**
-     * :purpose: Translate a protected-column conversion failure into the fail-closed
-     *     response. Hibernate wraps a converter failure in a {@link JpaSystemException},
-     *     which would otherwise reach the generic ``DataAccessException`` mapping and
-     *     disclose a persistence-layer message.
-     * :param ex: the wrapped persistence failure.
-     * :param request: the current request, used for the envelope path.
-     * :returns: HTTP 500 carrying the frozen non-disclosing message.
-     * :raises JpaSystemException: re-thrown unchanged when the cause is not an at-rest
-     *     encryption failure, so the generic mapping handles it.
+     * :purpose: Map any Spring data-access optimistic-locking failure — including the
+     *     ``ObjectOptimisticLockingFailureException`` Hibernate raises from a
+     *     ``StaleStateException`` at flush or commit — onto HTTP 409 and the frozen
+     *     COBOL concurrency message.
+     * :param ex: the optimistic-locking failure raised by the persistence layer.
+     * :param request: the current web request, used for the ``path`` field.
+     * :returns: HTTP 409 with the standard error envelope.
+     */
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    public ResponseEntity<ErrorResponse> handleOptimisticLockingFailure(
+            OptimisticLockingFailureException ex, WebRequest request) {
+        HttpStatus status = HttpStatus.CONFLICT;
+        String path = extractPath(request);
+        log.warn("Optimistic-locking failure from the persistence layer at {}: {}", path, ex.getMessage());
+        ErrorResponse body = new ErrorResponse(status.value(), status.getReasonPhrase(),
+                OptimisticLockConflictException.MESSAGE, path);
+        body.setTraceId(resolveTraceId());
+        return ResponseEntity.status(status).body(body);
+    }
+
+    /**
+     * :purpose: Recover the at-rest encryption failure that Hibernate hides. When an
+     *     ``AttributeConverter`` throws while a column is being read or written, Hibernate
+     *     wraps the cause in its own ``HibernateException`` and Spring re-wraps that as a
+     *     {@link JpaSystemException}, so the {@link PiiEncryptionException} raised by
+     *     ``CryptoConverter`` never reaches the handler registered for it. This handler walks
+     *     the cause chain and, when it finds that domain type, answers with the standard
+     *     envelope and the frozen non-disclosing message instead of an opaque ORM error.
+     * :param ex: the ORM system failure raised by the persistence layer.
+     * :param request: the current web request, used for the ``path`` field.
+     * :returns: HTTP 500 with the standard error envelope.
+     * :raises JpaSystemException: rethrown unchanged when the cause chain carries no
+     *     at-rest encryption failure, so unrelated ORM faults keep their own handling.
      */
     @ExceptionHandler(JpaSystemException.class)
     public ResponseEntity<ErrorResponse> handleJpaSystemException(JpaSystemException ex,
@@ -73,11 +100,14 @@ public class PersistenceExceptionHandler {
             throw ex;
         }
         HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
+        String path = extractPath(request);
         // The cause is logged for the operator; the response discloses no column,
         // key material or cryptographic detail.
-        log.error("Protected-data conversion failed at {}", ErrorResponseFactory.path(request), ex);
-        return ResponseEntity.status(status)
-                .body(ErrorResponseFactory.build(status, PiiEncryptionException.MESSAGE, request));
+        log.error("Protected-data conversion failed at {}", path, ex);
+        ErrorResponse body = new ErrorResponse(status.value(), status.getReasonPhrase(),
+                PiiEncryptionException.MESSAGE, path);
+        body.setTraceId(resolveTraceId());
+        return ResponseEntity.status(status).body(body);
     }
 
     /**
@@ -104,5 +134,24 @@ public class PersistenceExceptionHandler {
      * :param request: the current web request.
      * :returns: the request URI, or the raw description when it carries no ``uri=`` prefix.
      */
+    private String extractPath(WebRequest request) {
+        String description = request.getDescription(false);
+        if (description != null && description.startsWith("uri=")) {
+            return description.substring(4);
+        }
+        return description;
+    }
 
+    /**
+     * :purpose: Resolve the correlation identifier for the error envelope, preferring the
+     *     tracing ``traceId`` and falling back to the correlation id.
+     * :returns: the resolved identifier, or ``null`` when neither is present.
+     */
+    private String resolveTraceId() {
+        String traceId = MDC.get("traceId");
+        if (traceId == null || traceId.isBlank()) {
+            traceId = CorrelationIdContext.getCorrelationId();
+        }
+        return traceId;
+    }
 }

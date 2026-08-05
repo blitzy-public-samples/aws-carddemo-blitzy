@@ -118,10 +118,14 @@ public class SecurityConfig {
 
         SecurityHardening.apply(http)
             .authorizeHttpRequests(auth -> auth
-                // The container ERROR dispatch must not be re-authorized: doing so
-                // masks a genuine 4xx/5xx as an authorization failure.
-                .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
+                // The container ERROR/ASYNC dispatches must not be re-authorized: doing so
+                // masks a genuine 4xx/5xx as an authorization failure. Spring Security
+                // filters ALL dispatcher types by default, so an anonymous request that
+                // failed with a 500 was re-evaluated on its way to /error, denied, and
+                // answered with an EMPTY 403 - the real status and the error body were lost.
+                .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC).permitAll()
                 .requestMatchers("/auth/**", "/csrf").permitAll()
+                .requestMatchers("/error").permitAll()
                 .requestMatchers("/actuator/health/**", "/actuator/health", "/actuator/info").permitAll()
                 .requestMatchers("/admin/**", "/users/**").hasRole("ADMIN")
                 // The CREASTMT / CBSTM03A statement job stream had no online transaction: it

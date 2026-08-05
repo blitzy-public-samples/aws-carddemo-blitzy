@@ -85,7 +85,15 @@ class JobSchedulingCorrelationTest {
                 Path.of(System.getProperty("java.io.tmpdir"), "carddemo-batch-mdc", "input")
                         .toString());
         return new JobSchedulingConfig(jobRepository, job, job, job, job, job, job, job, job, job,
-                resolver);
+                resolver,
+                JobSchedulingConfig.DEFAULT_ACCOUNT_REPORT_FILE,
+                JobSchedulingConfig.DEFAULT_CARD_REPORT_FILE,
+                JobSchedulingConfig.DEFAULT_CARD_XREF_REPORT_FILE,
+                JobSchedulingConfig.DEFAULT_CUSTOMER_REPORT_FILE,
+                JobSchedulingConfig.DEFAULT_CATEGORY_BALANCE_REPORT_FILE,
+                JobSchedulingConfig.DEFAULT_TRANSACTION_DETAIL_REPORT_FILE,
+                JobSchedulingConfig.DEFAULT_COMBINED_TRANSACTION_FILE,
+                JobSchedulingConfig.DEFAULT_DAILY_TRANSACTION_FEED_FILE);
     }
 
     /**

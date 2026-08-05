@@ -81,6 +81,29 @@ class ReportingServiceApplicationIT {
     private JobRepository jobRepository;
 
     /**
+     * :purpose: Provision the Spring Batch metadata schema this test's throwaway
+     *   PostgreSQL needs. The deployed service reads and writes job/step
+     *   bookkeeping through a JDBC-backed ``JobRepository`` whose ``BATCH_*``
+     *   tables are owned by the shared ``carddemo-common`` Flyway migration
+     *   ``V4__batch_metadata.sql``; the ``test`` profile disables Flyway, so the
+     *   canonical Spring Batch PostgreSQL DDL is applied here instead.
+     *
+     *   A dedicated database name is registered so this class gets its OWN
+     *   throwaway container: ``ContainerDatabaseDriver`` caches one container per
+     *   JDBC URL for the whole JVM, and the sibling ``StatementGenerationJobIT``
+     *   applies the very same create-only DDL, so sharing one container would make
+     *   whichever context started second fail on already-existing tables.
+     * :param registry: the dynamic property registry supplied by the test context.
+     */
+    @DynamicPropertySource
+    static void provisionBatchMetadataSchema(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", () -> "jdbc:tc:postgresql:18:///carddemo_reporting_appit");
+        registry.add("spring.sql.init.mode", () -> "always");
+        registry.add("spring.sql.init.schema-locations",
+                () -> "classpath:org/springframework/batch/core/schema-postgresql.sql");
+    }
+
+    /**
      * :purpose: Verify the reporting-service Spring context boots against a real PostgreSQL container.
      */
     @Test

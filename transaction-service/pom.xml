@@ -142,6 +142,7 @@
           Testcontainers integration tests can provision the identical production schema
           (business tables plus the Spring Batch metadata the posting job needs).
         -->
+        <!-- Flyway schema/seed migrations under src/main/resources/db/migration/. -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
@@ -155,6 +156,11 @@
           spring-boot-flyway module (it is NOT bundled with flyway-core). Without it, the shared
           carddemo-common migrations never run and Hibernate `validate` fails on the missing
           business tables (QA Issue 1(a)). It is gated by `spring.flyway.enabled`.
+          spring-boot-flyway module (it is NOT bundled with flyway-core). Without it,
+          `spring.flyway.*` is inert - no flywayInitializer bean is registered and no
+          migration ever runs, however the properties are set. It is gated by
+          `spring.flyway.enabled`, so it stays inert in production, where this service does
+          not own the schema.
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -216,14 +222,6 @@
             <artifactId>spring-batch-test</artifactId>
             <scope>test</scope>
         </dependency>
-
-        <!--
-          Spring MVC test slice (MockMvc auto-configuration). As of Spring Boot 4.0 the
-          Web MVC test support was extracted from the catch-all
-          spring-boot-test-autoconfigure module into its own spring-boot-webmvc-test
-          module, surfaced through this starter; it is no longer transitively provided by
-          spring-boot-starter-test. The version is managed by the Spring Boot BOM.
-        -->
 
         <!-- Spring Security testing utilities for role-gated endpoint tests. -->
         <dependency>

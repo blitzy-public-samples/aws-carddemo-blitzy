@@ -195,6 +195,10 @@ class PostingJobCompletionListenerTest {
             assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
             assertThat(execution.getExitStatus().getExitCode())
                     .isEqualTo(ExitStatus.COMPLETED.getExitCode());
+            assertThat(execution.getExitStatus().getExitCode()).isEqualTo("COMPLETED");
+            assertThat(loggedLines()).containsExactly(
+                    "TRANSACTIONS PROCESSED :0",
+                    "TRANSACTIONS REJECTED  :0");
         }
     }
 

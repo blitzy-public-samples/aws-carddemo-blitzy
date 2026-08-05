@@ -20,6 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.Optional;
 
+import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,13 +41,13 @@ import com.carddemo.common.domain.Customer;
 
 /**
  * :purpose: Verify that a customer row created by the committed Flyway seed
- *     migrations can be read back through JPA: the seed writes the sensitive columns
- *     (``cust_ssn``, ``cust_govt_issued_id``, ``cust_eft_account_id``) as fixed-width
- *     plaintext taken from ``app/data/ASCII/custdata.txt``, the seeded-PII encryption
- *     migration then protects them, and the converter hands the clear value back to
- *     the entity while the column stays AES-256-GCM ciphertext at rest (AAP 0.6.7).
+ *     migrations can be read back through JPA even though the seed stores the
+ *     sensitive columns (``cust_ssn``, ``cust_govt_issued_id``,
+ *     ``cust_eft_account_id``) as fixed-width plaintext taken from
+ *     ``app/data/ASCII/custdata.txt``, and that re-saving such a row upgrades
+ *     those columns to AES-256-GCM ciphertext at rest (AAP 0.6.7).
  * :output: JUnit 5 / AssertJ assertions executed against an ephemeral
- *     Testcontainers PostgreSQL seeded by the real shared migration set.
+ *     Testcontainers PostgreSQL seeded by the real account-service migrations.
  *     Sensitive values are compared by shape and by round-trip equality only;
  *     no PII literal is written into this test or logged.
  */
@@ -69,14 +71,10 @@ class SeededPiiRoundTripIT {
                     .withPassword("test");
 
     /**
-     * :purpose: Bind the container coordinates. The schema, the reference data and the
-     *     seeded rows are provisioned by the service's own Flyway run of the shared
-     *     migration set — the single owner of ``classpath:db/migration``, java migration
-     *     for the seeded-PII encryption included — so the test reads exactly the rows,
-     *     and exactly the at-rest form, a real deployment is seeded with, and the test
-     *     profile's ``ddl-auto: validate`` asserts the entity-to-migration mapping. The
-     *     non-production AES-256 key the converter needs is supplied to the forked test
-     *     JVM by the ``carddemo.pii.key`` system property configured in the POM.
+     * :purpose: Bind the container coordinates and disable Hibernate schema
+     *     validation, because the account-service migrations create only
+     *     ``customers`` and ``accounts`` while the service entity-scans every
+     *     shared domain type.
      * :param registry: registry resolved before the application context starts.
      */
     @DynamicPropertySource
@@ -85,6 +83,25 @@ class SeededPiiRoundTripIT {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.datasource.driver-class-name", POSTGRES::getDriverClassName);
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "none");
+    }
+
+    /**
+     * :purpose: Apply the account-service migrations (V1-V4: create and seed
+     *     ``customers`` and ``accounts``) so the test reads exactly the rows a real
+     *     deployment is seeded with. The non-production AES-256 key the converter
+     *     needs for the write path is supplied to the forked test JVM by the
+     *     Surefire ``carddemo.pii.key`` system property configured in the POM.
+     */
+    @BeforeAll
+    static void prepareDatabase() {
+        Flyway.configure()
+                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .locations("classpath:db/migration")
+                .table("flyway_schema_history_account")
+                .baselineOnMigrate(true)
+                .load()
+                .migrate();
     }
 
     /** :purpose: Repository under test, exercising the converter on the read path. */
@@ -118,6 +135,10 @@ class SeededPiiRoundTripIT {
         assertThat(customer.getCustSsn()).isNotEqualTo(rawColumn("cust_ssn"));
         assertThat(CryptoConverter.isEncryptedToken(rawColumn("cust_govt_issued_id"))).isTrue();
         assertThat(CryptoConverter.isEncryptedToken(rawColumn("cust_eft_account_id"))).isTrue();
+        // The seed stores plaintext, so the converter must have passed it through
+        // rather than attempting (and failing) an AES-GCM decryption.
+        assertThat(customer.getCustSsn()).isEqualTo(rawColumn("cust_ssn"));
+        assertThat(CryptoConverter.isEncryptedToken(rawColumn("cust_ssn"))).isFalse();
     }
 
     @Test

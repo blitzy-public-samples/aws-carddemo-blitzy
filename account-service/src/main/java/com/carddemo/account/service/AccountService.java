@@ -45,6 +45,7 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+
 /**
  * :purpose: Business-logic service for the CardDemo Account feature. Re-expresses
  *  the ``PROCEDURE DIVISION`` logic of the two legacy CICS account programs while
@@ -247,6 +248,11 @@ public class AccountService {
         // read and the flush.
         assertVersionUnchanged(acctId, request, account);
 
+        // Step 3 -- COACTUPC 9300/9700-CHECK-CHANGE-IN-REC (L4131-4189): when the caller
+        // carries the display-time ACUP-OLD-* snapshot, compare the freshly re-read record
+        // against it field by field and abort on any difference rather than overwriting a
+        // concurrent edit. This is the read-snapshot-compare-rewrite window that a version
+        // column checked only inside the write transaction cannot cover (AAP 0.6.2).
         if (snapshotSupplied && hasDataChangedSinceSnapshot(request, account, customer)) {
             log.warn("Account update conflict for acctId={}: record changed since display", acctId);
             throw new OptimisticLockConflictException();

@@ -118,7 +118,9 @@ CREATE TABLE IF NOT EXISTS tran_category (
     tran_cat_cd        INTEGER     NOT NULL,  -- TRAN-CAT-CD        PIC 9(04)
     tran_cat_type_desc VARCHAR(50),           -- TRAN-CAT-TYPE-DESC PIC X(50)
     CONSTRAINT tran_category_pkey PRIMARY KEY (tran_type_cd, tran_cat_cd),
-    CONSTRAINT chk_tran_category_cat_cd CHECK (tran_cat_cd BETWEEN 0 AND 9999)
+    CONSTRAINT chk_tran_category_cat_cd CHECK (tran_cat_cd BETWEEN 0 AND 9999),
+    CONSTRAINT fk_tran_category_type FOREIGN KEY (tran_type_cd)
+        REFERENCES tran_type (tran_type)
 );
 
 -- -----------------------------------------------------------------------------
@@ -135,7 +137,9 @@ CREATE TABLE IF NOT EXISTS disclosure_group (
     dis_tran_cat_cd   INTEGER       NOT NULL, -- DIS-TRAN-CAT-CD   PIC 9(04)
     dis_int_rate      NUMERIC(6,2),           -- DIS-INT-RATE      PIC S9(04)V99
     CONSTRAINT disclosure_group_pkey PRIMARY KEY (dis_acct_group_id, dis_tran_type_cd, dis_tran_cat_cd),
-    CONSTRAINT chk_disclosure_group_cat_cd CHECK (dis_tran_cat_cd BETWEEN 0 AND 9999)
+    CONSTRAINT chk_disclosure_group_cat_cd CHECK (dis_tran_cat_cd BETWEEN 0 AND 9999),
+    CONSTRAINT fk_disclosure_group_category FOREIGN KEY (dis_tran_type_cd, dis_tran_cat_cd)
+        REFERENCES tran_category (tran_type_cd, tran_cat_cd)
 );
 
 -- Covering index for the DIS-ACCT-GROUP-ID-less lookup CBACT04C performs when it
@@ -269,6 +273,11 @@ CREATE TABLE IF NOT EXISTS tran_cat_bal (
 --            -> idx_card_xref_cust_id       (customer-side cross-reference lookup)
 --   TRANSACT -> idx_transactions_card_num   (transaction browse by card)
 -- -----------------------------------------------------------------------------
+-- Secondary index backing the disclosure-group lookup by account group id
+-- (CBACT04C interest calculation, including the 'DEFAULT' group fallback; AAP 0.6.1).
+CREATE INDEX IF NOT EXISTS idx_disclosure_group_acct_group_id
+    ON disclosure_group (dis_acct_group_id);
+
 CREATE INDEX IF NOT EXISTS idx_cards_card_acct_id ON cards (card_acct_id);
 CREATE INDEX IF NOT EXISTS idx_card_xref_acct_id ON card_xref (xref_acct_id);
 CREATE INDEX IF NOT EXISTS idx_card_xref_cust_id ON card_xref (xref_cust_id);

@@ -14,7 +14,7 @@
  * either express or implied. See the License for the specific
  * language governing permissions and limitations under the License.
  */
-package com.carddemo.common.util;
+package com.carddemo.common.crypto;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -53,8 +53,8 @@ final class PiiMaskerTest {
                 "1234567890,******7890"
         })
         void masksAllButTheTrailingFour(String raw, String expected) {
-            assertThat(PiiMasker.mask(raw)).isEqualTo(expected);
-            assertThat(PiiMasker.mask(raw)).hasSameSizeAs(raw);
+            assertThat(PiiMasker.maskIdentifier(raw)).isEqualTo(expected);
+            assertThat(PiiMasker.maskIdentifier(raw)).hasSameSizeAs(raw);
         }
 
         @ParameterizedTest
@@ -67,21 +67,21 @@ final class PiiMaskerTest {
                 "747,***"                        // CARD-CVV-CD PIC X(3)
         })
         void shortValuesAreFullyMasked(String raw, String expected) {
-            assertThat(PiiMasker.mask(raw)).isEqualTo(expected);
+            assertThat(PiiMasker.maskIdentifier(raw)).isEqualTo(expected);
         }
 
         @Test
         @DisplayName("null and empty values pass through so absent stays distinguishable from blank")
         void nullAndEmptyPassThrough() {
-            assertThat(PiiMasker.mask(null)).isNull();
-            assertThat(PiiMasker.mask("")).isEmpty();
+            assertThat(PiiMasker.maskIdentifier(null)).isNull();
+            assertThat(PiiMasker.maskIdentifier("")).isEmpty();
         }
 
         @Test
         @DisplayName("masking is idempotent, so a masked value re-masked is unchanged")
         void maskingIsIdempotent() {
-            String once = PiiMasker.mask("020973888");
-            assertThat(PiiMasker.mask(once)).isEqualTo(once);
+            String once = PiiMasker.maskIdentifier("020973888");
+            assertThat(PiiMasker.maskIdentifier(once)).isEqualTo(once);
         }
     }
 

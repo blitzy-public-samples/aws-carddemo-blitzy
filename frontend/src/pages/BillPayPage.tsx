@@ -342,6 +342,9 @@ export default function BillPayPage(): ReactElement {
         <label className="prompt" htmlFor="billPayConfirm">
           Do you want to pay your balance now. Please confirm:{' '}
         </label>
+        {/* BLITZY [A11Y]: CONFIRM is a 1-character BMS field, so the control is
+            smaller than the 44x44px touch-target minimum. Implemented at the
+            source width; flagged for designer review. */}
         <input
           id="billPayConfirm"
           name="CONFIRM"

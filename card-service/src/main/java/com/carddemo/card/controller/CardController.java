@@ -89,7 +89,8 @@ public class CardController {
      *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: the card-list response holding the requested page of card rows.
      * :raises CardDemoException: when the supplied account filter is not a one-to-eleven
-     *  digit number (translated to HTTP 400).
+     *  digit number, or the row-selection flag is neither ``S`` nor ``U`` (both translated
+     *  to HTTP 400).
      */
     @GetMapping
     public CardListResponseDto listCards(

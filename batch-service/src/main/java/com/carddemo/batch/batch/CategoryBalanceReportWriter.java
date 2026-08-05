@@ -28,7 +28,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.stereotype.Component;
 
-import com.carddemo.common.batch.BatchOutputPathResolver;
 import com.carddemo.common.config.CorrelationIdContext;
 import com.carddemo.common.domain.TranCatBal;
 

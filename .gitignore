@@ -177,6 +177,13 @@ acctdata-report*.txt
 carddata-report*.txt
 cardxref-report*.txt
 custdata-report*.txt
+combined*.txt
+trandet*.txt
+catbal*.txt
+acctrept*.txt
+cardrept*.txt
+xrefrept*.txt
+custrept*.txt
 dailytran*.txt
 carddemo-batch/
 
@@ -185,21 +192,14 @@ carddemo-batch/
 # fixture that shares a name with the generated daily-transaction feed.
 !app/data/**
 
-# ---- Local QA / agent evidence ----
-# Browser screenshots and screen recordings captured while validating the running
-# application. Large binary run evidence, not source.
-# ---- Automated QA / review evidence written into the working tree ----
-# Browser-automation screenshots and screen recordings captured during runtime
-# verification. These are large binary artifacts belonging to a single test run,
-# not project sources, so they must never be staged.
-blitzy/
-# ---- QA / agent working evidence (never committed) ----
+# ---- Automated QA / agent evidence written into the working tree ----
 # Automated review and QA runs write their working evidence into a `blitzy/`
-# directory at the repository root: screenshots, screen recordings, HTTP header
-# and log dumps, metrics dumps, and cookie jars. Cookie jars in particular hold
-# LIVE session identifiers, so none of it may ever be staged or committed. The
-# directory is transient working state, not a deliverable — the durable outputs
-# are docs/decision-log.md and docs/traceability-matrix.md.
+# directory at the repository root: browser screenshots, screen recordings, HTTP
+# header and log dumps, metrics dumps, and cookie jars. They are large binary
+# artifacts belonging to a single verification run, and cookie jars in particular
+# hold LIVE session identifiers, so none of it may ever be staged or committed.
+# The directory is transient working state, not a deliverable — the durable
+# outputs are docs/decision-log.md and docs/traceability-matrix.md.
 blitzy/
 *.cookies
 cookies.txt

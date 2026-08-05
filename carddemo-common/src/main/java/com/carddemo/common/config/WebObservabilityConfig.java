@@ -22,25 +22,25 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.core.Ordered;
 
 /**
- * :purpose: Register the shared CardDemo web observability filters — the correlation-id filter and
- *           the access-log filter — once, for every service, and make the correlation id
- *           propagate across thread boundaries.
- * :output: An auto-configuration that contributes {@link CorrelationIdFilter} at the highest
- *          precedence and {@link RequestLoggingFilter} immediately after it. Cross-thread
- *          propagation of the same id is registered by {@link ObservabilityConfig}, which is not
- *          web-specific.
- * :note: This class is listed in
- *        ``META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports``, so
- *        every service on the classpath of ``carddemo-common`` gets IDENTICAL correlation-id
- *        behaviour with no per-service wiring. Previously the library shipped no import file and no
- *        application class imported this configuration, so the shared filter was dead code: five
- *        services carried divergent local copies that ignored the documented W3C ``traceparent``
- *        fallback, and the remaining four emitted no correlation id at all. Registering it here is
- *        what makes the behaviour uniform.
- * :note: Filter ORDER matters and is deliberate. The correlation-id filter must run first so the
- *        MDC is populated before anything else logs; the access-log filter runs immediately inside
- *        it so its records — including the one it writes for an escaping exception — are still
- *        within the MDC scope.
+ * :purpose: Web-only observability configuration that registers the shared
+ *           {@link CorrelationIdFilter} so every HTTP request in a CardDemo web
+ *           service or the API gateway carries a bounded, trace-safe correlation
+ *           id through the MDC and the response. Together with the metrics/trace
+ *           tagging in {@link ObservabilityConfig} this completes the
+ *           correlation-propagation requirement of the Observability rule.
+ * :note: Gated by ``@ConditionalOnWebApplication(type = SERVLET)`` so it is only
+ *        active in servlet web modules; a non-servlet module never loads the
+ *        servlet filter. A service activates this configuration the same way it
+ *        activates {@link ObservabilityConfig}: by ``@Import`` or by broadening
+ *        component scanning to ``com.carddemo.common``.
+ * :note: This library ships no ``META-INF`` auto-configuration import file, so the
+ *        activation above is MANDATORY and is not applied automatically. A servlet
+ *        module that neither imports this class nor declares its own
+ *        {@link CorrelationIdFilter} ``@Component`` registers no correlation filter
+ *        at all, and the ``correlationId`` MDC key rendered by its
+ *        ``logback-spring.xml`` pattern stays permanently empty. Conversely, a module
+ *        that already declares its own filter component must NOT import this class,
+ *        or the filter would run twice per request.
  */
 @AutoConfiguration
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)

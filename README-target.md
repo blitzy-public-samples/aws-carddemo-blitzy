@@ -353,8 +353,13 @@ the nine backend services, an OTLP trace collector, Prometheus, and Grafana:
 docker compose up -d --build
 ```
 
-That command starts the datastores, the nine backend services, the observability
-stack and the React SPA together.
+The `frontend` service sits behind the `frontend` Compose profile, so the command
+above starts the datastores, the nine backend services and the observability stack.
+Add the profile to build and start the React SPA alongside them:
+
+```bash
+docker compose --profile frontend up -d --build frontend
+```
 
 Container health checks use a curl-free probe (bash `/dev/tcp` against
 `/actuator/health`) because the `eclipse-temurin:21-jre` base image ships neither
@@ -393,10 +398,10 @@ docker compose up -d --force-recreate frontend
 | Prometheus | <http://localhost:9090> (bound to loopback only) |
 | Grafana | <http://localhost:3001> (bound to loopback only) |
 | Jaeger (OTLP trace collector UI) | <http://localhost:16686> (bound to loopback only) |
-| Frontend (React SPA) | <http://localhost:3000> |
+| Frontend (React SPA) | <http://localhost:3000> — with `--profile frontend` |
 
-Only the API gateway (`8080`) and the frontend (`3000`) publish a host port for
-application traffic. The
+Only the API gateway (`8080`) — plus the frontend (`3000`) when its profile is
+enabled — publishes a host port for application traffic. The
 individual backend services and the datastores (PostgreSQL, Redis) are **not**
 exposed on the host — they are reachable only on the private Compose network and,
 for the browser, exclusively through the gateway (the SPA calls the same-origin
@@ -406,9 +411,9 @@ over that private network, not via a host port.
 
 ### Default Login Credentials
 
-Ten users are seeded by Flyway (`auth-service`
-`V2__seed_security_users.sql`) from the legacy security data. The credentials
-match the legacy application:
+Ten users are seeded by Flyway (`carddemo-common`
+`V3__seed_test_data.sql`) from the legacy security data, as `{bcrypt}` hashes. The
+credentials match the legacy application:
 
 | User ID | Password | `SEC-USR-TYPE` | Role | Post-login menu |
 | :------ | :------- | :------------- | :--- | :-------------- |

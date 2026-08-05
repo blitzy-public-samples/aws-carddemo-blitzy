@@ -142,6 +142,7 @@ class SessionAuthorizationTest {
         assertThat(result.getResponse().getCookie(SecurityConfig.CSRF_COOKIE_NAME))
                 .as("CSRF state must be carried by the double-submit cookie, never the session")
                 .isNotNull();
+        mockMvc.perform(get("/menu").session(session)).andExpect(status().isOk());
 
         List<String> attributes = Collections.list(session.getAttributeNames());
         assertThat(attributes)

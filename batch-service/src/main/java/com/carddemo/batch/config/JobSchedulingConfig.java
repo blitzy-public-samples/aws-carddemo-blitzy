@@ -28,6 +28,7 @@ import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
@@ -54,15 +55,25 @@ import java.util.UUID;
  *     ``categoryBalanceReportJob``, ``transactionDetailReportJob``,
  *     ``combineTransactionsJob``). Every launch adds a non-identifying
  *     ``correlationId`` job parameter, obtained from the static
- *     {@link CorrelationIdContext}, and an identifying unique ``run.id`` so each
- *     launch starts a fresh ``JobInstance``.
+ *     {@link CorrelationIdContext}, and a non-identifying unique ``run.id``
+ *     recorded purely for traceability. Because neither participates in job
+ *     identity, a ``JobInstance`` is identified by its business parameters
+ *     alone, so a failed instance can be restarted and a duplicate completed
+ *     instance is rejected.
  * :output: The ``asyncJobLauncher`` {@link JobLauncher} bean and nine public
  *     ``launch*`` methods, each returning the submitted job's
  *     {@link JobExecution}. The {@link JobRepository} and the nine ``Job`` beans
- *     are supplied by Spring Boot batch auto-configuration and this
- *     configuration's collaborators; no batch infrastructure is
- *     self-instantiated beyond the launcher, and ``@EnableBatchProcessing`` is
- *     intentionally absent so the Boot auto-configuration stays active.
+ *     are supplied by ``BatchInfrastructureConfig`` (which provides the durable
+ *     JDBC ``JobRepository``) and this configuration's collaborators; no batch
+ *     infrastructure is self-instantiated beyond the launcher.
+ * :note: Every ``launch*`` method that drives a file-producing or file-consuming job
+ *     accepts an optional explicit path and otherwise falls back to a configured
+ *     default, and validates it through {@link BatchOutputPathResolver} *before*
+ *     submitting. Previously six of the nine launchers submitted empty
+ *     ``JobParameters`` while their jobs required a ``outputFile``/``inputFile``
+ *     parameter, so every one of those jobs failed asynchronously with "Batch file
+ *     path must not be blank" while the caller was handed a ``STARTING``
+ *     ``JobExecution`` and believed the submission had succeeded.
  * :note: ``REPROC.prc`` — the generic IDCAMS REPRO VSAM unload/load utility
  *     invoked by ``TRANREPT.prc`` ``STEP01R`` [app/proc/REPROC.prc,
  *     app/proc/TRANREPT.prc] — is a database backup / point-in-time-recovery
@@ -74,34 +85,34 @@ import java.util.UUID;
 public class JobSchedulingConfig {
 
     /**
-     * :purpose: The job-parameter key holding the per-launch unique run token
-     *     that makes every launch a fresh ``JobInstance``; it is added as an
-     *     identifying parameter.
+     * :purpose: The job-parameter key holding a per-launch unique run token, recorded
+     *     for traceability as a NON-identifying parameter. It was previously
+     *     identifying, which made every submission a brand-new ``JobInstance``: a
+     *     failed run could never be restarted and re-submitting an already-completed
+     *     run was never rejected, defeating both guarantees the durable job
+     *     repository exists to provide. Job identity now derives solely from the
+     *     business parameters, exactly as the legacy JCL identified a run by its
+     *     ``PARM`` values.
      */
     private static final String RUN_ID_KEY = "run.id";
 
+    /** :purpose: Job-parameter key for the file a job writes its output to. */
+    private static final String OUTPUT_FILE_KEY = "outputFile";
+
+    /** :purpose: Job-parameter key for the file a job reads its input from. */
+    private static final String INPUT_FILE_KEY = "inputFile";
+
     /**
-     * :purpose: Upper bound on batch jobs executing concurrently on the async launcher.
-     *     ``SimpleAsyncTaskExecutor`` pools no threads, so an unbounded executor would
-     *     start a new thread for every submission and let a burst of launches exhaust
-     *     memory and saturate the connection pool. The legacy environment bounded this
-     *     naturally through JES initiator classes.
+     * :purpose: Upper bound on batch jobs executing concurrently on the async
+     *     launcher. ``SimpleAsyncTaskExecutor`` pools no threads, so an unbounded
+     *     executor would start a new thread for every submission and let a burst of
+     *     launches exhaust memory and saturate the connection pool. The legacy
+     *     environment bounded this naturally through JES initiator classes.
      */
     private static final int MAX_CONCURRENT_JOBS = 4;
 
-    /**
-     * :purpose: The job-parameter key naming the file a read/report job writes;
-     *     bound by the owning step's writer through
-     *     ``#{jobParameters['outputFile']}``.
-     */
-    public static final String OUTPUT_FILE_KEY = "outputFile";
 
-    /**
-     * :purpose: The job-parameter key naming the sequential feed file the
-     *     daily-transaction validation job reads; bound by its reader through
-     *     ``#{jobParameters['inputFile']}``.
-     */
-    public static final String INPUT_FILE_KEY = "inputFile";
+
 
     /**
      * :purpose: The job-parameter key naming the file the transaction-detail report job
@@ -193,6 +204,19 @@ public class JobSchedulingConfig {
      */
     public static final String DEFAULT_REPORT_END_DATE = "2022-07-06";
 
+
+
+
+
+
+
+
+
+
+
+
+
+
     /**
      * :purpose: Asynchronous launcher used by every ``launch*`` method; built in
      *     the constructor from the injected {@link JobRepository} and exposed as
@@ -201,11 +225,34 @@ public class JobSchedulingConfig {
     private final JobLauncher asyncJobLauncher;
 
     /**
-     * :purpose: Confines every batch file to the configured roots. Held here so a path that
-     *     escapes them is refused while the caller is still on the line, instead of being
-     *     accepted and then failing on a worker thread the caller cannot observe.
+     * :purpose: Resolver that confines and validates every batch file path, used here
+     *     to reject an unusable path at submission time.
      */
-    private final BatchOutputPathResolver outputPathResolver;
+    private final BatchOutputPathResolver pathResolver;
+
+    /** :purpose: Configured default output file name for ``accountReadJob``. */
+    private final String accountReportFile;
+
+    /** :purpose: Configured default output file name for ``cardReadJob``. */
+    private final String cardReportFile;
+
+    /** :purpose: Configured default output file name for ``cardXrefReadJob``. */
+    private final String cardXrefReportFile;
+
+    /** :purpose: Configured default output file name for ``customerReadJob``. */
+    private final String customerReportFile;
+
+    /** :purpose: Configured default output file name for ``categoryBalanceReportJob``. */
+    private final String categoryBalanceReportFile;
+
+    /** :purpose: Configured default output file name for ``transactionDetailReportJob``. */
+    private final String transactionDetailReportFile;
+
+    /** :purpose: Configured default output file name for ``combineTransactionsJob``. */
+    private final String combinedTransactionFile;
+
+    /** :purpose: Configured default input file name for ``dailyTransactionValidationJob``. */
+    private final String dailyTransactionFile;
 
     /** :purpose: The monthly interest-calculation job (``INTCALC`` / ``CBACT04C``). */
     private final Job interestCalculationJob;
@@ -249,6 +296,21 @@ public class JobSchedulingConfig {
      * :param categoryBalanceReportJob: the ``categoryBalanceReportJob`` bean.
      * :param transactionDetailReportJob: the ``transactionDetailReportJob`` bean.
      * :param combineTransactionsJob: the ``combineTransactionsJob`` bean.
+     * :param pathResolver: resolver used to validate a requested batch file path
+     *     before submission, so an unusable path is reported to the caller
+     *     synchronously instead of failing the job asynchronously.
+     * :param accountReportFile: default output file name for ``accountReadJob``.
+     * :param cardReportFile: default output file name for ``cardReadJob``.
+     * :param cardXrefReportFile: default output file name for ``cardXrefReadJob``.
+     * :param customerReportFile: default output file name for ``customerReadJob``.
+     * :param categoryBalanceReportFile: default output file name for
+     *     ``categoryBalanceReportJob``.
+     * :param transactionDetailReportFile: default output file name for
+     *     ``transactionDetailReportJob``.
+     * :param combinedTransactionFile: default output file name for
+     *     ``combineTransactionsJob``.
+     * :param dailyTransactionFile: default input file name for
+     *     ``dailyTransactionValidationJob``.
      */
     public JobSchedulingConfig(
             JobRepository jobRepository,
@@ -261,11 +323,18 @@ public class JobSchedulingConfig {
             @Qualifier("categoryBalanceReportJob") Job categoryBalanceReportJob,
             @Qualifier("transactionDetailReportJob") Job transactionDetailReportJob,
             @Qualifier("combineTransactionsJob") Job combineTransactionsJob,
-            BatchOutputPathResolver outputPathResolver) {
+            BatchOutputPathResolver pathResolver,
+            @Value("${carddemo.batch.account-report-file:" + DEFAULT_ACCOUNT_REPORT_FILE + "}") String accountReportFile,
+            @Value("${carddemo.batch.card-report-file:" + DEFAULT_CARD_REPORT_FILE + "}") String cardReportFile,
+            @Value("${carddemo.batch.card-xref-report-file:" + DEFAULT_CARD_XREF_REPORT_FILE + "}") String cardXrefReportFile,
+            @Value("${carddemo.batch.customer-report-file:" + DEFAULT_CUSTOMER_REPORT_FILE + "}") String customerReportFile,
+            @Value("${carddemo.batch.category-balance-report-file:" + DEFAULT_CATEGORY_BALANCE_REPORT_FILE + "}") String categoryBalanceReportFile,
+            @Value("${carddemo.batch.transaction-detail-report-file:" + DEFAULT_TRANSACTION_DETAIL_REPORT_FILE + "}") String transactionDetailReportFile,
+            @Value("${carddemo.batch.combined-transaction-file:" + DEFAULT_COMBINED_TRANSACTION_FILE + "}") String combinedTransactionFile,
+            @Value("${carddemo.batch.daily-transaction-file:" + DEFAULT_DAILY_TRANSACTION_FEED_FILE + "}") String dailyTransactionFile) {
         // Built here (not constructor-injected) because this class also defines
         // the asyncJobLauncher bean; injecting it would be a self-referential cycle.
         this.asyncJobLauncher = buildAsyncJobLauncher(jobRepository);
-        this.outputPathResolver = outputPathResolver;
         this.interestCalculationJob = interestCalculationJob;
         this.accountReadJob = accountReadJob;
         this.cardReadJob = cardReadJob;
@@ -275,12 +344,64 @@ public class JobSchedulingConfig {
         this.categoryBalanceReportJob = categoryBalanceReportJob;
         this.transactionDetailReportJob = transactionDetailReportJob;
         this.combineTransactionsJob = combineTransactionsJob;
+        this.pathResolver = pathResolver;
+        this.accountReportFile = accountReportFile;
+        this.cardReportFile = cardReportFile;
+        this.cardXrefReportFile = cardXrefReportFile;
+        this.customerReportFile = customerReportFile;
+        this.categoryBalanceReportFile = categoryBalanceReportFile;
+        this.transactionDetailReportFile = transactionDetailReportFile;
+        this.combinedTransactionFile = combinedTransactionFile;
+        this.dailyTransactionFile = dailyTransactionFile;
+    }
+
+    /**
+     * :purpose: Resolve the effective batch file name for a launch: the caller's
+     *     explicit request when supplied, otherwise the configured default. This is
+     *     what keeps a parameter-less launch from submitting a job that is certain to
+     *     fail on a blank path.
+     * :param requested: the caller's requested file name, possibly ``null`` or blank.
+     * :param configuredDefault: the configured default file name for this job.
+     * :returns: the effective file name to pass as the job parameter.
+     */
+    private static String effectiveFile(String requested, String configuredDefault) {
+        return (requested == null || requested.isBlank()) ? configuredDefault : requested;
+    }
+
+    /**
+     * :purpose: Validate an output path before submission so an unusable path is
+     *     reported to the caller synchronously rather than failing the job on a batch
+     *     worker thread where the caller never sees it.
+     * :param outputFile: the effective output file name.
+     * :returns: the same file name, once proven resolvable within the output root.
+     * :raises IllegalArgumentException: when the path is blank or escapes the
+     *     configured output root.
+     */
+    private String validatedOutput(String outputFile) {
+        pathResolver.resolveOutput(outputFile);
+        return outputFile;
+    }
+
+    /**
+     * :purpose: Validate an input path before submission, for the same reason as
+     *     {@link #validatedOutput(String)}.
+     * :param inputFile: the effective input file name.
+     * :returns: the same file name, once proven resolvable within the input root.
+     * :raises IllegalArgumentException: when the path is blank or escapes the
+     *     configured input root.
+     */
+    private String validatedInput(String inputFile) {
+        pathResolver.resolveInput(inputFile);
+        return inputFile;
     }
 
     /**
      * :purpose: Construct a {@link TaskExecutorJobLauncher} bound to the batch job
      *     repository and a {@link SimpleAsyncTaskExecutor} whose threads are named
-     *     ``batch-N``, so submitted jobs run on their own threads.
+     *     ``batch-N``, so submitted jobs run on their own threads. The executor is
+     *     decorated so the launching request's correlation id follows the job onto its
+     *     worker thread; without the decorator every line a job logged rendered an
+     *     empty ``correlationId`` and could not be tied back to its caller.
      * :param jobRepository: batch job repository the launcher records executions in.
      * :returns: a fully initialized asynchronous {@link JobLauncher}.
      */
@@ -325,46 +446,14 @@ public class JobSchedulingConfig {
      *     uniqueness parameters, then submit the job on the asynchronous
      *     launcher. A ``correlationId`` obtained from the static
      *     {@link CorrelationIdContext} is added as a non-identifying parameter
-     *     (also seeded into the launching thread's MDC) and a random ``run.id`` is
-     *     added as an identifying parameter so each launch starts a new
-     *     ``JobInstance``.
+     *     (also seeded into the launching thread's MDC), as is a random ``run.id``
+     *     recorded purely for traceability. Neither participates in job identity, so
+     *     a ``JobInstance`` is identified by its business parameters alone and both
+     *     restart of a failed instance and rejection of a duplicate completed
+     *     instance behave as Spring Batch intends.
      * :param job: the batch job to submit.
      * :param businessParameters: the job-specific parameters already assembled by
      *     the calling ``launch*`` method.
-     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
-     * :throws JobExecutionException: if the launcher cannot start the job.
-     */
-    /**
-     * :purpose: Resolve every file parameter of a submission through the shared resolver
-     *     before the run is accepted, so a path that escapes the configured root is refused
-     *     synchronously. The writers resolve the same way when they open the file, so this
-     *     adds no second policy: it only moves the refusal to the point where the caller can
-     *     still be told the submission was not accepted, rather than handing back a
-     *     ``STARTING`` execution for a job certain to fail on a worker thread.
-     * :param businessParameters: the business parameters of the submission.
-     * :raises IllegalArgumentException: if a file parameter escapes its configured root.
-     */
-    private void requireContainedPaths(JobParameters businessParameters) {
-        String outputFile = businessParameters.getString(OUTPUT_FILE_KEY);
-        if (outputFile != null) {
-            outputPathResolver.resolveOutput(outputFile);
-        }
-        String reportFile = businessParameters.getString(REPORT_FILE_KEY);
-        if (reportFile != null) {
-            outputPathResolver.resolveOutput(reportFile);
-        }
-        String inputFile = businessParameters.getString(INPUT_FILE_KEY);
-        if (inputFile != null) {
-            outputPathResolver.resolveInput(inputFile);
-        }
-    }
-
-    /**
-     * :purpose: Submit a job whose run changes persistent business state, so its identity
-     *     derives from the business parameters alone and re-submitting an already-completed
-     *     instance is refused exactly as JES refused a duplicate job.
-     * :param job: the batch job to submit.
-     * :param businessParameters: the parameters assembled by the calling ``launch*`` method.
      * :returns: the {@link JobExecution} returned by the asynchronous launcher.
      * :throws JobExecutionException: if the launcher cannot start the job.
      */
@@ -392,15 +481,24 @@ public class JobSchedulingConfig {
         return launch(job, businessParameters, true);
     }
 
+    /**
+     * :purpose: Enrich the business parameters with the correlation id and the ``run.id``
+     *     uniqueness token, then submit the job on the asynchronous launcher.
+     * :param job: the batch job to submit.
+     * :param businessParameters: the parameters assembled by the calling ``launch*`` method.
+     * :param repeatable: record ``run.id`` as IDENTIFYING, so a read/print run may be
+     *     repeated; ``false`` for a state-changing run, whose identity must derive from
+     *     its business parameters alone.
+     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
+     * :throws JobExecutionException: if the launcher cannot start the job.
+     */
     private JobExecution launch(Job job, JobParameters businessParameters, boolean repeatable)
             throws JobExecutionException {
         // Remember whether an id was already in scope: when it was, it belongs to the
-        // CorrelationIdFilter, which clears it at the end of the request. When it was not,
-        // this method seeded it and must clear it again, because the launching thread is a
-        // pooled container thread that would otherwise carry the id into the next,
-        // unrelated request handled by that thread.
-        requireContainedPaths(businessParameters);
-
+        // CorrelationIdFilter, which clears it at the end of the request. When it was
+        // not, this method seeded it and must clear it again, because the launching
+        // thread is a pooled container thread that would otherwise carry the id into
+        // the next, unrelated request handled by that thread.
         String previous = CorrelationIdContext.getCorrelationId();
         String correlationId = CorrelationIdContext.getOrCreateCorrelationId();
         try {
@@ -470,6 +568,8 @@ public class JobSchedulingConfig {
                 .addString("startDate", startDate)
                 .addString("endDate", endDate)
                 .addString(REPORT_FILE_KEY, reportFile)
+                .addString("reportFile",
+                        validatedOutput(effectiveFile(reportFile, transactionDetailReportFile)))
                 .toJobParameters();
         return launchRepeatable(transactionDetailReportJob, businessParameters);
     }
@@ -503,6 +603,8 @@ public class JobSchedulingConfig {
         return launchTransactionDetailReport(DEFAULT_REPORT_START_DATE, DEFAULT_REPORT_END_DATE);
     }
 
+
+
     /**
      * :purpose: Launch the transaction-category-balance report job
      *     (``categoryBalanceReportJob``) on the asynchronous launcher.
@@ -513,7 +615,8 @@ public class JobSchedulingConfig {
      */
     public JobExecution launchCategoryBalanceReport(String outputFile) throws JobExecutionException {
         JobParameters businessParameters = new JobParametersBuilder()
-                .addString("outputFile", outputFile)
+                .addString(OUTPUT_FILE_KEY,
+                        validatedOutput(effectiveFile(outputFile, categoryBalanceReportFile)))
                 .toJobParameters();
         return launchRepeatable(categoryBalanceReportJob, businessParameters);
     }
@@ -529,6 +632,7 @@ public class JobSchedulingConfig {
         return launchCategoryBalanceReport(DEFAULT_CATEGORY_BALANCE_REPORT_FILE);
     }
 
+
     /**
      * :purpose: Launch the daily-transaction validation-read job
      *     (``dailyTransactionValidationJob``) on the asynchronous launcher, reading
@@ -541,19 +645,20 @@ public class JobSchedulingConfig {
      * :throws JobExecutionException: if the launcher cannot start the job.
      */
     public JobExecution launchDailyTransactionValidation() throws JobExecutionException {
-        return launchDailyTransactionValidation(DEFAULT_DAILY_TRANSACTION_FEED_FILE);
+        return launchDailyTransactionValidation(null);
     }
 
     /**
-     * :purpose: Launch ``dailyTransactionValidationJob`` with an explicit sequential feed file.
-     * :param inputFile: the ``inputFile`` job parameter; a bare file name resolved
-     *     inside the configured batch root by ``BatchOutputPathResolver``.
-     * :returns: the {@link JobExecution} of the submitted job.
+     * :purpose: Launch ``dailyTransactionValidationJob`` writing to (or reading from) an explicit path.
+     * :param file: the requested file name; when ``null`` or blank the configured
+     *     default is used. The path is validated before submission.
+     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
      * :throws JobExecutionException: if the launcher cannot start the job.
+     * :raises IllegalArgumentException: when the resulting path is unusable.
      */
-    public JobExecution launchDailyTransactionValidation(String inputFile) throws JobExecutionException {
+    public JobExecution launchDailyTransactionValidation(String file) throws JobExecutionException {
         JobParameters businessParameters = new JobParametersBuilder()
-                .addString(INPUT_FILE_KEY, inputFile)
+                .addString(INPUT_FILE_KEY, validatedInput(effectiveFile(file, dailyTransactionFile)))
                 .toJobParameters();
         return launchRepeatable(dailyTransactionValidationJob, businessParameters);
     }
@@ -569,19 +674,20 @@ public class JobSchedulingConfig {
      * :throws JobExecutionException: if the launcher cannot start the job.
      */
     public JobExecution launchAccountRead() throws JobExecutionException {
-        return launchAccountRead(DEFAULT_ACCOUNT_REPORT_FILE);
+        return launchAccountRead(null);
     }
 
     /**
-     * :purpose: Launch ``accountReadJob`` with an explicit report file.
-     * :param outputFile: the ``outputFile`` job parameter; a bare file name resolved
-     *     inside the configured batch root by ``BatchOutputPathResolver``.
-     * :returns: the {@link JobExecution} of the submitted job.
+     * :purpose: Launch ``accountReadJob`` writing to (or reading from) an explicit path.
+     * :param file: the requested file name; when ``null`` or blank the configured
+     *     default is used. The path is validated before submission.
+     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
      * :throws JobExecutionException: if the launcher cannot start the job.
+     * :raises IllegalArgumentException: when the resulting path is unusable.
      */
-    public JobExecution launchAccountRead(String outputFile) throws JobExecutionException {
+    public JobExecution launchAccountRead(String file) throws JobExecutionException {
         JobParameters businessParameters = new JobParametersBuilder()
-                .addString(OUTPUT_FILE_KEY, outputFile)
+                .addString(OUTPUT_FILE_KEY, validatedOutput(effectiveFile(file, accountReportFile)))
                 .toJobParameters();
         return launchRepeatable(accountReadJob, businessParameters);
     }
@@ -594,19 +700,20 @@ public class JobSchedulingConfig {
      * :throws JobExecutionException: if the launcher cannot start the job.
      */
     public JobExecution launchCardRead() throws JobExecutionException {
-        return launchCardRead(DEFAULT_CARD_REPORT_FILE);
+        return launchCardRead(null);
     }
 
     /**
-     * :purpose: Launch ``cardReadJob`` with an explicit report file.
-     * :param outputFile: the ``outputFile`` job parameter; a bare file name resolved
-     *     inside the configured batch root by ``BatchOutputPathResolver``.
-     * :returns: the {@link JobExecution} of the submitted job.
+     * :purpose: Launch ``cardReadJob`` writing to (or reading from) an explicit path.
+     * :param file: the requested file name; when ``null`` or blank the configured
+     *     default is used. The path is validated before submission.
+     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
      * :throws JobExecutionException: if the launcher cannot start the job.
+     * :raises IllegalArgumentException: when the resulting path is unusable.
      */
-    public JobExecution launchCardRead(String outputFile) throws JobExecutionException {
+    public JobExecution launchCardRead(String file) throws JobExecutionException {
         JobParameters businessParameters = new JobParametersBuilder()
-                .addString(OUTPUT_FILE_KEY, outputFile)
+                .addString(OUTPUT_FILE_KEY, validatedOutput(effectiveFile(file, cardReportFile)))
                 .toJobParameters();
         return launchRepeatable(cardReadJob, businessParameters);
     }
@@ -620,19 +727,20 @@ public class JobSchedulingConfig {
      * :throws JobExecutionException: if the launcher cannot start the job.
      */
     public JobExecution launchCardXrefRead() throws JobExecutionException {
-        return launchCardXrefRead(DEFAULT_CARD_XREF_REPORT_FILE);
+        return launchCardXrefRead(null);
     }
 
     /**
-     * :purpose: Launch ``cardXrefReadJob`` with an explicit report file.
-     * :param outputFile: the ``outputFile`` job parameter; a bare file name resolved
-     *     inside the configured batch root by ``BatchOutputPathResolver``.
-     * :returns: the {@link JobExecution} of the submitted job.
+     * :purpose: Launch ``cardXrefReadJob`` writing to (or reading from) an explicit path.
+     * :param file: the requested file name; when ``null`` or blank the configured
+     *     default is used. The path is validated before submission.
+     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
      * :throws JobExecutionException: if the launcher cannot start the job.
+     * :raises IllegalArgumentException: when the resulting path is unusable.
      */
-    public JobExecution launchCardXrefRead(String outputFile) throws JobExecutionException {
+    public JobExecution launchCardXrefRead(String file) throws JobExecutionException {
         JobParameters businessParameters = new JobParametersBuilder()
-                .addString(OUTPUT_FILE_KEY, outputFile)
+                .addString(OUTPUT_FILE_KEY, validatedOutput(effectiveFile(file, cardXrefReportFile)))
                 .toJobParameters();
         return launchRepeatable(cardXrefReadJob, businessParameters);
     }
@@ -646,19 +754,20 @@ public class JobSchedulingConfig {
      * :throws JobExecutionException: if the launcher cannot start the job.
      */
     public JobExecution launchCustomerRead() throws JobExecutionException {
-        return launchCustomerRead(DEFAULT_CUSTOMER_REPORT_FILE);
+        return launchCustomerRead(null);
     }
 
     /**
-     * :purpose: Launch ``customerReadJob`` with an explicit report file.
-     * :param outputFile: the ``outputFile`` job parameter; a bare file name resolved
-     *     inside the configured batch root by ``BatchOutputPathResolver``.
-     * :returns: the {@link JobExecution} of the submitted job.
+     * :purpose: Launch ``customerReadJob`` writing to (or reading from) an explicit path.
+     * :param file: the requested file name; when ``null`` or blank the configured
+     *     default is used. The path is validated before submission.
+     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
      * :throws JobExecutionException: if the launcher cannot start the job.
+     * :raises IllegalArgumentException: when the resulting path is unusable.
      */
-    public JobExecution launchCustomerRead(String outputFile) throws JobExecutionException {
+    public JobExecution launchCustomerRead(String file) throws JobExecutionException {
         JobParameters businessParameters = new JobParametersBuilder()
-                .addString(OUTPUT_FILE_KEY, outputFile)
+                .addString(OUTPUT_FILE_KEY, validatedOutput(effectiveFile(file, customerReportFile)))
                 .toJobParameters();
         return launchRepeatable(customerReadJob, businessParameters);
     }
@@ -672,19 +781,20 @@ public class JobSchedulingConfig {
      * :throws JobExecutionException: if the launcher cannot start the job.
      */
     public JobExecution launchCombineTransactions() throws JobExecutionException {
-        return launchCombineTransactions(DEFAULT_COMBINED_TRANSACTION_FILE);
+        return launchCombineTransactions(null);
     }
 
     /**
-     * :purpose: Launch ``combineTransactionsJob`` with an explicit combined output file.
-     * :param outputFile: the ``outputFile`` job parameter; a bare file name resolved
-     *     inside the configured batch root by ``BatchOutputPathResolver``.
-     * :returns: the {@link JobExecution} of the submitted job.
+     * :purpose: Launch ``combineTransactionsJob`` writing to (or reading from) an explicit path.
+     * :param file: the requested file name; when ``null`` or blank the configured
+     *     default is used. The path is validated before submission.
+     * :returns: the {@link JobExecution} returned by the asynchronous launcher.
      * :throws JobExecutionException: if the launcher cannot start the job.
+     * :raises IllegalArgumentException: when the resulting path is unusable.
      */
-    public JobExecution launchCombineTransactions(String outputFile) throws JobExecutionException {
+    public JobExecution launchCombineTransactions(String file) throws JobExecutionException {
         JobParameters businessParameters = new JobParametersBuilder()
-                .addString(OUTPUT_FILE_KEY, outputFile)
+                .addString(OUTPUT_FILE_KEY, validatedOutput(effectiveFile(file, combinedTransactionFile)))
                 .toJobParameters();
         return launchRepeatable(combineTransactionsJob, businessParameters);
     }

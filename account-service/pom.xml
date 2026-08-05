@@ -144,21 +144,6 @@
             <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
         </dependency>
 
-        <!--
-          Spring Boot 4 extracted tracing auto-configuration out of spring-boot-actuator into
-          dedicated modules. Without BOTH of the modules below the bridge above is completely
-          inert: no io.micrometer.tracing.Tracer bean is created, no spans are produced, the
-          management.tracing.sampling.probability setting is ignored, and the traceId/spanId
-          fields of the logback-spring.xml pattern stay permanently empty.
-            * spring-boot-micrometer-tracing               -> MicrometerTracingAutoConfiguration
-                                                              (span-producing observation handlers)
-            * spring-boot-micrometer-tracing-opentelemetry -> OpenTelemetryTracingAutoConfiguration
-                                                              (SdkTracerProvider + OtelTracer +
-                                                               W3C context propagators)
-          No OTLP/Zipkin exporter artifact is declared, so spans are created and correlated into
-          the MDC but not shipped off-box; adding an exporter is a deployment-time choice.
-        -->
-
         <!-- PostgreSQL JDBC driver (runtime only). -->
         <dependency>
             <groupId>org.postgresql</groupId>
@@ -167,6 +152,12 @@
         </dependency>
 
         <!-- Flyway engine + PostgreSQL support for the shared carddemo-common migration set. -->
+        <!--
+          Flyway: the shared CardDemo migration set ships in carddemo-common
+          (classpath:db/migration) and is applied in production by the single migration
+          owner (batch-service). This service keeps the migration library so its
+          Testcontainers integration tests can provision the identical production schema.
+        -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
@@ -180,6 +171,11 @@
           spring-boot-flyway module (it is NOT bundled with flyway-core). Without it, the shared
           carddemo-common migrations never run and Hibernate `validate` fails on the missing
           business tables (QA Issue 1(a)). It is gated by `spring.flyway.enabled`.
+          spring-boot-flyway module (it is NOT bundled with flyway-core). Without it,
+          `spring.flyway.*` is inert - no flywayInitializer bean is registered and no
+          migration ever runs, however the properties are set. It is gated by
+          `spring.flyway.enabled`, so it stays inert in production, where this service does
+          not own the schema.
         -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -243,7 +239,6 @@
             <artifactId>testcontainers-postgresql</artifactId>
             <scope>test</scope>
         </dependency>
-
 
     </dependencies>
 

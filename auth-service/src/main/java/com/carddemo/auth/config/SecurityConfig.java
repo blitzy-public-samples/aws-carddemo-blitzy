@@ -89,12 +89,30 @@ public class SecurityConfig {
                 // an unsupported method must reach the dispatcher and be answered with
                 // 405 (plus an Allow header) instead of being masked as an
                 // authorization failure.
+                // The sign-on endpoint is public for EVERY method, not POST alone:
+                // gating it on POST made a GET fail authorization before the
+                // dispatcher could answer 405, masking the real outcome as an
+                // empty 403.
+                // The internal error/async dispatches must reach the error handler.
+                // Without this, a framework failure (an unsupported method, an
+                // unreadable body, an unsupported content type) is forwarded to
+                // /error as an anonymous ERROR dispatch, denied here, and surfaces
+                // as an opaque bodyless 403 that hides the real status and message.
+                .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC).permitAll()
+                // The sign-on resource is public as a PATH, not as a single method.
+                // Constraining the rule to POST makes Spring Security reject every
+                // other verb with an opaque 403 before the DispatcherServlet can
+                // report the supported methods; permitting the path lets the
+                // framework answer a non-POST verb with 405 and an Allow header.
                 .requestMatchers("/auth/signon").permitAll()
                 .requestMatchers(
                     "/actuator/health",
                     "/actuator/health/**",
                     "/actuator/info").permitAll()
                 .anyRequest().authenticated())
+            // No saved-request cache: an unauthenticated call must never create a
+            // session, which would otherwise leak an orphan session into Redis.
+            .requestCache(cache -> cache.disable())
             .httpBasic(httpBasic -> httpBasic.disable())
             .formLogin(formLogin -> formLogin.disable());
         return http.build();

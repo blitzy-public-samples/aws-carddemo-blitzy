@@ -3,6 +3,8 @@ package com.carddemo.common.crypto;
 import com.carddemo.common.exception.PiiEncryptionException;
 import jakarta.persistence.AttributeConverter;
 import jakarta.persistence.Converter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.crypto.AEADBadTagException;
 import javax.crypto.Cipher;
@@ -12,8 +14,6 @@ import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Base64;
 import java.util.concurrent.atomic.AtomicBoolean;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * JPA attribute converter that transparently encrypts and decrypts sensitive
@@ -78,6 +78,13 @@ public class CryptoConverter implements AttributeConverter<String, String> {
      *     token and is therefore a pre-encryption column value.
      */
     private static final int MIN_TOKEN_BYTES = GCM_IV_LENGTH + GCM_TAG_BITS / 8;
+
+
+    /** :purpose: Logger used for the once-per-JVM legacy-plaintext warning. */
+    private static final Logger LOGGER = LoggerFactory.getLogger(CryptoConverter.class);
+
+
+
 
     private final SecureRandom secureRandom = new SecureRandom();
 

@@ -26,8 +26,10 @@ import com.carddemo.account.repository.CustomerRepository;
 import com.carddemo.account.service.AccountService;
 import com.carddemo.common.domain.Account;
 import com.carddemo.common.domain.CardXref;
+import com.carddemo.common.testsupport.MigratedSchemaContainer;
 import com.carddemo.common.domain.Customer;
 import com.carddemo.common.dto.AccountUpdateRequestDto;
+import com.carddemo.common.dto.AccountUpdateResponseDto;
 import com.carddemo.common.dto.ErrorResponse;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.exception.OptimisticLockConflictException;
@@ -36,7 +38,6 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 
 import java.math.BigDecimal;
-import java.util.Base64;
 import java.util.List;
 
 import org.junit.jupiter.api.AfterEach;
@@ -49,6 +50,9 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.mock.web.MockHttpSession;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -78,37 +82,31 @@ import tools.jackson.databind.ObjectMapper;
  *  Sensitive customer fields (SSN, government-issued id, card number) are seeded but
  *  never asserted.
  */
-@SpringBootTest(properties = "spring.jpa.hibernate.ddl-auto=validate")
-// The production filter chain IS applied: every request below presents the shared
-// session context, which is exactly how a request authenticates in production, so the
-// security, correlation-id and hardening filters are all exercised end to end.
+@SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 public class OptimisticLockConflictIT {
 
-    // The ephemeral PostgreSQL 18 backing store is provisioned by the ``test`` profile
-    // Testcontainers JDBC-URL scheme (``jdbc:tc:postgresql:18:///carddemo`` +
-    // ``ContainerDatabaseDriver``), so the ``@Version`` optimistic-lock behavior is
-    // exercised against real PostgreSQL without a manually managed container. The
-    // shared migration set creates every entity-scanned table (``card_xref``
-    // included), so Hibernate validates the mapping instead of altering the schema:
-    // that database is reused by the other classes in this fork, and a schema export
-    // would silently reshape it underneath them.
-
-    static {
-        // The customer PII columns are encrypted at rest by a JPA AttributeConverter
-        // that resolves its AES-256 key from the ``carddemo.pii.key`` system property.
-        // A throwaway all-zero test key (never a real secret) is installed ONLY when the
-        // environment supplies none, so this class still runs standalone while never
-        // displacing the fixture key the module's Surefire/Failsafe configuration
-        // installs. Overwriting it unconditionally would re-key the JVM for every later
-        // context in the same fork, and the seeded PII already encrypted at rest under
-        // the fixture key would then fail to decrypt (AEADBadTagException).
-        if (System.getProperty("carddemo.pii.key") == null
-                && System.getenv("CARDDEMO_PII_KEY") == null) {
-            System.setProperty("carddemo.pii.key", Base64.getEncoder().encodeToString(new byte[32]));
-        }
+    /**
+     * :purpose: Bind the datasource to the shared, already-migrated ``postgres:18`` container
+     *  from :java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`, so the
+     *  ``@Version`` optimistic-lock behavior is exercised against real PostgreSQL on the schema
+     *  the committed Flyway migrations produce. Hibernate keeps the ``test`` profile's
+     *  ``ddl-auto: validate``: no test-side schema creation of any kind.
+     * :param registry: the dynamic property registry supplied by the Spring Test context.
+     */
+    @DynamicPropertySource
+    static void datasourceProperties(DynamicPropertyRegistry registry) {
+        MigratedSchemaContainer.registerDataSource(registry);
     }
+
+    // The customer PII columns are encrypted at rest by a JPA AttributeConverter that
+    // resolves its AES-256 key from the ``carddemo.pii.key`` system property. That
+    // property is supplied to the forked Surefire AND Failsafe JVMs by the module POM,
+    // so it is available to every test in the module regardless of execution order. A
+    // class-level ``System.setProperty`` must never be used for it: the mutation leaks
+    // into the whole fork and silently becomes the only key source for unrelated tests,
+    // which then fail whenever the run order places them first.
 
     /** :purpose: Account identifier of the self-contained fixture row (non-colliding with the 1..50 seed). */
     private static final Long SEED_ACCT_ID = 90000003L;
@@ -118,6 +116,18 @@ public class OptimisticLockConflictIT {
 
     /** :purpose: Sixteen-digit card number of the fixture cross-reference (non-sensitive fabricated fixture). */
     private static final String SEED_CARD_NUM = "9000000000000003";
+
+    /**
+     * :purpose: Version the fixture account is seeded at, i.e. the snapshot a client
+     *  reading the screen would carry back on its update request.
+     */
+    private static final Long SEED_VERSION = 0L;
+
+    /** :purpose: Balance submitted by the accepted (current-version) update. */
+    private static final BigDecimal ACCEPTED_BALANCE = new BigDecimal("2222.22");
+
+    /** :purpose: Customer first name submitted by the accepted update, proving the dual write. */
+    private static final String ACCEPTED_CUST_FIRST_NAME = "QAUpdated";
 
     /** :purpose: Original persisted balance of the fixture account at version 0. */
     private static final BigDecimal SEED_BALANCE = new BigDecimal("147.00");
@@ -156,14 +166,20 @@ public class OptimisticLockConflictIT {
     private static final String SEED_CUST_ADDR_LINE_3 = "New Gladys";
     private static final String SEED_CUST_ADDR_STATE_CD = "GA";
     private static final String SEED_CUST_ADDR_COUNTRY_CD = "USA";
-    // Paired with the state code above in the CSLKPCDY state-ZIP table, which
-    // COACTUPC's 1280-EDIT-US-STATE-ZIP-CD checks on every rewrite.
-    private static final String SEED_CUST_ADDR_ZIP = "30301";
-    // Area codes are taken from the CSLKPCDY general-purpose table: COACTUPC's
-    // EDIT-AREA-CODE rejects anything absent from it, and this fixture is submitted
-    // through the full update path whose subject here is the optimistic lock.
-    private static final String SEED_CUST_PHONE_1 = "(212)396-9024";
-    private static final String SEED_CUST_PHONE_2 = "(801)168-8826";
+    private static final String SEED_CUST_ADDR_ZIP = "19852";
+    private static final String SEED_CUST_PHONE_1 = "(950)396-9024";
+    private static final String SEED_CUST_PHONE_2 = "(685)168-8826";
+
+    /**
+     * :purpose: Screen-valid substitutes for the seeded zip and phone numbers. The seeded
+     *     fixture values are synthetic and are rejected by the ``CSLKPCDY`` lookup tables that
+     *     ``COACTUPC 1260-EDIT-US-PHONE-NUM`` and ``1280-EDIT-US-STATE-ZIP-CD`` consult, so an
+     *     operator would have to correct them on the screen before saving. This test targets
+     *     the concurrency outcome, which is only reachable once the edits pass.
+     */
+    private static final String VALID_CUST_ADDR_ZIP = "30852";
+    private static final String VALID_CUST_PHONE_1 = "(908)396-9024";
+    private static final String VALID_CUST_PHONE_2 = "(801)168-8826";
     private static final String SEED_CUST_SSN = "317460867";
     private static final String SEED_CUST_GOVT_ID = "GA1234567";
     private static final String SEED_CUST_DOB = "1987-11-30";
@@ -295,10 +311,13 @@ public class OptimisticLockConflictIT {
      *  every field except the account balance, which carries the stale losing value.
      *  Mirroring the customer fields keeps the customer record unchanged, so the only
      *  write the flush attempts is the account balance change against a stale version.
+     *  The payload carries the version snapshot the screen displayed
+     *  ({@link #SEED_VERSION}), which is what the competing writer invalidates.
      * :returns: the stale {@link AccountUpdateRequestDto} to submit.
      */
     private AccountUpdateRequestDto buildStaleUpdateRequest() {
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setVersion(SEED_VERSION);
         request.setAcctActiveStatus(SEED_ACTIVE_STATUS);
         request.setAcctCurrBal(STALE_BALANCE);
         request.setAcctCreditLimit(SEED_CREDIT_LIMIT);
@@ -317,9 +336,9 @@ public class OptimisticLockConflictIT {
         request.setCustAddrLine3(SEED_CUST_ADDR_LINE_3);
         request.setCustAddrStateCd(SEED_CUST_ADDR_STATE_CD);
         request.setCustAddrCountryCd(SEED_CUST_ADDR_COUNTRY_CD);
-        request.setCustAddrZip(SEED_CUST_ADDR_ZIP);
-        request.setCustPhoneNum1(SEED_CUST_PHONE_1);
-        request.setCustPhoneNum2(SEED_CUST_PHONE_2);
+        request.setCustAddrZip(VALID_CUST_ADDR_ZIP);
+        request.setCustPhoneNum1(VALID_CUST_PHONE_1);
+        request.setCustPhoneNum2(VALID_CUST_PHONE_2);
         request.setCustSsn(SEED_CUST_SSN);
         request.setCustGovtIssuedId(SEED_CUST_GOVT_ID);
         request.setCustDobYyyyMmDd(SEED_CUST_DOB);
@@ -352,6 +371,22 @@ public class OptimisticLockConflictIT {
     }
 
     /**
+     * :purpose: Build a session in the state sign-on leaves it: carrying the
+     *  externalized {@link SessionContext} under the frozen attribute key. The service
+     *  ``SecurityFilterChain`` authenticates the caller from this attribute, so every
+     *  request that reaches a controller in production has it.
+     * :returns: a ``MockHttpSession`` carrying a {@link SessionContext}.
+     */
+    private static MockHttpSession signedOnSession() {
+        MockHttpSession session = new MockHttpSession();
+        SessionContext context = new SessionContext();
+        context.setUserId("ADMIN001");
+        context.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        session.setAttribute(SessionContext.SESSION_ATTRIBUTE_NAME, context);
+        return session;
+    }
+
+    /**
      * :purpose: MANDATORY scenario (AAP 0.6.2). Drive a stale-version update through the
      *  full ``PUT /accounts/{id}`` controller stack and assert it surfaces as HTTP 409
      *  Conflict carrying the verbatim legacy concurrency message, and that the losing
@@ -381,8 +416,7 @@ public class OptimisticLockConflictIT {
                 //    entity, and flush the losing update straight into the version conflict.
                 MvcResult result;
                 try {
-                    result = mockMvc.perform(put("/accounts/{id}", SEED_ACCT_ID)
-                                    .sessionAttr(SessionContext.SESSION_ATTRIBUTE_NAME, updatingSession())
+                    result = mockMvc.perform(put("/accounts/{id}", SEED_ACCT_ID).session(signedOnSession())
                                     .contentType(MediaType.APPLICATION_JSON)
                                     .content(requestJson))
                             .andReturn();
@@ -461,5 +495,101 @@ public class OptimisticLockConflictIT {
         assertThat(persisted.getAcctCurrBal()).isEqualByComparingTo(WINNING_BALANCE);
         assertThat(persisted.getAcctCurrBal()).isNotEqualByComparingTo(STALE_BALANCE);
         assertThat(persisted.getVersion()).isEqualTo(1L);
+    }
+
+    /**
+     * :purpose: MANDATORY scenario (AAP 0.6.2), stateless-client form: the client read the
+     *  screen at version 0, a competing writer committed version 1, and the client then
+     *  submits its edits echoing the stale version snapshot. Each request runs in its own
+     *  transaction and persistence context - exactly how a browser or API client behaves -
+     *  so detection can only come from the submitted version token being compared against
+     *  the stored record (``COACTUPC`` ``DATA-WAS-CHANGED-BEFORE-UPDATE``). The response
+     *  must be HTTP 409 with the verbatim legacy message and the winning value must survive.
+     */
+    @Test
+    void staleVersionSnapshot_throughController_returns409AndDoesNotOverwrite() {
+        // The competing writer commits BEFORE the update request is dispatched, so nothing
+        // stale lingers in a shared persistence context: only the payload is stale.
+        advanceVersionOutOfBand();
+
+        AccountUpdateRequestDto staleRequest = buildStaleUpdateRequest();
+        assertThat(staleRequest.getVersion()).isEqualTo(SEED_VERSION);
+
+        MvcResult result = dispatchUpdate(staleRequest);
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(409);
+
+        final ErrorResponse error;
+        try {
+            error = objectMapper.readValue(result.getResponse().getContentAsString(), ErrorResponse.class);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to parse the 409 error body", ex);
+        }
+        assertThat(error.getStatus()).isEqualTo(409);
+        assertThat(error.getMessage()).isEqualTo("Record changed by some one else. Please review");
+        assertThat(error.getError()).isEqualTo("Conflict");
+
+        // Nothing was overwritten: the competing writer's balance and version stand.
+        Account persisted = reloadAccount();
+        assertThat(persisted.getAcctCurrBal()).isEqualByComparingTo(WINNING_BALANCE);
+        assertThat(persisted.getAcctCurrBal()).isNotEqualByComparingTo(STALE_BALANCE);
+        assertThat(persisted.getVersion()).isEqualTo(1L);
+    }
+
+    /**
+     * :purpose: Companion scenario proving the version check does not block legitimate
+     *  work: a payload carrying the CURRENT version is applied, the account and customer
+     *  halves commit together in the one ``@Transactional`` unit, and both versions
+     *  advance so the client can immediately issue another update with the echoed value.
+     */
+    @Test
+    void currentVersionSnapshot_throughController_succeedsAndIncrementsVersion() {
+        AccountUpdateRequestDto freshRequest = buildStaleUpdateRequest();
+        freshRequest.setAcctCurrBal(ACCEPTED_BALANCE);
+        freshRequest.setCustFirstName(ACCEPTED_CUST_FIRST_NAME);
+
+        MvcResult result = dispatchUpdate(freshRequest);
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(200);
+
+        final AccountUpdateResponseDto body;
+        try {
+            body = objectMapper.readValue(result.getResponse().getContentAsString(),
+                    AccountUpdateResponseDto.class);
+        } catch (Exception ex) {
+            throw new IllegalStateException("Unable to parse the update response body", ex);
+        }
+        assertThat(body.getAcctCurrBal()).isEqualByComparingTo(ACCEPTED_BALANCE);
+        assertThat(body.getVersion())
+                .as("the echoed version must be the incremented one so the next update can reuse it")
+                .isEqualTo(SEED_VERSION + 1);
+
+        Account persisted = reloadAccount();
+        assertThat(persisted.getAcctCurrBal()).isEqualByComparingTo(ACCEPTED_BALANCE);
+        assertThat(persisted.getVersion()).isEqualTo(SEED_VERSION + 1);
+
+        Customer persistedCustomer = customerRepository.findById(SEED_CUST_ID).orElseThrow();
+        assertThat(persistedCustomer.getCustFirstName()).isEqualTo(ACCEPTED_CUST_FIRST_NAME);
+        assertThat(persistedCustomer.getVersion())
+                .as("the customer half of the dual write committed in the same unit of work")
+                .isEqualTo(SEED_VERSION + 1);
+    }
+
+    /**
+     * :purpose: Serialize and dispatch an account-update payload through the real
+     *  ``PUT /accounts/{id}`` stack, each call running in its own transaction and
+     *  persistence context.
+     * :param request: the payload to submit.
+     * :returns: the raw {@link MvcResult} for status and body assertions.
+     */
+    private MvcResult dispatchUpdate(AccountUpdateRequestDto request) {
+        try {
+            return mockMvc.perform(put("/accounts/{id}", SEED_ACCT_ID)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(request)))
+                    .andReturn();
+        } catch (Exception ex) {
+            throw new IllegalStateException("MockMvc PUT /accounts dispatch failed", ex);
+        }
     }
 }

@@ -55,6 +55,11 @@
         <!-- Batch support for the shared batch helpers (output path resolution and
              failed-output cleanup). Optional so only the services that actually run
              batch jobs inherit the batch runtime. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+            <optional>true</optional>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -109,23 +114,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>
-            <optional>true</optional>
-        </dependency>
-
-        <!--
-          Spring Batch, for the shared batch infrastructure the batch-capable services
-          import: BatchOutputPathResolver / BatchPathConfig (allowlisted batch file
-          roots, QA Issue 21 and CWE-22) and JdbcBatchConfiguration (the JDBC-backed
-          JobRepository that persists job and step executions into the BATCH_* tables,
-          replacing the in-memory ResourcelessJobRepository that Spring Batch 6 makes
-          the default). Optional and provider-side only: batch-service,
-          reporting-service and transaction-service declare
-          spring-boot-starter-batch themselves, and the other six services stay free
-          of any batch dependency.
-        -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-batch</artifactId>
             <optional>true</optional>
         </dependency>
 
@@ -254,13 +242,6 @@
             <scope>test</scope>
         </dependency>
 
-        <!--
-          Flyway is used by the shared test-support utility
-          (com.carddemo.common.testsupport.CardDemoSchemaMigrations), which applies the
-          owning modules' committed migrations to a throwaway database so integration
-          tests validate against the real schema. Test scope only: carddemo-common ships
-          no migrations of its own.
-        -->
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>

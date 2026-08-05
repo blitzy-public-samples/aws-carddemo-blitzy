@@ -91,8 +91,9 @@ import java.util.Map;
  *  logging. ``JobRepository``, the batch ``PlatformTransactionManager``, and the
  *  JPA ``EntityManagerFactory`` are supplied by Spring Boot batch
  *  auto-configuration and injected as ``@Bean`` method parameters; no batch
- *  infrastructure is self-instantiated and ``@EnableBatchProcessing`` is
- *  intentionally absent so the Boot auto-configuration stays active.
+ *  infrastructure is self-instantiated here. The durable JDBC job repository is
+ *  declared once for the module, in ``BatchInfrastructureConfig``, so job
+ *  executions are persisted to the ``BATCH_*`` tables.
  */
 @Configuration
 public class DataManagementJobConfig {
@@ -231,6 +232,39 @@ public class DataManagementJobConfig {
     }
 
     /**
+     * :purpose: Build the cleanup listener for the steps whose output path arrives as the
+     *  ``outputFile`` job parameter, so a step that does not complete successfully leaves
+     *  no file behind. Without it a failed dump run left a file holding only the legacy
+     *  start and end banners - indistinguishable from a successful run over an empty
+     *  input - and a failed report run left a zero-byte report.
+     * :param pathResolver: shared resolver giving the same path the writer opens.
+     * :param outputFile: the ``outputFile`` job parameter.
+     * :returns: the cleanup listener bound to that step's output path.
+     */
+    @Bean
+    @StepScope
+    public FailedOutputCleanupListener outputFileCleanupListener(
+            BatchOutputPathResolver pathResolver,
+            @Value("#{jobParameters['outputFile']}") String outputFile) {
+        return new FailedOutputCleanupListener(pathResolver.resolveOutput(outputFile));
+    }
+
+    /**
+     * :purpose: Build the cleanup listener for the transaction-detail report step, whose
+     *  output path arrives as the ``reportFile`` job parameter.
+     * :param pathResolver: shared resolver giving the same path the writer opens.
+     * :param reportFile: the ``reportFile`` job parameter.
+     * :returns: the cleanup listener bound to the report's output path.
+     */
+    @Bean
+    @StepScope
+    public FailedOutputCleanupListener reportFileCleanupListener(
+            BatchOutputPathResolver pathResolver,
+            @Value("#{jobParameters['reportFile']}") String reportFile) {
+        return new FailedOutputCleanupListener(pathResolver.resolveOutput(reportFile));
+    }
+
+    /**
      * :purpose: Chunk-oriented step that reads every account and prints each to
      *  the account dump output file; mirrors the ``CBACT01C`` read/``DISPLAY``
      *  loop with no mutation.
@@ -253,6 +287,8 @@ public class DataManagementJobConfig {
                 .reader(accountReader)
                 .writer(accountDumpWriter)
                 .listener((StepExecutionListener) outputFileCleanupListener)
+                
+                .listener(outputFileCleanupListener)
                 .build();
     }
 
@@ -348,6 +384,8 @@ public class DataManagementJobConfig {
                 .reader(cardReader)
                 .writer(cardDumpWriter)
                 .listener((StepExecutionListener) outputFileCleanupListener)
+                
+                .listener(outputFileCleanupListener)
                 .build();
     }
 
@@ -445,6 +483,8 @@ public class DataManagementJobConfig {
                 .reader(cardXrefReader)
                 .writer(cardXrefDumpWriter)
                 .listener((StepExecutionListener) outputFileCleanupListener)
+                
+                .listener(outputFileCleanupListener)
                 .build();
     }
 
@@ -541,6 +581,8 @@ public class DataManagementJobConfig {
                 .reader(customerReader)
                 .writer(customerDumpWriter)
                 .listener((StepExecutionListener) outputFileCleanupListener)
+                
+                .listener(outputFileCleanupListener)
                 .build();
     }
 
@@ -736,6 +778,8 @@ public class DataManagementJobConfig {
                 .reader(categoryBalanceReader)
                 .writer(categoryBalanceReportWriter)
                 .listener((StepExecutionListener) outputFileCleanupListener)
+                
+                .listener(outputFileCleanupListener)
                 .build();
     }
 
@@ -892,6 +936,8 @@ public class DataManagementJobConfig {
                 .processor(transactionReportItemProcessor)
                 .writer(transactionDetailReportWriter)
                 .listener((StepExecutionListener) reportFileCleanupListener)
+                
+                .listener(reportFileCleanupListener)
                 .build();
     }
 

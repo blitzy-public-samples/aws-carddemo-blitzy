@@ -600,6 +600,7 @@ class AccountServiceTest {
         request.setAcctCurrBal(new BigDecimal("111.00"));
 
         when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         when(account.getAcctCurrBal()).thenReturn(new BigDecimal("999.99"));
@@ -629,6 +630,7 @@ class AccountServiceTest {
         AccountUpdateResponseDto expected = mock(AccountUpdateResponseDto.class);
 
         when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
         when(accountMapper.toUpdateResponse(account, customer, cardXref)).thenReturn(expected);
@@ -651,6 +653,7 @@ class AccountServiceTest {
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
         request.setAcctActiveStatus("Y");
 
+        when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).thenReturn(Optional.of(cardXref));
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
         when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));

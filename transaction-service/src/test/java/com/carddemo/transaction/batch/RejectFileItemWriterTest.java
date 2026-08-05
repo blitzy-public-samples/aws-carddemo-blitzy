@@ -100,6 +100,7 @@ class RejectFileItemWriterTest {
         RejectFileItemWriter writer = new RejectFileItemWriter(
                 "dalyrejs.txt",
                 new BatchOutputPathResolver(tempDir.toString(), tempDir.toString()));
+        Path rejectFile = tempDir.resolve("dalyrejs.txt");
         writer.open(new ExecutionContext());
         try {
             Chunk<PostingItem> chunk = new Chunk<>();

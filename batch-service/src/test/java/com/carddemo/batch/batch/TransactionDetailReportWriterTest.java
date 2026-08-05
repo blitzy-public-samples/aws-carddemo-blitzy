@@ -187,6 +187,7 @@ class TransactionDetailReportWriterTest {
 
         // One page break inside the report plus the end-of-file page total.
         assertThat(pageTotals).hasSize(2);
+        assertThat(pageTotals).isNotEmpty();
         String pageTotal = pageTotals.get(0);
         assertThat(pageTotal.substring(0, 11)).isEqualTo("Page Total ");
         assertThat(pageTotal.substring(11, 97)).isEqualTo(".".repeat(86));

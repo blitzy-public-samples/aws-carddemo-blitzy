@@ -36,10 +36,18 @@ spring:
   # but carry no value, so the shared namespace below was silently ignored and
   # every service fell back to the default 'spring:session' prefix. Canonical Boot
   # 4.1 keys are used here so the namespace is genuinely applied. Session tuning;
+  # and is inert (QA CR-15). Session tuning lives under spring.session.data.redis.*
+  # (the spring.session.redis.* prefix was removed in Boot 4.0 and is IGNORED);
+  # and is inert (QA CR-15). Session tuning lives under spring.session.data.redis.* (the Boot 4
+  # namespace; the Boot 3 spring.session.redis.* keys are inert);
   # the connection uses spring.data.redis.* above. The shared namespace lets the
   # gateway and every downstream service read/write the same session.
   session:
     timeout: ${SPRING_SESSION_TIMEOUT:30m}
+    # Boot 4 renamed the Redis session properties: spring.session.redis.* is
+    # deprecated at ERROR level and inert, so the namespace/flush-mode below MUST
+    # sit under spring.session.data.redis.* to take effect. Every service must
+    # declare the SAME namespace or the shared COMMAREA-equivalent session breaks.
     data:
       redis:
         namespace: ${SPRING_SESSION_REDIS_NAMESPACE:carddemo:session}
@@ -169,11 +177,19 @@ management:
   # canonical Boot 4.1 key is used here, and the default now points at the OTLP HTTP
   # receiver of the 'jaeger' collector declared in docker-compose.yml / k8s rather than
   # at the container's own loopback.
+  # Distributed tracing export (QA CR-12). The gateway is the trace entry
+  # point, so its sampling DEFAULT stays 1.0, but both the OTLP endpoint and
+  # the probability are environment-driven (QA MN-03) - an operator lowers the
+  # sample under load via the env var without rebuilding the image.
+  # NOTE: Spring Boot 4 RELOCATED this key. The pre-4.0 form
+  # management.otlp.tracing.endpoint was removed in 4.0.0 and is now silently
+  # ignored, so the endpoint must be declared under
+  # management.opentelemetry.tracing.export.otlp.* to take effect.
   opentelemetry:
     tracing:
       export:
         otlp:
-          endpoint: ${MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+          endpoint: ${MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT:${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}}
   tracing:
     sampling:
       probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:1.0}

@@ -26,29 +26,63 @@
 #     capabilities dropped (backends), a read-only root filesystem, and a
 #     tmpfs for writable scratch space.
 #
-# NOTE: the per-service Dockerfiles are delivered with the bootable services in
-# a later tranche, so `--build` is not yet runnable; `docker compose config`
-# validates this topology today. See docs/decision-log.md.
+# NOTE: every service in this file has its Dockerfile on disk, so `--build` is
+# runnable; eight of the nine backend images copy the executable JAR the Maven
+# reactor produces, which is why `mvn -B clean install -DskipTests` must run
+# first. See README-target.md and docs/decision-log.md.
 
 name: carddemo
 
 # ---------------------------------------------------------------------------
+# Startup ordering.
+#
+# Two dependency sets are shared below:
+#
+#   datastore-dependencies  the datastores must be HEALTHY (not merely started).
+#                           Used by the migration owner and by the api-gateway,
+#                           which owns no database.
+#
+#   schema-dependencies     the datastores PLUS the single Flyway migration owner
+#                           (batch-service) reporting healthy. Every other backend
+#                           runs with spring.flyway.enabled=false and Hibernate
+#                           ddl-auto=validate, so it can only start once the shared
+#                           schema exists. Without this gate a service that happens
+#                           to start first fails validation (or, when several
+#                           services migrate, races on cross-table foreign keys and
+#                           on the schema-history table). batch-service's own
+#                           healthcheck only reports UP after its migrations have
+#                           been applied, so "healthy" is exactly the right signal.
+#                           The equivalent gate in Kubernetes is the await-schema
+#                           init container in k8s/deployment-*.yaml.
+# ---------------------------------------------------------------------------
+x-datastore-dependencies: &datastore-dependencies
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+
+x-schema-dependencies: &schema-dependencies
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  batch-service:
+    condition: service_healthy
+
+# ---------------------------------------------------------------------------
 # Shared definition for every runnable Spring Boot service. Each backend block
-# merges this anchor and then supplies only its own build context. Services do
+# merges this anchor and then supplies only its own build context (and, for the
+# services that must wait for the schema, its own depends_on). Services do
 # NOT publish host ports (CR-08): traffic flows through the api-gateway. All
 # services listen on 8080 internally.
 # ---------------------------------------------------------------------------
 x-backend-service: &backend-service
   # Gate startup on the datastores being fully ready, not merely started.
-  depends_on:
-    postgres:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
   # Anchored separately from the service anchor because a YAML merge key is
   # SHALLOW: a service that needs one extra variable (batch-service and
   # reporting-service need the batch directory roots) must re-merge this map
   # explicitly rather than declare `environment` and silently drop all of it.
+  depends_on: *datastore-dependencies
   environment: &backend-environment
     # Activates each service's application-docker.yml profile.
     SPRING_PROFILES_ACTIVE: docker
@@ -73,6 +107,10 @@ x-backend-service: &backend-service
     # Actuator health details are only rendered to authenticated principals
     # (MJ-16); anonymous callers still receive the overall UP/DOWN status.
     MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: when-authorized
+    # Sample every request in this local stack so each log line carries a
+    # traceId/spanId and a flow can be followed across service boundaries. The
+    # application default stays at the production-safe 10% (see each service's
+    # application.yml); only this environment raises it.
     # AES-256-GCM key for at-rest encryption of sensitive customer/card
     # attributes (SSN, government id, EFT account id, CVV) via carddemo-common's
     # CryptoConverter. carddemo-common validates the key EAGERLY during context
@@ -88,7 +126,6 @@ x-backend-service: &backend-service
     # tracing cannot be verified in the local environment at all - the in-file default
     # points at the container's OWN loopback, which is never a collector. Pointing it at
     # the compose-DNS name makes the whole gateway -> downstream trace land in Jaeger.
-    MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
   # Liveness/readiness via the Spring Boot Actuator health endpoint.
   #
   # The probe uses bash's /dev/tcp pseudo-device rather than an HTTP client. Note
@@ -105,6 +142,19 @@ x-backend-service: &backend-service
     # principal with a random credential and every scrape target would return
     # 401. Externalized like every other secret (CR-11): no in-file default.
     MONITORING_PASSWORD: ${MONITORING_PASSWORD:?set MONITORING_PASSWORD in .env}
+    # Statement/report output destination read by reporting-service only. The root
+    # filesystem is read-only and /tmp is the sole writable mount, so the default
+    # points there; a report request whose destination cannot be written is refused
+    # with the legacy CORPT00C message rather than reported as a success (F22).
+    CARDDEMO_REPORTING_OUTPUT_DIR: ${CARDDEMO_REPORTING_OUTPUT_DIR:-/tmp/carddemo-reporting/output}
+    # Distributed tracing (AAP 0.7.5). Spans are exported over OTLP/HTTP to the
+    # jaeger collector on the private network; the application default targets
+    # each container's own loopback, where nothing listens, so the endpoint MUST
+    # be supplied here for tracing to be verifiable locally (F28). The local
+    # environment samples every request so a trace can be asserted end to end;
+    # production overrides the probability from the environment.
+    MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT: ${MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT:-http://jaeger:4318/v1/traces}
+    MANAGEMENT_TRACING_SAMPLING_PROBABILITY: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:-1.0}
   # Liveness/readiness via the Spring Boot Actuator health endpoint. The base
   # image (eclipse-temurin:21-jre) ships neither curl nor wget, so the probe
   # uses bash's /dev/tcp pseudo-device to issue a minimal HTTP request and
@@ -277,6 +327,7 @@ services:
       # Same telemetry scrape credential as every other service (MJ-17): the
       # gateway also publishes /actuator/prometheus and must not leave it open.
       MONITORING_PASSWORD: ${MONITORING_PASSWORD:?set MONITORING_PASSWORD in .env}
+      # Full sampling in this local stack (see the x-backend-service anchor).
       AUTH_SERVICE_URI: http://auth-service:8080
       USER_SERVICE_URI: http://user-service:8080
       ACCOUNT_SERVICE_URI: http://account-service:8080
@@ -295,6 +346,9 @@ services:
     # (QA Issue 17). Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/auth-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
+    # Waits for the shared schema: this service does not migrate, it validates
+    # (see x-schema-dependencies above).
+    depends_on: *schema-dependencies
 
     environment:
       # Shallow merge: a YAML merge key REPLACES the anchor's map, so the shared
@@ -313,6 +367,9 @@ services:
     # (QA Issue 17). Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/user-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
+    # Waits for the shared schema: this service does not migrate, it validates
+    # (see x-schema-dependencies above).
+    depends_on: *schema-dependencies
 
     environment:
       # Shallow merge: a YAML merge key REPLACES the anchor's map, so the shared
@@ -331,6 +388,9 @@ services:
     # (QA Issue 17). Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/account-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
+    # Waits for the shared schema: this service does not migrate, it validates
+    # (see x-schema-dependencies above).
+    depends_on: *schema-dependencies
 
     environment:
       # Shallow merge: a YAML merge key REPLACES the anchor's map, so the shared
@@ -349,6 +409,9 @@ services:
     # (QA Issue 17). Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/card-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
+    # Waits for the shared schema: this service does not migrate, it validates
+    # (see x-schema-dependencies above).
+    depends_on: *schema-dependencies
 
     environment:
       # Shallow merge: a YAML merge key REPLACES the anchor's map, so the shared
@@ -383,6 +446,9 @@ services:
     # (QA Issue 17). Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/transaction-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
+    # Waits for the shared schema: this service does not migrate, it validates
+    # (see x-schema-dependencies above).
+    depends_on: *schema-dependencies
 
   billpay-service:
     <<: *backend-service
@@ -393,6 +459,9 @@ services:
     # (QA Issue 17). Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/billpay-service:${CARDDEMO_IMAGE_TAG:-1.0.0}
+    # Waits for the shared schema: this service does not migrate, it validates
+    # (see x-schema-dependencies above).
+    depends_on: *schema-dependencies
 
     environment:
       # Shallow merge: a YAML merge key REPLACES the anchor's map, so the shared
@@ -439,6 +508,9 @@ services:
     tmpfs:
       - /tmp
       - /var/carddemo/batch
+    # Waits for the shared schema: this service does not migrate, it validates
+    # (see x-schema-dependencies above).
+    depends_on: *schema-dependencies
 
   batch-service:
     <<: *backend-service
@@ -477,7 +549,16 @@ services:
   # baked into the bundle, so no host port of the gateway is assumed.
   # =========================================================================
 
+  # The service is guarded by a profile so that `docker compose up --build` (the
+  # command README-target.md documents) covers the datastores, the nine backend
+  # services and the observability stack, and the browser tier is opted into
+  # explicitly with `docker compose --profile frontend up -d --build frontend`.
+  # The bundle itself is complete — the Vite entry point (src/main.tsx), the route
+  # table and the 17 page components are all on disk, and `npm run build` produces
+  # the dist/ tree this image serves.
   frontend:
+    profiles:
+      - frontend
     build:
       context: ./frontend
       args:
@@ -570,6 +651,14 @@ services:
         uid: "65534"
         gid: "65534"
         mode: 0440
+    # No credential is projected into this container (QA Issue 15). The scrape
+    # config previously declared an HTTP basic-authentication block naming a
+    # "monitoring" principal that was never seeded anywhere, so the credential and
+    # this projection were inert: every scrape succeeded regardless of what was
+    # presented. The control that actually protects the monitoring path is network
+    # isolation - no service publishes its management port, and the scrape stays on
+    # the private carddemo-net bridge. See the header of
+    # observability/prometheus.yml and docs/decision-log.md.
     ports:
       - "127.0.0.1:9090:9090"
     security_opt:

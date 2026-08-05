@@ -410,6 +410,8 @@ export default function CardListPage(): ReactElement {
             {pageRows.map((row, rowIndex) => (
               <tr data-testid="card-list-row" key={row.cardNum}>
                 <td>
+                  {/* BLITZY [A11Y]: single-character field per COCRDLI CRDSELn;
+                      smaller than the 24x24 target-size recommendation. */}
                   <input
                     {...invalidValueProps(isRowActionInvalid(rowActions[row.cardNum]))}
                     aria-label={'Select card in row ' + String(rowIndex + 1)}

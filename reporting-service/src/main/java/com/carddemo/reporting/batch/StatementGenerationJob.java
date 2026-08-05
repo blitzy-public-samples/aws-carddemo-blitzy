@@ -706,6 +706,27 @@ public class StatementGenerationJob {
     }
 
     /**
+     * :purpose: Build the cleanup listener for the statement step, bound to both statement
+     *  outputs, so a run that does not complete successfully leaves neither file behind. A
+     *  failed run previously left two zero-byte files that read as a finished statement
+     *  run that simply had nothing to say.
+     * :param pathResolver: shared resolver giving the same paths the writer opens.
+     * :param stmtPath: the plain-text statement output file name.
+     * :param htmlPath: the HTML statement output file name.
+     * :returns: the cleanup listener bound to both statement output paths.
+     */
+    @Bean
+    @StepScope
+    public FailedOutputCleanupListener statementOutputCleanupListener(
+            BatchOutputPathResolver pathResolver,
+            @Value("#{jobParameters['stmtFile'] ?: 'statements.txt'}") String stmtPath,
+            @Value("#{jobParameters['htmlFile'] ?: 'statements.html'}") String htmlPath) {
+        return new FailedOutputCleanupListener(
+                pathResolver.resolveOutput(stmtPath),
+                pathResolver.resolveOutput(htmlPath));
+    }
+
+    /**
      * :purpose: Define the chunk-oriented statement-generation step: read the card
      *  cross-reference, assemble each statement model, and write the dual text and
      *  HTML output. The writer is registered as a stream so its file delegates are

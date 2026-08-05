@@ -95,6 +95,7 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             log.error("{} {} failed after {}ms: {}",
                     request.getMethod(),
                     loggedUri(request),
+                    request.getRequestURI(),
                     elapsedMillis(startNanos),
                     ex.getClass().getName(),
                     ex);

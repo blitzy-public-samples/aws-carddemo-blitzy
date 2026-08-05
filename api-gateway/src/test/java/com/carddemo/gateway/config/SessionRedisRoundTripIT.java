@@ -289,6 +289,7 @@ class SessionRedisRoundTripIT {
                         .cookie(new Cookie("SESSION", cookieValue),
                                 new Cookie(SecurityConfig.CSRF_COOKIE_NAME, csrfToken))
                         .header(SecurityConfig.CSRF_HEADER_NAME, csrfToken)
+                        .cookie(new Cookie("SESSION", cookieValue))
                         .contentType("application/json")
                         .content("{\"option\":\"1\",\"aid\":\"ENTER\"}")
                         .with(user("USER0001").roles("USER")))
@@ -335,6 +336,7 @@ class SessionRedisRoundTripIT {
                         .cookie(new Cookie("SESSION", cookieValue),
                                 new Cookie(SecurityConfig.CSRF_COOKIE_NAME, csrfToken))
                         .header(SecurityConfig.CSRF_HEADER_NAME, csrfToken)
+                        .cookie(new Cookie("SESSION", cookieValue))
                         .contentType("application/json")
                         .content("{\"option\":\"1\",\"aid\":\"PF3\"}")
                         .with(user("USER0001").roles("USER")))

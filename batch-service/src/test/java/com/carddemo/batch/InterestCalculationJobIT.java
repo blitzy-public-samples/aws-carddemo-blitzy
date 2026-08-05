@@ -39,9 +39,16 @@ import org.springframework.batch.core.job.parameters.JobParametersBuilder;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.batch.core.launch.support.TaskExecutorJobLauncher;
 import org.springframework.batch.core.repository.JobRepository;
+import org.springframework.batch.core.step.StepExecution;
+import org.springframework.batch.infrastructure.item.ExecutionContext;
+import org.springframework.batch.infrastructure.item.support.SingleItemPeekableItemReader;
+import org.springframework.batch.test.MetaDataInstanceFactory;
+import org.springframework.batch.test.StepScopeTestUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.task.SyncTaskExecutor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -73,13 +80,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * :note: The job is launched through a dedicated synchronous {@link TaskExecutorJobLauncher}
  *     (a {@link SyncTaskExecutor} over the context {@link JobRepository}) so the launch
  *     blocks until the job finishes; the asynchronous ``asyncJobLauncher`` bean is never
- *     used. Schema provisioning inherits the production ``application.yml`` settings unchanged
- *     — Flyway and ``spring.batch.jdbc.initialize-schema`` are left at their production values
- *     rather than overridden — so the test exercises the same schema-management configuration
- *     production runs. The shared business tables have no ``batch-service`` migration — they are
- *     owned by other services and are absent from this classpath — so Hibernate materializes
- *     them from the ``com.carddemo.common.domain`` entities via ``ddl-auto=create`` (the one
- *     property this test overrides). A parent ``customers`` row is seeded per account because
+ *     used. Schema provisioning inherits the production ``application.yml`` settings unchanged —
+ *     batch-service is the single Flyway migration owner, so its own configuration applies the
+ *     shared migration set from ``carddemo-common`` (``classpath:db/migration``) and builds the
+ *     complete schema: business tables, reference data, fixtures and the Spring Batch metadata,
+ *     validated by Hibernate ``ddl-auto=validate``. Nothing about the schema configuration is
+ *     overridden, so the test runs exactly what production runs. Each scenario starts from an
+ *     empty business state: the seeded fixtures are cleared child-before-parent in
+ *     ``@BeforeEach``, and a parent ``customers`` row is seeded per account because
  *     {@link CardXref} declares a real foreign key to ``customers``.
  */
 @SpringBootTest(classes = BatchServiceApplication.class)
@@ -88,9 +96,11 @@ class InterestCalculationJobIT {
 
     /**
      * ``INSERT`` statement seeding the parent ``customers`` row required by the card
-     * cross-reference foreign key. It populates every non-null column of the
-     * Hibernate-generated ``customers`` table: the identifier, first/last name, FICO score,
-     * and the ``@Version`` optimistic-locking column (initialized to zero).
+     * cross-reference foreign key. It populates every ``NOT NULL`` column of the migrated
+     * ``customers`` table (``CVCUS01Y``): the identifier, the name, address, phone, PII, date of
+     * birth and card-holder fields, the FICO score, and the ``@Version`` optimistic-locking
+     * column. The three PII columns are seeded EMPTY, which the at-rest ``CryptoConverter``
+     * passes through unchanged, so the row is readable without depending on an encryption key.
      */
     private static final String INSERT_CUSTOMER_SQL =
             "INSERT INTO customers (cust_id, cust_first_name, cust_middle_name, cust_last_name, "
@@ -127,7 +137,7 @@ class InterestCalculationJobIT {
     @Autowired
     private JobRepository jobRepository;
 
-    /** Raw JDBC access used only to seed and clear the ``customers`` parent rows. */
+    /** Raw JDBC access used to seed and clear the tables this test reaches without a repository. */
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
@@ -151,15 +161,22 @@ class InterestCalculationJobIT {
     @Autowired
     private TransactionRepository transactionRepository;
 
+    /** Used to resolve the step-scoped reader inside two distinct step scopes. */
+    @Autowired
+    private ApplicationContext applicationContext;
+
     /**
      * :purpose: Reset all business state before each scenario so row counts and balances are
-     *     exact. Tables are cleared child-before-parent to respect the {@link CardXref}
-     *     foreign keys to ``accounts`` and ``customers``; batch metadata is intentionally left
-     *     in place because each launch uses a unique ``run.id``.
+     *     exact, clearing the migration-seeded fixtures as well as anything a previous scenario
+     *     wrote. Tables are cleared child-before-parent to respect the foreign keys of
+     *     {@link CardXref} (to ``accounts`` and ``customers``), ``cards`` (to ``accounts``) and
+     *     ``tran_cat_bal`` (to ``accounts``); batch metadata is intentionally left in place
+     *     because each launch uses a unique ``run.id``.
      */
     @BeforeEach
     void resetBusinessState() {
         transactionRepository.deleteAll();
+        jdbcTemplate.update("DELETE FROM daily_transactions");
         tranCatBalRepository.deleteAll();
         cardXrefRepository.deleteAll();
         // The migration seed carries 50 cards that foreign-key into accounts, so they are
@@ -284,10 +301,10 @@ class InterestCalculationJobIT {
     }
 
     /**
-     * :purpose: Seed the parent ``customers`` row (all non-null columns, including the
-     *     ``@Version`` column) so the card cross-reference foreign key
-     *     ``fk_card_xref_customer`` is satisfied. Raw JDBC is used so the whitelist-scoped
-     *     ``Customer`` entity does not have to be imported.
+     * :purpose: Seed the parent ``customers`` row (every ``NOT NULL`` column, including the
+     *     ``@Version`` column) so the card cross-reference foreign key ``fk_card_xref_cust`` is
+     *     satisfied. Raw JDBC is used so the whitelist-scoped ``Customer`` entity does not have
+     *     to be imported.
      * :param custId: the customer id referenced by the seeded {@link CardXref}.
      */
     private void seedCustomer(long custId) {
@@ -296,6 +313,7 @@ class InterestCalculationJobIT {
         jdbcTemplate.update(INSERT_CUSTOMER_SQL, custId, "Test", "T", "Customer",
                 "Addr line 1", "Addr line 2", "Addr line 3", "NC", "USA", "00000",
                 "(000)000-0000", "(000)000-0000", "", "", "1970-01-01", "", "Y", 750, 0L);
+        jdbcTemplate.update(INSERT_CUSTOMER_SQL, custId, 750, 0L);
     }
 
     /**

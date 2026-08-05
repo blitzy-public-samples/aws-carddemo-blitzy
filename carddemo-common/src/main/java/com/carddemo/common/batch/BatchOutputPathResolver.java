@@ -31,7 +31,7 @@ import java.nio.file.Paths;
  *  Two independent roots are managed: an output root for files the jobs write
  *  (reports, record dumps, the combined transaction file) and an input root for
  *  the daily-transaction feed the jobs read.
- * :output: A {@link Component} exposing {@link #resolveOutput(String)} and
+ * :output: A shared resolver exposing {@link #resolveOutput(String)} and
  *  {@link #resolveInput(String)}. Each returns a canonical {@link Path} proven
  *  to reside within the matching real (symlink-resolved) root; the output
  *  variant additionally creates the parent directory. Any request that is blank,

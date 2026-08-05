@@ -168,18 +168,6 @@ public class BatchController {
     }
 
     /**
-     * :purpose: Route a launch request to the launcher method that owns the job's
-     *  parameter contract.
-     * :param jobName: the job bean name.
-     * :param parmDate: interest-calculation business date.
-     * :param startDate: report window start.
-     * :param endDate: report window end.
-     * :param file: explicit output or input file name, possibly null.
-     * :returns: the accepted {@link JobExecution}.
-     * :raises Exception: when the launcher rejects the submission.
-     * :raises CardDemoException: when the job name is not launchable.
-     */
-    /**
      * :purpose: Treat a blank request parameter as absent, so a submission that carries an
      *  empty value still runs on the JCL default rather than on an empty file name or date.
      * :param value: the raw request-parameter value.
@@ -193,6 +181,18 @@ public class BatchController {
         return trimmed.isEmpty() ? null : trimmed;
     }
 
+    /**
+     * :purpose: Route a launch request to the launcher method that owns the job's
+     *  parameter contract.
+     * :param jobName: the job bean name.
+     * :param parmDate: interest-calculation business date.
+     * :param startDate: report window start.
+     * :param endDate: report window end.
+     * :param file: explicit output or input file name, possibly null.
+     * :returns: the accepted {@link JobExecution}.
+     * :raises Exception: when the launcher rejects the submission.
+     * :raises CardDemoException: when the job name is not launchable.
+     */
     private JobExecution dispatch(String jobName, String parmDate, String startDate,
                                   String endDate, String file) throws Exception {
         parmDate = trimToNull(parmDate);

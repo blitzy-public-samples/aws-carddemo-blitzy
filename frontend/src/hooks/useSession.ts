@@ -269,6 +269,27 @@ function probeIdentityOnce(): Promise<void> {
 }
 
 /**
+ * :purpose: Seed the module-level store directly with a user id and role, without
+ *     a network round trip, so a test can place the SPA in an authenticated or
+ *     signed-out state. Passing ``null`` for both arguments publishes the
+ *     server-confirmed signed-out state, so a route guard answers rather than
+ *     waiting on the identity probe.
+ * :param user: the user id to publish (``CDEMO-USER-ID``), or ``null``.
+ * :param role: the role to publish (``CDEMO-USER-TYPE`` — ``'A'`` / ``'U'``), or
+ *     ``null``.
+ * :note: Test seam only; never called by application code, and deliberately not
+ *     re-exported by the hooks barrel. It notifies ``useSyncExternalStore``
+ *     subscribers, so callers must wrap it in ``act``.
+ */
+export function __setSession(user: string | null, role: Role | null): void {
+  if (user === null || role === null) {
+    setState(SIGNED_OUT_STATE);
+    return;
+  }
+  setState(stateFor(user, role));
+}
+
+/**
  * :purpose: Return contract of :func:`useSession`.
  * :field user: authenticated user id, or ``null`` when signed out.
  * :field role: user role (``'A'`` / ``'U'``), or ``null`` when signed out.

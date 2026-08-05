@@ -51,11 +51,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  *  ``transactionPostingJob`` bean whose name matches its frozen identifier while
  *  reporting zero job instances at boot.
  */
-// The shared migration set in carddemo-common (enabled for the ``test`` profile) provisions the
-// whole schema - business tables AND the Spring Batch metadata the JobRepository query needs - so
-// the context boots on the production settings: Hibernate ``ddl-auto: validate`` with the JDBC
-// batch-schema initializer left off.
-@SpringBootTest
+@SpringBootTest(properties = {
+        // Create the scanned entity tables not owned by transaction-service migrations.
+        "spring.jpa.hibernate.ddl-auto=update"
+        // The BATCH_* metadata tables are provisioned by BatchInfrastructureConfig.
+        // spring.batch.jdbc.initialize-schema is NOT set here: BatchProperties in
+        // Spring Boot 4.1 exposes only the `job` group, so the key was inert and the
+        // JobRepository query below only passed because the repository was in-memory.
+})
 @ActiveProfiles("test")
 public class TransactionServiceApplicationIT {
 

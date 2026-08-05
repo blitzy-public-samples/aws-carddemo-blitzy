@@ -28,9 +28,13 @@ import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.constant.MenuOptions;
 import com.carddemo.common.constant.Messages;
 import com.carddemo.common.dto.SessionContext;
+import com.carddemo.common.security.SessionContextAuthenticationFilter;
 import com.carddemo.gateway.config.SecurityConfig;
 import tools.jackson.databind.ObjectMapper;
 
+import jakarta.servlet.http.HttpSession;
+
+import java.util.Collections;
 import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -44,9 +48,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.security.test.context.support.WithMockUser;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
 
@@ -62,6 +68,38 @@ import org.springframework.web.context.WebApplicationContext;
 @WebMvcTest(MenuController.class)
 @Import({SecurityConfig.class, GlobalExceptionHandler.class})
 class MenuControllerTest {
+
+    /**
+     * :purpose: The frozen ``HttpSession`` attribute name the whole application uses for
+     *           the COMMAREA-equivalent session context.
+     */
+    private static final String SESSION_ATTR = SessionContext.SESSION_ATTRIBUTE_NAME;
+
+    /**
+     * :purpose: Build the signed-on session context a request always carries at runtime.
+     *           Every menu route is role-gated and the gateway derives its Authentication
+     *           from this very attribute, so a request that passes authorization always
+     *           has one; the controller therefore never fabricates a blank context.
+     * :param userId: the signed-on ``SEC-USR-ID``.
+     * :param userType: the COMMAREA ``CDEMO-USER-TYPE`` condition.
+     * :returns: a populated session context.
+     */
+    private static SessionContext contextFor(String userId, SessionContext.UserType userType) {
+        SessionContext ctx = new SessionContext();
+        ctx.setUserId(userId);
+        ctx.setUserType(userType);
+        return ctx;
+    }
+
+    /** :returns: the session context of a signed-on administrator (``CDEMO-USER-TYPE`` ``'A'``). */
+    private static SessionContext adminContext() {
+        return contextFor("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+    }
+
+    /** :returns: the session context of a signed-on regular user (``CDEMO-USER-TYPE`` ``'U'``). */
+    private static SessionContext userContext() {
+        return contextFor("USER0001", SessionContext.UserType.CDEMO_USRTYP_USER);
+    }
 
     /**
      * :purpose: Invalid-option banner (frozen, COMEN01C L131 / COADM01C L131):
@@ -157,7 +195,7 @@ class MenuControllerTest {
     @DisplayName("GET /menu lists the 10 main-menu options (CM00 / COMEN01C)")
     @WithMockUser(roles = "USER")
     void mainMenuEnumeration() throws Exception {
-        mockMvc.perform(get("/menu"))
+        mockMvc.perform(get("/menu").sessionAttr(SESSION_ATTR, userContext()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.tranId").value("CM00"))
                 .andExpect(jsonPath("$.programName").value("COMEN01C"))
@@ -179,7 +217,7 @@ class MenuControllerTest {
     @DisplayName("GET /admin/menu lists the 4 admin-menu options (CA00 / COADM01C)")
     @WithMockUser(roles = "ADMIN")
     void adminMenuEnumeration() throws Exception {
-        mockMvc.perform(get("/admin/menu"))
+        mockMvc.perform(get("/admin/menu").sessionAttr(SESSION_ATTR, adminContext()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.tranId").value("CA00"))
                 .andExpect(jsonPath("$.programName").value("COADM01C"))
@@ -202,7 +240,7 @@ class MenuControllerTest {
     @DisplayName("POST /menu/select rejects an invalid option with 400 + MSG_INVALID_OPTION")
     @WithMockUser(roles = "USER")
     void mainSelectRejectsInvalidOption(String option) throws Exception {
-        mockMvc.perform(post("/menu/select")
+        mockMvc.perform(post("/menu/select").sessionAttr(SESSION_ATTR, userContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body(option, "ENTER")))
@@ -217,7 +255,7 @@ class MenuControllerTest {
     @DisplayName("POST /admin/menu/select rejects out-of-range option 5 (count 4) with 400 + MSG_INVALID_OPTION")
     @WithMockUser(roles = "ADMIN")
     void adminSelectRejectsOutOfRangeOption() throws Exception {
-        mockMvc.perform(post("/admin/menu/select")
+        mockMvc.perform(post("/admin/menu/select").sessionAttr(SESSION_ATTR, adminContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("5", "ENTER")))
@@ -232,7 +270,7 @@ class MenuControllerTest {
     @DisplayName("POST /menu/select accepts a trimmed/zero-padded option and dispatches (no 400)")
     @WithMockUser(roles = "USER")
     void mainSelectAcceptsNormalizedOptionFive(String option) throws Exception {
-        mockMvc.perform(post("/menu/select")
+        mockMvc.perform(post("/menu/select").sessionAttr(SESSION_ATTR, userContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body(option, "ENTER")))
@@ -252,7 +290,7 @@ class MenuControllerTest {
     @DisplayName("POST /menu/select with an unsupported key returns 400 + CCDA_MSG_INVALID_KEY")
     @WithMockUser(roles = "USER")
     void mainSelectRejectsInvalidKey() throws Exception {
-        mockMvc.perform(post("/menu/select")
+        mockMvc.perform(post("/menu/select").sessionAttr(SESSION_ATTR, userContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "PF9")))
@@ -266,7 +304,7 @@ class MenuControllerTest {
     @DisplayName("POST /admin/menu/select with an unsupported key returns 400 + CCDA_MSG_INVALID_KEY")
     @WithMockUser(roles = "ADMIN")
     void adminSelectRejectsInvalidKey() throws Exception {
-        mockMvc.perform(post("/admin/menu/select")
+        mockMvc.perform(post("/admin/menu/select").sessionAttr(SESSION_ATTR, adminContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "PF9")))
@@ -282,7 +320,7 @@ class MenuControllerTest {
     @DisplayName("POST /menu/select PF3 returns to /auth (dispatched, no program, no message)")
     @WithMockUser(roles = "USER")
     void mainSelectPf3ReturnsToAuth() throws Exception {
-        mockMvc.perform(post("/menu/select")
+        mockMvc.perform(post("/menu/select").sessionAttr(SESSION_ATTR, userContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "PF3")))
@@ -297,7 +335,7 @@ class MenuControllerTest {
     @DisplayName("POST /admin/menu/select PF3 returns to /auth (dispatched, no program, no message)")
     @WithMockUser(roles = "ADMIN")
     void adminSelectPf3ReturnsToAuth() throws Exception {
-        mockMvc.perform(post("/admin/menu/select")
+        mockMvc.perform(post("/admin/menu/select").sessionAttr(SESSION_ATTR, adminContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "PF3")))
@@ -319,7 +357,7 @@ class MenuControllerTest {
     void mainSelectDispatchesValidOption(int optionNumber) throws Exception {
         String expectedProgram = MenuOptions.MAIN_MENU_OPTIONS.get(optionNumber - 1).programName();
         String expectedRoute = EXPECTED_MAIN_ROUTES.get(expectedProgram);
-        mockMvc.perform(post("/menu/select")
+        mockMvc.perform(post("/menu/select").sessionAttr(SESSION_ATTR, userContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body(String.valueOf(optionNumber), "ENTER")))
@@ -336,7 +374,7 @@ class MenuControllerTest {
     @WithMockUser(roles = "ADMIN")
     void adminSelectDispatchesValidOption(int optionNumber) throws Exception {
         String expectedProgram = MenuOptions.ADMIN_MENU_OPTIONS.get(optionNumber - 1).programName();
-        mockMvc.perform(post("/admin/menu/select")
+        mockMvc.perform(post("/admin/menu/select").sessionAttr(SESSION_ATTR, adminContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body(String.valueOf(optionNumber), "ENTER")))
@@ -361,10 +399,11 @@ class MenuControllerTest {
     @WithMockUser(roles = "USER")
     void mainSelectRegularUserOptionNotGated() throws Exception {
         SessionContext ctx = new SessionContext();
+        ctx.setUserId("USER0001");
         ctx.setUserType(SessionContext.UserType.CDEMO_USRTYP_USER);
         mockMvc.perform(post("/menu/select")
                         .with(csrf())
-                        .sessionAttr(SessionContext.SESSION_ATTRIBUTE_NAME, ctx)
+                        .sessionAttr(SESSION_ATTR, ctx)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "ENTER")))
                 .andExpect(status().isOk())
@@ -430,7 +469,7 @@ class MenuControllerTest {
     @DisplayName("POST /menu/select dispatches option 1 without a coming-soon message")
     @WithMockUser(roles = "USER")
     void mainSelectDispatchNotComingSoon() throws Exception {
-        mockMvc.perform(post("/menu/select")
+        mockMvc.perform(post("/menu/select").sessionAttr(SESSION_ATTR, userContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "ENTER")))
@@ -447,7 +486,7 @@ class MenuControllerTest {
     @DisplayName("POST /admin/menu/select dispatches option 1 without a coming-soon message")
     @WithMockUser(roles = "ADMIN")
     void adminSelectDispatchNotComingSoon() throws Exception {
-        mockMvc.perform(post("/admin/menu/select")
+        mockMvc.perform(post("/admin/menu/select").sessionAttr(SESSION_ATTR, adminContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "ENTER")))
@@ -464,22 +503,21 @@ class MenuControllerTest {
     @DisplayName("H1: ADMIN may GET /admin/menu (200)")
     @WithMockUser(roles = "ADMIN")
     void adminMenuAllowedForAdmin() throws Exception {
-        mockMvc.perform(get("/admin/menu")).andExpect(status().isOk());
+        mockMvc.perform(get("/admin/menu").sessionAttr(SESSION_ATTR, adminContext())).andExpect(status().isOk());
     }
 
     @Test
     @DisplayName("H2: USER may not GET /admin/menu (403)")
     @WithMockUser(roles = "USER")
     void adminMenuForbiddenForUser() throws Exception {
-        mockMvc.perform(get("/admin/menu")).andExpect(status().isForbidden());
+        mockMvc.perform(get("/admin/menu").sessionAttr(SESSION_ATTR, userContext())).andExpect(status().isForbidden());
     }
 
     @Test
     @DisplayName("H3: USER may not POST /admin/menu/select (403)")
     @WithMockUser(roles = "USER")
     void adminSelectForbiddenForUser() throws Exception {
-        mockMvc.perform(post("/admin/menu/select")
-                        .with(csrf())
+        mockMvc.perform(post("/admin/menu/select").sessionAttr(SESSION_ATTR, userContext())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("1", "ENTER")))
                 .andExpect(status().isForbidden());
@@ -489,14 +527,14 @@ class MenuControllerTest {
     @DisplayName("H4: USER may GET /menu (200)")
     @WithMockUser(roles = "USER")
     void mainMenuAllowedForUser() throws Exception {
-        mockMvc.perform(get("/menu")).andExpect(status().isOk());
+        mockMvc.perform(get("/menu").sessionAttr(SESSION_ATTR, userContext())).andExpect(status().isOk());
     }
 
     @Test
     @DisplayName("H5: ADMIN may GET /menu (200)")
     @WithMockUser(roles = "ADMIN")
     void mainMenuAllowedForAdmin() throws Exception {
-        mockMvc.perform(get("/menu")).andExpect(status().isOk());
+        mockMvc.perform(get("/menu").sessionAttr(SESSION_ATTR, adminContext())).andExpect(status().isOk());
     }
 
     @Test
@@ -585,5 +623,130 @@ class MenuControllerTest {
 
         assertThat(EXPECTED_COMING_SOON_ADMIN).hasSize(30)
                 .isEqualTo("This option " + "is coming soon ...");
+    }
+
+    // -----------------------------------------------------------------
+    // QA Issue 22 - no Redis session churn from anonymous or one-off calls
+    // -----------------------------------------------------------------
+
+    /**
+     * :purpose: Regression guard for QA Issue 22. Spring Security's default
+     *           HttpSessionRequestCache calls request.getSession() while saving a denied
+     *           request, so every anonymous call minted a brand-new Spring Session entry
+     *           in Redis. The chain now installs a NullRequestCache (the gateway has no
+     *           login page - the entry point answers a bare 401 - so a saved request
+     *           could never be replayed), and no session must be created.
+     */
+    @Test
+    @DisplayName("QA Issue 22: a denied anonymous request persists no session state")
+    void deniedAnonymousRequestCreatesNoSession() throws Exception {
+        MvcResult result = mockMvc.perform(get("/menu"))
+                .andExpect(status().isUnauthorized())
+                .andReturn();
+        // The absence of the session OBJECT is asserted by SessionAuthorizationTest, which
+        // demands a pristine context for exactly this reason: the with(csrf()) post-processor
+        // used by the write tests in this class reaches into the shared cached chain and swaps
+        // the configured CookieCsrfTokenRepository for a session-backed test repository, which
+        // then stores a CSRF token in the session. The substantive half is pinned here - no
+        // saved request and no Spring Security context are persisted into the shared session -
+        // and it holds whichever CSRF repository the chain is carrying.
+        HttpSession denied = result.getRequest().getSession(false);
+        if (denied != null) {
+            assertThat(Collections.list(denied.getAttributeNames()))
+                    .doesNotContain(SESSION_ATTR,
+                            "SPRING_SECURITY_CONTEXT",
+                            "SPRING_SECURITY_SAVED_REQUEST");
+        }
+    }
+
+    /**
+     * :purpose: Regression guard for QA Issue 22. A caller that reaches a menu endpoint
+     *           without a session must leave without one: every endpoint takes
+     *           HttpServletRequest and reads the pseudo-conversational context through
+     *           getSession(false), so no Spring Session entry is created - and therefore
+     *           none is persisted to Redis - for a one-off call. Declaring an HttpSession
+     *           parameter instead made Spring's argument resolver call getSession()
+     *           unconditionally on every request.
+     * :note:    Deliberately exercised through a standalone MockMvc over the controller
+     *           alone rather than through the slice's security-filtered MockMvc. The
+     *           @WithMockUser/springSecurity() harness persists its own SecurityContext
+     *           through the chain's session-backed SecurityContextRepository, which
+     *           creates a MockHttpSession before the handler is ever invoked - a test
+     *           artifact that would mask exactly the production behaviour under test. The
+     *           anonymous/denied path (where the request cache used to create the
+     *           session) is covered against the real filter chain by
+     *           deniedAnonymousRequestCreatesNoSession above.
+     */
+    @Test
+    @DisplayName("QA Issue 22: menu endpoints create no HTTP session for a sessionless caller")
+    void menuEndpointsCreateNoSessionForSessionlessCaller() throws Exception {
+        MockMvc plainMockMvc = MockMvcBuilders.standaloneSetup(new MenuController()).build();
+
+        MvcResult mainMenu = plainMockMvc.perform(get("/menu"))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(mainMenu.getRequest().getSession(false)).isNull();
+
+        MvcResult adminMenu = plainMockMvc.perform(get("/admin/menu"))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(adminMenu.getRequest().getSession(false)).isNull();
+
+        MvcResult mainSelect = plainMockMvc.perform(post("/menu/select")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("1", "ENTER")))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(mainSelect.getRequest().getSession(false)).isNull();
+
+        MvcResult adminSelect = plainMockMvc.perform(post("/admin/menu/select")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("1", "ENTER")))
+                .andExpect(status().isOk())
+                .andReturn();
+        assertThat(adminSelect.getRequest().getSession(false)).isNull();
+    }
+
+    /**
+     * :purpose: A caller that already holds a session keeps its pseudo-conversational
+     *           context: the stored SessionContext instance is mutated in place with the
+     *           originating tranid/program and written back under the SHARED attribute
+     *           key, so sign-on's CDEMO-USER-TYPE survives menu navigation. This
+     *           controller previously used its own private key ("sessionContext") while
+     *           sign-on and every business service used "carddemoSessionContext", so the
+     *           menu read a phantom empty context and stored a second redundant copy.
+     */
+    @Test
+    @DisplayName("Menu navigation updates the SHARED session context in place (one COMMAREA)")
+    @WithMockUser(roles = "USER")
+    void menuNavigationUpdatesTheSharedSessionContext() throws Exception {
+        SessionContext signedOn = new SessionContext();
+        signedOn.setUserId("USER0001");
+        signedOn.setUserType(SessionContext.UserType.CDEMO_USRTYP_USER);
+        MockHttpSession session = new MockHttpSession();
+        session.setAttribute(SESSION_ATTR, signedOn);
+
+        mockMvc.perform(get("/menu").session(session)).andExpect(status().isOk());
+
+        Object stored = session.getAttribute(SESSION_ATTR);
+        assertThat(stored).isSameAs(signedOn);
+        assertThat(signedOn.getUserId()).isEqualTo("USER0001");
+        assertThat(signedOn.getUserType()).isEqualTo(SessionContext.UserType.CDEMO_USRTYP_USER);
+        assertThat(signedOn.getFromTranid()).isEqualTo("CM00");
+        assertThat(signedOn.getFromProgram()).isEqualTo("COMEN01C");
+        assertThat(session.getAttribute("sessionContext")).isNull();
+    }
+
+    /**
+     * :purpose: Guardrail: the gateway must address the pseudo-conversational context by
+     *           the SAME session attribute key as auth-service sign-on, the shared
+     *           SessionContextAuthenticationFilter and every business service. One key
+     *           means one COMMAREA, exactly as the legacy flow carried one.
+     */
+    @Test
+    @DisplayName("The gateway shares the single 'carddemoSessionContext' attribute key")
+    void gatewayUsesTheSharedSessionAttributeKey() {
+        assertThat(SessionContext.SESSION_ATTRIBUTE_NAME)
+                .isEqualTo("carddemoSessionContext");
     }
 }

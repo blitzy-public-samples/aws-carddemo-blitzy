@@ -45,6 +45,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import org.testcontainers.containers.PostgreSQLContainer;
 
 /**
  * :purpose: Mandatory optimistic-lock (HTTP 409) integration test for the card-update
@@ -74,6 +75,21 @@ class OptimisticLockConflictIT {
     // produced exclusively by the committed Flyway migrations of every owning module, so the
     // card-service context boots with ``ddl-auto: validate`` against the deployed schema and
     // no table definition is fabricated here.
+    /**
+     * :purpose: Shared, manually-managed ``postgres:18`` container (singleton pattern). It is
+     *     started once in the static initializer below so its mapped port is available to
+     *     ``@DynamicPropertySource`` before the Spring context refreshes and the shared
+     *     carddemo-common Flyway migration set creates and seeds every table.
+     */
+    private static final PostgreSQLContainer<?> POSTGRES =
+            new PostgreSQLContainer<>("postgres:18")
+                    .withDatabaseName("carddemo")
+                    .withUsername("test")
+                    .withPassword("test");
+
+    static {
+        POSTGRES.start();
+    }
 
     /**
      * :purpose: HTTP session attribute key under which the pseudo-conversational
@@ -81,7 +97,7 @@ class OptimisticLockConflictIT {
      */
     private static final String SESSION_KEY = "carddemoSessionContext";
 
-    /** :purpose: A real seeded card (``V3__seed_cards.sql``); all seeded cards are status ``'Y'``. */
+    /** :purpose: A real seeded card (``V3__seed_test_data.sql``); all seeded cards are status ``'Y'``. */
     private static final String TARGET_CARD_NUM = "0500024453765740";
 
     /** :purpose: Seeded embossed name for the target card. */
@@ -93,11 +109,12 @@ class OptimisticLockConflictIT {
     /** :purpose: Seeded active status for the target card. */
     private static final String SEED_STATUS = "Y";
 
-
     /**
-     * :purpose: Point the Spring datasource at the shared migrated container (overriding the
-     *     ``jdbc:tc:`` URL from ``application-test.yml``) so this class validates against the
-     *     schema the committed migrations produce.
+     * :purpose: Point the Spring datasource at the manually-managed container (overriding the
+     *     ``jdbc:tc:`` URL from ``application-test.yml``). The context's own Flyway
+     *     auto-configuration then applies the shared carddemo-common migration set
+     *     (``V1``..``V4``) to the empty container, creating and seeding every table the
+     *     entity-scanned mapping validates against.
      * :param registry: the dynamic property registry supplied by the test context.
      */
     @DynamicPropertySource
@@ -107,6 +124,10 @@ class OptimisticLockConflictIT {
         // Spring-managed Flyway run during context refresh is a no-op; baselining at version 0
         // keeps that run from treating the populated schema as a version-1 baseline.
         registry.add("spring.flyway.baseline-version", () -> "0");
+        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.username", POSTGRES::getUsername);
+        registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
     }
 
     /** :purpose: MockMvc entry point for the card REST endpoints. */
@@ -167,9 +188,12 @@ class OptimisticLockConflictIT {
     }
 
     /**
-     * :purpose: Build an administrator session context (``CDEMO-USER-TYPE 'A'``) so
-     *     authorization scoping never interferes with the conflict assertion.
-     * :returns: a :java:type:`SessionContext` whose user type is ``CDEMO_USRTYP_ADMIN``.
+     * :purpose: Build an administrator session context (``CDEMO-USER-TYPE 'A'``) in the
+     *     state sign-on leaves it, so authorization scoping never interferes with the
+     *     conflict assertion. The user id is required: the service
+     *     ``SecurityFilterChain`` derives the authenticated principal from it, so a
+     *     context without one is not a signed-on identity and yields 401.
+     * :returns: a :java:type:`SessionContext` for signed-on administrator ``ADMIN001``.
      */
     private SessionContext adminSession() {
         SessionContext context = new SessionContext();

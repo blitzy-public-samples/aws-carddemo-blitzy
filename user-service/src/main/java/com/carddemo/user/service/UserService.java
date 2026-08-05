@@ -65,6 +65,16 @@ import jakarta.persistence.OptimisticLockException;
  * :output: {@link UserResponseDto} projections (id, first name, last name, user type)
  *     and verbatim outcome messages; failures surface as {@link RecordNotFoundException}
  *     (not found) or {@link CardDemoException} (all other rejections).
+ * :note: Administration that changes what a user is allowed to do, or the credential
+ *     that proves who they are, also revokes that user's live sessions through
+ *     {@link SessionPrincipalIndex}. On the 3270 the next transaction re-read
+ *     ``USRSEC``, so a maintenance action took effect immediately; a cached session
+ *     context would otherwise keep a deleted user signed on, or keep a demoted
+ *     administrator's authority alive, until the session timeout elapsed. Revocation is
+ *     deliberately performed while the unit of work is still open: should the commit
+ *     then fail, an already-revoked user is merely asked to sign on again, whereas
+ *     revoking only after commit would leave a window in which the stale authority is
+ *     still honoured. Renaming a user changes no authority and revokes nothing.
  */
 @Service
 public class UserService {
@@ -133,21 +143,18 @@ public class UserService {
     private final UserRepository userRepository;
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
-
-    /**
-     * :purpose: Principal-to-session index used to invalidate the shared Redis sessions of a
-     *     user whose authority or credential just changed, so a change that removes access
-     *     takes effect immediately instead of at the next natural session expiry. May be
-     *     ``null`` when no session store is wired (unit tests), in which case revocation is
-     *     a no-op.
-     */
     private final SessionPrincipalIndex sessionPrincipalIndex;
+
 
     /**
      * :purpose: Construct the service with its collaborators via constructor injection.
      * :param userRepository: Spring Data JPA repository over the ``security_users`` store.
      * :param userMapper: mapper between {@link SecurityUser} entities and the user DTOs.
      * :param passwordEncoder: encoder used to hash and verify user credentials.
+     * :param sessionPrincipalIndex: principal-to-session index used to invalidate the
+     *     live sessions of a user whose authority or credential changed, or who was
+     *     deleted. Inert when no session store is configured, in which case there are no
+     *     shared sessions to revoke.
      */
     @Autowired
     public UserService(UserRepository userRepository,
@@ -160,22 +167,7 @@ public class UserService {
         this.sessionPrincipalIndex = sessionPrincipalIndex;
     }
 
-    /**
-     * :purpose: Construct the service without a session index, so a unit test can exercise
-     *     the CRUD contract without a Redis-backed session store. Session revocation is a
-     *     no-op in that configuration.
-     * :param userRepository: the security-user repository.
-     * :param userMapper: the entity/DTO mapper.
-     * :param passwordEncoder: the shared delegating password encoder.
-     */
-    public UserService(UserRepository userRepository,
-                       UserMapper userMapper,
-                       PasswordEncoder passwordEncoder) {
-        this.userRepository = userRepository;
-        this.userMapper = userMapper;
-        this.passwordEncoder = passwordEncoder;
-        this.sessionPrincipalIndex = null;
-    }
+
     /**
      * :purpose: Invalidate every live session of a user so a maintenance action takes
      *     effect on the caller's very next request instead of at session expiry.
@@ -635,6 +627,8 @@ public class UserService {
     /**
      * :purpose: Delete an existing security user (``COUSR03C`` / ``CU03``): validate the id,
      *     read the current record, and delete it as one unit of work.
+     *     Every live session of the deleted user is revoked, so the removal takes effect
+     *     immediately rather than at session expiry.
      * :param userId: the user id to delete.
      * :raises RecordNotFoundException: when no user exists for ``userId``.
      * :raises CardDemoException: when the id is empty or the delete fails unexpectedly.

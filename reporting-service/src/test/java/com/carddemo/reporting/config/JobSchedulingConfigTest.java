@@ -23,6 +23,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.parameters.JobParameter;
@@ -31,7 +32,6 @@ import org.springframework.batch.core.launch.JobExecutionAlreadyRunningException
 import org.springframework.batch.core.launch.JobLauncher;
 
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -65,6 +65,26 @@ class JobSchedulingConfigTest {
     private Job statementGenerationJob;
 
     /**
+     * :purpose: Construct the system under test over the mocked launcher and job with
+     *   the configured default ``STMTFILE``/``HTMLFILE`` output names.
+     * :returns: the configured {@link JobSchedulingConfig}.
+     */
+    private JobSchedulingConfig newConfig() {
+        return new JobSchedulingConfig(jobLauncher, statementGenerationJob,
+                "statements.txt", "statements.html");
+    }
+
+    /**
+     * :purpose: Build a job execution reporting a successful run.
+     * :returns: a mocked {@link JobExecution} whose status is ``COMPLETED``.
+     */
+    private static JobExecution completedExecution() {
+        JobExecution execution = mock(JobExecution.class);
+        when(execution.getStatus()).thenReturn(BatchStatus.COMPLETED);
+        return execution;
+    }
+
+    /**
      * :purpose: Verify the launch entry point submits the ``statementGenerationJob``
      *   with the two output file names as identifying string parameters plus a
      *   non-blank, IDENTIFYING uniqueness ``run.id``, records no invented
@@ -73,11 +93,11 @@ class JobSchedulingConfigTest {
      * :raises Exception: propagated from the mocked launcher signature.
      */
     @Test
-    void launchStatementGenerationSubmitsJobWithTheOutputFileNames() throws Exception {
-        JobExecution execution = mock(JobExecution.class);
+    void launchStatementGenerationSubmitsJobWithReportParameters() throws Exception {
+        JobExecution execution = completedExecution();
         when(jobLauncher.run(eq(statementGenerationJob), any(JobParameters.class)))
                 .thenReturn(execution);
-        JobSchedulingConfig config = new JobSchedulingConfig(jobLauncher, statementGenerationJob, "statements.txt", "statements.html");
+        JobSchedulingConfig config = newConfig();
 
         JobExecution future = config.launchStatementGeneration("cycle.txt", "cycle.html");
 
@@ -109,10 +129,10 @@ class JobSchedulingConfigTest {
      */
     @Test
     void launchStatementGenerationFallsBackToTheConfiguredFileNames() throws Exception {
-        JobExecution execution = mock(JobExecution.class);
+        JobExecution execution = completedExecution();
         when(jobLauncher.run(eq(statementGenerationJob), any(JobParameters.class)))
                 .thenReturn(execution);
-        JobSchedulingConfig config = new JobSchedulingConfig(jobLauncher, statementGenerationJob, "statements.txt", "statements.html");
+        JobSchedulingConfig config = newConfig();
 
         config.launchStatementGeneration();
 
@@ -135,7 +155,7 @@ class JobSchedulingConfigTest {
                 new JobExecutionAlreadyRunningException("job already running");
         when(jobLauncher.run(eq(statementGenerationJob), any(JobParameters.class)))
                 .thenThrow(cause);
-        JobSchedulingConfig config = new JobSchedulingConfig(jobLauncher, statementGenerationJob, "statements.txt", "statements.html");
+        JobSchedulingConfig config = newConfig();
 
         assertThatThrownBy(() ->
                 config.launchStatementGeneration("failing.txt", "failing.html"))
@@ -153,10 +173,10 @@ class JobSchedulingConfigTest {
      */
     @Test
     void repeatSubmissionsUseDistinctRunId() throws Exception {
-        JobExecution execution = mock(JobExecution.class);
+        JobExecution execution = completedExecution();
         when(jobLauncher.run(eq(statementGenerationJob), any(JobParameters.class)))
                 .thenReturn(execution);
-        JobSchedulingConfig config = new JobSchedulingConfig(jobLauncher, statementGenerationJob, "statements.txt", "statements.html");
+        JobSchedulingConfig config = newConfig();
 
         config.launchStatementGeneration("cycle.txt", "cycle.html");
         config.launchStatementGeneration("cycle.txt", "cycle.html");

@@ -250,6 +250,8 @@ class UserControllerTest {
         return new UserWriteResponseDto(userId, firstName, lastName, userType, message);
     }
 
+
+
     /**
      * :purpose: Serialize an update-user request body (editable non-secret profile fields).
      * :param firstName: the new first name.

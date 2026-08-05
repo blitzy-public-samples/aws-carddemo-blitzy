@@ -13,6 +13,7 @@
 --   * daily_transactions 300 rows <- dailytran.txt         (CVTRA06Y)
 --   * transactions       300 rows <- an earlier posted image of the daily feed,
 --                                    re-keyed into a reserved id window (see below)
+--   * transactions       300 rows <- the posted image of the daily feed (see below)
 --
 -- Statements are ordered so every foreign key resolves: customers and accounts
 -- before cards / card_xref / tran_cat_bal, and daily_transactions before the
@@ -59,6 +60,8 @@ ON CONFLICT DO NOTHING;
 
 -- Customers (CVCUS01Y CUSTOMER-RECORD, RECLN 500; FILLER X(168) not persisted).
 -- SSN / government id / EFT account id stay strings to preserve leading zeros.
+
+-- -------------------------------------------------------- customers (50 rows)
 INSERT INTO customers (
     cust_id, cust_first_name, cust_middle_name, cust_last_name,
     cust_addr_line_1, cust_addr_line_2, cust_addr_line_3,
@@ -121,6 +124,8 @@ ON CONFLICT DO NOTHING;
 
 -- Accounts (CVACT01Y ACCOUNT-RECORD, RECLN 300). Money overpunch-decoded to
 -- NUMERIC(12,2); blank ACCT-GROUP-ID -> NULL.
+
+-- --------------------------------------------------------- accounts (50 rows)
 INSERT INTO accounts (
     acct_id, acct_active_status, acct_curr_bal, acct_credit_limit,
     acct_cash_credit_limit, acct_open_date, acct_expiraion_date,
@@ -181,6 +186,8 @@ ON CONFLICT DO NOTHING;
 
 -- Cards (CVACT02Y CARD-RECORD, RECLN 150). card_num / card_cvv_cd stay strings to
 -- preserve leading zeros.
+
+-- ------------------------------------------------------------ cards (50 rows)
 INSERT INTO cards (
     card_num, card_acct_id, card_cvv_cd, card_embossed_name,
     card_expiraion_date, card_active_status
@@ -239,6 +246,8 @@ ON CONFLICT DO NOTHING;
 
 -- Card cross-reference (CVACT03Y CARD-XREF-RECORD, RECLN 50) - the CXACAIX anchor
 -- linking card -> customer -> account.
+
+-- -------------------------------------------------------- card_xref (50 rows)
 INSERT INTO card_xref (
     xref_card_num, xref_cust_id, xref_acct_id
 ) VALUES
@@ -296,6 +305,8 @@ ON CONFLICT DO NOTHING;
 
 -- Transaction-category balances (CVTRA01Y TRAN-CAT-BAL-RECORD, RECLN 50).
 -- tcatbal.txt holds 50 records and is authoritative for the row count.
+
+-- ------------------------------------------------------------- tran_cat_bal
 INSERT INTO tran_cat_bal (trancat_acct_id, trancat_type_cd, trancat_cd, tran_cat_bal) VALUES
 (1, '01', 1, 0.00),
 (2, '01', 1, 0.00),
@@ -351,6 +362,8 @@ ON CONFLICT DO NOTHING;
 
 -- Daily-transaction posting feed (CVTRA06Y DALYTRAN-RECORD, RECLN 350).
 -- dalytran_proc_ts is blank in the feed (a record is stamped when it posts) -> NULL.
+
+-- ------------------------------------------------------- daily_transactions
 INSERT INTO daily_transactions (dalytran_id, dalytran_type_cd, dalytran_cat_cd, dalytran_source, dalytran_desc, dalytran_amt, dalytran_merchant_id, dalytran_merchant_name, dalytran_merchant_city, dalytran_merchant_zip, dalytran_card_num, dalytran_orig_ts, dalytran_proc_ts) VALUES
 ('0000000000683580', '01', 1, 'POS TERM', 'Purchase at Abshire-Lowe', 504.77, 800000000, 'Abshire-Lowe', 'North Enoshaven', '72112', '4859452612877065', '2022-06-10 19:27:53.000000', NULL),
 ('0000000001774260', '03', 1, 'OPERATOR', 'Return item at Nitzsche, Nicolas and Lowe', -919.00, 800000000, 'Nitzsche, Nicolas and Lowe', 'Fidelshire', '53378', '0927987108636232', '2022-06-10 19:27:53.000000', NULL),

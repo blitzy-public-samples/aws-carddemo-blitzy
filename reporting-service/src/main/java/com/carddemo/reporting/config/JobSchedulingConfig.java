@@ -80,7 +80,9 @@ public class JobSchedulingConfig {
     private static final String PARAM_HTML_FILE = "htmlFile";
 
     /** :purpose: Frozen operator-visible message emitted when the submission fails. */
-    private static final String SUBMIT_FAILURE_MESSAGE = "Unable to Write TDQ (JOBS)...";
+    public static final String SUBMIT_FAILURE_MESSAGE = "Unable to Write TDQ (JOBS)...";
+
+
 
     /** :purpose: Upper bound on jobs running concurrently on the launch executor. */
     private static final int MAX_CONCURRENT_JOBS = 4;
@@ -218,12 +220,28 @@ public class JobSchedulingConfig {
         LOGGER.info("Submitting statementGenerationJob (stmtFile={}, htmlFile={})",
                 jobParameters.getString(PARAM_STMT_FILE), jobParameters.getString(PARAM_HTML_FILE));
 
+        JobExecution jobExecution;
         try {
-            return jobLauncher.run(statementGenerationJob, jobParameters);
+            jobExecution = jobLauncher.run(statementGenerationJob, jobParameters);
         } catch (JobExecutionAlreadyRunningException | JobRestartException
                  | JobInstanceAlreadyCompleteException | InvalidJobParametersException e) {
             throw new CardDemoException(SUBMIT_FAILURE_MESSAGE, e);
         }
+
+        // The launcher returns normally even when the run itself failed, so the
+        // exit status is inspected here and an unsuccessful run is surfaced with
+        // the same operator-visible message as a failed submission.
+        if (jobExecution.getStatus().isUnsuccessful()) {
+            LOGGER.error("statementGenerationJob {} ended with status {} (exitCode={}, description={})",
+                    jobExecution.getId(), jobExecution.getStatus(),
+                    jobExecution.getExitStatus().getExitCode(),
+                    jobExecution.getExitStatus().getExitDescription());
+            throw new CardDemoException(SUBMIT_FAILURE_MESSAGE);
+        }
+
+        LOGGER.info("statementGenerationJob {} ended with status {}",
+                jobExecution.getId(), jobExecution.getStatus());
+        return jobExecution;
     }
 
     /**

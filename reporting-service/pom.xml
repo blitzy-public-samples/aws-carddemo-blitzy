@@ -58,14 +58,6 @@
         </dependency>
 
         <!-- Actuator health/readiness/liveness and the Prometheus endpoint. -->
-        <!--
-          Spring Security. Every service enforces authentication itself
-          (defence in depth): the api-gateway is not a trust boundary, so a
-          request that reaches this service over the internal network still has
-          to present the shared, Redis-backed session principal. It also
-          protects the Actuator telemetry endpoints with the dedicated
-          monitoring principal (carddemo-common ManagementSecurityConfig).
-        -->
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -129,21 +121,6 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-micrometer-tracing-opentelemetry</artifactId>
         </dependency>
-
-        <!--
-          Spring Boot 4 extracted tracing auto-configuration out of spring-boot-actuator into
-          dedicated modules. Without BOTH of the modules below the bridge above is completely
-          inert: no io.micrometer.tracing.Tracer bean is created, no spans are produced, the
-          management.tracing.sampling.probability setting is ignored, and the traceId/spanId
-          fields of the logback-spring.xml pattern stay permanently empty.
-            * spring-boot-micrometer-tracing               -> MicrometerTracingAutoConfiguration
-                                                              (span-producing observation handlers)
-            * spring-boot-micrometer-tracing-opentelemetry -> OpenTelemetryTracingAutoConfiguration
-                                                              (SdkTracerProvider + OtelTracer +
-                                                               W3C context propagators)
-          No OTLP/Zipkin exporter artifact is declared, so spans are created and correlated into
-          the MDC but not shipped off-box; adding an exporter is a deployment-time choice.
-        -->
 
         <!-- PostgreSQL JDBC driver (runtime only). -->
         <dependency>

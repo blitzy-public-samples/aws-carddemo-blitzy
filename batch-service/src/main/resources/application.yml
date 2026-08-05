@@ -100,6 +100,11 @@ spring:
   # V5__batch_metadata.sql owns the BATCH_* tables, and carddemo-common's
   # JdbcBatchConfiguration (imported by BatchServiceApplication) supplies the
   # JDBC-backed JobRepository that reads and writes them.
+  # Batch jobs run ON-DEMAND via JobLauncher, never automatically at startup.
+  # The JDBC job repository is declared by BatchJobRepositoryConfig
+  # (@EnableBatchProcessing + @EnableJdbcJobRepository) and creates no schema of
+  # its own; Flyway owns the BATCH_* metadata tables. Spring Boot 4 removed the
+  # spring.batch.jdbc.* properties, so no initializer switch is set here.
   batch:
     job:
       enabled: false
@@ -109,10 +114,17 @@ spring:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
       port: ${SPRING_DATA_REDIS_PORT:6379}
 
-  # Pure batch service: no HTTP session. The legacy spring.session.store-type
-  # property was removed in Boot 3.x/4.x and is inert (QA CR-15); with no
-  # spring-session starter on the batch classpath, no session store is
-  # configured - which is exactly the intent here, so no session block is set.
+  # HTTP session for the /batch launch surface. batch-service now exposes launch
+  # endpoints, so it participates in the same shared Redis session as the other
+  # services: the gateway forwards the caller's SESSION cookie and the shared
+  # session-context filter derives the authenticated principal from it. The
+  # namespace and flush-mode keys live under spring.session.data.redis in Boot 4.
+  session:
+    timeout: ${SPRING_SESSION_TIMEOUT:30m}
+    data:
+      redis:
+        namespace: ${SPRING_SESSION_REDIS_NAMESPACE:carddemo:session}
+        flush-mode: on-save
 
 server:
   port: 8080
@@ -130,6 +142,13 @@ management:
     health:
       probes:
         enabled: true
+      # The readiness group must reflect the datastore: a service whose database is
+      # unreachable cannot serve a single business request, so it must report
+      # not-ready and be pulled out of the load-balancer / Service endpoints instead
+      # of continuing to receive traffic it can only answer with HTTP 500. Without
+      # this the group contains readinessState alone and stays UP while the database
+      # is down. Liveness deliberately stays state-only so a transient datastore
+      # outage never triggers a container restart.
       # Health detail is disclosed only to authenticated principals so an
       # anonymous caller cannot enumerate datastore/dependency internals
       # (QA MJ-16). Liveness/readiness aggregate status stays public for probes.
@@ -171,11 +190,19 @@ management:
   # canonical Boot 4.1 key is used here, and the default now points at the OTLP HTTP
   # receiver of the 'jaeger' collector declared in docker-compose.yml / k8s rather than
   # at the container's own loopback.
+  # Distributed tracing export (QA CR-12). The OTLP endpoint and the sampling
+  # probability are environment-driven (QA MN-03): 100% capture is unsafe for
+  # p95/memory NFRs in production, so the default is a 10% sample that each
+  # environment overrides (e.g. 1.0 in dev, lower under load).
+  # NOTE: Spring Boot 4 RELOCATED this key. The pre-4.0 form
+  # management.otlp.tracing.endpoint was removed in 4.0.0 and is now silently
+  # ignored, so the endpoint must be declared under
+  # management.opentelemetry.tracing.export.otlp.* to take effect.
   opentelemetry:
     tracing:
       export:
         otlp:
-          endpoint: ${MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+          endpoint: ${MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT:${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}}
   tracing:
     sampling:
       probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0.1}

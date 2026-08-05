@@ -109,14 +109,70 @@ spring:
   # but carry no value, so the shared namespace below was silently ignored and
   # every service fell back to the default 'spring:session' prefix. Canonical Boot
   # 4.1 keys are used here so the namespace is genuinely applied. Session tuning;
+  # and is inert (QA CR-15). Session tuning lives under spring.session.data.redis.*
+  # (the spring.session.redis.* prefix was removed in Boot 4.0 and is IGNORED);
   # the Redis connection uses spring.data.redis.* declared above. A shared
   # namespace lets every service read/write the same COMMAREA-equivalent session.
   session:
     timeout: ${SPRING_SESSION_TIMEOUT:30m}
+    # Boot 4 renamed the Redis session properties: spring.session.redis.* is
+    # deprecated at ERROR level and inert, so the namespace/flush-mode below MUST
+    # sit under spring.session.data.redis.* to take effect. Every service must
+    # declare the SAME namespace or the shared COMMAREA-equivalent session breaks.
     data:
       redis:
         namespace: ${SPRING_SESSION_REDIS_NAMESPACE:carddemo:session}
         flush-mode: on-save
+
+# ---------------------------------------------------------------------
+# Statement/report output destination (QA F22). The statement-generation
+# job writes the CBSTM03A 80-column STMTFILE and 100-column HTMLFILE
+# documents into this root. It MUST be writable: the container runs with a
+# read-only root filesystem and a writable /tmp mount, so a blank value
+# resolves to <java.io.tmpdir>/carddemo-reporting/output - the same
+# convention batch-service applies to its own report output. A report
+# request whose destination cannot be created or written is refused with
+# the legacy CORPT00C message 'Unable to Write TDQ (JOBS)...' instead of
+# being reported as a success.
+#
+# 'launch-verification-timeout' bounds how long a report request waits for
+# the launched run to report an outcome: a run that ends inside the window
+# has its exit status inspected (a failure is surfaced to the caller), while
+# a longer run keeps the legacy asynchronous TDQ submission semantics -
+# CORPT00C never waited for the JES job either - and is audited through its
+# BATCH_JOB_EXECUTION row plus an ERROR log line. The default is deliberately
+# short so the online response stays inside the p95 budget; the deterministic
+# failure mode (an unwritable destination) is refused synchronously before the
+# run is launched and therefore does not depend on this window at all.
+carddemo:
+  reporting:
+    output-dir: ${CARDDEMO_REPORTING_OUTPUT_DIR:}
+    launch-verification-timeout: ${CARDDEMO_REPORTING_LAUNCH_VERIFICATION_TIMEOUT:250ms}
+# ---------------------------------------------------------------------
+# Statement-generation output root (QA Issue 21, and QA MJ-08 / CWE-22).
+#
+# The CBSTM03A statement writer used to open the RELATIVE paths
+# 'output/statements.txt' and 'output/statements.html', which FileSystemResource
+# resolved against the process working directory - /app inside the container, on
+# the read-only root filesystem. Every submitted report therefore failed at
+# statementGenerationStep with "Unable to create file" /
+# "java.io.IOException: No such file or directory" and was recorded FAILED,
+# while the caller had already received HTTP 200 "Monthly report submitted for
+# printing".
+#
+# The statement file names are now confined to this allowlisted root by the
+# shared carddemo-common BatchOutputPathResolver (absolute paths, '..' traversal
+# and symlink escapes are rejected), and the root is created and proven writable
+# while the context refreshes, so a deployment without a writable batch
+# directory fails fast instead of failing every job. 'input-dir' is declared for
+# symmetry with batch-service; this service reads no feed file. When a value is
+# blank a <java.io.tmpdir>/carddemo-batch/{output,input} default is used, which
+# keeps the job runnable on a workstation and in a container whose only writable
+# mount is /tmp.
+# ---------------------------------------------------------------------
+  batch:
+    output-dir: ${CARDDEMO_BATCH_OUTPUT_DIR:}
+    input-dir: ${CARDDEMO_BATCH_INPUT_DIR:}
 
 # --------------------------------------------------------------------
 # Session-cookie policy for the shared Spring Session cookie (CWE-614).
@@ -149,6 +205,13 @@ management:
     health:
       probes:
         enabled: true
+      # The readiness group must reflect the datastore: a service whose database is
+      # unreachable cannot serve a single business request, so it must report
+      # not-ready and be pulled out of the load-balancer / Service endpoints instead
+      # of continuing to receive traffic it can only answer with HTTP 500. Without
+      # this the group contains readinessState alone and stays UP while the database
+      # is down. Liveness deliberately stays state-only so a transient datastore
+      # outage never triggers a container restart.
       # Health detail is disclosed only to authenticated principals so an
       # anonymous caller cannot enumerate datastore/dependency internals
       # (QA MJ-16). Liveness/readiness aggregate status stays public for probes.
@@ -190,41 +253,23 @@ management:
   # canonical Boot 4.1 key is used here, and the default now points at the OTLP HTTP
   # receiver of the 'jaeger' collector declared in docker-compose.yml / k8s rather than
   # at the container's own loopback.
+  # Distributed tracing export (QA CR-12). The OTLP endpoint and the sampling
+  # probability are environment-driven (QA MN-03): 100% capture is unsafe for
+  # p95/memory NFRs in production, so the default is a 10% sample that each
+  # environment overrides (e.g. 1.0 in dev, lower under load).
+  # NOTE: Spring Boot 4 RELOCATED this key. The pre-4.0 form
+  # management.otlp.tracing.endpoint was removed in 4.0.0 and is now silently
+  # ignored, so the endpoint must be declared under
+  # management.opentelemetry.tracing.export.otlp.* to take effect.
   opentelemetry:
     tracing:
       export:
         otlp:
-          endpoint: ${MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+          endpoint: ${MANAGEMENT_OPENTELEMETRY_TRACING_EXPORT_OTLP_ENDPOINT:${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}}
   tracing:
     sampling:
       probability: ${MANAGEMENT_TRACING_SAMPLING_PROBABILITY:0.1}
 
-# ---------------------------------------------------------------------
-# Statement-generation output root (QA Issue 21, and QA MJ-08 / CWE-22).
-#
-# The CBSTM03A statement writer used to open the RELATIVE paths
-# 'output/statements.txt' and 'output/statements.html', which FileSystemResource
-# resolved against the process working directory - /app inside the container, on
-# the read-only root filesystem. Every submitted report therefore failed at
-# statementGenerationStep with "Unable to create file" /
-# "java.io.IOException: No such file or directory" and was recorded FAILED,
-# while the caller had already received HTTP 200 "Monthly report submitted for
-# printing".
-#
-# The statement file names are now confined to this allowlisted root by the
-# shared carddemo-common BatchOutputPathResolver (absolute paths, '..' traversal
-# and symlink escapes are rejected), and the root is created and proven writable
-# while the context refreshes, so a deployment without a writable batch
-# directory fails fast instead of failing every job. 'input-dir' is declared for
-# symmetry with batch-service; this service reads no feed file. When a value is
-# blank a <java.io.tmpdir>/carddemo-batch/{output,input} default is used, which
-# keeps the job runnable on a workstation and in a container whose only writable
-# mount is /tmp.
-# ---------------------------------------------------------------------
-carddemo:
-  batch:
-    output-dir: ${CARDDEMO_BATCH_OUTPUT_DIR:}
-    input-dir: ${CARDDEMO_BATCH_INPUT_DIR:}
 
 # ---------------------------------------------------------------------
 # Structured-logging members (QA Issue 8).

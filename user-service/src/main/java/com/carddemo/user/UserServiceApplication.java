@@ -31,13 +31,9 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 import com.carddemo.common.config.CardDemoErrorController;
 import com.carddemo.common.config.ContainerErrorReportConfig;
-import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.config.SecurityExceptionHandler;
-import com.carddemo.common.config.ObservabilityConfig;
 import com.carddemo.common.config.PersistenceExceptionHandler;
 import com.carddemo.common.config.RedisCommandMetricsConfig;
-import com.carddemo.common.config.SessionRedisConfig;
-import com.carddemo.common.config.WebObservabilityConfig;
 import com.carddemo.common.config.SchemaMigrationConfig;
 /**
  * Executable entry point for the CardDemo User Management microservice.

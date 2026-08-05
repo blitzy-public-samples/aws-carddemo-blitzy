@@ -28,12 +28,10 @@ import org.springframework.context.annotation.Import;
 
 import com.carddemo.common.config.CardDemoErrorController;
 import com.carddemo.common.config.ContainerErrorReportConfig;
-import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.config.SecurityExceptionHandler;
-import com.carddemo.common.config.ObservabilityConfig;
+
+
 import com.carddemo.common.config.RedisCommandMetricsConfig;
-import com.carddemo.common.config.SessionRedisConfig;
-import com.carddemo.common.config.WebObservabilityConfig;
 /**
  * :purpose: Executable entry point for the CardDemo API Gateway, a Spring Cloud
  *     Gateway Server WebMVC (servlet) edge router that also serves the
@@ -44,10 +42,14 @@ import com.carddemo.common.config.WebObservabilityConfig;
  *     GlobalExceptionHandler because that library ships no auto-configuration
  *     imports file.
  */
-@SpringBootApplication(exclude = UserDetailsServiceAutoConfiguration.class)
-@Import({ ObservabilityConfig.class, GlobalExceptionHandler.class, CardDemoErrorController.class,
-        SecurityExceptionHandler.class, ContainerErrorReportConfig.class, SessionRedisConfig.class,
-        RedisCommandMetricsConfig.class, WebObservabilityConfig.class, WebHardeningConfig.class })
+@SpringBootApplication
+@Import({
+        ObservabilityConfig.class,
+        WebObservabilityConfig.class,
+        WebHardeningConfig.class,
+        GlobalExceptionHandler.class,
+        SessionRedisConfig.class
+})
 public class GatewayApplication {
 
     /**

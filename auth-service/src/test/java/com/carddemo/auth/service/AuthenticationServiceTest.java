@@ -19,6 +19,7 @@ package com.carddemo.auth.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -120,6 +121,7 @@ class AuthenticationServiceTest {
     private final LoginAttemptService loginAttemptService =
             new LoginAttemptService(5, java.time.Duration.ofMinutes(15));
 
+    @InjectMocks
     private AuthenticationService authenticationService;
 
     /**
@@ -164,6 +166,8 @@ class AuthenticationServiceTest {
         when(httpRequest.getSession(false)).thenReturn(null);
         when(httpRequest.getSession(true)).thenReturn(session);
 
+        when(httpRequest.getSession(true)).thenReturn(session);
+
         SignonResponseDto result =
                 authenticationService.signon(new SignonRequestDto("ADMIN001", "password"), httpRequest);
 
@@ -188,6 +192,8 @@ class AuthenticationServiceTest {
                 .thenReturn(new SignonResponseDto("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN, "CA00"));
         when(signonMapper.toSessionContext(user)).thenReturn(new SessionContext());
         when(httpRequest.getSession(false)).thenReturn(null);
+        when(httpRequest.getSession(true)).thenReturn(session);
+
         when(httpRequest.getSession(true)).thenReturn(session);
 
         authenticationService.signon(new SignonRequestDto("admin001", "password"), httpRequest);
@@ -219,6 +225,8 @@ class AuthenticationServiceTest {
         verify(passwordEncoder).matches(eq("whatever"), any());
         verifyNoInteractions(signonMapper);
         verify(session, never()).setAttribute(any(), any());
+        // Issue 9: a rejected sign-on must not create a session at all.
+        verify(httpRequest, never()).getSession(anyBoolean());
     }
 
     /**
@@ -242,6 +250,8 @@ class AuthenticationServiceTest {
         assertThat(ex.getReason()).isEqualTo(MSG_WRONG_PASSWORD);
         verifyNoInteractions(signonMapper);
         verify(session, never()).setAttribute(any(), any());
+        // Issue 9: a rejected sign-on must not create a session at all.
+        verify(httpRequest, never()).getSession(anyBoolean());
     }
 
     /**
@@ -265,6 +275,8 @@ class AuthenticationServiceTest {
         verify(passwordEncoder, never()).matches(anyString(), eq(STORED_HASH));
         verifyNoInteractions(signonMapper);
         verify(session, never()).setAttribute(any(), any());
+        // Issue 9: a rejected sign-on must not create a session at all.
+        verify(httpRequest, never()).getSession(anyBoolean());
     }
 
     /**
@@ -282,6 +294,8 @@ class AuthenticationServiceTest {
                 .thenReturn(new SignonResponseDto("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN, "CA00"));
         when(signonMapper.toSessionContext(user)).thenReturn(new SessionContext());
         when(httpRequest.getSession(false)).thenReturn(null);
+        when(httpRequest.getSession(true)).thenReturn(session);
+
         when(httpRequest.getSession(true)).thenReturn(session);
 
         SignonResponseDto result =
@@ -308,6 +322,8 @@ class AuthenticationServiceTest {
         when(httpRequest.getSession(false)).thenReturn(null);
         when(httpRequest.getSession(true)).thenReturn(session);
 
+        when(httpRequest.getSession(true)).thenReturn(session);
+
         SignonResponseDto result =
                 authenticationService.signon(new SignonRequestDto("user0001", "password"), httpRequest);
 
@@ -331,6 +347,8 @@ class AuthenticationServiceTest {
                 .thenReturn(new SignonResponseDto("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN, "CA00"));
         when(signonMapper.toSessionContext(user)).thenReturn(new SessionContext());
         when(httpRequest.getSession(false)).thenReturn(null);
+        when(httpRequest.getSession(true)).thenReturn(session);
+
         when(httpRequest.getSession(true)).thenReturn(session);
 
         authenticationService.signon(new SignonRequestDto("admin001", "PaSsWoRd"), httpRequest);
@@ -361,6 +379,8 @@ class AuthenticationServiceTest {
         assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(ex.getReason()).isEqualTo(MSG_WRONG_PASSWORD);
         verify(session, never()).setAttribute(any(), any());
+        // Issue 9: a rejected sign-on must not create a session at all.
+        verify(httpRequest, never()).getSession(anyBoolean());
     }
 
     /**
@@ -442,4 +462,7 @@ class AuthenticationServiceTest {
 
         assertThat(loginAttemptService.isLocked("ADMIN001")).isFalse();
     }
+
+
+
 }

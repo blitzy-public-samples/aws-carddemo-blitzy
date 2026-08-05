@@ -22,6 +22,7 @@ import com.carddemo.auth.mapper.SignonMapper;
 import com.carddemo.auth.repository.SecurityUserRepository;
 import com.carddemo.auth.security.LoginAttemptService;
 import com.carddemo.common.domain.SecurityUser;
+import com.carddemo.common.dto.SessionAttributes;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.security.SecurityAuditLogger;
 import com.carddemo.common.security.SessionPrincipalIndex;
@@ -29,6 +30,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import java.util.Locale;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -46,6 +49,12 @@ import org.springframework.web.server.ResponseStatusException;
  */
 @Service
 public class AuthenticationService {
+
+    /**
+     * :purpose: Logger for sign-on outcomes that need operator attention (an unusable stored
+     *     credential); never used to record credentials or entered passwords.
+     */
+    private static final Logger log = LoggerFactory.getLogger(AuthenticationService.class);
 
     /**
      * :purpose: Sign-on failure message for a user id with no matching
@@ -70,10 +79,12 @@ public class AuthenticationService {
     /**
      * :purpose: Session attribute key under which the externalized
      *  {@link SessionContext} (the CICS COMMAREA replacement) is stored on the
-     *  current {@link HttpSession}. It delegates to the canonical constant on
-     *  {@link SessionContext} so every service reads and writes one key.
+     *  current {@link HttpSession}. Delegates to
+     *  {@link SessionAttributes#SESSION_CONTEXT}, the single key shared by the API
+     *  gateway's menu navigation and every business service, so the migrated
+     *  COMMAREA is one object rather than several divergent copies.
      */
-    public static final String SESSION_CONTEXT_ATTRIBUTE = SessionContext.SESSION_ATTRIBUTE_NAME;
+    public static final String SESSION_CONTEXT_ATTRIBUTE = SessionAttributes.SESSION_CONTEXT;
 
     private final SecurityUserRepository securityUserRepository;
     private final PasswordEncoder passwordEncoder;
@@ -163,6 +174,9 @@ public class AuthenticationService {
         loginAttemptService.recordSuccess(userId);
         SignonResponseDto response = signonMapper.toSignonResponse(user);
         SessionContext context = signonMapper.toSessionContext(user);
+        // Credentials verified: only now is a session worth creating, and its id is
+        // rotated first so a session id obtained before sign-on can never become an
+        // authenticated one.
         HttpSession session = rotateSession(httpRequest);
         session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, context);
         sessionPrincipalIndex.register(context.getUserId(), session.getId());
