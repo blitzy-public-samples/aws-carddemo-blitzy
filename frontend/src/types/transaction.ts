@@ -8,18 +8,23 @@
  *   add request / response DTOs.
  * :note: Member names mirror the backend ``Transaction*Dto`` JSON contracts
  *   (camelCase) so axios payloads bind without field remapping.
- * :note: Monetary amounts (``tranAmt``) and identifier fields (transaction id, card
- *   number, account id, merchant id) are carried as ``string`` to preserve packed-
- *   decimal scale and fixed field widths / leading zeros; 26-character timestamps are
- *   ``string``. The numeric category code (``tranCatCd``) is the sole ``number`` field.
+ * :note: Every monetary, identifier and numeric field — ``tranAmt``, the
+ *   transaction id, the card number, the account id, ``tranMerchantId`` and
+ *   ``tranCatCd`` — is carried as ``string``: the services serialize them as
+ *   strings so packed-decimal scale and fixed COBOL field widths (including leading
+ *   zeros) survive the wire, and a 16-digit id exceeds
+ *   ``Number.MAX_SAFE_INTEGER``. Timestamps are ``string`` in the 26-character
+ *   ``YYYY-MM-DD-HH.MM.SS.mmmmmm`` form. No member of this module is a ``number``
+ *   except the list paging counters.
  */
 
 /**
  * :purpose: One row of the transaction list screen ``COTRN00``. Mirrors the backend
  *   ``TransactionListItemDto``.
  * :field tranId: 16-character transaction identifier.
- * :field tranDate: display date (``MM/DD/YY``) derived from the origination
- *   timestamp date portion.
+ * :field tranDate: display date in ``MM/DD/YY`` form, derived server-side from the
+ *   first ten characters of the origination timestamp; empty when that date portion
+ *   is absent or unparseable.
  * :field tranDesc: transaction description.
  * :field tranAmt: signed monetary amount as a decimal string (``NUMERIC(11,2)``).
  */
@@ -83,7 +88,8 @@ export interface TranListResponseDto {
  * :field tranId: 16-character transaction identifier.
  * :field tranCardNum: 16-character card number / PAN.
  * :field tranTypeCd: two-character transaction type code.
- * :field tranCatCd: numeric transaction category code.
+ * :field tranCatCd: four-digit transaction category code (``TRAN-CAT-CD`` 9(04)) as a
+ *   zero-padded string.
  * :field tranSource: origination source of the transaction.
  * :field tranDesc: transaction description.
  * :field tranAmt: signed monetary amount as a decimal string (``NUMERIC(11,2)``).
@@ -100,7 +106,7 @@ export interface TranViewResponseDto {
   tranId: string;
   tranCardNum: string;
   tranTypeCd: string;
-  tranCatCd: number;
+  tranCatCd: string;
   tranSource: string;
   tranDesc: string;
   tranAmt: string;
@@ -121,14 +127,20 @@ export interface TranViewResponseDto {
  * :field tranCardNum: 16-character card number. Optional under the same
  *   account-or-card rule as ``acctId``.
  * :field tranTypeCd: two-character transaction type code.
- * :field tranCatCd: numeric transaction category code.
+ * :field tranCatCd: four-digit transaction category code (``TRAN-CAT-CD`` 9(04)) as a
+ *   zero-padded string. A blank value is reported with the legacy category-code
+ *   message rather than being coerced to zero.
  * :field tranSource: origination source of the transaction.
  * :field tranDesc: transaction description.
  * :field tranAmt: signed monetary amount as a decimal string (``NUMERIC(11,2)``).
- * :field tranOrigTs: origination timestamp; the screen collects the ``YYYY-MM-DD``
- *   date portion and it is expanded server-side.
+ * :field tranOrigTs: origination timestamp. The screen collects the ``YYYY-MM-DD``
+ *   date portion (``TORIGDT``, ten characters) and the service stores the submitted
+ *   value verbatim in the 26-character field, exactly as ``COTRN02C`` L464 moves the
+ *   ten-character screen field into ``TRAN-ORIG-TS``; it is NOT expanded to a full
+ *   timestamp.
  * :field tranProcTs: processing timestamp, collected as the ``YYYY-MM-DD`` date
- *   portion.
+ *   portion (``TPROCDT``) and stored verbatim on the same terms (``COTRN02C``
+ *   L465).
  * :field tranMerchantId: 9-digit merchant identifier as a string.
  * :field tranMerchantName: merchant name.
  * :field tranMerchantCity: merchant city.
@@ -140,7 +152,7 @@ export interface TranAddRequestDto {
   acctId?: string;
   tranCardNum?: string;
   tranTypeCd: string;
-  tranCatCd: number;
+  tranCatCd: string;
   tranSource: string;
   tranDesc: string;
   tranAmt: string;

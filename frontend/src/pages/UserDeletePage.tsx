@@ -16,25 +16,21 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, ReactElement } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
+import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { UserDto } from '../types';
 import { ApiError, deleteUser, getUser } from '../api';
-import { useApi } from '../hooks';
+import OutputField from '../components/OutputField';
+import { useApi, useFocusOnChange, useFocusOnSettled, useInitialFocus } from '../hooks';
 
 /** CICS transaction id of the delete-user screen (``WS-TRANID``). */
 const TRANSACTION_ID = 'CU03';
 
 /** Legacy program name shown on header line 2 (``WS-PGMNAME``). */
 const PROGRAM_NAME = 'COUSR03C';
-
-/** First header title line. */
-const TITLE01 = 'CardDemo';
-
-/** Second header title line. */
-const TITLE02 = 'Delete User';
 
 /** Route F3 returns to, replacing the legacy ``XCTL`` to ``COADM01C``. */
 const ADMIN_MENU_ROUTE = '/admin';
@@ -101,6 +97,14 @@ const PFKEY_LABEL_PF4 = 'F4=Clear';
 
 /** BMS line-24 legend caption for F5. */
 const PFKEY_LABEL_PF5 = 'F5=Delete';
+
+/*
+ * ``COUSR03C`` evaluates ``DFHPF12`` and returns to the administrator menu without
+ * deleting, but ``COUSR03.bms`` paints only four keys on line 24. The AID is claimed
+ * so the key behaves as the program specifies, while the caption stays off the
+ * legend: the mapset, not the program, decides what line 24 shows.
+ */
+const PFKEY_LABEL_PF12 = 'F12=Cancel';
 
 /** In-body caption of the read-for-display action. */
 const BUTTON_LABEL_FETCH = 'Fetch';
@@ -232,6 +236,10 @@ export default function UserDeletePage(): ReactElement {
   const [userId, setUserId] = useState<string>(selectedUserId);
   const [detail, setDetail] = useState<UserDto | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
+
+  // ``COUSR03C`` faults USRIDIN for its own two edits only.
+  const faultedUserId =
+    errorMessage === MSG_USER_ID_EMPTY || errorMessage === MSG_USER_NOT_FOUND;
   const [infoMessage, setInfoMessage] = useState<string>('');
 
   const { loading: fetching, run: runFetch } = useApi(fetchUserOutcome);
@@ -335,7 +343,7 @@ export default function UserDeletePage(): ReactElement {
    * :purpose: F3 handler — return to the administrator menu.
    */
   const handleExit = useCallback((): void => {
-    navigate(ADMIN_MENU_ROUTE);
+    void navigate(ADMIN_MENU_ROUTE);
   }, [navigate]);
 
   /**
@@ -344,6 +352,13 @@ export default function UserDeletePage(): ReactElement {
    */
   const handleUserIdChange = useCallback((event: ChangeEvent<HTMLInputElement>): void => {
     setUserId(event.target.value);
+    // ``DELETE-USER-INFO`` keys off the live ``USRIDINI`` and re-reads before it
+    // deletes, and ``SEND-USRDEL-SCREEN`` sends with ``ERASE``, so the protected
+    // detail fields never survive a send that did not repopulate them. Dropping the
+    // loaded record the moment the key stops matching it reproduces that: the
+    // details on screen always belong to the key beside them.
+    setDetail(null);
+    setInfoMessage('');
   }, []);
 
   /**
@@ -356,6 +371,19 @@ export default function UserDeletePage(): ReactElement {
       handleFetch();
     },
     [handleFetch],
+  );
+
+  // ``COUSR03`` declares ``USRIDIN ATTRB=(FSET,IC,NORM,UNPROT)`` and every
+  // ``COUSR03C`` path ends ``MOVE -1 TO USRIDINL``, and CICS honours the insert
+  // cursor on every ``SEND MAP`` - not only the first. The settle hook re-places it
+  // after each request because the browser blurs a control the instant it is
+  // disabled, and the token hook covers the paths that publish a message without
+  // issuing a request at all.
+  const userIdRef = useInitialFocus<HTMLInputElement>();
+  useFocusOnSettled(busy, userIdRef);
+  useFocusOnChange(
+    errorMessage === '' && infoMessage === '' ? null : errorMessage + '\u0000' + infoMessage,
+    userIdRef,
   );
 
   // Entry with a pre-selected id keys it into the field and reads the record
@@ -381,7 +409,16 @@ export default function UserDeletePage(): ReactElement {
         onActivate: handleFetch,
         enabled: !busy,
       },
-      { action: PfKeyAction.PF3, label: PFKEY_LABEL_PF3, onActivate: handleExit },
+      // A pending DELETE must not be abandoned by navigating away: unmounting the
+      // page aborts the request, so its outcome would never be known. CICS cannot
+      // accept a new AID while the task runs either, so refusing keys in flight is
+      // the faithful rendering rather than an added restriction.
+      {
+        action: PfKeyAction.PF3,
+        label: PFKEY_LABEL_PF3,
+        onActivate: handleExit,
+        enabled: !busy,
+      },
       {
         action: PfKeyAction.PF4,
         label: PFKEY_LABEL_PF4,
@@ -394,14 +431,22 @@ export default function UserDeletePage(): ReactElement {
         onActivate: handleDelete,
         enabled: !busy,
       },
+      {
+        action: PfKeyAction.PF12,
+        label: PFKEY_LABEL_PF12,
+        onActivate: handleExit,
+        enabled: !busy,
+        dark: true,
+      },
     ];
     setChrome({
       transactionId: TRANSACTION_ID,
       programName: PROGRAM_NAME,
-      title01: TITLE01,
-      title02: TITLE02,
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
       errorMessage,
       infoMessage,
+      busy,
       pfKeys,
     });
   }, [
@@ -426,6 +471,7 @@ export default function UserDeletePage(): ReactElement {
           {LABEL_USER_ID}
         </label>{' '}
         <input
+          {...invalidFieldProps(faultedUserId)}
           id="usridin"
           name="usridin"
           data-testid="user-id"
@@ -436,7 +482,8 @@ export default function UserDeletePage(): ReactElement {
           size={USER_ID_LENGTH}
           autoComplete="off"
           spellCheck={false}
-          autoFocus
+          ref={userIdRef}
+          disabled={busy}
           onChange={handleUserIdChange}
         />{' '}
         <button type="submit" data-testid="fetch-button" disabled={busy}>
@@ -449,57 +496,33 @@ export default function UserDeletePage(): ReactElement {
       </div>
 
       <div className="userDelete__detail">
-        <div className="userDelete__row">
-          <label className="prompt" htmlFor="fname">
-            {LABEL_FIRST_NAME}
-          </label>{' '}
-          <input
-            id="fname"
-            name="fname"
-            data-testid="first-name"
-            className="label"
-            type="text"
+        <dl className="userDelete__row">
+          <OutputField
+            label={LABEL_FIRST_NAME}
             value={detail?.firstName ?? ''}
-            maxLength={NAME_LENGTH}
-            size={NAME_LENGTH}
-            readOnly
+            testId="first-name"
+            width={NAME_LENGTH}
           />
-        </div>
+        </dl>
 
-        <div className="userDelete__row">
-          <label className="prompt" htmlFor="lname">
-            {LABEL_LAST_NAME}
-          </label>{' '}
-          <input
-            id="lname"
-            name="lname"
-            data-testid="last-name"
-            className="label"
-            type="text"
+        <dl className="userDelete__row">
+          <OutputField
+            label={LABEL_LAST_NAME}
             value={detail?.lastName ?? ''}
-            maxLength={NAME_LENGTH}
-            size={NAME_LENGTH}
-            readOnly
+            testId="last-name"
+            width={NAME_LENGTH}
           />
-        </div>
+        </dl>
 
-        <div className="userDelete__row">
-          <label className="prompt" htmlFor="usrtype">
-            {LABEL_USER_TYPE}
-          </label>{' '}
-          <input
-            id="usrtype"
-            name="usrtype"
-            data-testid="user-type"
-            className="label"
-            type="text"
+        <dl className="userDelete__row">
+          <OutputField
+            label={LABEL_USER_TYPE}
             value={detail?.userType ?? ''}
-            maxLength={USER_TYPE_LENGTH}
-            size={USER_TYPE_LENGTH}
-            readOnly
-          />{' '}
-          <span className="label">{USER_TYPE_HINT}</span>
-        </div>
+            testId="user-type"
+            width={USER_TYPE_LENGTH}
+          />
+          <div className="label">{USER_TYPE_HINT}</div>
+        </dl>
       </div>
 
       <div className="userDelete__actions">
@@ -515,4 +538,3 @@ export default function UserDeletePage(): ReactElement {
     </section>
   );
 }
-

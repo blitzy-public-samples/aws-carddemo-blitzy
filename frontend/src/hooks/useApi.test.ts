@@ -8,17 +8,30 @@
  *     ``401`` (surfaced without the hook redirecting), and a non-``ApiError``
  *     failure normalized to ``status`` ``0`` with its message preserved. Also
  *     covers ``reset``.
- * :note: Uses the real ``ApiError`` imported from ``../api`` (constructed
- *     directly); ``apiFn`` is a plain Jest mock, so no network and no
- *     ``import.meta`` evaluation occur.
+ * :note: Uses the real ``ApiError``; ``apiFn`` is a plain Jest mock, so the hook's own
+ *     state machine is exercised with no network of its own. ``../api/auth`` is mocked
+ *     because the hook reads the signed-on identity (to drop held data when it
+ *     changes) and the session store answers that from the server: the mock keeps the
+ *     probe from reaching the network while leaving ``../api/client`` — and therefore
+ *     the real ``ApiError`` — untouched.
  */
 
 import { renderHook, act } from '@testing-library/react';
 // Jest's native-ESM runtime does not inject ``jest`` as a global (unlike
 // ``describe`` / ``it`` / ``expect``), so the mock factory is imported explicitly.
 import { jest } from '@jest/globals';
-import { useApi } from './useApi';
-import { ApiError } from '../api';
+
+jest.unstable_mockModule('../api/auth', () => ({
+  __esModule: true,
+  signon: jest.fn(),
+  // Never settles: the identity is irrelevant to this hook's state machine, and an
+  // unresolved probe leaves the session store untouched for the duration of the file.
+  getSessionIdentity: (): Promise<never> => new Promise<never>(() => undefined),
+  logout: (): Promise<void> => Promise.resolve(),
+}));
+
+const { useApi } = await import('./useApi');
+const { ApiError } = await import('../api');
 
 /** Minimal wire-shaped payload; fields kept as strings to mirror preserved wire formats. */
 interface Payload {
@@ -95,12 +108,12 @@ describe('useApi — success path', () => {
 });
 
 describe('useApi — surfaces client-normalized errors (never masks)', () => {
-  it('surfaces the 409 optimistic-lock conflict and leaves prior data intact', async () => {
+  it('surfaces the 409 optimistic-lock conflict and drops the stale payload', async () => {
     const conflict = new ApiError(409, OPTIMISTIC_LOCK_MESSAGE, undefined, true);
     const apiFn = jest.fn((): Promise<Payload> => Promise.resolve(payload));
     const { result } = renderHook(() => useApi(apiFn));
 
-    // Seed a successful read so we can prove a later failure does not clear data.
+    // Seed a successful read, then prove the failure that follows clears it.
     await act(async () => {
       await result.current.run();
     });
@@ -119,8 +132,9 @@ describe('useApi — surfaces client-normalized errors (never masks)', () => {
     expect(result.current.error?.isOptimisticLockConflict).toBe(true);
     expect(result.current.error?.message).toBe(OPTIMISTIC_LOCK_MESSAGE);
     expect(result.current.isOptimisticLockConflict).toBe(true);
-    // Prior data is preserved — the hook never masks or discards it.
-    expect(result.current.data).toEqual(payload);
+    // The held payload described the call that just failed, so it is not left on
+    // screen beside the failure message.
+    expect(result.current.data).toBeNull();
     expect(result.current.loading).toBe(false);
   });
 
@@ -210,5 +224,97 @@ describe('useApi — reset', () => {
       result.current.reset();
     });
     expect(result.current.error).toBeNull();
+  });
+});
+
+describe('useApi — supersession', () => {
+  it('commits only the newest call when an earlier one resolves last', async () => {
+    const first: Payload = { id: '00000000001', amount: '1.00' };
+    const second: Payload = { id: '00000000002', amount: '2.00' };
+    let resolveFirst!: (value: Payload) => void;
+    let resolveSecond!: (value: Payload) => void;
+    const apiFn = jest
+      .fn<() => Promise<Payload>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<Payload>((resolve) => {
+            resolveFirst = resolve;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<Payload>((resolve) => {
+            resolveSecond = resolve;
+          }),
+      );
+    const { result } = renderHook(() => useApi(apiFn));
+
+    let firstRun!: Promise<Payload | undefined>;
+    let secondRun!: Promise<Payload | undefined>;
+    act(() => {
+      firstRun = result.current.run();
+      secondRun = result.current.run();
+    });
+
+    // The newest call settles first and is committed.
+    await act(async () => {
+      resolveSecond(second);
+      await secondRun;
+    });
+    expect(result.current.data).toEqual(second);
+
+    // The superseded call settles afterwards and must be discarded entirely.
+    let firstReturned: Payload | undefined = second;
+    await act(async () => {
+      resolveFirst(first);
+      firstReturned = await firstRun;
+    });
+    expect(firstReturned).toBeUndefined();
+    expect(result.current.data).toEqual(second);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('aborts the superseded call and publishes the newest signal', async () => {
+    const apiFn = jest.fn((): Promise<Payload> => Promise.resolve(payload));
+    const { result } = renderHook(() => useApi(apiFn));
+
+    await act(async () => {
+      await result.current.run();
+    });
+    const firstSignal = result.current.signal;
+    expect(firstSignal).not.toBeNull();
+    expect(firstSignal?.aborted).toBe(false);
+
+    await act(async () => {
+      await result.current.run();
+    });
+    expect(firstSignal?.aborted).toBe(true);
+    expect(result.current.signal).not.toBe(firstSignal);
+    expect(result.current.signal?.aborted).toBe(false);
+  });
+
+  it('aborts the call in flight when the screen is left', async () => {
+    let resolveFn!: (value: Payload) => void;
+    const apiFn = jest.fn(
+      (): Promise<Payload> =>
+        new Promise<Payload>((resolve) => {
+          resolveFn = resolve;
+        }),
+    );
+    const { result, unmount } = renderHook(() => useApi(apiFn));
+
+    let pending!: Promise<Payload | undefined>;
+    act(() => {
+      pending = result.current.run();
+    });
+    const signal = result.current.signal;
+    expect(signal?.aborted).toBe(false);
+
+    unmount();
+    expect(signal?.aborted).toBe(true);
+
+    // The late response is discarded rather than written to an unmounted screen.
+    resolveFn(payload);
+    await expect(pending).resolves.toBeUndefined();
   });
 });

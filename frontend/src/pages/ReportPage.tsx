@@ -16,10 +16,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
+import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction, REPORT_TYPES } from '../types';
+import { PfKeyAction, REPORT_TYPES, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type {
   ReportDateParts,
   ReportRequestDto,
@@ -85,6 +86,54 @@ const INVALID_CONFIRM_SUFFIX = '" is not a valid value to confirm...';
 const SUBMIT_SUCCESS_SUFFIX = ' report submitted for printing ...';
 
 /**
+ * :purpose: Control that receives the cursor on the next screen send. Each
+ *     ``CORPT00C`` path ends with ``MOVE -1 TO <field>L`` naming one of the
+ *     mapset's eight enterable fields; the values are the control ids.
+ */
+type ReportCursorField =
+  | 'reportType-MONTHLY'
+  | 'startDateMonth'
+  | 'startDateDay'
+  | 'startDateYear'
+  | 'endDateMonth'
+  | 'endDateDay'
+  | 'endDateYear'
+  | 'confirm';
+
+/**
+ * :purpose: The control each ``CORPT00C`` edit faults for the value it rejected.
+ *     The confirmation prompt, the ``N`` reset and the submitted/TDQ outcomes report a
+ *     screen state rather than a rejected value, so none of them appears here and none
+ *     marks a control invalid.
+ */
+const FAULTED_FIELD_BY_MESSAGE: Readonly<Record<string, ReportCursorField>> = {
+  [MSG_SELECT_REPORT_TYPE]: 'reportType-MONTHLY',
+  [MSG_START_MONTH_EMPTY]: 'startDateMonth',
+  [MSG_START_MONTH_INVALID]: 'startDateMonth',
+  [MSG_START_DATE_INVALID]: 'startDateMonth',
+  [MSG_START_DAY_EMPTY]: 'startDateDay',
+  [MSG_START_DAY_INVALID]: 'startDateDay',
+  [MSG_START_YEAR_EMPTY]: 'startDateYear',
+  [MSG_START_YEAR_INVALID]: 'startDateYear',
+  [MSG_END_MONTH_EMPTY]: 'endDateMonth',
+  [MSG_END_MONTH_INVALID]: 'endDateMonth',
+  [MSG_END_DATE_INVALID]: 'endDateMonth',
+  [MSG_END_DAY_EMPTY]: 'endDateDay',
+  [MSG_END_DAY_INVALID]: 'endDateDay',
+  [MSG_END_YEAR_EMPTY]: 'endDateYear',
+  [MSG_END_YEAR_INVALID]: 'endDateYear',
+};
+
+/**
+ * :purpose: A failed edit: the message for line 23 and the field the legacy
+ *     screen cursors to when it re-sends the map.
+ */
+interface ReportEdit {
+  field: ReportCursorField;
+  message: string;
+}
+
+/**
  * :purpose: Report whether a date part was left empty (COBOL ``= SPACES OR
  *     LOW-VALUES``).
  * :param value: the entered date part.
@@ -137,61 +186,63 @@ function isCalendarDate(year: number, month: number, day: number): boolean {
  *     failure as the legacy screen does.
  * :param start: the entered start-date month, day and year parts.
  * :param end: the entered end-date month, day and year parts.
- * :returns: the failure message, or ``null`` when the window is valid.
+ * :returns: the failed edit with the field the legacy screen cursors to, or
+ *     ``null`` when the window is valid.
  */
 function validateCustomWindow(
   start: ReportDateParts,
   end: ReportDateParts,
-): string | null {
+): ReportEdit | null {
   if (isEmptyPart(start.month)) {
-    return MSG_START_MONTH_EMPTY;
+    return { field: 'startDateMonth', message: MSG_START_MONTH_EMPTY };
   }
   if (isEmptyPart(start.day)) {
-    return MSG_START_DAY_EMPTY;
+    return { field: 'startDateDay', message: MSG_START_DAY_EMPTY };
   }
   if (isEmptyPart(start.year)) {
-    return MSG_START_YEAR_EMPTY;
+    return { field: 'startDateYear', message: MSG_START_YEAR_EMPTY };
   }
   if (isEmptyPart(end.month)) {
-    return MSG_END_MONTH_EMPTY;
+    return { field: 'endDateMonth', message: MSG_END_MONTH_EMPTY };
   }
   if (isEmptyPart(end.day)) {
-    return MSG_END_DAY_EMPTY;
+    return { field: 'endDateDay', message: MSG_END_DAY_EMPTY };
   }
   if (isEmptyPart(end.year)) {
-    return MSG_END_YEAR_EMPTY;
+    return { field: 'endDateYear', message: MSG_END_YEAR_EMPTY };
   }
 
   const startMonth = parseDatePart(start.month);
   if (startMonth === null || startMonth > MAX_MONTH) {
-    return MSG_START_MONTH_INVALID;
+    return { field: 'startDateMonth', message: MSG_START_MONTH_INVALID };
   }
   const startDay = parseDatePart(start.day);
   if (startDay === null || startDay > MAX_DAY) {
-    return MSG_START_DAY_INVALID;
+    return { field: 'startDateDay', message: MSG_START_DAY_INVALID };
   }
   const startYear = parseDatePart(start.year);
   if (startYear === null) {
-    return MSG_START_YEAR_INVALID;
+    return { field: 'startDateYear', message: MSG_START_YEAR_INVALID };
   }
   const endMonth = parseDatePart(end.month);
   if (endMonth === null || endMonth > MAX_MONTH) {
-    return MSG_END_MONTH_INVALID;
+    return { field: 'endDateMonth', message: MSG_END_MONTH_INVALID };
   }
   const endDay = parseDatePart(end.day);
   if (endDay === null || endDay > MAX_DAY) {
-    return MSG_END_DAY_INVALID;
+    return { field: 'endDateDay', message: MSG_END_DAY_INVALID };
   }
   const endYear = parseDatePart(end.year);
   if (endYear === null) {
-    return MSG_END_YEAR_INVALID;
+    return { field: 'endDateYear', message: MSG_END_YEAR_INVALID };
   }
 
+  // The two calendar edits both cursor to the month part of their window.
   if (!isCalendarDate(startYear, startMonth, startDay)) {
-    return MSG_START_DATE_INVALID;
+    return { field: 'startDateMonth', message: MSG_START_DATE_INVALID };
   }
   if (!isCalendarDate(endYear, endMonth, endDay)) {
-    return MSG_END_DATE_INVALID;
+    return { field: 'endDateMonth', message: MSG_END_DATE_INVALID };
   }
   return null;
 }
@@ -277,6 +328,36 @@ export default function ReportPage(): ReactElement {
   // is set returns without launching the report job again.
   const submissionInFlight = useRef(false);
 
+  const [cursor, setCursor] = useState<{
+    field: ReportCursorField;
+    seq: number;
+  }>({ field: 'reportType-MONTHLY', seq: 0 });
+
+  /**
+   * :purpose: ``MOVE -1 TO <field>L`` — name the control the next screen send
+   *     places the cursor on. ``seq`` advances so a repeated outcome on the same
+   *     field still moves the cursor.
+   * :param field: Control that receives the cursor.
+   */
+  const faultedField: ReportCursorField | null = errorMessage.endsWith(
+    INVALID_CONFIRM_SUFFIX,
+  )
+    ? 'confirm'
+    : (FAULTED_FIELD_BY_MESSAGE[errorMessage] ?? null);
+
+  const placeCursor = useCallback((field: ReportCursorField): void => {
+    setCursor((previous) => ({ field, seq: previous.seq + 1 }));
+  }, []);
+
+  // The entry controls are disabled for the keyboard-locked interval and focusing
+  // a disabled control is a no-op, so placement waits for the submission to settle.
+  useEffect(() => {
+    if (submitting) {
+      return;
+    }
+    document.getElementById(cursor.field)?.focus();
+  }, [cursor, submitting]);
+
   // Clears every entry field, as ``INITIALIZE-ALL-FIELDS`` does.
   const resetFields = useCallback((): void => {
     setReportType('');
@@ -304,6 +385,7 @@ export default function ReportPage(): ReactElement {
     if (reportType === '') {
       setInfoMessage('');
       setErrorMessage(MSG_SELECT_REPORT_TYPE);
+      placeCursor('reportType-MONTHLY');
       return;
     }
 
@@ -318,7 +400,8 @@ export default function ReportPage(): ReactElement {
       const failure = validateCustomWindow(start, end);
       if (failure !== null) {
         setInfoMessage('');
-        setErrorMessage(failure);
+        setErrorMessage(failure.message);
+        placeCursor(failure.field);
         return;
       }
     }
@@ -329,17 +412,20 @@ export default function ReportPage(): ReactElement {
     if (confirmValue === '') {
       setInfoMessage('');
       setErrorMessage(`${CONFIRM_PROMPT_PREFIX}${reportName}${CONFIRM_PROMPT_SUFFIX}`);
+      placeCursor('confirm');
       return;
     }
     if (confirmValue === 'N' || confirmValue === 'n') {
       resetFields();
       setInfoMessage('');
       setErrorMessage('');
+      placeCursor('reportType-MONTHLY');
       return;
     }
     if (confirmValue !== 'Y' && confirmValue !== 'y') {
       setInfoMessage('');
       setErrorMessage(`"${confirmValue}${INVALID_CONFIRM_SUFFIX}`);
+      placeCursor('confirm');
       return;
     }
 
@@ -354,6 +440,7 @@ export default function ReportPage(): ReactElement {
     }
     if (response === undefined) {
       // The normalized failure reaches line 23 through the submission effect.
+      placeCursor('reportType-MONTHLY');
       return;
     }
 
@@ -362,16 +449,19 @@ export default function ReportPage(): ReactElement {
     if (serverMessage !== '' && serverMessage !== submitted) {
       setInfoMessage('');
       setErrorMessage(serverMessage);
+      placeCursor('reportType-MONTHLY');
       return;
     }
     resetFields();
     setErrorMessage('');
     setInfoMessage(submitted);
+    placeCursor('reportType-MONTHLY');
   }, [
     confirmInput,
     endDay,
     endMonth,
     endYear,
+    placeCursor,
     reportType,
     resetFields,
     startDay,
@@ -382,7 +472,7 @@ export default function ReportPage(): ReactElement {
 
   // F3 leaves the screen for the main menu, as ``XCTL PROGRAM('COMEN01C')`` does.
   const handleExit = useCallback((): void => {
-    navigate('/menu');
+    void navigate('/menu');
   }, [navigate]);
 
   // Publishes a failed submission on the line-23 message region.
@@ -400,7 +490,9 @@ export default function ReportPage(): ReactElement {
       {
         action: PfKeyAction.Enter,
         label: 'ENTER=Continue',
-        onActivate: handleEnter,
+        onActivate: () => {
+          void handleEnter();
+        },
         enabled: !submitting,
       },
       {
@@ -412,11 +504,12 @@ export default function ReportPage(): ReactElement {
     setChrome({
       transactionId: 'CR00',
       programName: 'CORPT00C',
-      title01: 'CardDemo',
-      title02: 'Transaction Reports',
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
       errorMessage,
       infoMessage,
       pfKeys,
+      busy: submitting,
     });
   }, [errorMessage, handleEnter, handleExit, infoMessage, setChrome, submitting]);
 
@@ -430,6 +523,7 @@ export default function ReportPage(): ReactElement {
         className="reportPage__types"
         role="radiogroup"
         aria-labelledby="reportHeading"
+        {...invalidFieldProps(faultedField === 'reportType-MONTHLY')}
       >
         {REPORT_TYPES.map((type) => (
           <div className="reportPage__option" key={type}>
@@ -439,6 +533,7 @@ export default function ReportPage(): ReactElement {
               name="reportType"
               value={type}
               checked={reportType === type}
+              disabled={submitting}
               onChange={() => {
                 setReportType(type);
               }}
@@ -456,11 +551,12 @@ export default function ReportPage(): ReactElement {
           <input
             type="text"
             id="startDateMonth"
+            {...invalidFieldProps(faultedField === 'startDateMonth')}
             inputMode="numeric"
             maxLength={2}
             size={2}
             value={startMonth}
-            disabled={!customSelected}
+            disabled={!customSelected || submitting}
             aria-label="Start Date - Month"
             onChange={(event) => {
               setStartMonth(event.target.value);
@@ -472,11 +568,12 @@ export default function ReportPage(): ReactElement {
           <input
             type="text"
             id="startDateDay"
+            {...invalidFieldProps(faultedField === 'startDateDay')}
             inputMode="numeric"
             maxLength={2}
             size={2}
             value={startDay}
-            disabled={!customSelected}
+            disabled={!customSelected || submitting}
             aria-label="Start Date - Day"
             onChange={(event) => {
               setStartDay(event.target.value);
@@ -488,11 +585,12 @@ export default function ReportPage(): ReactElement {
           <input
             type="text"
             id="startDateYear"
+            {...invalidFieldProps(faultedField === 'startDateYear')}
             inputMode="numeric"
             maxLength={4}
             size={4}
             value={startYear}
-            disabled={!customSelected}
+            disabled={!customSelected || submitting}
             aria-label="Start Date - Year"
             onChange={(event) => {
               setStartYear(event.target.value);
@@ -506,11 +604,12 @@ export default function ReportPage(): ReactElement {
           <input
             type="text"
             id="endDateMonth"
+            {...invalidFieldProps(faultedField === 'endDateMonth')}
             inputMode="numeric"
             maxLength={2}
             size={2}
             value={endMonth}
-            disabled={!customSelected}
+            disabled={!customSelected || submitting}
             aria-label="End Date - Month"
             onChange={(event) => {
               setEndMonth(event.target.value);
@@ -522,11 +621,12 @@ export default function ReportPage(): ReactElement {
           <input
             type="text"
             id="endDateDay"
+            {...invalidFieldProps(faultedField === 'endDateDay')}
             inputMode="numeric"
             maxLength={2}
             size={2}
             value={endDay}
-            disabled={!customSelected}
+            disabled={!customSelected || submitting}
             aria-label="End Date - Day"
             onChange={(event) => {
               setEndDay(event.target.value);
@@ -538,11 +638,12 @@ export default function ReportPage(): ReactElement {
           <input
             type="text"
             id="endDateYear"
+            {...invalidFieldProps(faultedField === 'endDateYear')}
             inputMode="numeric"
             maxLength={4}
             size={4}
             value={endYear}
-            disabled={!customSelected}
+            disabled={!customSelected || submitting}
             aria-label="End Date - Year"
             onChange={(event) => {
               setEndYear(event.target.value);
@@ -559,9 +660,11 @@ export default function ReportPage(): ReactElement {
         <input
           type="text"
           id="confirm"
+          {...invalidFieldProps(faultedField === 'confirm')}
           maxLength={1}
           size={1}
           value={confirmInput}
+          disabled={submitting}
           onChange={(event) => {
             setConfirmInput(event.target.value);
           }}
@@ -571,4 +674,3 @@ export default function ReportPage(): ReactElement {
     </div>
   );
 }
-

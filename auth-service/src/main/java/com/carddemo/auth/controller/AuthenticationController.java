@@ -20,6 +20,7 @@ import com.carddemo.auth.dto.SignonRequestDto;
 import com.carddemo.auth.dto.SignonResponseDto;
 import com.carddemo.auth.service.AuthenticationService;
 import com.carddemo.common.config.CorrelationIdContext;
+import com.carddemo.common.security.SensitiveDataMasker;
 import com.carddemo.common.dto.ErrorResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -66,14 +67,10 @@ public class AuthenticationController {
      *  after the credentials verify, so a rejected sign-on leaves none behind.
      * :returns: the sign-on response (user id, user type, redirect target) with
      *  HTTP 200.
-     * :note: Takes the servlet request rather than an ``HttpSession`` parameter
-     *     deliberately. Spring resolves an ``HttpSession`` argument EAGERLY with
-     *     ``getSession(true)`` before the handler body runs, so declaring one
-     *     minted a Redis session for every sign-on attempt - including the failed
-     *     ones that never reach {@link AuthenticationService}'s publish step.
-     *     Deferring creation to the success path keeps a rejected credential from
-     *     consuming session storage, which is what lets a brute-force attempt be
-     *     absorbed without unbounded session growth.
+     * :note: The parameter is the servlet request, not an ``HttpSession``: an
+     *     ``HttpSession`` argument is resolved with ``getSession(true)`` before the
+     *     handler body runs, so a session is created only on the success path here.
+     *     See docs/decision-log.md.
      */
     @PostMapping("/signon")
     public SignonResponseDto signon(@Valid @RequestBody SignonRequestDto request,
@@ -88,7 +85,7 @@ public class AuthenticationController {
      * :param ex: the status-bearing exception thrown by the service.
      * :param request: the current web request, used to derive the request path.
      * :returns: an {@link ErrorResponse} carrying the exception's status, reason
-     *  phrase, verbatim message, request path, and trace id.
+     *  phrase, verbatim message, request path, trace id and correlation id.
      */
     @ExceptionHandler(ResponseStatusException.class)
     public ResponseEntity<ErrorResponse> handleResponseStatus(ResponseStatusException ex, WebRequest request) {
@@ -104,31 +101,25 @@ public class AuthenticationController {
     }
 
     /**
-     * :purpose: Extract the request URI from the web-request description.
+     * :purpose: Extract the request URI from the web-request description and redact any
+     *     PAN-shaped segment, so the envelope's ``path`` can never echo a card number.
      * :param request: the current web request.
-     * :returns: the request path (for example ``/auth/signon``).
+     * :returns: the PAN-redacted request path (for example ``/auth/signon``).
      */
     private String extractPath(WebRequest request) {
         String description = request.getDescription(false);
-        if (description != null && description.startsWith("uri=")) {
-            return description.substring(4);
-        }
-        return description;
+        String uri = description != null && description.startsWith("uri=")
+                ? description.substring(4)
+                : description;
+        return SensitiveDataMasker.maskPan(uri);
     }
 
-    /**
-     * :purpose: Resolve the trace id for the error body, preferring the
-     *  Micrometer Tracing MDC value and falling back to the business
-     *  correlation id.
-     * :returns: the trace id, or ``null`` when neither source is present.
-     */
     /**
      * :purpose: Resolve the DISTRIBUTED-TRACE id of the current request from the ``traceId`` MDC
      *     entry published by Micrometer Tracing.
      * :returns: the current trace id, or ``null`` when the request was not traced.
-     * :note: Deliberately no fallback to the correlation id: the envelope reports the two ids in
-     *     their own fields (``traceId`` and ``correlationId``) so each value resolves where it
-     *     actually exists - the trace backend and the log stream respectively.
+     * :note: Returns ``null`` rather than falling back to the correlation id; the envelope
+     *     carries the two ids in their own ``traceId`` and ``correlationId`` fields.
      */
     private String resolveTraceId() {
         String traceId = MDC.get("traceId");

@@ -8,19 +8,20 @@
  * :output: The named export ``signon`` — posts sign-on credentials to
  *   ``POST /auth/signon`` and resolves the backend result (authenticated user
  *   id, granted role, and post-login redirect target).
- * :note: Credentials are transmitted exactly as entered — this module performs
- *   no client-side upper-casing or other mutation of ``userId`` / ``password``
- *   and never logs them. The legacy ``COSGN00C`` upper-casing (and its resulting
- *   case-insensitive comparison) is a deliberate, decision-logged behavior
- *   change to case-sensitive encoder verification; the rationale lives in
- *   ``docs/decision-log.md`` (AAP 0.6.7), not in this code. Errors are left to
- *   propagate: the shared ``apiClient`` already normalizes every failure into an
- *   ``ApiError`` (for example, a ``401`` triggers the guarded redirect to the
- *   sign-on route), so this module neither catches nor swallows them.
+ * :note: Credentials are transmitted exactly as entered: this module applies no
+ *   upper-casing or other mutation to ``userId`` / ``password`` and never logs
+ *   them, so verification is case-sensitive where ``COSGN00C`` was not. That
+ *   deviation is recorded in ``docs/decision-log.md`` (AAP 0.6.7).
+ * :note: Errors propagate. The shared ``apiClient`` normalizes every failure into
+ *   an ``ApiError``, so this module neither catches nor swallows them.
  */
 
 import apiClient from './client';
-import type { SignonRequestDto, SignonResponseDto } from '../types';
+import type {
+  SessionIdentityDto,
+  SignonRequestDto,
+  SignonResponseDto,
+} from '../types';
 
 /**
  * :purpose: Authenticate a set of sign-on credentials by issuing
@@ -44,4 +45,35 @@ export async function signon(
     request,
   );
   return response.data;
+}
+
+/**
+ * :purpose: Resolve who is signed on from the SERVER-held session by issuing
+ *   ``GET /session``. The legacy screens received ``CDEMO-USER-ID`` and
+ *   ``CDEMO-USER-TYPE`` in the COMMAREA on every pseudo-conversational turn; this
+ *   route returns the same two fields so the SPA never derives authority from
+ *   client-writable browser storage.
+ * :returns: a promise resolving to the ``SessionIdentityDto`` of the signed-on
+ *   caller.
+ * :raises ApiError: with status ``401`` when the session carries no sign-on
+ *   context, which is how an expired or revoked session is reported.
+ */
+export async function getSessionIdentity(): Promise<SessionIdentityDto> {
+  const response = await apiClient.get<SessionIdentityDto>('/session', {
+    skipAuthRedirect: true,
+  });
+  return response.data;
+}
+
+/**
+ * :purpose: Revoke the server-side session by issuing the CSRF-protected
+ *   ``POST /logout`` the api-gateway exposes. The gateway clears the
+ *   authentication, invalidates the HTTP session (so the Redis entry and its
+ *   cookie stop being valid) and deletes the CSRF cookie, answering ``204``.
+ * :returns: a promise that resolves once the server has revoked the session.
+ * :raises ApiError: when the revocation call itself fails, so a caller can avoid
+ *   presenting a signed-out screen over a session that is still live.
+ */
+export async function logout(): Promise<void> {
+  await apiClient.post<void>('/logout', null, { skipAuthRedirect: true });
 }

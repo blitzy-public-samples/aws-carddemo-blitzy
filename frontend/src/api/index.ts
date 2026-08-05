@@ -8,8 +8,9 @@
  *   individual modules.
  * :output: The camelCase REST functions of every domain module, plus ``apiClient``
  *   (the shared ``AxiosInstance``), ``ApiError`` and ``isApiError`` (the normalized
- *   error type and its type-guard), and ``getApiBaseUrl`` (the api-gateway base-URL
- *   resolver).
+ *   error type and its type-guard), ``registerSessionExpiryHandler`` and
+ *   ``clearLocalCredentials`` (the centralized session-expiry hooks), and
+ *   ``getApiBaseUrl`` (the api-gateway base-URL resolver).
  * :note: Pure ES-module re-export surface: it declares no runtime logic, no own
  *   default export, and no side effects, and it never reads the Vite build-time
  *   environment directly, so it is evaluable under Jest (jsdom) without any Vite
@@ -26,5 +27,11 @@ export * from './reports';
 export * from './users';
 export * from './menu';
 
-export { default as apiClient, ApiError, isApiError } from './client';
-export { getApiBaseUrl } from './config';
+export {
+  default as apiClient,
+  ApiError,
+  isApiError,
+  clearLocalCredentials,
+  registerSessionExpiryHandler,
+} from './client';
+export { getApiBaseUrl, getAppId, getSysId } from './config';

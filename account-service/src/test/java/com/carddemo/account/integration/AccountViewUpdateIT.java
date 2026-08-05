@@ -405,11 +405,14 @@ class AccountViewUpdateIT {
         assertThat(view.getCustAddrCountryCd()).isEqualTo("USA");
         assertThat(view.getCustFicoCreditScore()).isEqualTo(274);
 
-        // Wire-level confirmation that money renders at scale 2 (COBOL COMP-3 fidelity).
+        // Wire-level confirmation that money renders as a scale-2 string and a PIC 9(n)
+        // identifier keeps its full width (COBOL COMP-3 / zero-padded display fidelity).
         String body = result.getResponse().getContentAsString();
-        assertThat(body).contains("\"acctCurrBal\":194.00");
-        assertThat(body).contains("\"acctCurrCycCredit\":0.00");
-        assertThat(body).contains("\"acctCurrCycDebit\":0.00");
+        assertThat(body).contains("\"acctCurrBal\":\"194.00\"");
+        assertThat(body).contains("\"acctCurrCycCredit\":\"0.00\"");
+        assertThat(body).contains("\"acctCurrCycDebit\":\"0.00\"");
+        assertThat(body).contains("\"acctId\":\"00000000001\"");
+        assertThat(body).contains("\"custFicoCreditScore\":\"274\"");
     }
 
     /**

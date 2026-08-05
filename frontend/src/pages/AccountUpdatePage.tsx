@@ -16,11 +16,16 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { fieldErrorClass, fieldMarker } from '../components/ErrorBanner';
-import { PfKeyAction } from '../types';
+import {
+  ERROR_LINE_ID,
+  fieldErrorClass,
+  fieldMarker,
+  isFieldInError,
+} from '../components/ErrorBanner';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type {
   AccountViewResponseDto,
   AccountUpdateRequestDto,
@@ -29,7 +34,8 @@ import type {
   FieldErrorMap,
 } from '../types';
 import { getAccount, updateAccount, ApiError } from '../api';
-import { useApi } from '../hooks';
+import { useApi, useFocusOnChange, useInitialFocus } from '../hooks';
+import { isBlank, SSN_MASK_PREFIX } from '../components/display';
 
 /* ------------------------------------------------------------------ */
 /* Screen identity (BMS COACTUP / CICS CAUP / program COACTUPC)       */
@@ -41,20 +47,11 @@ const TRANSACTION_ID = 'CAUP';
 /** COBOL program the screen replaces. */
 const PROGRAM_NAME = 'COACTUPC';
 
-/** First header title line. */
-const TITLE01 = 'CardDemo';
-
-/** Second header title line, matching the ``Update Account`` screen heading. */
-const TITLE02 = 'Update Account';
-
 /** NEUTRAL screen heading at BMS ``POS=(4,33)``. */
 const HEADING = 'Update Account';
 
 /** NEUTRAL customer-section heading at BMS ``POS=(11,32)``. */
 const CUSTOMER_SECTION_HEADING = 'Customer Details';
-
-/** Visible entry hint for the four date fields carried as ``YYYY-MM-DD`` strings. */
-const DATE_HINT = '(YYYY-MM-DD)';
 
 /* ------------------------------------------------------------------ */
 /* Message literals (COACTUPC WS-INFO-MSG / WS-RETURN-MSG 88-levels)  */
@@ -62,6 +59,18 @@ const DATE_HINT = '(YYYY-MM-DD)';
 
 /** ``PROMPT-FOR-SEARCH-KEYS``. */
 const MSG_PROMPT_FOR_SEARCH_KEYS = 'Enter or update id of account to update';
+
+/** ENTER half of the BMS ``FKEYS`` legend ``ENTER=Process F3=Exit``. */
+const PF_PROCESS_LABEL = 'ENTER=Process';
+
+/** PF3 half of the BMS ``FKEYS`` legend ``ENTER=Process F3=Exit``. */
+const PF_EXIT_LABEL = 'F3=Exit';
+
+/** BMS ``FKEY05`` legend, declared ``ATTRB=(ASKIP,DRK)``. */
+const PF_SAVE_LABEL = 'F5=Save';
+
+/** BMS ``FKEY12`` legend, declared ``ATTRB=(ASKIP,DRK)``. */
+const PF_CANCEL_LABEL = 'F12=Cancel';
 
 /** ``PROMPT-FOR-CHANGES``. */
 const MSG_PROMPT_FOR_CHANGES = 'Update account details presented above.';
@@ -83,6 +92,9 @@ const MSG_ACCOUNT_NOT_PROVIDED = 'Account number not provided';
 
 /** ``DATA-WAS-CHANGED-BEFORE-UPDATE`` — surfaced on an HTTP ``409`` conflict. */
 const MSG_OPTIMISTIC_LOCK_CONFLICT = 'Record changed by some one else. Please review';
+
+/** ``COACTUPC`` ``NO-CHANGES-DETECTED``. */
+const MSG_NO_CHANGES_DETECTED = 'No change detected with respect to values fetched.';
 
 /* ------------------------------------------------------------------ */
 /* Composed edit-message suffixes (COACTUPC 1215-1265 edit routines)  */
@@ -142,6 +154,30 @@ const VAR_PRIMARY_CARD_HOLDER = 'Primary Card Holder';
 const ACCOUNT_ID_LENGTH = 11;
 const STATUS_LENGTH = 1;
 const DATE_LENGTH = 10;
+
+/** ``OPNYEAR`` / ``EXPYEAR`` / ``RISYEAR`` / ``DOBYEAR`` declared width. */
+const DATE_YEAR_LENGTH = 4;
+
+/** ``OPNMON`` / ``OPNDAY`` and the other date-part fields' declared width. */
+const DATE_PART_LENGTH = 2;
+
+/** ``ACTSSN1`` declared width. */
+const SSN_AREA_LENGTH = 3;
+
+/** ``ACTSSN2`` declared width. */
+const SSN_GROUP_LENGTH = 2;
+
+/** ``ACTSSN3`` declared width. */
+const SSN_SERIAL_LENGTH = 4;
+
+/** ``ACSPH1A`` / ``ACSPH2A`` declared width. */
+const PHONE_AREA_LENGTH = 3;
+
+/** ``ACSPH1B`` / ``ACSPH2B`` declared width. */
+const PHONE_PREFIX_LENGTH = 3;
+
+/** ``ACSPH1C`` / ``ACSPH2C`` declared width. */
+const PHONE_LINE_LENGTH = 4;
 const AMOUNT_LENGTH = 15;
 const ACCOUNT_GROUP_LENGTH = 10;
 const CUSTOMER_ID_LENGTH = 9;
@@ -157,8 +193,15 @@ const GOVT_ID_LENGTH = 20;
 const EFT_ACCOUNT_LENGTH = 10;
 const CARD_HOLDER_LENGTH = 1;
 
-/** ``S9(09)V99`` picture accepted by ``1250-EDIT-SIGNED-9V2``. */
-const AMOUNT_PATTERN = /^[+-]?\d{1,9}(\.\d{1,2})?$/;
+/**
+ * ``S9(09)V99`` picture accepted by ``1250-EDIT-SIGNED-9V2``.
+ *
+ * Both quantifiers are bounded, so the expression runs in linear time and the
+ * `detect-unsafe-regex` heuristic misreads the nested group; the picture is a frozen
+ * contract and is reproduced digit-for-digit.
+ */
+// eslint-disable-next-line security/detect-unsafe-regex
+const AMOUNT_PATTERN = /^[+-]?\d{1,10}(\.\d{1,2})?$/;
 
 /** ``YYYY-MM-DD`` shape accepted by ``EDIT-DATE-CCYYMMDD``. */
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -178,18 +221,28 @@ const DIGITS_PATTERN = /^\d+$/;
  */
 interface AccountUpdateFormState {
   acctActiveStatus: string;
-  acctOpenDate: string;
+  opnYear: string;
+  opnMon: string;
+  opnDay: string;
   acctCreditLimit: string;
-  acctExpiraionDate: string;
+  expYear: string;
+  expMon: string;
+  expDay: string;
   acctCashCreditLimit: string;
-  acctReissueDate: string;
+  risYear: string;
+  risMon: string;
+  risDay: string;
   acctCurrBal: string;
   acctCurrCycCredit: string;
   acctGroupId: string;
   acctCurrCycDebit: string;
   custId: string;
-  custSsn: string;
-  custDobYyyyMmDd: string;
+  actSsn1: string;
+  actSsn2: string;
+  actSsn3: string;
+  dobYear: string;
+  dobMon: string;
+  dobDay: string;
   custFicoCreditScore: string;
   custFirstName: string;
   custMiddleName: string;
@@ -200,9 +253,13 @@ interface AccountUpdateFormState {
   custAddrZip: string;
   custAddrLine3: string;
   custAddrCountryCd: string;
-  custPhoneNum1: string;
+  acsPh1A: string;
+  acsPh1B: string;
+  acsPh1C: string;
   custGovtIssuedId: string;
-  custPhoneNum2: string;
+  acsPh2A: string;
+  acsPh2B: string;
+  acsPh2C: string;
   custEftAccountId: string;
   custPriCardHolderInd: string;
 }
@@ -210,18 +267,28 @@ interface AccountUpdateFormState {
 /** Empty entry state used before the account is read and when the read fails. */
 const EMPTY_FORM: AccountUpdateFormState = {
   acctActiveStatus: '',
-  acctOpenDate: '',
+  opnYear: '',
+  opnMon: '',
+  opnDay: '',
   acctCreditLimit: '',
-  acctExpiraionDate: '',
+  expYear: '',
+  expMon: '',
+  expDay: '',
   acctCashCreditLimit: '',
-  acctReissueDate: '',
+  risYear: '',
+  risMon: '',
+  risDay: '',
   acctCurrBal: '',
   acctCurrCycCredit: '',
   acctGroupId: '',
   acctCurrCycDebit: '',
   custId: '',
-  custSsn: '',
-  custDobYyyyMmDd: '',
+  actSsn1: '',
+  actSsn2: '',
+  actSsn3: '',
+  dobYear: '',
+  dobMon: '',
+  dobDay: '',
   custFicoCreditScore: '',
   custFirstName: '',
   custMiddleName: '',
@@ -232,9 +299,13 @@ const EMPTY_FORM: AccountUpdateFormState = {
   custAddrZip: '',
   custAddrLine3: '',
   custAddrCountryCd: '',
-  custPhoneNum1: '',
+  acsPh1A: '',
+  acsPh1B: '',
+  acsPh1C: '',
   custGovtIssuedId: '',
-  custPhoneNum2: '',
+  acsPh2A: '',
+  acsPh2B: '',
+  acsPh2C: '',
   custEftAccountId: '',
   custPriCardHolderInd: '',
 };
@@ -267,6 +338,18 @@ interface EntryFieldOptions {
 }
 
 /**
+ * :purpose: One segment of a field the mapset splits across several 3270 fields.
+ * :param field: the entry-state member the segment is bound to.
+ * :param ariaLabel: accessible name; the mapset gives the segments no visible caption.
+ * :param maxLength: the segment's declared width.
+ */
+interface SegmentOptions {
+  field: keyof AccountUpdateFormState;
+  ariaLabel: string;
+  maxLength: number;
+}
+
+/**
  * :purpose: The four AID handlers of the screen, held in a ref so the function
  *     keys published into the shared shell stay identity-stable while always
  *     invoking the handler built from the current entry state.
@@ -275,6 +358,112 @@ interface EntryFieldOptions {
  * :param handleSave: PF5.
  * :param handleCancel: PF12.
  */
+/**
+ * :purpose: Every entry field of the ``COACTUP`` mapset in screen order — row by row,
+ *     left to right — which is the order the source walks when it decides where to
+ *     leave the cursor (``3300-SETUP-SCREEN-ATTRS``).
+ */
+const SCREEN_FIELD_ORDER: readonly string[] = [
+  'acctsid',
+  'acctActiveStatus',
+  'opnYear',
+  'opnMon',
+  'opnDay',
+  'acctCreditLimit',
+  'expYear',
+  'expMon',
+  'expDay',
+  'acctCashCreditLimit',
+  'risYear',
+  'risMon',
+  'risDay',
+  'acctCurrBal',
+  'acctCurrCycCredit',
+  'acctGroupId',
+  'acctCurrCycDebit',
+  'custId',
+  'actSsn1',
+  'actSsn2',
+  'actSsn3',
+  'dobYear',
+  'dobMon',
+  'dobDay',
+  'custFicoCreditScore',
+  'custFirstName',
+  'custMiddleName',
+  'custLastName',
+  'custAddrLine1',
+  'custAddrStateCd',
+  'custAddrLine2',
+  'custAddrZip',
+  'custAddrLine3',
+  'custAddrCountryCd',
+  'acsPh1A',
+  'acsPh1B',
+  'acsPh1C',
+  'custGovtIssuedId',
+  'acsPh2A',
+  'acsPh2B',
+  'acsPh2C',
+  'custEftAccountId',
+  'custPriCardHolderInd',
+];
+
+/**
+ * :purpose: The ``COACTUPC`` screen states, named after the ``ACUP-*`` condition
+ *     names that drive its AID validity gate, its information message and the
+ *     visibility of the ``F5`` and ``F12`` legends.
+ */
+type ScreenState =
+  | 'DETAILS_NOT_FETCHED'
+  | 'SHOW_DETAILS'
+  | 'CHANGES_NOT_OK'
+  | 'CHANGES_OK_NOT_CONFIRMED'
+  | 'CHANGES_OKAYED_AND_DONE'
+  | 'CHANGES_FAILED';
+
+/**
+ * :purpose: Entry-state members the source compares case-insensitively after
+ *     trimming (``FUNCTION UPPER-CASE (FUNCTION TRIM (...))``) in
+ *     ``1205-COMPARE-OLD-NEW``. Every other member is compared on its trimmed
+ *     character value.
+ */
+const CASE_INSENSITIVE_FIELDS: ReadonlySet<keyof AccountUpdateFormState> = new Set([
+  'acctActiveStatus',
+  'acctGroupId',
+  'custFirstName',
+  'custMiddleName',
+  'custLastName',
+  'custAddrLine1',
+  'custAddrLine2',
+  'custAddrLine3',
+  'custAddrStateCd',
+  'custAddrCountryCd',
+  'custGovtIssuedId',
+  'custPriCardHolderInd',
+]);
+
+/**
+ * :purpose: ``1205-COMPARE-OLD-NEW`` — decide whether the entry state still matches
+ *     the values the read returned.
+ * :param current: the current entry state.
+ * :param original: the entry state seeded by the last successful read.
+ * :returns: ``true`` when at least one field differs, the source's
+ *     ``CHANGE-HAS-OCCURRED``; ``false`` is its ``NO-CHANGES-DETECTED``.
+ */
+function hasChanges(
+  current: AccountUpdateFormState,
+  original: AccountUpdateFormState,
+): boolean {
+  return (Object.keys(current) as Array<keyof AccountUpdateFormState>).some((field) => {
+    const left = current[field].trim();
+    const right = original[field].trim();
+    return CASE_INSENSITIVE_FIELDS.has(field)
+      ? left.toUpperCase() !== right.toUpperCase()
+      : left !== right;
+  });
+}
+
 interface ScreenHandlers {
   handleProcess: () => void;
   handleExit: () => void;
@@ -293,17 +482,13 @@ interface ScreenHandlers {
  * :returns: the value as a string, or an empty string when it is absent.
  */
 function asText(value: unknown): string {
-  return value === null || value === undefined ? '' : String(value);
-}
-
-/**
- * :purpose: Whether a value is absent for edit purposes (``EQUAL SPACES`` or
- *     ``LOW-VALUES`` in the COBOL edits).
- * :param value: the entry value.
- * :returns: ``true`` when the value holds no non-blank character.
- */
-function isBlank(value: string): boolean {
-  return value.trim().length === 0;
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return '';
 }
 
 /**
@@ -377,6 +562,124 @@ function isCalendarDate(value: string): boolean {
 }
 
 /**
+ * :purpose: Left-justify a segment in its declared 3270 field width, the effect of a
+ *     COBOL ``MOVE`` into a fixed-width sub-field that a following ``STRING ...
+ *     DELIMITED BY SIZE`` then copies in full.
+ * :param value: the segment entry value.
+ * :param width: the declared field width.
+ * :returns: the value truncated or space-padded to exactly ``width`` characters.
+ */
+function toFieldWidth(value: string, width: number): string {
+  return value.length >= width ? value.slice(0, width) : value.padEnd(width, ' ');
+}
+
+/**
+ * :purpose: Split a ``YYYY-MM-DD`` record value into the year, month and day fields
+ *     the mapset presents, at the substring positions ``(1:4)``, ``(6:2)`` and
+ *     ``(9:2)`` the source uses.
+ * :param value: the record value.
+ * :returns: the year, month and day segments.
+ */
+function splitDate(value: string): { year: string; mon: string; day: string } {
+  const padded = padToWidth(value, DATE_LENGTH);
+  return {
+    year: padded.slice(0, 4).trim(),
+    mon: padded.slice(5, 7).trim(),
+    day: padded.slice(8, 10).trim(),
+  };
+}
+
+/**
+ * :purpose: Rebuild the ``YYYY-MM-DD`` record value from its three entry fields,
+ *     reproducing ``STRING year '-' mon '-' day DELIMITED BY SIZE``.
+ * :param year: the year segment.
+ * :param mon: the month segment.
+ * :param day: the day segment.
+ * :returns: the assembled value, or an empty string when every segment is blank.
+ */
+function joinDate(year: string, mon: string, day: string): string {
+  if (isBlank(year) && isBlank(mon) && isBlank(day)) {
+    return '';
+  }
+  return (
+    toFieldWidth(year.trim(), DATE_YEAR_LENGTH) +
+    '-' +
+    toFieldWidth(mon.trim(), DATE_PART_LENGTH) +
+    '-' +
+    toFieldWidth(day.trim(), DATE_PART_LENGTH)
+  );
+}
+
+/**
+ * :purpose: Split the customer SSN into the ``ACTSSN1`` / ``ACTSSN2`` / ``ACTSSN3``
+ *     fields. A value the service masked keeps its mask in the two leading segments
+ *     so the screen never presents a regulated identifier it did not receive.
+ * :param value: the record value, clear ``PIC 9(09)`` digits or a ``***-**-nnnn`` mask.
+ * :returns: the area, group and serial segments.
+ */
+function splitSsn(value: string): { area: string; group: string; serial: string } {
+  const trimmed = value.trim();
+  if (isMaskShaped(trimmed)) {
+    return {
+      area: '***',
+      group: '**',
+      serial: trimmed.slice(-SSN_SERIAL_LENGTH),
+    };
+  }
+  const padded = padToWidth(trimmed, SSN_LENGTH);
+  return {
+    area: padded.slice(0, 3).trim(),
+    group: padded.slice(3, 5).trim(),
+    serial: padded.slice(5, 9).trim(),
+  };
+}
+
+/**
+ * :purpose: Rebuild the ``PIC 9(09)`` SSN from its three entry fields. Segments still
+ *     carrying the service mask are echoed back in the exact masked presentation, so
+ *     the service retains the stored identifier instead of overwriting it.
+ * :param area: the ``ACTSSN1`` segment.
+ * :param group: the ``ACTSSN2`` segment.
+ * :param serial: the ``ACTSSN3`` segment.
+ * :returns: the assembled value, or an empty string when every segment is blank.
+ */
+function joinSsn(area: string, group: string, serial: string): string {
+  if (isBlank(area) && isBlank(group) && isBlank(serial)) {
+    return '';
+  }
+  if (isMaskShaped(area) || isMaskShaped(group) || isMaskShaped(serial)) {
+    return SSN_MASK_PREFIX + serial.trim();
+  }
+  return (
+    toFieldWidth(area.trim(), SSN_AREA_LENGTH) +
+    toFieldWidth(group.trim(), SSN_GROUP_LENGTH) +
+    toFieldWidth(serial.trim(), SSN_SERIAL_LENGTH)
+  );
+}
+
+/**
+ * :purpose: Rebuild the ``PIC X(15)`` phone number from its three entry fields,
+ *     reproducing ``STRING '(' a ')' b '-' c DELIMITED BY SIZE``.
+ * :param areaCode: the ``ACSPH1A`` / ``ACSPH2A`` segment.
+ * :param prefix: the ``ACSPH1B`` / ``ACSPH2B`` segment.
+ * :param lineNumber: the ``ACSPH1C`` / ``ACSPH2C`` segment.
+ * :returns: the assembled value, or an empty string when every segment is blank.
+ */
+function joinPhone(areaCode: string, prefix: string, lineNumber: string): string {
+  if (isBlank(areaCode) && isBlank(prefix) && isBlank(lineNumber)) {
+    return '';
+  }
+  return (
+    '(' +
+    toFieldWidth(areaCode.trim(), PHONE_AREA_LENGTH) +
+    ')' +
+    toFieldWidth(prefix.trim(), PHONE_PREFIX_LENGTH) +
+    '-' +
+    toFieldWidth(lineNumber.trim(), PHONE_LINE_LENGTH)
+  );
+}
+
+/**
  * :purpose: Recover the ``WS-EDIT-US-PHONE-NUMA`` / ``-NUMB`` / ``-NUMC`` screen
  *     fields from the single ``PIC X(15)`` value the record and the REST contract
  *     carry in the fixed-width ``(aaa)ppp-llll`` presentation.
@@ -413,20 +716,37 @@ function toActiveStatus(value: string): ActiveStatus {
  * :returns: the entry state for every field the mapset presents.
  */
 function toFormState(response: AccountViewResponseDto): AccountUpdateFormState {
+  const opened = splitDate(asText(response.acctOpenDate));
+  const expiry = splitDate(asText(response.acctExpiraionDate));
+  const reissue = splitDate(asText(response.acctReissueDate));
+  const dob = splitDate(asText(response.custDobYyyyMmDd));
+  const ssn = splitSsn(asText(response.custSsn));
+  const phone1 = splitPhone(asText(response.custPhoneNum1));
+  const phone2 = splitPhone(asText(response.custPhoneNum2));
   return {
     acctActiveStatus: asText(response.acctActiveStatus),
-    acctOpenDate: asText(response.acctOpenDate),
+    opnYear: opened.year,
+    opnMon: opened.mon,
+    opnDay: opened.day,
     acctCreditLimit: asText(response.acctCreditLimit),
-    acctExpiraionDate: asText(response.acctExpiraionDate),
+    expYear: expiry.year,
+    expMon: expiry.mon,
+    expDay: expiry.day,
     acctCashCreditLimit: asText(response.acctCashCreditLimit),
-    acctReissueDate: asText(response.acctReissueDate),
+    risYear: reissue.year,
+    risMon: reissue.mon,
+    risDay: reissue.day,
     acctCurrBal: asText(response.acctCurrBal),
     acctCurrCycCredit: asText(response.acctCurrCycCredit),
     acctGroupId: asText(response.acctGroupId),
     acctCurrCycDebit: asText(response.acctCurrCycDebit),
     custId: asText(response.custId),
-    custSsn: asText(response.custSsn),
-    custDobYyyyMmDd: asText(response.custDobYyyyMmDd),
+    actSsn1: ssn.area,
+    actSsn2: ssn.group,
+    actSsn3: ssn.serial,
+    dobYear: dob.year,
+    dobMon: dob.mon,
+    dobDay: dob.day,
     custFicoCreditScore: asText(response.custFicoCreditScore),
     custFirstName: asText(response.custFirstName),
     custMiddleName: asText(response.custMiddleName),
@@ -437,9 +757,13 @@ function toFormState(response: AccountViewResponseDto): AccountUpdateFormState {
     custAddrZip: asText(response.custAddrZip),
     custAddrLine3: asText(response.custAddrLine3),
     custAddrCountryCd: asText(response.custAddrCountryCd),
-    custPhoneNum1: asText(response.custPhoneNum1),
+    acsPh1A: phone1.areaCode,
+    acsPh1B: phone1.prefix,
+    acsPh1C: phone1.lineNumber,
     custGovtIssuedId: asText(response.custGovtIssuedId),
-    custPhoneNum2: asText(response.custPhoneNum2),
+    acsPh2A: phone2.areaCode,
+    acsPh2B: phone2.prefix,
+    acsPh2C: phone2.lineNumber,
     custEftAccountId: asText(response.custEftAccountId),
     custPriCardHolderInd: asText(response.custPriCardHolderInd),
   };
@@ -463,9 +787,9 @@ function toRequestDto(
     acctCurrBal: form.acctCurrBal,
     acctCreditLimit: form.acctCreditLimit,
     acctCashCreditLimit: form.acctCashCreditLimit,
-    acctOpenDate: form.acctOpenDate,
-    acctExpiraionDate: form.acctExpiraionDate,
-    acctReissueDate: form.acctReissueDate,
+    acctOpenDate: joinDate(form.opnYear, form.opnMon, form.opnDay),
+    acctExpiraionDate: joinDate(form.expYear, form.expMon, form.expDay),
+    acctReissueDate: joinDate(form.risYear, form.risMon, form.risDay),
     acctCurrCycCredit: form.acctCurrCycCredit,
     acctCurrCycDebit: form.acctCurrCycDebit,
     acctGroupId: form.acctGroupId,
@@ -478,14 +802,14 @@ function toRequestDto(
     custAddrStateCd: form.custAddrStateCd,
     custAddrCountryCd: form.custAddrCountryCd,
     custAddrZip: form.custAddrZip,
-    custPhoneNum1: form.custPhoneNum1,
-    custPhoneNum2: form.custPhoneNum2,
-    custSsn: form.custSsn,
+    custPhoneNum1: joinPhone(form.acsPh1A, form.acsPh1B, form.acsPh1C),
+    custPhoneNum2: joinPhone(form.acsPh2A, form.acsPh2B, form.acsPh2C),
+    custSsn: joinSsn(form.actSsn1, form.actSsn2, form.actSsn3),
     custGovtIssuedId: form.custGovtIssuedId,
-    custDobYyyyMmDd: form.custDobYyyyMmDd,
+    custDobYyyyMmDd: joinDate(form.dobYear, form.dobMon, form.dobDay),
     custEftAccountId: form.custEftAccountId,
     custPriCardHolderInd: form.custPriCardHolderInd,
-    custFicoCreditScore: Number(form.custFicoCreditScore),
+    custFicoCreditScore: form.custFicoCreditScore.trim(),
   };
 }
 
@@ -523,14 +847,26 @@ function validateAccountUpdate(
     }
   };
 
-  const editDate = (field: keyof AccountUpdateFormState, caption: string): void => {
-    const value = form[field];
-    if (isBlank(value)) {
-      fail(field, true, caption + SUFFIX_MUST_BE_SUPPLIED);
+  const editDateParts = (
+    yearField: keyof AccountUpdateFormState,
+    monField: keyof AccountUpdateFormState,
+    dayField: keyof AccountUpdateFormState,
+    caption: string,
+  ): void => {
+    const year = form[yearField];
+    const mon = form[monField];
+    const day = form[dayField];
+    const blank = isBlank(year) && isBlank(mon) && isBlank(day);
+    if (blank) {
+      fail(yearField, true, caption + SUFFIX_MUST_BE_SUPPLIED);
+      fieldErrors[monField] = { invalid: false, blank: true };
+      fieldErrors[dayField] = { invalid: false, blank: true };
       return;
     }
-    if (!isCalendarDate(value.trim())) {
-      fail(field, false, caption + SUFFIX_IS_NOT_VALID);
+    if (!isCalendarDate(joinDate(year, mon, day))) {
+      fail(yearField, false, caption + SUFFIX_IS_NOT_VALID);
+      fieldErrors[monField] = { invalid: true, blank: false };
+      fieldErrors[dayField] = { invalid: true, blank: false };
     }
   };
 
@@ -569,17 +905,42 @@ function validateAccountUpdate(
     }
   };
 
-  const editPhone = (field: keyof AccountUpdateFormState, caption: string): void => {
-    const { areaCode, prefix, lineNumber } = splitPhone(form[field]);
+  const editSsnParts = (caption: string): void => {
+    const assembled = joinSsn(form.actSsn1, form.actSsn2, form.actSsn3);
+    if (isMaskShaped(assembled)) {
+      return;
+    }
+    if (isBlank(assembled)) {
+      fail('actSsn1', true, caption + SUFFIX_MUST_BE_SUPPLIED);
+      fieldErrors.actSsn2 = { invalid: false, blank: true };
+      fieldErrors.actSsn3 = { invalid: false, blank: true };
+      return;
+    }
+    if (!isAllDigits(padToWidth(assembled.trim(), SSN_LENGTH))) {
+      fail('actSsn1', false, caption + SUFFIX_MUST_BE_ALL_NUMERIC);
+      fieldErrors.actSsn2 = { invalid: true, blank: false };
+      fieldErrors.actSsn3 = { invalid: true, blank: false };
+    }
+  };
+
+  const editPhoneParts = (
+    areaField: keyof AccountUpdateFormState,
+    prefixField: keyof AccountUpdateFormState,
+    lineField: keyof AccountUpdateFormState,
+    caption: string,
+  ): void => {
+    const areaCode = form[areaField].trim();
+    const prefix = form[prefixField].trim();
+    const lineNumber = form[lineField].trim();
     if (areaCode === '' && prefix === '' && lineNumber === '') {
       return;
     }
-    if (areaCode.length !== 3 || !isAllDigits(areaCode)) {
-      fail(field, areaCode === '', caption + SUFFIX_AREA_CODE_3_DIGIT);
+    if (areaCode.length !== PHONE_AREA_LENGTH || !isAllDigits(areaCode)) {
+      fail(areaField, areaCode === '', caption + SUFFIX_AREA_CODE_3_DIGIT);
       return;
     }
-    if (lineNumber.length !== 4 || !isAllDigits(lineNumber)) {
-      fail(field, lineNumber === '', caption + SUFFIX_LINE_4_DIGIT);
+    if (lineNumber.length !== PHONE_LINE_LENGTH || !isAllDigits(lineNumber)) {
+      fail(lineField, lineNumber === '', caption + SUFFIX_LINE_4_DIGIT);
     }
   };
 
@@ -587,16 +948,16 @@ function validateAccountUpdate(
     fail('acctsid', isBlank(accountNumber), MSG_ACCOUNT_ID_INVALID);
   }
   editYesNo('acctActiveStatus', VAR_ACCOUNT_STATUS);
-  editDate('acctOpenDate', VAR_OPEN_DATE);
+  editDateParts('opnYear', 'opnMon', 'opnDay', VAR_OPEN_DATE);
   editAmount('acctCreditLimit', VAR_CREDIT_LIMIT);
-  editDate('acctExpiraionDate', VAR_EXPIRY_DATE);
+  editDateParts('expYear', 'expMon', 'expDay', VAR_EXPIRY_DATE);
   editAmount('acctCashCreditLimit', VAR_CASH_CREDIT_LIMIT);
-  editDate('acctReissueDate', VAR_REISSUE_DATE);
+  editDateParts('risYear', 'risMon', 'risDay', VAR_REISSUE_DATE);
   editAmount('acctCurrBal', VAR_CURRENT_BALANCE);
   editAmount('acctCurrCycCredit', VAR_CURR_CYC_CREDIT);
   editAmount('acctCurrCycDebit', VAR_CURR_CYC_DEBIT);
-  editNumeric('custSsn', VAR_SSN, SSN_LENGTH);
-  editDate('custDobYyyyMmDd', VAR_DATE_OF_BIRTH);
+  editSsnParts(VAR_SSN);
+  editDateParts('dobYear', 'dobMon', 'dobDay', VAR_DATE_OF_BIRTH);
   editNumeric('custFicoCreditScore', VAR_FICO_SCORE, FICO_LENGTH);
   editRequired('custFirstName', VAR_FIRST_NAME);
   editRequired('custLastName', VAR_LAST_NAME);
@@ -605,8 +966,8 @@ function validateAccountUpdate(
   editNumeric('custAddrZip', VAR_ZIP, ZIP_LENGTH);
   editRequired('custAddrLine3', VAR_CITY);
   editRequired('custAddrCountryCd', VAR_COUNTRY);
-  editPhone('custPhoneNum1', VAR_PHONE_NUMBER_1);
-  editPhone('custPhoneNum2', VAR_PHONE_NUMBER_2);
+  editPhoneParts('acsPh1A', 'acsPh1B', 'acsPh1C', VAR_PHONE_NUMBER_1);
+  editPhoneParts('acsPh2A', 'acsPh2B', 'acsPh2C', VAR_PHONE_NUMBER_2);
   editNumeric('custEftAccountId', VAR_EFT_ACCOUNT_ID, EFT_ACCOUNT_LENGTH);
   editYesNo('custPriCardHolderInd', VAR_PRIMARY_CARD_HOLDER);
 
@@ -636,13 +997,24 @@ export default function AccountUpdatePage(): ReactElement {
 
   const [accountNumber, setAccountNumber] = useState<string>(routeAccountId);
   const [form, setForm] = useState<AccountUpdateFormState>(EMPTY_FORM);
+  // ACUP-OLD-* — the values the read returned, never edited by the screen. Both the
+  // change detection and the save target are anchored to this snapshot.
+  const [originalForm, setOriginalForm] = useState<AccountUpdateFormState>(EMPTY_FORM);
   const [version, setVersion] = useState<number | null>(null);
+  // The account the snapshot belongs to. Only a successful read sets it, so the
+  // editable ACCTSID field can never redirect a save to a different account.
+  const [loadedAccountId, setLoadedAccountId] = useState<string | null>(null);
+  const [screenState, setScreenState] = useState<ScreenState>('DETAILS_NOT_FETCHED');
   const [fieldErrors, setFieldErrors] = useState<FieldErrorMap>({});
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [infoMessage, setInfoMessage] = useState<string>(MSG_PROMPT_FOR_SEARCH_KEYS);
   const [saving, setSaving] = useState<boolean>(false);
 
   const { run: runGetAccount, error: loadError, loading } = useApi(getAccount);
+
+  // Synchronous guard: two activations of F5 within one render cannot both reach the
+  // service, because the ref is observed and set before the first await.
+  const saveLatch = useRef<boolean>(false);
 
   /**
    * :purpose: Read the account and seed the entry state together with the
@@ -655,8 +1027,12 @@ export default function AccountUpdatePage(): ReactElement {
       if (loaded === undefined) {
         return;
       }
-      setForm(toFormState(loaded));
+      const seeded = toFormState(loaded);
+      setForm(seeded);
+      setOriginalForm(seeded);
       setVersion(loaded.version);
+      setLoadedAccountId(identifier);
+      setScreenState('SHOW_DETAILS');
       setFieldErrors({});
       setErrorMessage('');
       setInfoMessage(MSG_PROMPT_FOR_CHANGES);
@@ -673,7 +1049,10 @@ export default function AccountUpdatePage(): ReactElement {
   useEffect(() => {
     if (!isValidAccountNumber(routeAccountId)) {
       setForm(EMPTY_FORM);
+      setOriginalForm(EMPTY_FORM);
       setVersion(null);
+      setLoadedAccountId(null);
+      setScreenState('DETAILS_NOT_FETCHED');
       setFieldErrors(
         routeAccountId === '' ? {} : { acctsid: { invalid: true, blank: false } },
       );
@@ -691,11 +1070,40 @@ export default function AccountUpdatePage(): ReactElement {
   useEffect(() => {
     if (loadError !== null) {
       setForm(EMPTY_FORM);
+      setOriginalForm(EMPTY_FORM);
       setVersion(null);
+      setLoadedAccountId(null);
+      setScreenState('DETAILS_NOT_FETCHED');
       setErrorMessage(loadError.body?.message ?? loadError.message);
       setInfoMessage('');
     }
   }, [loadError]);
+
+  // 3300-SETUP-SCREEN-ATTRS positions the cursor on the first field, in screen order,
+  // whose edit failed; with no failure it rests on the first editable field of a
+  // fetched account, or on ACCTSID while the keys are still being asked for.
+  const firstErrorField = SCREEN_FIELD_ORDER.find((field) =>
+    isFieldInError(fieldErrors[field]),
+  );
+  const focusField =
+    firstErrorField ??
+    (screenState === 'DETAILS_NOT_FETCHED' ? 'acctsid' : 'acctActiveStatus');
+  const focusRef = useInitialFocus<HTMLInputElement>();
+  useFocusOnChange(`${focusField}:${errorMessage}`, focusRef);
+
+  /**
+   * :purpose: Associate a field with the hint that describes it and, for the field the
+   *     line-23 message was raised for, with that message.
+   * :param field: the field being rendered.
+   * :param hintId: id of the field's own hint, when it has one.
+   * :returns: the ``aria-describedby`` value, or ``undefined`` when neither applies.
+   */
+  const describedBy = (field: string, hintId: string | undefined): string | undefined => {
+    const parts = [hintId, field === firstErrorField ? ERROR_LINE_ID : undefined].filter(
+      (part): part is string => part !== undefined,
+    );
+    return parts.length === 0 ? undefined : parts.join(' ');
+  };
 
   /**
    * :purpose: Record an entry-field change.
@@ -719,26 +1127,34 @@ export default function AccountUpdatePage(): ReactElement {
       setFieldErrors({ acctsid: { invalid: !isBlank(requested), blank: isBlank(requested) } });
       setErrorMessage(MSG_ACCOUNT_ID_INVALID);
       setInfoMessage('');
+      setScreenState('DETAILS_NOT_FETCHED');
       return;
     }
-    if (requested !== routeAccountId) {
-      navigate(`/accounts/${requested}/update`);
-      return;
-    }
-    if (version === null) {
+    // A key that does not match the snapshot fetches that account and repaints the
+    // screen in place, the source's 9000-READ-ACCT followed by 3000-SEND-MAP.
+    if (requested !== loadedAccountId || version === null) {
       void loadAccount(requested);
+      return;
+    }
+    if (!hasChanges(form, originalForm)) {
+      setFieldErrors({});
+      setErrorMessage(MSG_NO_CHANGES_DETECTED);
+      setInfoMessage(MSG_PROMPT_FOR_CHANGES);
+      setScreenState('SHOW_DETAILS');
       return;
     }
     const result = validateAccountUpdate(requested, form);
     setFieldErrors(result.fieldErrors);
     if (result.message !== '') {
       setErrorMessage(result.message);
-      setInfoMessage('');
+      setInfoMessage(MSG_PROMPT_FOR_CHANGES);
+      setScreenState('CHANGES_NOT_OK');
       return;
     }
     setErrorMessage('');
     setInfoMessage(MSG_PROMPT_FOR_CONFIRMATION);
-  }, [accountNumber, form, loadAccount, navigate, routeAccountId, version]);
+    setScreenState('CHANGES_OK_NOT_CONFIRMED');
+  }, [accountNumber, form, loadAccount, loadedAccountId, originalForm, version]);
 
   /**
    * :purpose: F5 — commit the edited account and customer fields, carrying the
@@ -747,42 +1163,51 @@ export default function AccountUpdatePage(): ReactElement {
    *     and the entered values untouched, so the user reviews before retrying.
    */
   const handleSave = useCallback(async (): Promise<void> => {
-    if (saving) {
+    if (saveLatch.current) {
       return;
     }
-    const requested = accountNumber.trim();
-    if (!isValidAccountNumber(requested)) {
-      setFieldErrors({ acctsid: { invalid: !isBlank(requested), blank: isBlank(requested) } });
-      setErrorMessage(MSG_ACCOUNT_ID_INVALID);
-      setInfoMessage('');
-      return;
-    }
-    if (version === null) {
+    if (loadedAccountId === null || version === null) {
       setErrorMessage(MSG_ACCOUNT_NOT_PROVIDED);
-      setInfoMessage('');
+      setInfoMessage(MSG_PROMPT_FOR_SEARCH_KEYS);
       return;
     }
-    const result = validateAccountUpdate(requested, form);
+    // The source reads the record it is about to rewrite and aborts when it no longer
+    // matches the snapshot taken at display time. An ACCTSID edited away from the
+    // loaded key is exactly that mismatch, so it reports the same outcome and writes
+    // nothing until a fresh read re-anchors the snapshot.
+    if (accountNumber.trim() !== loadedAccountId) {
+      setErrorMessage(MSG_OPTIMISTIC_LOCK_CONFLICT);
+      setInfoMessage(MSG_PROMPT_FOR_CHANGES);
+      setScreenState('SHOW_DETAILS');
+      return;
+    }
+    const result = validateAccountUpdate(loadedAccountId, form);
     setFieldErrors(result.fieldErrors);
     if (result.message !== '') {
       setErrorMessage(result.message);
-      setInfoMessage('');
+      setInfoMessage(MSG_PROMPT_FOR_CHANGES);
+      setScreenState('CHANGES_NOT_OK');
       return;
     }
     setErrorMessage('');
+    saveLatch.current = true;
     setSaving(true);
     try {
       const updated: AccountUpdateResponseDto = await updateAccount(
-        requested,
+        loadedAccountId,
         toRequestDto(form, version),
       );
-      setForm(toFormState(updated));
+      const committed = toFormState(updated);
+      setForm(committed);
+      setOriginalForm(committed);
       setVersion(updated.version);
       setFieldErrors({});
       setErrorMessage('');
       setInfoMessage(MSG_UPDATE_SUCCESS);
+      setScreenState('CHANGES_OKAYED_AND_DONE');
     } catch (caught) {
-      setInfoMessage('');
+      setInfoMessage(MSG_FAILURE);
+      setScreenState('CHANGES_FAILED');
       if (caught instanceof ApiError) {
         setErrorMessage(
           caught.isOptimisticLockConflict
@@ -795,19 +1220,27 @@ export default function AccountUpdatePage(): ReactElement {
         setErrorMessage(MSG_FAILURE);
       }
     } finally {
+      saveLatch.current = false;
       setSaving(false);
     }
-  }, [accountNumber, form, saving, version]);
+  }, [accountNumber, form, loadedAccountId, version]);
 
   /** :purpose: F3 — leave the screen for the calling menu. */
   const handleExit = useCallback((): void => {
-    navigate('/menu');
+    void navigate('/menu');
   }, [navigate]);
 
-  /** :purpose: F12 — abandon the edits and return to the account view. */
+  /**
+   * :purpose: F12 — discard the edits by re-reading the account and repainting the
+   *     original values, the source's ``WHEN CCARD-AID-PFK12`` branch of
+   *     ``2000-DECIDE-ACTION``. The screen is never left.
+   */
   const handleCancel = useCallback((): void => {
-    navigate(routeAccountId === '' ? '/menu' : `/accounts/${routeAccountId}`);
-  }, [navigate, routeAccountId]);
+    if (loadedAccountId === null) {
+      return;
+    }
+    void loadAccount(loadedAccountId);
+  }, [loadAccount, loadedAccountId]);
 
   // The published function keys dispatch through this ref, so a key activated at
   // any time acts on the current entry state and version snapshot.
@@ -830,35 +1263,67 @@ export default function AccountUpdatePage(): ReactElement {
     handlersRef.current.handleExit();
   }, []);
 
+  // COACTUPC L905-916: only ENTER, PF3, PF5-while-awaiting-confirmation and
+  // PF12-once-details-are-fetched are valid AIDs; every other combination is
+  // rewritten to ENTER before the screen decides what to do.
   const activateSave = useCallback((): void => {
+    if (screenState !== 'CHANGES_OK_NOT_CONFIRMED') {
+      handlersRef.current.handleProcess();
+      return;
+    }
     void handlersRef.current.handleSave();
-  }, []);
+  }, [screenState]);
 
   const activateCancel = useCallback((): void => {
+    if (screenState === 'DETAILS_NOT_FETCHED') {
+      handlersRef.current.handleProcess();
+      return;
+    }
     handlersRef.current.handleCancel();
-  }, []);
+  }, [screenState]);
 
   // Publish the screen chrome; Layout renders the header, message line and key bar.
   useEffect(() => {
+    // COACTUPC 3390-SETUP-INFOMSG-ATTRS un-darkens FKEY05 only while the confirmation
+    // is being prompted, and FKEY12 as soon as changes exist that are not yet saved.
+    const awaitingConfirmation = screenState === 'CHANGES_OK_NOT_CONFIRMED';
+    const changesPending =
+      screenState === 'CHANGES_NOT_OK' ||
+      screenState === 'CHANGES_OK_NOT_CONFIRMED' ||
+      screenState === 'CHANGES_FAILED';
     const pfKeys: PFKeyDef[] = [
-      { action: PfKeyAction.Enter, label: 'ENTER=Process', onActivate: activateProcess },
-      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: activateExit },
-      { action: PfKeyAction.PF5, label: 'F5=Save', onActivate: activateSave },
-      { action: PfKeyAction.PF12, label: 'F12=Cancel', onActivate: activateCancel },
+      { action: PfKeyAction.Enter, label: PF_PROCESS_LABEL, onActivate: activateProcess },
+      { action: PfKeyAction.PF3, label: PF_EXIT_LABEL, onActivate: activateExit },
+      {
+        action: PfKeyAction.PF5,
+        label: PF_SAVE_LABEL,
+        onActivate: activateSave,
+        dark: !awaitingConfirmation,
+      },
+      {
+        action: PfKeyAction.PF12,
+        label: PF_CANCEL_LABEL,
+        onActivate: activateCancel,
+        dark: !changesPending,
+      },
     ];
     setChrome({
       transactionId: TRANSACTION_ID,
       programName: PROGRAM_NAME,
-      title01: TITLE01,
-      title02: TITLE02,
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
       errorMessage,
       infoMessage,
       pfKeys,
+      busy: loading || saving,
     });
   }, [
     setChrome,
     errorMessage,
     infoMessage,
+    screenState,
+    loading,
+    saving,
     activateProcess,
     activateExit,
     activateSave,
@@ -898,13 +1363,15 @@ export default function AccountUpdatePage(): ReactElement {
         <input
           id={field}
           name={field}
+          ref={field === focusField ? focusRef : undefined}
           type="text"
           className={errorClass === '' ? 'field' : `field ${errorClass}`}
           maxLength={maxLength}
           size={maxLength}
           value={form[field]}
+          disabled={saving}
           aria-label={ariaLabel}
-          aria-describedby={hintId}
+          aria-describedby={describedBy(field, hintId)}
           aria-invalid={errorClass === '' ? undefined : true}
           onChange={(event) => {
             handleFieldChange(field, event.target.value);
@@ -920,15 +1387,81 @@ export default function AccountUpdatePage(): ReactElement {
     );
   }
 
+  /**
+   * :purpose: Render a field the mapset splits across several 3270 fields — the three
+   *     account dates, the date of birth, the SSN and the two phone numbers. The
+   *     visible caption labels the first segment, so the on-screen prompt is also its
+   *     programmatic name; the later segments carry their own accessible names because
+   *     the mapset gives them no caption.
+   * :param label: the visible TURQUOISE caption.
+   * :param segments: the segments in mapset order.
+   * :param separator: literal rendered between segments, the mapset's ``'-'`` fields.
+   * :returns: The rendered caption and segment fields.
+   */
+  function segmentGroup({
+    label,
+    segments,
+    separator,
+  }: {
+    label: string;
+    segments: SegmentOptions[];
+    separator?: string;
+  }): ReactElement {
+    const [first] = segments;
+    const groupState = segments.map((segment) => fieldErrors[segment.field]);
+    const marker = groupState.map(fieldMarker).find((each) => each !== '') ?? '';
+    return (
+      <span className="accountUpdate__field">
+        {marker !== '' && (
+          <span className="fieldError" aria-hidden="true">
+            {marker}
+          </span>
+        )}
+        <label className="prompt" htmlFor={first.field}>
+          {label}
+        </label>{' '}
+        {segments.map((segment, index) => {
+          const errorClass = fieldErrorClass(fieldErrors[segment.field]);
+          return (
+            <span key={segment.field}>
+              {index > 0 && separator !== undefined && (
+                <span className="label" aria-hidden="true">
+                  {separator}
+                </span>
+              )}
+              <input
+                id={segment.field}
+                name={segment.field}
+                ref={segment.field === focusField ? focusRef : undefined}
+                type="text"
+                className={errorClass === '' ? 'field' : `field ${errorClass}`}
+                maxLength={segment.maxLength}
+                size={segment.maxLength}
+                value={form[segment.field]}
+                disabled={saving}
+                aria-label={index === 0 ? undefined : segment.ariaLabel}
+                aria-describedby={describedBy(segment.field, undefined)}
+                aria-invalid={errorClass === '' ? undefined : true}
+                onChange={(event) => {
+                  handleFieldChange(segment.field, event.target.value);
+                }}
+              />
+            </span>
+          );
+        })}
+      </span>
+    );
+  }
+
   const accountNumberState = fieldErrors.acctsid;
   const accountNumberErrorClass = fieldErrorClass(accountNumberState);
   const accountNumberMarker = fieldMarker(accountNumberState);
 
   return (
     <section className="accountUpdate" aria-labelledby="accountUpdateHeading">
-      <h3 id="accountUpdateHeading" className="neutral">
+      <h2 id="accountUpdateHeading" className="neutral">
         {HEADING}
-      </h3>
+      </h2>
 
       <div className="accountUpdate__row">
         <span className="accountUpdate__field">
@@ -943,6 +1476,7 @@ export default function AccountUpdatePage(): ReactElement {
           <input
             id="acctsid"
             name="acctsid"
+            ref={focusField === 'acctsid' ? focusRef : undefined}
             type="text"
             className={
               accountNumberErrorClass === '' ? 'field' : `field ${accountNumberErrorClass}`
@@ -950,6 +1484,8 @@ export default function AccountUpdatePage(): ReactElement {
             maxLength={ACCOUNT_ID_LENGTH}
             size={ACCOUNT_ID_LENGTH}
             value={accountNumber}
+            disabled={saving}
+            aria-describedby={describedBy('acctsid', undefined)}
             aria-invalid={accountNumberErrorClass === '' ? undefined : true}
             onChange={(event) => {
               setAccountNumber(event.target.value);
@@ -964,11 +1500,14 @@ export default function AccountUpdatePage(): ReactElement {
       </div>
 
       <div className="accountUpdate__row">
-        {entryField({
-          field: 'acctOpenDate',
+        {segmentGroup({
           label: 'Opened :',
-          maxLength: DATE_LENGTH,
-          hint: DATE_HINT,
+          separator: '-',
+          segments: [
+            { field: 'opnYear', ariaLabel: `${VAR_OPEN_DATE} year`, maxLength: DATE_YEAR_LENGTH },
+            { field: 'opnMon', ariaLabel: `${VAR_OPEN_DATE} month`, maxLength: DATE_PART_LENGTH },
+            { field: 'opnDay', ariaLabel: `${VAR_OPEN_DATE} day`, maxLength: DATE_PART_LENGTH },
+          ],
         })}{' '}
         {entryField({
           field: 'acctCreditLimit',
@@ -978,11 +1517,14 @@ export default function AccountUpdatePage(): ReactElement {
       </div>
 
       <div className="accountUpdate__row">
-        {entryField({
-          field: 'acctExpiraionDate',
+        {segmentGroup({
           label: 'Expiry :',
-          maxLength: DATE_LENGTH,
-          hint: DATE_HINT,
+          separator: '-',
+          segments: [
+            { field: 'expYear', ariaLabel: `${VAR_EXPIRY_DATE} year`, maxLength: DATE_YEAR_LENGTH },
+            { field: 'expMon', ariaLabel: `${VAR_EXPIRY_DATE} month`, maxLength: DATE_PART_LENGTH },
+            { field: 'expDay', ariaLabel: `${VAR_EXPIRY_DATE} day`, maxLength: DATE_PART_LENGTH },
+          ],
         })}{' '}
         {entryField({
           field: 'acctCashCreditLimit',
@@ -992,11 +1534,22 @@ export default function AccountUpdatePage(): ReactElement {
       </div>
 
       <div className="accountUpdate__row">
-        {entryField({
-          field: 'acctReissueDate',
+        {segmentGroup({
           label: 'Reissue:',
-          maxLength: DATE_LENGTH,
-          hint: DATE_HINT,
+          separator: '-',
+          segments: [
+            {
+              field: 'risYear',
+              ariaLabel: `${VAR_REISSUE_DATE} year`,
+              maxLength: DATE_YEAR_LENGTH,
+            },
+            {
+              field: 'risMon',
+              ariaLabel: `${VAR_REISSUE_DATE} month`,
+              maxLength: DATE_PART_LENGTH,
+            },
+            { field: 'risDay', ariaLabel: `${VAR_REISSUE_DATE} day`, maxLength: DATE_PART_LENGTH },
+          ],
         })}{' '}
         {entryField({
           field: 'acctCurrBal',
@@ -1026,7 +1579,7 @@ export default function AccountUpdatePage(): ReactElement {
         })}
       </div>
 
-      <h4 className="neutral">{CUSTOMER_SECTION_HEADING}</h4>
+      <h3 className="neutral">{CUSTOMER_SECTION_HEADING}</h3>
 
       <div className="accountUpdate__row">
         {entryField({
@@ -1034,15 +1587,38 @@ export default function AccountUpdatePage(): ReactElement {
           label: 'Customer id  :',
           maxLength: CUSTOMER_ID_LENGTH,
         })}{' '}
-        {entryField({ field: 'custSsn', label: 'SSN:', maxLength: SSN_LENGTH })}
+        {segmentGroup({
+          label: 'SSN:',
+          separator: '-',
+          segments: [
+            { field: 'actSsn1', ariaLabel: `${VAR_SSN} area`, maxLength: SSN_AREA_LENGTH },
+            { field: 'actSsn2', ariaLabel: `${VAR_SSN} group`, maxLength: SSN_GROUP_LENGTH },
+            { field: 'actSsn3', ariaLabel: `${VAR_SSN} serial`, maxLength: SSN_SERIAL_LENGTH },
+          ],
+        })}
       </div>
 
       <div className="accountUpdate__row">
-        {entryField({
-          field: 'custDobYyyyMmDd',
+        {segmentGroup({
           label: 'Date of birth:',
-          maxLength: DATE_LENGTH,
-          hint: DATE_HINT,
+          separator: '-',
+          segments: [
+            {
+              field: 'dobYear',
+              ariaLabel: `${VAR_DATE_OF_BIRTH} year`,
+              maxLength: DATE_YEAR_LENGTH,
+            },
+            {
+              field: 'dobMon',
+              ariaLabel: `${VAR_DATE_OF_BIRTH} month`,
+              maxLength: DATE_PART_LENGTH,
+            },
+            {
+              field: 'dobDay',
+              ariaLabel: `${VAR_DATE_OF_BIRTH} day`,
+              maxLength: DATE_PART_LENGTH,
+            },
+          ],
         })}{' '}
         {entryField({ field: 'custFicoCreditScore', label: 'FICO Score:', maxLength: FICO_LENGTH })}
       </div>
@@ -1073,7 +1649,26 @@ export default function AccountUpdatePage(): ReactElement {
       </div>
 
       <div className="accountUpdate__row">
-        {entryField({ field: 'custPhoneNum1', label: 'Phone 1:', maxLength: PHONE_LENGTH })}{' '}
+        {segmentGroup({
+          label: 'Phone 1:',
+          segments: [
+            {
+              field: 'acsPh1A',
+              ariaLabel: `${VAR_PHONE_NUMBER_1} area code`,
+              maxLength: PHONE_AREA_LENGTH,
+            },
+            {
+              field: 'acsPh1B',
+              ariaLabel: `${VAR_PHONE_NUMBER_1} prefix`,
+              maxLength: PHONE_PREFIX_LENGTH,
+            },
+            {
+              field: 'acsPh1C',
+              ariaLabel: `${VAR_PHONE_NUMBER_1} line number`,
+              maxLength: PHONE_LINE_LENGTH,
+            },
+          ],
+        })}{' '}
         {entryField({
           field: 'custGovtIssuedId',
           label: 'Government Issued Id Ref    :',
@@ -1082,7 +1677,26 @@ export default function AccountUpdatePage(): ReactElement {
       </div>
 
       <div className="accountUpdate__row">
-        {entryField({ field: 'custPhoneNum2', label: 'Phone 2:', maxLength: PHONE_LENGTH })}{' '}
+        {segmentGroup({
+          label: 'Phone 2:',
+          segments: [
+            {
+              field: 'acsPh2A',
+              ariaLabel: `${VAR_PHONE_NUMBER_2} area code`,
+              maxLength: PHONE_AREA_LENGTH,
+            },
+            {
+              field: 'acsPh2B',
+              ariaLabel: `${VAR_PHONE_NUMBER_2} prefix`,
+              maxLength: PHONE_PREFIX_LENGTH,
+            },
+            {
+              field: 'acsPh2C',
+              ariaLabel: `${VAR_PHONE_NUMBER_2} line number`,
+              maxLength: PHONE_LINE_LENGTH,
+            },
+          ],
+        })}{' '}
         {entryField({
           field: 'custEftAccountId',
           label: 'EFT Account Id:',
@@ -1095,19 +1709,6 @@ export default function AccountUpdatePage(): ReactElement {
         })}
       </div>
 
-      <div className="accountUpdate__actions">
-        <button
-          type="button"
-          className="accountUpdate__save"
-          disabled={loading || saving}
-          onClick={() => {
-            void handleSave();
-          }}
-        >
-          Save
-        </button>
-      </div>
     </section>
   );
 }
-

@@ -1,10 +1,13 @@
 import { render, screen } from '@testing-library/react';
 import ErrorBanner, {
+  ERROR_LINE_ID,
   ERROR_LINE_WIDTH,
   isFieldInError,
   fieldErrorClass,
   fieldMarker,
   hasFieldErrors,
+  invalidFieldProps,
+  invalidValueProps,
 } from './ErrorBanner';
 import type { FieldErrorMap } from '../types';
 
@@ -44,6 +47,56 @@ describe('ErrorBanner', () => {
     expect(fieldErrorClass({ invalid: false, blank: false })).toBe('');
     expect(fieldMarker({ invalid: false, blank: true })).toBe('*');
     expect(fieldMarker({ invalid: true, blank: false })).toBe('');
+  });
+
+  it('binds aria-invalid and the message region only on the faulted control', () => {
+    expect(invalidFieldProps(true)).toEqual({
+      'aria-invalid': true,
+      'aria-describedby': ERROR_LINE_ID,
+    });
+    // A control that is not faulted emits nothing, so no dangling IDREF is left
+    // behind on a screen whose banner is showing the info or blank variant.
+    expect(invalidFieldProps(false)).toEqual({});
+  });
+
+  it('keeps a field hint ahead of the message region when faulted', () => {
+    expect(invalidFieldProps(true, 'tranAmtHint')).toEqual({
+      'aria-invalid': true,
+      'aria-describedby': `tranAmtHint ${ERROR_LINE_ID}`,
+    });
+    expect(invalidFieldProps(false, 'tranAmtHint')).toEqual({
+      'aria-describedby': 'tranAmtHint',
+    });
+    expect(invalidFieldProps(false, '')).toEqual({});
+  });
+
+  it('emits an id the error variant actually renders', () => {
+    render(<ErrorBanner message="Tran ID can NOT be empty..." />);
+    expect(screen.getByRole('alert')).toHaveAttribute('id', ERROR_LINE_ID);
+    const bound = invalidFieldProps(true)['aria-describedby'];
+    expect(document.getElementById(bound ?? '')).not.toBeNull();
+  });
+
+  it('omits the message reference for a value-evident fault', () => {
+    // A row-action column faults from its own value without publishing a line-23
+    // message, so the error variant is never mounted and the id does not exist.
+    expect(invalidValueProps(true)).toEqual({ 'aria-invalid': true });
+    expect(invalidValueProps(false)).toEqual({});
+    expect(invalidValueProps(true)).not.toHaveProperty('aria-describedby');
+  });
+
+  it('never leaves a dangling message reference on a screen with no error', () => {
+    // The blank and informational variants carry no id, so any control that
+    // referenced the message region while one of them is showing would point at
+    // nothing. Only the error variant renders it.
+    const { unmount } = render(<ErrorBanner infoMessage="Press PF5 key to delete this user ..." />);
+    expect(document.getElementById(ERROR_LINE_ID)).toBeNull();
+    expect(invalidValueProps(true)['aria-describedby']).toBeUndefined();
+    unmount();
+
+    render(<ErrorBanner />);
+    expect(document.getElementById(ERROR_LINE_ID)).toBeNull();
+    expect(invalidValueProps(true)['aria-describedby']).toBeUndefined();
   });
 
   it('detects whether any field in a map is in error', () => {

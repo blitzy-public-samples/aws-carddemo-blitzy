@@ -115,19 +115,26 @@ public class CardController {
      * :purpose: Read a single card for the card-detail screen (legacy ``COCRDSLC``,
      *  CICS ``CCDL``) by its sixteen-digit card number.
      * :param cardNumber: the sixteen-digit card number path variable.
+     * :param accountId: the ``ACCTSID`` the screen collects alongside ``CARDSID``,
+     *  completing the composite selection; optional, and when supplied it must be a
+     *  non-zero eleven-digit number.
      * :param httpRequest: the current servlet request; its already-established session,
      *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: the card-detail response for the resolved card.
-     * :raises CardDemoException: when the card number is not sixteen digits (translated
-     *  to HTTP 400).
+     * :raises CardDemoException: when the card number is not sixteen digits or the account
+     *  number is not a non-zero eleven-digit value (translated to HTTP 400).
      */
     @GetMapping("/{cardNumber}")
     public CardDetailResponseDto getCardDetail(
             @PathVariable String cardNumber,
+            @RequestParam(name = "accountId", required = false) String accountId,
             HttpServletRequest httpRequest) {
         String validated = parseCardNumber(cardNumber);
+        Long acctIdFilter = parseAccountFilter(accountId);
         SessionContext ctx = resolveSessionContext(httpRequest);
-        CardDetailResponseDto response = cardService.getCardDetail(validated, ctx);
+        CardDetailResponseDto response = cardService.getCardDetail(validated, acctIdFilter);
+        ctx.setCardNum(validated);
+        ctx.setAcctId(response.getCardAcctId());
         storeSessionContext(httpRequest, ctx);
         return response;
     }
@@ -137,22 +144,29 @@ public class CardController {
      *  ``CCUP``). The editable card fields are validated by the service and the update
      *  is applied as a single atomic transaction.
      * :param cardNumber: the sixteen-digit card number path variable.
+     * :param accountId: the ``ACCTSID`` the screen collects alongside ``CARDSID``,
+     *  completing the composite selection; optional, and when supplied it must be a
+     *  non-zero eleven-digit number.
      * :param request: the editable card fields (embossed name, active status, expiry
      *  date, and CVV).
      * :param httpRequest: the current servlet request; its already-established session,
      *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: the card-update response reflecting the persisted card.
-     * :raises CardDemoException: when the card number is not sixteen digits, or a card
-     *  field fails a validation edit (translated to HTTP 400).
+     * :raises CardDemoException: when the card number is not sixteen digits, the account
+     *  number is not a non-zero eleven-digit value, or a card field fails a validation
+     *  edit (translated to HTTP 400).
      */
     @PutMapping("/{cardNumber}")
     public CardUpdateResponseDto updateCard(
             @PathVariable String cardNumber,
+            @RequestParam(name = "accountId", required = false) String accountId,
             @Valid @RequestBody CardUpdateRequestDto request,
             HttpServletRequest httpRequest) {
         String validated = parseCardNumber(cardNumber);
+        Long acctIdFilter = parseAccountFilter(accountId);
         SessionContext ctx = resolveSessionContext(httpRequest);
-        CardUpdateResponseDto response = cardService.updateCard(validated, request, ctx);
+        CardUpdateResponseDto response =
+                cardService.updateCard(validated, acctIdFilter, request, ctx);
         storeSessionContext(httpRequest, ctx);
         return response;
     }
@@ -197,11 +211,8 @@ public class CardController {
      * :purpose: Resolve the externalized pseudo-conversational session context from the
      *  request's *already-established* HTTP session under the shared attribute key,
      *  returning an empty context when the caller has no session or the session carries
-     *  none. ``getSession(false)`` is deliberate (QA Issue 22): declaring an
-     *  ``HttpSession`` controller parameter made Spring's argument resolver call
-     *  ``getSession()`` on every request, so each anonymous call created and persisted a
-     *  brand-new Spring Session entry in Redis even though no pseudo-conversational
-     *  state was ever carried into it.
+     *  none. ``getSession(false)`` never creates a session, so an anonymous call persists
+     *  no Spring Session entry.
      * :param httpRequest: the current servlet request.
      * :returns: the resolved :java:type:`SessionContext`, never ``null``.
      */
@@ -226,8 +237,7 @@ public class CardController {
      * :purpose: Flush the (possibly mutated) session context back to the caller's HTTP
      *  session so the next stateless request sees the updated COMMAREA replacement. Only
      *  an existing session is written to: a caller without one carries no
-     *  pseudo-conversational state to preserve, and creating a session for it would
-     *  reintroduce the Redis session churn of QA Issue 22.
+     *  pseudo-conversational state to preserve.
      * :param httpRequest: the current servlet request.
      * :param ctx: the session context to persist.
      */

@@ -20,6 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
@@ -54,6 +55,7 @@ import org.mockito.InjectMocks;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Pageable;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 /**
@@ -220,23 +222,47 @@ class CardServiceTest {
         return request;
     }
 
+
+    /**
+     * :purpose: Stub the unfiltered ordered browse so the store returns one window: the rows the
+     *     page shows plus, when ``hasLookahead`` is set, the single extra record ``COCRDLIC``
+     *     reads to learn a further page exists.
+     * :param rowCount: rows the page itself shows.
+     * :param hasLookahead: whether the window carries the extra lookahead record.
+     */
+    private void stubWindow(int rowCount, boolean hasLookahead) {
+        when(cardRepository.findAllByOrderByCardNumAsc(any(Pageable.class)))
+                .thenReturn(cards(rowCount + (hasLookahead ? 1 : 0)));
+    }
+
+    /**
+     * :purpose: Stub the account-filtered ordered browse for one window.
+     * :param acctId: the owning account whose browse is stubbed.
+     * :param rowCount: rows the page itself shows.
+     * :param hasLookahead: whether the window carries the extra lookahead record.
+     */
+    private void stubAccountWindow(Long acctId, int rowCount, boolean hasLookahead) {
+        when(cardRepository.findByCardAcctIdOrderByCardNumAsc(eq(acctId), any(Pageable.class)))
+                .thenReturn(cards(rowCount + (hasLookahead ? 1 : 0)));
+    }
+
     // =====================================================================================
-    // LIST scenarios (COCRDLIC, CICS CCLI) -- seven rows per page, filter edits, scoping.
+    // LIST scenarios (COCRDLIC, CICS CCLI) -- seven rows per page and the ACCTSID / CARDSID
+    // filter edits. COCRDLIC has no user-type branch (9500-FILTER-RECORDS, L1382-1390), so
+    // the operator-supplied filters are the only browse scope.
     // =====================================================================================
 
     /**
-     * :purpose: An administrator with no filter browses the full card master and receives
-     *     the mapper's list response.
+     * :purpose: A caller with no filter browses the full card master and receives the mapper's
+     *     list response.
      */
     @Test
-    void listCards_adminNoFilter_returnsMappedResponse() {
-        SessionContext admin = mock(SessionContext.class);
-        when(admin.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+    void listCards_noFilter_returnsMappedResponse() {
         CardListResponseDto expected = mock(CardListResponseDto.class);
-        when(cardRepository.findAll()).thenReturn(cards(3));
+        stubWindow(3, false);
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
-        CardListResponseDto result = cardService.listCards(null, null, 1, admin);
+        CardListResponseDto result = cardService.listCards(null, null, 1, mock(SessionContext.class));
 
         assertThat(result).isSameAs(expected);
         verify(cardMapper).toListResponse(any());
@@ -250,7 +276,7 @@ class CardServiceTest {
     @SuppressWarnings("unchecked")
     void listCards_exactlySevenRows_singlePageNoOverflow() {
         CardListResponseDto expected = mock(CardListResponseDto.class);
-        when(cardRepository.findAll()).thenReturn(cards(7));
+        stubWindow(7, false);
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
         cardService.listCards(null, null, 1, null);
@@ -268,7 +294,7 @@ class CardServiceTest {
     @SuppressWarnings("unchecked")
     void listCards_moreThanSevenRows_firstPageCapsAtSeven() {
         CardListResponseDto expected = mock(CardListResponseDto.class);
-        when(cardRepository.findAll()).thenReturn(cards(8));
+        stubWindow(7, true);
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
         cardService.listCards(null, null, 1, null);
@@ -286,7 +312,7 @@ class CardServiceTest {
     @SuppressWarnings("unchecked")
     void listCards_pageTwo_returnsRemainderSlice() {
         CardListResponseDto expected = mock(CardListResponseDto.class);
-        when(cardRepository.findAll()).thenReturn(cards(8));
+        stubWindow(1, false);
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
         cardService.listCards(null, null, 2, null);
@@ -297,131 +323,91 @@ class CardServiceTest {
     }
 
     /**
-     * :purpose: A non-admin user's browse is scoped to the account carried in the session,
-     *     using the account-filtered read and never the unfiltered browse.
+     * :purpose: The browse is scoped by the ACCTSID the operator typed, whatever the caller's
+     *     role: ``COCRDLIC 9500-FILTER-RECORDS`` (L1382-1390) filters on the screen filter and
+     *     has no user-type branch, so an ordinary user and an administrator resolve the same
+     *     rows for the same filter.
      */
     @Test
-    void listCards_nonAdminScopedToSessionAccount() {
+    void listCards_acctFilter_scopesBrowseForEveryRole() {
         SessionContext user = mock(SessionContext.class);
-        when(user.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_USER);
-        when(user.getAcctId()).thenReturn(ACCT_ID);
         CardListResponseDto expected = mock(CardListResponseDto.class);
-        when(cardRepository.findByCardAcctId(ACCT_ID)).thenReturn(cards(2));
+        stubAccountWindow(ACCT_ID, 2, false);
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
-        CardListResponseDto result = cardService.listCards(null, null, 1, user);
+        CardListResponseDto asUser = cardService.listCards(ACCT_ID, null, 1, user);
 
-        assertThat(result).isSameAs(expected);
-        ArgumentCaptor<Long> acctCaptor = ArgumentCaptor.forClass(Long.class);
-        verify(cardRepository).findByCardAcctId(acctCaptor.capture());
-        assertThat(acctCaptor.getValue()).isEqualTo(ACCT_ID);
-        verify(cardRepository, never()).findAll();
+        assertThat(asUser).isSameAs(expected);
+        verify(cardRepository).findByCardAcctIdOrderByCardNumAsc(eq(ACCT_ID), any(Pageable.class));
+        verify(cardRepository, never()).findAllByOrderByCardNumAsc(any(Pageable.class));
     }
 
     /**
-     * :purpose: A non-admin user asking for an account other than the one pinned in its
-     *     session receives no rows: the supplied filter is honoured (``COCRDLIC``
-     *     ``9500-FILTER-RECORDS`` has no user-type branch) and the session account is applied
-     *     as an ADDITIONAL restriction, so neither the requested account's cards nor -- as
-     *     happened when the filter was overwritten -- the session account's cards are
-     *     disclosed. Nothing is read for the foreign account.
+     * :purpose: A different ACCTSID resolves that account's browse; the session's own workflow
+     *     account is never substituted for the filter the operator supplied.
      */
     @Test
-    void listCards_nonAdminForeignAcctFilter_returnsNoRowsAndReadsNothing() {
+    void listCards_foreignAcctFilter_readsTheRequestedAccountNotTheSessionAccount() {
         SessionContext user = mock(SessionContext.class);
-        when(user.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_USER);
-        when(user.getAcctId()).thenReturn(ACCT_ID);
         CardListResponseDto expected = mock(CardListResponseDto.class);
+        stubAccountWindow(OTHER_ACCT_ID, 1, false);
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
-        CardListResponseDto result = cardService.listCards(OTHER_ACCT_ID, null, 1, user);
+        cardService.listCards(OTHER_ACCT_ID, null, 1, user);
 
-        assertThat(result).isSameAs(expected);
-        verify(cardRepository, never()).findByCardAcctId(any());
-        verify(cardRepository, never()).findAll();
-        verify(cardRepository, never()).findById(any());
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<Card>> rowsCaptor = ArgumentCaptor.forClass(List.class);
-        verify(cardMapper).toListResponse(rowsCaptor.capture());
-        assertThat(rowsCaptor.getValue()).isEmpty();
+        verify(cardRepository).findByCardAcctIdOrderByCardNumAsc(eq(OTHER_ACCT_ID), any(Pageable.class));
+        verify(cardRepository, never()).findByCardAcctIdOrderByCardNumAsc(eq(ACCT_ID), any(Pageable.class));
+        verify(cardRepository, never()).findAllByOrderByCardNumAsc(any(Pageable.class));
     }
 
     /**
-     * :purpose: A non-admin user whose session pins an account and who supplies NO filter
-     *     browses its own account only (the session account is the additional restriction).
+     * :purpose: With no ACCTSID supplied the browse is the unfiltered ordered card-master
+     *     browse, exactly as ``COCRDLIC`` browses ``CARDDAT`` when the filter is blank.
      */
     @Test
-    void listCards_nonAdminNoFilter_scopedToOwnAccount() {
-        SessionContext user = mock(SessionContext.class);
-        when(user.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_USER);
-        when(user.getAcctId()).thenReturn(ACCT_ID);
+    void listCards_noFilter_usesTheUnfilteredOrderedBrowse() {
         CardListResponseDto expected = mock(CardListResponseDto.class);
-        when(cardRepository.findByCardAcctId(ACCT_ID)).thenReturn(cards(1));
+        stubWindow(2, false);
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
-        cardService.listCards(null, null, 1, user);
+        cardService.listCards(null, null, 1, mock(SessionContext.class));
 
-        verify(cardRepository).findByCardAcctId(ACCT_ID);
-        verify(cardRepository, never()).findAll();
+        verify(cardRepository).findAllByOrderByCardNumAsc(any(Pageable.class));
+        verify(cardRepository, never()).findByCardAcctIdOrderByCardNumAsc(any(), any(Pageable.class));
     }
 
     /**
-     * :purpose: A non-admin user with no account pinned in its session and no filter must not
-     *     receive the entire card base; the browse yields no rows instead of every PAN.
+     * :purpose: The store is asked for one bounded window -- seven rows plus the single
+     *     lookahead record -- so the whole card base is never materialised for a seven-row page.
      */
     @Test
-    void listCards_nonAdminUnpinnedNoFilter_doesNotWidenToFindAll() {
-        SessionContext user = mock(SessionContext.class);
-        when(user.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_USER);
-        when(user.getAcctId()).thenReturn(null);
+    void listCards_readsOnlyOnePageWindowPlusOneLookaheadRow() {
         CardListResponseDto expected = mock(CardListResponseDto.class);
+        stubWindow(7, true);
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
-        CardListResponseDto result = cardService.listCards(null, null, 1, user);
+        cardService.listCards(null, null, 2, null);
 
-        assertThat(result).isSameAs(expected);
-        verify(cardRepository, never()).findAll();
-        @SuppressWarnings("unchecked")
-        ArgumentCaptor<List<Card>> rowsCaptor = ArgumentCaptor.forClass(List.class);
-        verify(cardMapper).toListResponse(rowsCaptor.capture());
-        assertThat(rowsCaptor.getValue()).isEmpty();
+        ArgumentCaptor<Pageable> windowCaptor = ArgumentCaptor.forClass(Pageable.class);
+        verify(cardRepository).findAllByOrderByCardNumAsc(windowCaptor.capture());
+        assertThat(windowCaptor.getValue().getPageSize()).isEqualTo(CardService.MAX_SCREEN_LINES + 1);
+        assertThat(windowCaptor.getValue().getPageNumber()).isEqualTo(1);
     }
 
     /**
-     * :purpose: A non-admin user supplying its OWN account id as the filter reads exactly that
-     *     account (the filter is honoured, not discarded).
+     * :purpose: A valid eleven-digit account filter reads exactly that account's cards.
      */
     @Test
-    void listCards_nonAdminOwnAcctFilter_isHonoured() {
-        SessionContext user = mock(SessionContext.class);
-        when(user.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_USER);
-        when(user.getAcctId()).thenReturn(ACCT_ID);
+    void listCards_withValidAcctFilter_usesFilter() {
         CardListResponseDto expected = mock(CardListResponseDto.class);
-        when(cardRepository.findByCardAcctId(ACCT_ID)).thenReturn(cards(2));
+        stubAccountWindow(ACCT_ID, 2, false);
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
-        cardService.listCards(ACCT_ID, null, 1, user);
-
-        verify(cardRepository).findByCardAcctId(ACCT_ID);
-        verify(cardRepository, never()).findAll();
-    }
-
-    /**
-     * :purpose: An administrator supplying a valid eleven-digit account filter reads that
-     *     account's cards.
-     */
-    @Test
-    void listCards_adminWithValidAcctFilter_usesFilter() {
-        SessionContext admin = mock(SessionContext.class);
-        when(admin.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
-        CardListResponseDto expected = mock(CardListResponseDto.class);
-        when(cardRepository.findByCardAcctId(ACCT_ID)).thenReturn(cards(2));
-        when(cardMapper.toListResponse(any())).thenReturn(expected);
-
-        cardService.listCards(ACCT_ID, null, 1, admin);
+        cardService.listCards(ACCT_ID, null, 1, null);
 
         ArgumentCaptor<Long> acctCaptor = ArgumentCaptor.forClass(Long.class);
-        verify(cardRepository).findByCardAcctId(acctCaptor.capture());
+        verify(cardRepository)
+                .findByCardAcctIdOrderByCardNumAsc(acctCaptor.capture(), any(Pageable.class));
         assertThat(acctCaptor.getValue()).isEqualTo(ACCT_ID);
     }
 
@@ -485,7 +471,7 @@ class CardServiceTest {
     @SuppressWarnings("unchecked")
     void listCards_emptyResult_returnsMappedEmptyNotException() {
         CardListResponseDto expected = mock(CardListResponseDto.class);
-        when(cardRepository.findAll()).thenReturn(List.of());
+        when(cardRepository.findAllByOrderByCardNumAsc(any(Pageable.class))).thenReturn(List.of());
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
         CardListResponseDto result = cardService.listCards(null, null, 1, null);
@@ -552,39 +538,46 @@ class CardServiceTest {
 
     /**
      * :purpose: A non-admin user requesting a card outside its account is rejected with the
-     *     same not-found message (scoping hides foreign cards).
+     *     same not-found message: the ``ACCTSID``/``CARDSID`` pair is the selection, so a card
+     *     outside the named account is not part of it.
      */
     @Test
-    void getCardDetail_nonAdminForeignAccount_isScoped() {
+    void getCardDetail_accountFilterMismatch_reportsCombinationNotFound() {
         Card card = card(CARD_NUM, OTHER_ACCT_ID);
-        SessionContext user = mock(SessionContext.class);
-        when(user.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_USER);
-        when(user.getAcctId()).thenReturn(ACCT_ID);
         when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.of(card));
 
         assertThatExceptionOfType(RecordNotFoundException.class)
-                .isThrownBy(() -> cardService.getCardDetail(CARD_NUM, user))
+                .isThrownBy(() -> cardService.getCardDetail(CARD_NUM, ACCT_ID))
                 .withMessage(MSG_DETAIL_NOT_FOUND);
         verifyNoInteractions(cardXrefRepository, cardMapper);
     }
 
     /**
-     * :purpose: A non-admin user requesting a card owned by its own account receives the
-     *     mapped detail response.
+     * :purpose: ``COCRDSLC 2210-EDIT-ACCOUNT``: an ``ACCTSID`` outside the non-zero
+     *     eleven-digit range fails the edit before any store access.
      */
     @Test
-    void getCardDetail_nonAdminOwnAccount_returnsDetail() {
+    void getCardDetail_invalidAccountFilter_throwsAccountEditMessage() {
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> cardService.getCardDetail(CARD_NUM, 0L))
+                .withMessage("Account number must be a non zero 11 digit number");
+        verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
+    }
+
+    /**
+     * :purpose: A card that belongs to the supplied ``ACCTSID`` resolves to the mapped detail
+     *     response.
+     */
+    @Test
+    void getCardDetail_accountFilterMatches_returnsDetail() {
         Card card = card(CARD_NUM, ACCT_ID);
         CardXref xref = new CardXref(CARD_NUM, FAKE_CUST_ID, ACCT_ID);
-        SessionContext user = mock(SessionContext.class);
-        when(user.getUserType()).thenReturn(SessionContext.UserType.CDEMO_USRTYP_USER);
-        when(user.getAcctId()).thenReturn(ACCT_ID);
         CardDetailResponseDto expected = mock(CardDetailResponseDto.class);
         when(cardRepository.findById(CARD_NUM)).thenReturn(Optional.of(card));
         when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.of(xref));
         when(cardMapper.toDetailResponse(card, xref)).thenReturn(expected);
 
-        CardDetailResponseDto result = cardService.getCardDetail(CARD_NUM, user);
+        CardDetailResponseDto result = cardService.getCardDetail(CARD_NUM, ACCT_ID);
 
         assertThat(result).isSameAs(expected);
         verify(cardMapper).toDetailResponse(card, xref);
@@ -605,7 +598,7 @@ class CardServiceTest {
     @Test
     void updateCard_nullRequest_throwsNameNotProvided() {
         assertThatExceptionOfType(CardDemoException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, null, null))
                 .withMessage(MSG_NAME_NOT_PROVIDED);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
@@ -618,7 +611,7 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest("John3 Smith", "Y", VALID_EXPIRY);
 
         assertThatExceptionOfType(CardDemoException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_NAME_ALPHA);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
@@ -633,7 +626,7 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest("   ", "Y", VALID_EXPIRY);
 
         assertThatExceptionOfType(CardDemoException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_NAME_NOT_PROVIDED);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
@@ -647,7 +640,7 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest("0000000000", "Y", VALID_EXPIRY);
 
         assertThatExceptionOfType(CardDemoException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_NAME_NOT_PROVIDED);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
@@ -660,7 +653,7 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "X", VALID_EXPIRY);
 
         assertThatExceptionOfType(CardDemoException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_STATUS_YN);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
@@ -673,7 +666,7 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", "2025-00-15");
 
         assertThatExceptionOfType(CardDemoException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_EXPIRY_MONTH);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
@@ -686,7 +679,7 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", "2025-13-15");
 
         assertThatExceptionOfType(CardDemoException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_EXPIRY_MONTH);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
@@ -700,12 +693,10 @@ class CardServiceTest {
         when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.empty());
 
         assertThatExceptionOfType(RecordNotFoundException.class)
-                .isThrownBy(() -> cardService.updateCard(
-                        CARD_NUM, mockRequest(VALID_NAME, "Y", "2025-01-15"), null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, mockRequest(VALID_NAME, "Y", "2025-01-15"), null))
                 .withMessage(MSG_DETAIL_NOT_FOUND);
         assertThatExceptionOfType(RecordNotFoundException.class)
-                .isThrownBy(() -> cardService.updateCard(
-                        CARD_NUM, mockRequest(VALID_NAME, "Y", "2025-12-15"), null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, mockRequest(VALID_NAME, "Y", "2025-12-15"), null))
                 .withMessage(MSG_DETAIL_NOT_FOUND);
         verify(cardRepository, never()).saveAndFlush(any());
     }
@@ -718,7 +709,7 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", "1949-06-15");
 
         assertThatExceptionOfType(CardDemoException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_EXPIRY_YEAR);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
@@ -731,7 +722,7 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", "2100-06-15");
 
         assertThatExceptionOfType(CardDemoException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_EXPIRY_YEAR);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
@@ -745,12 +736,10 @@ class CardServiceTest {
         when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.empty());
 
         assertThatExceptionOfType(RecordNotFoundException.class)
-                .isThrownBy(() -> cardService.updateCard(
-                        CARD_NUM, mockRequest(VALID_NAME, "Y", "1950-06-15"), null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, mockRequest(VALID_NAME, "Y", "1950-06-15"), null))
                 .withMessage(MSG_DETAIL_NOT_FOUND);
         assertThatExceptionOfType(RecordNotFoundException.class)
-                .isThrownBy(() -> cardService.updateCard(
-                        CARD_NUM, mockRequest(VALID_NAME, "Y", "2099-06-15"), null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, mockRequest(VALID_NAME, "Y", "2099-06-15"), null))
                 .withMessage(MSG_DETAIL_NOT_FOUND);
         verify(cardRepository, never()).saveAndFlush(any());
     }
@@ -764,7 +753,7 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest("John3 Smith", "X", VALID_EXPIRY);
 
         assertThatExceptionOfType(CardDemoException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_NAME_ALPHA);
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
@@ -781,7 +770,7 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", VALID_EXPIRY);
 
         assertThatExceptionOfType(RecordNotFoundException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_DETAIL_NOT_FOUND);
         verify(cardRepository, never()).saveAndFlush(any());
     }
@@ -799,7 +788,7 @@ class CardServiceTest {
         when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
-        CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, request, null);
+        CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, null, request, null);
 
         assertThat(result).isSameAs(expected);
         verify(cardRepository, never()).saveAndFlush(any());
@@ -820,7 +809,7 @@ class CardServiceTest {
         when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
-        CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, request, null);
+        CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, null, request, null);
 
         assertThat(result).isSameAs(expected);
         verify(cardRepository, never()).saveAndFlush(any());
@@ -837,7 +826,7 @@ class CardServiceTest {
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "N", VALID_EXPIRY);
 
         assertThatExceptionOfType(RecordNotFoundException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_DETAIL_NOT_FOUND);
         verify(cardRepository, never()).saveAndFlush(any());
         verifyNoInteractions(cardXrefRepository, cardMapper);
@@ -859,7 +848,7 @@ class CardServiceTest {
         when(cardRepository.saveAndFlush(card)).thenReturn(card);
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
-        CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, request, session);
+        CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, null, request, session);
 
         assertThat(result).isSameAs(expected);
         InOrder inOrder = inOrder(cardRepository, cardMapper);
@@ -888,7 +877,7 @@ class CardServiceTest {
         when(cardRepository.saveAndFlush(card)).thenReturn(card);
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
-        CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, request, null);
+        CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, null, request, null);
 
         assertThat(result).isSameAs(expected);
         verify(cardMapper).applyUpdate(request, card);
@@ -917,7 +906,7 @@ class CardServiceTest {
         when(cardRepository.saveAndFlush(card)).thenReturn(card);
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
-        assertThat(cardService.updateCard(CARD_NUM, request, null)).isSameAs(expected);
+        assertThat(cardService.updateCard(CARD_NUM, null, request, null)).isSameAs(expected);
         verify(cardRepository).saveAndFlush(card);
     }
 
@@ -934,7 +923,7 @@ class CardServiceTest {
         when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
 
         assertThatExceptionOfType(OptimisticLockConflictException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_DATA_WAS_CHANGED);
         verify(cardRepository, never()).saveAndFlush(any());
         verify(cardMapper, never()).applyUpdate(any(), any());
@@ -956,7 +945,7 @@ class CardServiceTest {
         when(cardRepository.saveAndFlush(card)).thenReturn(card);
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
-        assertThat(cardService.updateCard(CARD_NUM, request, null)).isSameAs(expected);
+        assertThat(cardService.updateCard(CARD_NUM, null, request, null)).isSameAs(expected);
     }
 
     /**
@@ -978,7 +967,7 @@ class CardServiceTest {
         when(cardRepository.saveAndFlush(card)).thenReturn(card);
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
-        assertThat(cardService.updateCard(CARD_NUM, request, null)).isSameAs(expected);
+        assertThat(cardService.updateCard(CARD_NUM, null, request, null)).isSameAs(expected);
         verify(cardMapper).applyUpdate(request, card);
     }
 
@@ -996,7 +985,7 @@ class CardServiceTest {
         when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
 
         assertThatExceptionOfType(OptimisticLockConflictException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_DATA_WAS_CHANGED);
         verify(cardRepository, never()).saveAndFlush(any());
     }
@@ -1015,7 +1004,7 @@ class CardServiceTest {
                 .thenThrow(new ObjectOptimisticLockingFailureException(Card.class, CARD_NUM));
 
         assertThatExceptionOfType(OptimisticLockConflictException.class)
-                .isThrownBy(() -> cardService.updateCard(CARD_NUM, request, null))
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
                 .withMessage(MSG_DATA_WAS_CHANGED);
     }
 
@@ -1033,7 +1022,7 @@ class CardServiceTest {
         when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
         when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
-        assertThat(cardService.updateCard(CARD_NUM, request, null)).isSameAs(expected);
+        assertThat(cardService.updateCard(CARD_NUM, null, request, null)).isSameAs(expected);
         verify(cardRepository, never()).saveAndFlush(any());
         verify(cardMapper, never()).applyUpdate(any(), any());
     }
@@ -1066,7 +1055,7 @@ class CardServiceTest {
     @Test
     @DisplayName("an empty first page carries 'NO RECORDS FOUND FOR THIS SEARCH CONDITION.'")
     void listCards_emptyFirstPage_carriesNoRecordsFound() {
-        when(cardRepository.findAll()).thenReturn(cards(0));
+        stubWindow(0, false);
         stubRealListResponse(0);
 
         CardListResponseDto result = cardService.listCards(null, null, 1, null, null, null, null);
@@ -1084,7 +1073,7 @@ class CardServiceTest {
     @Test
     @DisplayName("a page past the end carries 'NO MORE RECORDS TO SHOW'")
     void listCards_pagePastTheEnd_carriesNoMoreRecords() {
-        when(cardRepository.findAll()).thenReturn(cards(3));
+        stubWindow(0, false);
         stubRealListResponse(0);
 
         CardListResponseDto result = cardService.listCards(null, null, 3, null, null, null, null);
@@ -1101,7 +1090,7 @@ class CardServiceTest {
     @Test
     @DisplayName("PF8 past the last page carries 'NO MORE PAGES TO DISPLAY'")
     void listCards_pf8PastLastPage_carriesNoMorePages() {
-        when(cardRepository.findAll()).thenReturn(cards(7));
+        stubWindow(0, false);
         stubRealListResponse(0);
 
         CardListResponseDto result =
@@ -1119,7 +1108,7 @@ class CardServiceTest {
     @Test
     @DisplayName("PF7 on the first page carries 'NO PREVIOUS PAGES TO DISPLAY'")
     void listCards_pf7OnFirstPage_carriesNoPreviousPages() {
-        when(cardRepository.findAll()).thenReturn(cards(3));
+        stubWindow(3, false);
         stubRealListResponse(3);
 
         CardListResponseDto result =
@@ -1135,7 +1124,7 @@ class CardServiceTest {
     @Test
     @DisplayName("an invalid row action reports 'INVALID ACTION CODE'")
     void listCards_invalidRowAction_reportsInvalidActionCode() {
-        when(cardRepository.findAll()).thenReturn(cards(3));
+        stubWindow(3, false);
         stubRealListResponse(3);
 
         assertThatThrownBy(() -> cardService.listCards(null, null, 1, null, "X", CARD_NUM, null))
@@ -1151,7 +1140,7 @@ class CardServiceTest {
     @Test
     @DisplayName("row actions S and U are echoed with the selected card number")
     void listCards_validRowActions_areEchoed() {
-        when(cardRepository.findAll()).thenReturn(cards(3));
+        stubWindow(3, false);
         stubRealListResponse(3);
 
         CardListResponseDto select = cardService.listCards(null, null, 1, null, "s", CARD_NUM, null);
@@ -1169,7 +1158,7 @@ class CardServiceTest {
     @Test
     @DisplayName("a populated page carries 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD'")
     void listCards_populatedPage_carriesInformationalLine() {
-        when(cardRepository.findAll()).thenReturn(cards(10));
+        stubWindow(7, true);
         stubRealListResponse(7);
 
         CardListResponseDto result = cardService.listCards(null, null, 1, null, null, null, null);

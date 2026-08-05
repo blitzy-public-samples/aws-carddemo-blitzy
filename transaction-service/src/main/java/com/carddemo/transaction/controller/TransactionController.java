@@ -105,6 +105,19 @@ public class TransactionController {
      * :raises RecordNotFoundException: when no transaction exists for the id (mapped to
      *  HTTP 404 by the shared ``GlobalExceptionHandler``).
      */
+    /**
+     * :purpose: Read the last transaction on file, backing the add screen's
+     *  ``F5=Copy Last Tran.`` action (``COTRN02C COPY-LAST-TRAN-DATA``). Declared before
+     *  the ``/{id}`` template so the literal segment wins the mapping.
+     * :returns: the view response DTO for the highest-keyed transaction (HTTP 200).
+     * :raises RecordNotFoundException: when no transaction exists, mapped to HTTP 404 by
+     *  the shared ``GlobalExceptionHandler``.
+     */
+    @GetMapping("/last")
+    public TransactionViewResponseDto viewLastTransaction() {
+        return transactionService.viewLastTransaction();
+    }
+
     @GetMapping("/{id}")
     public TransactionViewResponseDto viewTransaction(@PathVariable("id") String id,
                                                       HttpServletRequest httpRequest) {
@@ -139,11 +152,8 @@ public class TransactionController {
      * :purpose: Resolve the externalized pseudo-conversational session context from the
      *  request's *already-established* servlet session, returning a fresh instance when
      *  the caller has no session or none is present (COMMAREA bridge, AAP section
-     *  0.6.3). ``getSession(false)`` is deliberate (QA Issue 22): declaring an
-     *  ``HttpSession`` controller parameter made Spring's argument resolver call
-     *  ``getSession()`` on every request, so each anonymous call created and persisted a
-     *  brand-new Spring Session entry in Redis even though no pseudo-conversational
-     *  state was ever carried into it.
+     *  0.6.3). ``getSession(false)`` never creates a session, so an anonymous call
+     *  persists no Spring Session entry.
      * :param httpRequest: the current servlet request.
      * :returns: the stored {@link SessionContext}, or a new instance when the caller has
      *  no session, or the attribute is absent or of an unexpected type.
@@ -165,8 +175,7 @@ public class TransactionController {
      * :purpose: Re-store the (possibly mutated) session context so any paging cursor,
      *  last-map, or selected-id state the service updated is flushed to the session for
      *  the next stateless request. Only an existing session is written to: a caller
-     *  without one carries no pseudo-conversational state to preserve, and creating a
-     *  session for it would reintroduce the Redis session churn of QA Issue 22.
+     *  without one carries no pseudo-conversational state to preserve.
      * :param httpRequest: the current servlet request.
      * :param sessionContext: the session context to persist.
      */

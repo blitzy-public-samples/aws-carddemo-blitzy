@@ -65,10 +65,7 @@ import type {
   UserDeleteRequestDto,
   UserAddResponseDto,
   UserUpdateResponseDto,
-  UserDeleteResponseDto,
   ApiErrorResponse,
-  Page,
-  PageInfo,
   FieldErrorMap,
   FieldErrorState,
   ErrMsg,
@@ -187,14 +184,13 @@ describe('session contract (SessionContext)', () => {
 });
 
 describe('account contract (Account*Dto)', () => {
-  // The frontend account contract follows its authoritative agent-prompt and AAP
-  // 0.6.2 optimistic locking: it carries `version` and the read-only `acctAddrZip`
-  // and types `acctId` / `custId` as string. The backend AccountViewResponseDto /
-  // AccountUpdateRequestDto currently lack `version` + `acctAddrZip` and use Long
-  // ids; bringing those DTOs up to this contract is a tracked backend follow-up.
+  // Mirrors account-service AccountViewResponseDto / AccountUpdateResponseDto: the
+  // AAP 0.6.2 optimistic-lock `version` is the only numeric member, and acctId,
+  // custId, every amount and the FICO score are strings on the wire. ACCT-ADDR-ZIP
+  // is absent because neither COACTVWC nor COACTUPC displays it - ACSZIPC carries
+  // CUST-ADDR-ZIP (COACTVWC L515).
   const view: AccountViewResponseDto = {
     acctId: '00000000011',
-    acctAddrZip: '12345-6789',
     custId: '000000001',
     version: 3,
     acctActiveStatus: 'Y',
@@ -223,47 +219,54 @@ describe('account contract (Account*Dto)', () => {
     custDobYyyyMmDd: '1985-06-15',
     custEftAccountId: 'EFT0000001',
     custPriCardHolderInd: 'Y',
-    custFicoCreditScore: 720,
+    custFicoCreditScore: '720',
   };
 
   it('binds AccountViewResponseDto with optimistic-lock version', () => {
     expect(view.version).toBe(3);
     expect(view.acctExpiraionDate).toBe('2027-01-31');
-    expect(view.acctAddrZip).toBe('12345-6789');
     expect(view.acctId).toBe('00000000011');
+    // Every numeric account field is serialized as a string so NUMERIC(p,s) scale
+    // and the zero-padded COBOL field width survive the wire.
+    expect(view.acctCurrBal).toBe('1250.00');
+    expect(view.custFicoCreditScore).toBe('720');
+    expect(typeof view.custFicoCreditScore).toBe('string');
+    expect(typeof view.acctId).toBe('string');
+    expect(typeof view.custId).toBe('string');
   });
 
+  const update: AccountUpdateRequestDto = {
+    version: 3,
+    acctActiveStatus: 'Y',
+    acctCurrBal: '1250.00',
+    acctCreditLimit: '5000.00',
+    acctCashCreditLimit: '1000.00',
+    acctOpenDate: '2020-01-15',
+    acctExpiraionDate: '2027-01-31',
+    acctReissueDate: '2024-01-15',
+    acctCurrCycCredit: '300.00',
+    acctCurrCycDebit: '150.00',
+    acctGroupId: 'GRP0000001',
+    custFirstName: 'JANE',
+    custMiddleName: 'Q',
+    custLastName: 'DOE',
+    custAddrLine1: '1 MAIN ST',
+    custAddrLine2: 'APT 2',
+    custAddrLine3: 'ANYTOWN',
+    custAddrStateCd: 'NY',
+    custAddrCountryCd: 'USA',
+    custAddrZip: '12345',
+    custPhoneNum1: '(555)555-1212',
+    custPhoneNum2: '(555)555-3434',
+    custSsn: '123456789',
+    custGovtIssuedId: 'DL-1234567890',
+    custDobYyyyMmDd: '1985-06-15',
+    custEftAccountId: 'EFT0000001',
+    custPriCardHolderInd: 'Y',
+    custFicoCreditScore: '720',
+  };
+
   it('binds AccountUpdateRequestDto (mutable fields + version, no identity fields)', () => {
-    const update: AccountUpdateRequestDto = {
-      version: 3,
-      acctActiveStatus: 'Y',
-      acctCurrBal: '1250.00',
-      acctCreditLimit: '5000.00',
-      acctCashCreditLimit: '1000.00',
-      acctOpenDate: '2020-01-15',
-      acctExpiraionDate: '2027-01-31',
-      acctReissueDate: '2024-01-15',
-      acctCurrCycCredit: '300.00',
-      acctCurrCycDebit: '150.00',
-      acctGroupId: 'GRP0000001',
-      custFirstName: 'JANE',
-      custMiddleName: 'Q',
-      custLastName: 'DOE',
-      custAddrLine1: '1 MAIN ST',
-      custAddrLine2: 'APT 2',
-      custAddrLine3: 'ANYTOWN',
-      custAddrStateCd: 'NY',
-      custAddrCountryCd: 'USA',
-      custAddrZip: '12345',
-      custPhoneNum1: '(555)555-1212',
-      custPhoneNum2: '(555)555-3434',
-      custSsn: '123456789',
-      custGovtIssuedId: 'DL-1234567890',
-      custDobYyyyMmDd: '1985-06-15',
-      custEftAccountId: 'EFT0000001',
-      custPriCardHolderInd: 'Y',
-      custFicoCreditScore: 720,
-    };
     const updated: AccountUpdateResponseDto = view;
     const conflict: OptimisticLockConflict = {
       message: 'Record changed by some one else. Please review',
@@ -273,6 +276,48 @@ describe('account contract (Account*Dto)', () => {
     expect(update.acctGroupId).toBe('GRP0000001');
     expect(updated.version).toBe(3);
     expect(conflict.message).toContain('Please review');
+  });
+
+  it('accepts the COACTUPC old* snapshot members alongside the version', () => {
+    const withSnapshot: AccountUpdateRequestDto = {
+      ...update,
+      oldAcctActiveStatus: 'Y',
+      oldAcctCurrBal: '1250.00',
+      oldAcctCreditLimit: '5000.00',
+      oldAcctCashCreditLimit: '1000.00',
+      oldAcctCurrCycCredit: '300.00',
+      oldAcctCurrCycDebit: '150.00',
+      oldAcctOpenDate: '2020-01-15',
+      oldAcctExpiraionDate: '2027-01-31',
+      oldAcctReissueDate: '2024-01-15',
+      oldAcctGroupId: 'GRP0000001',
+      oldCustFirstName: 'JANE',
+      oldCustMiddleName: 'Q',
+      oldCustLastName: 'DOE',
+      oldCustAddrLine1: '1 MAIN ST',
+      oldCustAddrLine2: 'APT 2',
+      oldCustAddrLine3: 'ANYTOWN',
+      oldCustAddrStateCd: 'NY',
+      oldCustAddrCountryCd: 'USA',
+      oldCustAddrZip: '12345',
+      oldCustPhoneNum1: '(555)555-1212',
+      oldCustPhoneNum2: '(555)555-3434',
+      oldCustSsn: '123456789',
+      oldCustGovtIssuedId: 'DL-1234567890',
+      oldCustDobYyyyMmDd: '1985-06-15',
+      oldCustEftAccountId: 'EFT0000001',
+      oldCustPriCardHolderInd: 'Y',
+      oldCustFicoCreditScore: '720',
+    };
+
+    // Every editable member has exactly one old* counterpart, and the snapshot is
+    // optional so version-only submissions still bind.
+    const snapshotKeys = Object.keys(withSnapshot).filter((key) =>
+      key.startsWith('old'),
+    );
+    expect(snapshotKeys).toHaveLength(27);
+    expect(withSnapshot.oldAcctExpiraionDate).toBe('2027-01-31');
+    expect(update.oldAcctCurrBal).toBeUndefined();
   });
 
   it('binds the page-level AccountUpdateFormParts helper', () => {
@@ -290,17 +335,43 @@ describe('account contract (Account*Dto)', () => {
 });
 
 describe('card contract (Card*Dto)', () => {
-  it('binds CardListResponseDto ({ cards })', () => {
+  it('binds CardListResponseDto with the server paging state and both banners', () => {
     const item: CardListItemDto = {
       cardNum: '4111111111111111',
       cardAcctId: '00000000011',
       cardActiveStatus: 'Y',
     };
-    const list: CardListResponseDto = { cards: [item] };
-    const listReq: CardListRequestDto = { accountId: '00000000011', page: 0 };
+    // Mirrors card-service CardListResponseDto field for field, so the screen reads
+    // the paging state from the response instead of re-slicing the page it was
+    // given.
+    const list: CardListResponseDto = {
+      cards: [item],
+      pageNumber: 1,
+      nextPage: true,
+      selectedCardNumber: null,
+      selectedAction: null,
+      message: null,
+      infoMessage: 'TYPE S FOR DETAIL, U TO UPDATE ANY RECORD',
+    };
+    // `page` is one-based, matching the route default of 1; `aid` carries the PF7 /
+    // PF8 key press and `action` + `selectedCardNumber` the row selection.
+    const listReq: CardListRequestDto = {
+      accountId: '00000000011',
+      cardNum: '4111111111111111',
+      page: 1,
+      aid: 'PF8',
+      action: 'S',
+      selectedCardNumber: '4111111111111111',
+    };
 
     expect(list.cards[0].cardNum).toBe('4111111111111111');
+    expect(list.pageNumber).toBe(1);
+    expect(list.nextPage).toBe(true);
+    expect(list.infoMessage).toBe('TYPE S FOR DETAIL, U TO UPDATE ANY RECORD');
+    expect(list.selectedAction).toBeNull();
     expect(listReq.accountId).toBe('00000000011');
+    expect(listReq.aid).toBe('PF8');
+    expect(listReq.action).toBe('S');
   });
 
   it('binds CardDetailResponseDto (with custId) and CardUpdateResponseDto', () => {
@@ -323,18 +394,29 @@ describe('card contract (Card*Dto)', () => {
   });
 
   it('binds CardUpdateRequestDto (editable fields + version, no CVV, no keys)', () => {
-    // CVV (cardCvvCd) is intentionally absent per C09 — it is never accepted from
-    // the client; the card number travels in the request path, not the body. The
-    // optimistic-lock `version` read at display time IS carried, mirroring the
-    // account update contract (AAP 0.6.2).
+    // cardCvvCd is absent because the COCRDUP mapset has no CVV field: COCRDUPC
+    // copies the stored CVV into its own snapshot (L1354). The card number travels
+    // in the request path, not the body. The optimistic-lock `version` read at
+    // display time IS carried, mirroring the account update contract (AAP 0.6.2).
     const update: CardUpdateRequestDto = {
       cardEmbossedName: 'JANE Q DOE',
       cardActiveStatus: 'N',
       cardExpiraionDate: '2028-01-31',
       version: 4,
     };
+    // The old* snapshot members are optional and enable the field-by-field
+    // comparison COCRDUPC performs before its REWRITE (L1503).
+    const withSnapshot: CardUpdateRequestDto = {
+      ...update,
+      oldCardEmbossedName: 'JANE Q DOE',
+      oldCardActiveStatus: 'Y',
+      oldCardExpiraionDate: '2027-01-31',
+    };
+
     expect(update.cardActiveStatus).toBe('N');
     expect(update.version).toBe(4);
+    expect(update.oldCardActiveStatus).toBeUndefined();
+    expect(withSnapshot.oldCardActiveStatus).toBe('Y');
   });
 });
 
@@ -373,7 +455,7 @@ describe('transaction contract (Transaction*Dto)', () => {
       tranId: '0000000000000001',
       tranCardNum: '4111111111111111',
       tranTypeCd: '01',
-      tranCatCd: 5,
+      tranCatCd: '0005',
       tranSource: 'POS',
       tranDesc: 'PURCHASE',
       tranAmt: '42.50',
@@ -384,8 +466,11 @@ describe('transaction contract (Transaction*Dto)', () => {
       tranMerchantCity: 'ANYTOWN',
       tranMerchantZip: '12345',
     };
-    expect(detail.tranCatCd).toBe(5);
+    // tranCatCd (9(04)) and tranMerchantId (9(09)) are serialized as zero-padded
+    // strings, so the COBOL field width survives the wire.
+    expect(detail.tranCatCd).toBe('0005');
     expect(detail.tranMerchantId).toBe('000000123');
+    expect(typeof detail.tranCatCd).toBe('string');
   });
 
   it('binds TranAddRequestDto (acctId / tranCardNum) and TranAddResponseDto (message)', () => {
@@ -393,7 +478,7 @@ describe('transaction contract (Transaction*Dto)', () => {
       acctId: '00000000011',
       tranCardNum: '4111111111111111',
       tranTypeCd: '01',
-      tranCatCd: 5,
+      tranCatCd: '0005',
       tranSource: 'POS',
       tranDesc: 'PURCHASE',
       tranAmt: '42.50',
@@ -477,19 +562,38 @@ describe('user contract (User DTOs)', () => {
       userType: 'A',
     };
     const listItem: UserListItemDto = user;
-    const listReq: UserListRequestDto = { userId: 'A', page: 1 };
-    const pageInfo: PageInfo = {
-      pageNumber: 1,
-      pageSize: 10,
-      hasNext: false,
-      hasPrevious: false,
+    // Mirrors the parameters GET /users binds: the browse-start key, the screen's
+    // one-based page counter (converted to the route's zero-based index by
+    // api/users), the PF7 / PF8 action with its cursor, and the row selection.
+    const listReq: UserListRequestDto = {
+      userId: 'ADMIN001',
+      page: 1,
+      direction: 'PF8',
+      cursor: 'USER0005',
+      selection: 'U',
+      selectedUserId: 'USER0005',
     };
-    const listResp: UserListResponseDto = { items: [listItem], page: pageInfo };
+    // Mirrors user-service UserListResponseDto field for field. `pageNumber` is the
+    // route's zero-based index; the screen keeps its own CDEMO-CU00-PAGE-NUM.
+    const listResp: UserListResponseDto = {
+      users: [listItem],
+      pageNumber: 0,
+      userIdFirst: 'ADMIN001',
+      userIdLast: 'USER0005',
+      nextPage: true,
+      selectedUserId: null,
+      selectedAction: null,
+      message: null,
+    };
 
     expect(user.userType).toBe('A');
     expect(listReq.page).toBe(1);
-    expect(listResp.items[0].userId).toBe('ADMIN001');
-    expect(listResp.page.pageSize).toBe(10);
+    expect(listReq.direction).toBe('PF8');
+    expect(listResp.users[0].userId).toBe('ADMIN001');
+    expect(listResp.pageNumber).toBe(0);
+    expect(listResp.userIdFirst).toBe('ADMIN001');
+    expect(listResp.userIdLast).toBe('USER0005');
+    expect(listResp.nextPage).toBe(true);
   });
 
   it('binds add / update / delete requests (password required on add + update)', () => {
@@ -511,18 +615,24 @@ describe('user contract (User DTOs)', () => {
     };
     const del: UserDeleteRequestDto = { userId: 'USER0001' };
 
+    // The add and update routes answer with UserWriteResponseDto, which carries the
+    // verbatim legacy banner alongside the password-free user. DELETE answers 204 No
+    // Content with no body, so there is no delete response type.
     const addResp: UserAddResponseDto = {
-      userId: 'USER0001', firstName: 'JOHN', lastName: 'SMITH', userType: 'U',
+      userId: 'USER0001',
+      firstName: 'JOHN',
+      lastName: 'SMITH',
+      userType: 'U',
+      message: 'User has been added ...',
     };
     const updResp: UserUpdateResponseDto = addResp;
-    const delResp: UserDeleteResponseDto = addResp;
 
     expect(add.password).toBe('secret01');
     expect(update.password).toBe('secret02');
     expect(del.userId).toBe('USER0001');
     expect(addResp.userType).toBe('U');
+    expect(addResp.message).toBe('User has been added ...');
     expect(updResp.userId).toBe('USER0001');
-    expect(delResp.userId).toBe('USER0001');
   });
 });
 
@@ -554,18 +664,16 @@ describe('common contract (ErrorResponse + shared primitives)', () => {
     expect(minimal.correlationId).toBeUndefined();
   });
 
-  it('binds the shared primitives (Page, FieldError*, message aliases, ActiveStatus)', () => {
-    const page: Page<UserDto> = {
-      items: [],
-      page: { pageNumber: 1, pageSize: 7, hasNext: true, hasPrevious: false },
-    };
+  it('binds the shared primitives (FieldError*, message aliases, ActiveStatus)', () => {
+    // There is no generic paged wrapper: each list route answers with its own
+    // response DTO carrying its own paging cursors, so no shared Page<T> exists to
+    // model a shape no service returns.
     const fieldState: FieldErrorState = { invalid: true, blank: false };
     const fieldMap: FieldErrorMap = { acctId: fieldState };
     const err: ErrMsg = 'invalid';
     const info: InfoMsg = 'saved';
     const status: ActiveStatus = 'Y';
 
-    expect(page.page.pageSize).toBe(7);
     expect(fieldMap.acctId.invalid).toBe(true);
     expect(err).toBe('invalid');
     expect(info).toBe('saved');

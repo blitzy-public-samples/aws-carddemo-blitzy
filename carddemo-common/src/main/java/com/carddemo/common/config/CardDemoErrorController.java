@@ -78,7 +78,7 @@ public class CardDemoErrorController implements ErrorController {
      *  preserving the status the container resolved.
      * :param request: the error dispatch request carrying the standard
      *  ``jakarta.servlet.error.*`` attributes.
-     * :returns: the envelope with the dispatched status, reason phrase, original
+     * :returns: the envelope with the dispatched status, reason phrase, PAN-redacted
      *  request URI and trace id.
      */
     @RequestMapping(value = "${server.error.path:${error.path:/error}}",
@@ -86,7 +86,7 @@ public class CardDemoErrorController implements ErrorController {
     public ResponseEntity<ErrorResponse> handleError(HttpServletRequest request) {
         HttpStatus status = resolveStatus(request);
         ErrorResponse body = new ErrorResponse(status.value(), status.getReasonPhrase(),
-                status.getReasonPhrase(), resolvePath(request));
+                status.getReasonPhrase(), SensitiveDataMasker.maskPan(resolvePath(request)));
         body.setTraceId(ErrorResponseFactory.traceId());
         // Consume the recorded error so it is not re-reported downstream; the
         // exception itself is deliberately not surfaced to the caller.
@@ -94,10 +94,8 @@ public class CardDemoErrorController implements ErrorController {
         Throwable error = (attributes == null) ? null
                 : attributes.getError(new org.springframework.web.context.request.ServletWebRequest(request));
         if (error != null) {
-            // The path is masked for the LOG only; the response body keeps the URI the
-            // caller itself supplied, which is part of the shared error contract.
             log.warn("Error dispatch for {} resolved to {}: {}",
-                    SensitiveDataMasker.maskPan(body.getPath()), status.value(),
+                    body.getPath(), status.value(),
                     error.getClass().getSimpleName());
         } else {
             log.warn("Error dispatch for {} resolved to {}",

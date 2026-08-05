@@ -68,16 +68,16 @@ public class UpstreamFailureHandler {
                                                                    HttpServletRequest request) {
         String path = request.getRequestURI();
         // The upstream target and the underlying cause are operator information: logged
-        // here, never placed in the response body.
-        // Masked for the LOG only: a card path embeds the PAN and must not be retained in a
-        // log file; the response body keeps the URI the caller supplied.
+        // here, never placed in the response body. A card path embeds the PAN, so the path is
+        // redacted for both the log record and the envelope.
+        String redactedPath = SensitiveDataMasker.maskPan(path);
         LOGGER.error("Upstream service unavailable for {}: {}",
-                SensitiveDataMasker.maskPan(path), exception.getMessage());
+                redactedPath, exception.getMessage());
         ErrorResponse body = new ErrorResponse(
                 HttpStatus.SERVICE_UNAVAILABLE.value(),
                 HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase(),
                 UPSTREAM_UNAVAILABLE_MESSAGE,
-                path);
+                redactedPath);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .header(org.springframework.http.HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS)
                 .body(body);

@@ -48,6 +48,16 @@ public interface UserRepository extends JpaRepository<SecurityUser, String> {
     Page<SecurityUser> findAllByOrderBySecUsrIdAsc(Pageable pageable);
 
     /**
+     * :purpose: ordered browse positioned at a starting user id, reproducing the
+     *     ``STARTBR`` (GTEQ) of ``USRSEC`` that ``COUSR00C`` issues for the
+     *     ``Search User ID`` field (L218-L221).
+     * :param startId: inclusive lower-bound user id.
+     * :param pageable: page-size limit for the slice.
+     * :output: users with ``secUsrId`` greater than or equal to ``startId``, ascending.
+     */
+    List<SecurityUser> findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(String startId, Pageable pageable);
+
+    /**
      * :purpose: keyset forward paging (PF8) from a given user id.
      * :param afterId: exclusive lower-bound user id.
      * :param pageable: page-size limit for the slice.

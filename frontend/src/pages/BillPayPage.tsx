@@ -20,13 +20,16 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { BillPayRequestDto, BillPayResponseDto } from '../types';
-import { payBill, ApiError } from '../api';
-import { useApi } from '../hooks';
+import { payBill } from '../api';
+import { useApi, useFocusOnChange } from '../hooks';
+import OutputField from '../components/OutputField';
+import { invalidFieldProps } from '../components/ErrorBanner';
+import { displayText, resolveApiErrorMessage } from '../components/display';
 
 /** CICS transaction id of the bill-payment screen. */
 const TRANSACTION_ID = 'CB00';
@@ -50,6 +53,16 @@ const MSG_CONFIRM_PAYMENT = 'Confirm to make a bill payment...';
  */
 const MSG_PAYMENT_SUCCESSFUL = 'Payment successful. ';
 
+/**
+ * :purpose: The control each ``COBIL00C`` message faults for the value it rejected.
+ *     The confirm prompt and the nothing-to-pay outcome report a screen state rather
+ *     than a bad value, so neither appears here and neither marks a control invalid.
+ */
+const FAULTED_FIELD_BY_MESSAGE: Readonly<Record<string, CursorField>> = {
+  [MSG_ACCT_ID_EMPTY]: 'acctId',
+  [MSG_INVALID_CONFIRM]: 'confirm',
+};
+
 /** ``ACTIDIN`` field width (``PIC X(11)``). */
 const ACCT_ID_WIDTH = 11;
 
@@ -63,27 +76,19 @@ const CONFIRM_WIDTH = 1;
 const SEPARATOR_WIDTH = 70;
 
 /**
- * :purpose: Render a nullable wire value as display text.
- * :param value: the value received from the service.
- * :returns: the value itself, or an empty string when it is absent, so ``null``
- *     and ``undefined`` are never shown on screen.
+ * :purpose: The enterable field a screen send places the cursor on. ``COBIL00C``
+ *     ends every path with ``MOVE -1 TO ACTIDINL`` or ``MOVE -1 TO CONFIRML``
+ *     before its ``SEND``, so each outcome names one of these two fields.
  */
-function displayText(value: string | null | undefined): string {
-  return value === null || value === undefined ? '' : value;
-}
+type CursorField = 'acctId' | 'confirm';
 
 /**
- * :purpose: Resolve the line-23 text for a failed call, preferring the
- *     standardized ``ApiErrorResponse.message`` carried by the response body.
- * :param error: the normalized error surfaced by ``useApi``.
- * :returns: the backend message when the body carried one, otherwise the
- *     already-resolved error message.
+ * :purpose: A cursor placement. ``seq`` distinguishes consecutive placements on
+ *     the same field so a repeated outcome still moves the cursor.
  */
-function resolveErrorMessage(error: ApiError): string {
-  const bodyMessage = error.body?.message;
-  return bodyMessage !== undefined && bodyMessage.length > 0
-    ? bodyMessage
-    : error.message;
+interface ScreenCursor {
+  field: CursorField;
+  seq: number;
 }
 
 /**
@@ -119,6 +124,11 @@ export default function BillPayPage(): ReactElement {
   const [confirmValue, setConfirmValue] = useState('');
   const [screenMessage, setScreenMessage] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [cursor, setCursor] = useState<ScreenCursor>({
+    field: 'acctId',
+    seq: 0,
+  });
 
   const accountIdRef = useRef<HTMLInputElement | null>(null);
   const confirmRef = useRef<HTMLInputElement | null>(null);
@@ -132,12 +142,29 @@ export default function BillPayPage(): ReactElement {
       ? screenMessage
       : error === null
         ? ''
-        : resolveErrorMessage(error);
+        : resolveApiErrorMessage(error);
 
-  // Initial cursor position: ACTIDIN (BMS ``IC`` attribute).
-  useEffect(() => {
-    accountIdRef.current?.focus();
+  /**
+   * :purpose: ``MOVE -1 TO <field>L`` — name the field the next screen send
+   *     places the cursor on.
+   * :param field: Field that receives the cursor.
+   */
+  const placeCursor = useCallback((field: CursorField): void => {
+    setCursor((previous) => ({ field, seq: previous.seq + 1 }));
   }, []);
+
+  // ACTIDIN carries the mapset's ``IC`` attribute, so the opening placement is
+  // the screen's initial cursor position as well.
+  const settled = !submitting;
+  const acctIdCursor =
+    settled && cursor.field === 'acctId' ? `acctId:${String(cursor.seq)}` : '';
+  const confirmCursor =
+    settled && cursor.field === 'confirm' ? `confirm:${String(cursor.seq)}` : '';
+  useFocusOnChange(acctIdCursor, accountIdRef);
+  useFocusOnChange(confirmCursor, confirmRef);
+
+  // The cursor moves for every outcome, but only a rejected value is invalid.
+  const faultedField: CursorField | null = FAULTED_FIELD_BY_MESSAGE[errorMessage] ?? null;
 
   /**
    * :purpose: ``INITIALIZE-ALL-FIELDS`` / ``CLEAR-CURRENT-SCREEN`` — blank the
@@ -151,15 +178,15 @@ export default function BillPayPage(): ReactElement {
     setScreenMessage('');
     setInfoMessage('');
     reset();
-    accountIdRef.current?.focus();
-  }, [reset]);
+    placeCursor('acctId');
+  }, [placeCursor, reset]);
 
   /**
    * :purpose: ``RETURN-TO-PREV-SCREEN`` — leave the screen for the main menu
    *     (``COMEN01C``). Bound to F3.
    */
   const handleExit = useCallback((): void => {
-    navigate('/menu');
+    void navigate('/menu');
   }, [navigate]);
 
   /**
@@ -180,7 +207,7 @@ export default function BillPayPage(): ReactElement {
       reset();
       setInfoMessage('');
       setScreenMessage(MSG_ACCT_ID_EMPTY);
-      accountIdRef.current?.focus();
+      placeCursor('acctId');
       return;
     }
 
@@ -195,7 +222,7 @@ export default function BillPayPage(): ReactElement {
       reset();
       setInfoMessage('');
       setScreenMessage(MSG_INVALID_CONFIRM);
-      confirmRef.current?.focus();
+      placeCursor('confirm');
       return;
     }
 
@@ -208,13 +235,15 @@ export default function BillPayPage(): ReactElement {
     };
     let response: BillPayResponseDto | undefined;
     submittingRef.current = true;
+    setSubmitting(true);
     try {
       response = await run(request);
     } finally {
       submittingRef.current = false;
+      setSubmitting(false);
     }
     if (response === undefined) {
-      accountIdRef.current?.focus();
+      placeCursor('acctId');
       return;
     }
 
@@ -224,7 +253,7 @@ export default function BillPayPage(): ReactElement {
       setCurrentBalance('');
       setConfirmValue('');
       setInfoMessage(buildPaymentSuccessMessage(response));
-      accountIdRef.current?.focus();
+      placeCursor('acctId');
       return;
     }
 
@@ -233,15 +262,17 @@ export default function BillPayPage(): ReactElement {
     setScreenMessage(
       previewMessage.length > 0 ? previewMessage : MSG_CONFIRM_PAYMENT,
     );
-    confirmRef.current?.focus();
-  }, [handleClear, reset, run]);
+    placeCursor('confirm');
+  }, [handleClear, placeCursor, reset, run]);
 
   useEffect(() => {
     const pfKeys: PFKeyDef[] = [
       {
         action: PfKeyAction.Enter,
         label: 'ENTER=Continue',
-        onActivate: handleEnter,
+        onActivate: () => {
+          void handleEnter();
+        },
       },
       { action: PfKeyAction.PF3, label: 'F3=Back', onActivate: handleExit },
       { action: PfKeyAction.PF4, label: 'F4=Clear', onActivate: handleClear },
@@ -249,16 +280,18 @@ export default function BillPayPage(): ReactElement {
     setChrome({
       transactionId: TRANSACTION_ID,
       programName: PROGRAM_NAME,
-      title01: 'CardDemo',
-      title02: 'Bill Payment',
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
       errorMessage,
       infoMessage,
       pfKeys,
+      busy: submitting,
     });
   }, [
     setChrome,
     errorMessage,
     infoMessage,
+    submitting,
     handleEnter,
     handleExit,
     handleClear,
@@ -275,6 +308,7 @@ export default function BillPayPage(): ReactElement {
           Enter Acct ID:
         </label>
         <input
+          {...invalidFieldProps(faultedField === 'acctId')}
           id="billPayAcctId"
           name="ACTIDIN"
           className="field"
@@ -284,6 +318,7 @@ export default function BillPayPage(): ReactElement {
           maxLength={ACCT_ID_WIDTH}
           size={ACCT_ID_WIDTH}
           value={accountId}
+          disabled={submitting}
           ref={accountIdRef}
           data-testid="acct-id"
           onChange={(event) => setAccountId(event.target.value)}
@@ -294,30 +329,19 @@ export default function BillPayPage(): ReactElement {
         {'-'.repeat(SEPARATOR_WIDTH)}
       </div>
 
-      <div className="billPay__row">
-        <label className="prompt" htmlFor="billPayCurrBal">
-          Your current balance is:{' '}
-        </label>
-        <input
-          id="billPayCurrBal"
-          name="CURBAL"
-          className="label"
-          type="text"
-          readOnly
-          tabIndex={-1}
-          size={CURR_BAL_WIDTH}
+      <dl className="billPay__row">
+        <OutputField
+          label="Your current balance is:"
           value={currentBalance}
-          data-testid="cur-bal"
+          testId="cur-bal"
+          width={CURR_BAL_WIDTH}
         />
-      </div>
+      </dl>
 
       <div className="billPay__row">
         <label className="prompt" htmlFor="billPayConfirm">
           Do you want to pay your balance now. Please confirm:{' '}
         </label>
-        {/* BLITZY [A11Y]: CONFIRM is a 1-character BMS field, so the control is
-            smaller than the 44x44px touch-target minimum. Implemented at the
-            source width; flagged for designer review. */}
         <input
           id="billPayConfirm"
           name="CONFIRM"
@@ -327,8 +351,9 @@ export default function BillPayPage(): ReactElement {
           maxLength={CONFIRM_WIDTH}
           size={CONFIRM_WIDTH}
           value={confirmValue}
+          disabled={submitting}
           ref={confirmRef}
-          aria-describedby="billPayConfirmValues"
+          {...invalidFieldProps(faultedField === 'confirm', 'billPayConfirmValues')}
           data-testid="confirm"
           onChange={(event) => setConfirmValue(event.target.value)}
         />

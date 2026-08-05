@@ -14,13 +14,16 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
+import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { AccountViewResponseDto } from '../types';
 import { getAccount } from '../api';
-import { useApi } from '../hooks';
+import { useApi, useFocusOnChange, useInitialFocus } from '../hooks';
+import { displayText, SSN_MASK_PREFIX } from '../components/display';
+import OutputField from '../components/OutputField';
 
 /**
  * :purpose: Line-23 message rejecting an account number that is not an 11-digit
@@ -28,9 +31,6 @@ import { useApi } from '../hooks';
  *     ``SEARCHED-ACCT-NOT-NUMERIC``).
  */
 const ACCOUNT_NUMBER_ERROR = 'Account number must be a non zero 11 digit number';
-
-/** :purpose: Leading mask rendered in place of the Social Security number digits. */
-const SSN_MASK_PREFIX = '***-**-';
 
 /** :purpose: An account number is exactly eleven numeric characters. */
 const ACCOUNT_ID_PATTERN = /^\d{11}$/u;
@@ -49,15 +49,6 @@ function isValidAccountId(value: string): boolean {
 }
 
 /**
- * :purpose: Coerce a fetched value to display text, keeping an absent value blank.
- * :param value: the value taken from the fetched record.
- * :returns: the display text, or an empty string when the value is absent.
- */
-function displayText(value: string | number | null | undefined): string {
-  return value === null || value === undefined ? '' : String(value);
-}
-
-/**
  * :purpose: Mask a Social Security number for display, retaining only its last
  *     four digits.
  * :param value: the Social Security number as received from the service.
@@ -69,41 +60,6 @@ function maskSsn(value: string | null | undefined): string {
 }
 
 /**
- * :purpose: Props for :func:`DetailField`.
- * :param label: the exact BMS caption; empty for the second address line, which
- *     the mapset leaves uncaptioned.
- * :param value: the read-only display text.
- * :param testId: stable ``data-testid`` of the value cell.
- * :param labelledBy: id of the caption naming this cell when it carries none of
- *     its own.
- */
-interface DetailFieldProps {
-  label: string;
-  value: string;
-  testId: string;
-  labelledBy?: string;
-}
-
-/**
- * :purpose: Render one read-only caption / value pair of the account view.
- * :param props: see :class:`DetailFieldProps`.
- * :returns: the rendered caption / value pair.
- */
-function DetailField({ label, value, testId, labelledBy }: DetailFieldProps): ReactElement {
-  const captionId = `${testId}-label`;
-  return (
-    <div className="accountView__field">
-      <dt className="prompt" id={captionId}>
-        {label}
-      </dt>
-      <dd className="field" data-testid={testId} aria-labelledby={labelledBy ?? captionId}>
-        {value}
-      </dd>
-    </div>
-  );
-}
-
-/**
  * :purpose: The account view screen (CICS ``CAVW``, program ``COACTVWC``).
  * :returns: The rendered screen body.
  */
@@ -111,7 +67,7 @@ export default function AccountViewPage(): ReactElement {
   const navigate = useNavigate();
   const { accountId } = useParams();
   const { setChrome } = useScreenChrome();
-  const { data, error, run } = useApi(getAccount);
+  const { data, error, loading, run } = useApi(getAccount);
   const [acctInput, setAcctInput] = useState<string>(accountId ?? '');
   const [validationMessage, setValidationMessage] = useState<string>('');
 
@@ -145,20 +101,36 @@ export default function AccountViewPage(): ReactElement {
   const errorMessage =
     validationMessage !== '' ? validationMessage : displayText(error?.message);
 
+  // COACTVW marks ACCTSID ``ATTRB=(FSET,IC,NORM,UNPROT)``, so the cursor rests there
+  // when the map is sent and returns there whenever the search is rejected.
+  const acctInputRef = useInitialFocus<HTMLInputElement>();
+  // ``COACTVWC`` faults ACCTSID only for its own 11-digit edit; a failed read
+  // reports an absent record rather than a rejected value.
+  const faultedAcctId = validationMessage !== '';
+
+  useFocusOnChange(errorMessage === '' ? null : errorMessage, acctInputRef);
+
   useEffect(() => {
     const pfKeys: PFKeyDef[] = [
-      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: () => navigate('/menu') },
+      {
+        action: PfKeyAction.PF3,
+        label: 'F3=Exit',
+        onActivate: () => {
+          void navigate('/menu');
+        },
+      },
     ];
     setChrome({
       transactionId: 'CAVW',
       programName: 'COACTVWC',
-      title01: 'CardDemo',
-      title02: 'View Account',
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
       errorMessage,
       infoMessage: '',
       pfKeys,
+      busy: loading,
     });
-  }, [errorMessage, navigate, setChrome]);
+  }, [errorMessage, loading, navigate, setChrome]);
 
   return (
     <div className="accountView">
@@ -175,8 +147,10 @@ export default function AccountViewPage(): ReactElement {
           Account Number :
         </label>
         <input
+          {...invalidFieldProps(faultedAcctId)}
           id="acctsid"
           name="acctsid"
+          ref={acctInputRef}
           className="field"
           type="text"
           inputMode="numeric"
@@ -195,52 +169,72 @@ export default function AccountViewPage(): ReactElement {
       </form>
 
       <dl className="accountView__details">
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Active Y/N:"
           value={displayText(account?.acctActiveStatus)}
           testId="acct-active-status"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Opened:"
           value={displayText(account?.acctOpenDate)}
           testId="acct-open-date"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Credit Limit        :"
           value={displayText(account?.acctCreditLimit)}
           testId="acct-credit-limit"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Expiry:"
           value={displayText(account?.acctExpiraionDate)}
           testId="acct-expiraion-date"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Cash credit Limit   :"
           value={displayText(account?.acctCashCreditLimit)}
           testId="acct-cash-credit-limit"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Reissue:"
           value={displayText(account?.acctReissueDate)}
           testId="acct-reissue-date"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Current Balance     :"
           value={displayText(account?.acctCurrBal)}
           testId="acct-curr-bal"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Current Cycle Credit:"
           value={displayText(account?.acctCurrCycCredit)}
           testId="acct-curr-cyc-credit"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Account Group:"
           value={displayText(account?.acctGroupId)}
           testId="acct-group-id"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Current Cycle Debit :"
           value={displayText(account?.acctCurrCycDebit)}
           testId="acct-curr-cyc-debit"
@@ -250,89 +244,129 @@ export default function AccountViewPage(): ReactElement {
       <h3 className="neutral">Customer Details</h3>
 
       <dl className="accountView__details">
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Customer id  :"
           value={displayText(account?.custId)}
           testId="cust-id"
         />
-        <DetailField label="SSN:" value={maskSsn(account?.custSsn)} testId="cust-ssn" />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
+          label="SSN:"
+          value={maskSsn(account?.custSsn)}
+          testId="cust-ssn"
+        />
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Date of birth:"
           value={displayText(account?.custDobYyyyMmDd)}
           testId="cust-dob-yyyy-mm-dd"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="FICO Score:"
           value={displayText(account?.custFicoCreditScore)}
           testId="cust-fico-credit-score"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="First Name"
           value={displayText(account?.custFirstName)}
           testId="cust-first-name"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Middle Name:"
           value={displayText(account?.custMiddleName)}
           testId="cust-middle-name"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Last Name :"
           value={displayText(account?.custLastName)}
           testId="cust-last-name"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Address:"
           value={displayText(account?.custAddrLine1)}
           testId="cust-addr-line-1"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="State"
           value={displayText(account?.custAddrStateCd)}
           testId="cust-addr-state-cd"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label=""
           value={displayText(account?.custAddrLine2)}
           testId="cust-addr-line-2"
           labelledBy="cust-addr-line-1-label"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Zip"
           value={displayText(account?.custAddrZip)}
           testId="cust-addr-zip"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="City"
           value={displayText(account?.custAddrLine3)}
           testId="cust-addr-line-3"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Country"
           value={displayText(account?.custAddrCountryCd)}
           testId="cust-addr-country-cd"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Phone 1:"
           value={displayText(account?.custPhoneNum1)}
           testId="cust-phone-num-1"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Government Issued Id Ref    :"
           value={displayText(account?.custGovtIssuedId)}
           testId="cust-govt-issued-id"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Phone 2:"
           value={displayText(account?.custPhoneNum2)}
           testId="cust-phone-num-2"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="EFT Account Id:"
           value={displayText(account?.custEftAccountId)}
           testId="cust-eft-account-id"
         />
-        <DetailField
+        <OutputField
+          className="accountView__field"
+          valueClassName="field"
           label="Primary Card Holder Y/N:"
           value={displayText(account?.custPriCardHolderInd)}
           testId="cust-pri-card-holder-ind"

@@ -314,6 +314,75 @@ class UserControllerTest {
     }
 
     /**
+     * :purpose: A non-blank {@code userId} with no paging action positions the browse at
+     *     that id via {@code listUsersFrom} (COUSR00C L218-L221) instead of listing page
+     *     zero.
+     */
+    @Test
+    @DisplayName("GET /users as ADMIN with userId positions the browse via listUsersFrom and returns 200")
+    @WithMockUser(roles = "ADMIN")
+    void listUsersWithSearchKeyDispatchesToListUsersFrom() throws Exception {
+        given(userService.listUsersFrom("USER0003")).willReturn(listResponse(
+                userResponse("USER0003", "Carol", "Clarkson", "U"),
+                userResponse("USER0004", "Dan", "Dyer", "U")));
+
+        mockMvc.perform(get("/users").param("userId", "USER0003"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.users", hasSize(2)))
+                .andExpect(jsonPath("$.users[0].userId").value("USER0003"))
+                .andExpect(jsonPath("$.userIdFirst").value("USER0003"))
+                .andExpect(jsonPath("$.userIdLast").value("USER0004"));
+
+        verify(userService).listUsersFrom("USER0003");
+        verify(userService, never()).listUsers(anyInt());
+        verify(userService, never()).pageForward(any());
+        verify(userService, never()).pageBackward(any());
+    }
+
+    /**
+     * :purpose: A blank {@code userId} is the legacy ``LOW-VALUES`` key, so the browse
+     *     degrades to the page-based listing rather than searching for spaces.
+     */
+    @Test
+    @DisplayName("GET /users as ADMIN with a blank userId lists the requested page")
+    @WithMockUser(roles = "ADMIN")
+    void listUsersWithBlankSearchKeyListsPage() throws Exception {
+        given(userService.listUsers(0)).willReturn(listResponse(
+                userResponse("USER0001", "Alice", "Adminson", "A")));
+
+        mockMvc.perform(get("/users").param("userId", "   "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.users", hasSize(1)));
+
+        verify(userService).listUsers(0);
+        verify(userService, never()).listUsersFrom(any());
+    }
+
+    /**
+     * :purpose: ``PF7``/``PF8`` browse from the COMMAREA cursors, so a search key present
+     *     alongside a paging action is ignored (COUSR00C L239-L265).
+     */
+    @Test
+    @DisplayName("GET /users as ADMIN ignores userId when a paging action is supplied")
+    @WithMockUser(roles = "ADMIN")
+    void listUsersPagingActionIgnoresSearchKey() throws Exception {
+        given(userService.pageForward("USER0005")).willReturn(listResponse(
+                userResponse("USER0006", "Dan", "Dyer", "U")));
+
+        mockMvc.perform(get("/users")
+                        .param("userId", "USER0001")
+                        .param("direction", "PF8")
+                        .param("cursor", "USER0005"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.users", hasSize(1)))
+                .andExpect(jsonPath("$.users[0].userId").value("USER0006"));
+
+        verify(userService).pageForward("USER0005");
+        verify(userService, never()).listUsersFrom(any());
+        verify(userService, never()).listUsers(anyInt());
+    }
+
+    /**
      * :purpose: {@code direction=forward} with a non-blank cursor dispatches to
      *     {@code pageForward(cursor)} (COUSR00C PF8) and never to the page-based list.
      */

@@ -30,10 +30,12 @@ import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.RecordNotFoundException;
 import jakarta.persistence.OptimisticLockException;
-import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -187,17 +189,17 @@ public class CardService {
 
     /**
      * :purpose: List cards for the card-list screen (``COCRDLIC``, CICS ``CCLI``),
-     *  reproducing the seven-rows-per-page browse over the card master with the
-     *  legacy account and card-number filter edits and admin-versus-user account
-     *  scoping. The list projection shows only the owning account id, the card
-     *  number and the active status; the CVV and embossed name are never listed.
+     *  reproducing the seven-rows-per-page browse over the card master with the legacy
+     *  ``ACCTSID`` / ``CARDSID`` filter edits. The list projection shows only the owning
+     *  account id, the card number and the active status; the CVV and embossed name are
+     *  never listed.
      * :param acctIdFilter: optional owning-account filter; when supplied it must be
      *  a positive number of at most eleven digits.
      * :param cardNumFilter: optional exact card-number filter; when supplied it must
      *  be sixteen digits.
      * :param pageNumber: the one-based page number to return.
-     * :param sessionContext: the caller session; a non-admin user is scoped to the
-     *  account it carries. May be ``null``.
+     * :param sessionContext: the caller session, whose workflow fields the resolved
+     *  selection is propagated into. May be ``null``.
      * :returns: the card-list response holding at most ``MAX_SCREEN_LINES`` rows.
      * :raises CardDemoException: when a supplied account or card-number filter is invalid.
      */
@@ -222,7 +224,8 @@ public class CardService {
      *  ``null`` or blank means plain entry.
      * :param action: the row-selection flag, ``"S"`` for detail or ``"U"`` for update.
      * :param selectedCardNumber: the card number of the selected row.
-     * :param sessionContext: the caller session; a non-admin user is scoped to its account.
+     * :param sessionContext: the caller session, whose workflow fields the resolved
+     *  selection is propagated into.
      * :returns: the card-list response holding at most ``MAX_SCREEN_LINES`` rows, the paging
      *  state, the resolved selection and the two message lines.
      * :raises CardDemoException: when a supplied filter is invalid, or the row-selection flag
@@ -245,61 +248,33 @@ public class CardService {
             throw new CardDemoException(MSG_CARD_FILTER_16);
         }
 
-        // Filter resolution and authorization scoping. COCRDLIC filters on the ACCTSID the
-        // operator typed and has no user-type branch at all (9500-FILTER-RECORDS, L1386), so the
-        // supplied filter is ALWAYS honoured. The session account of a non-admin is applied as an
-        // ADDITIONAL restriction, never as a replacement: overwriting the filter with the session
-        // account returned a different account's cards, and overwriting it with an unpinned
-        // (null) session account widened the browse to the entire card base and disclosed
-        // unrelated PANs. A non-admin asking for an account other than its own therefore sees
-        // the empty-result banner rather than someone else's cards.
-        Long effectiveAcctId = acctIdFilter;
-        boolean outsideOwnAccount = false;
-        if (sessionContext != null
-                && sessionContext.getUserType() == SessionContext.UserType.CDEMO_USRTYP_USER) {
-            Long ownAcctId = sessionContext.getAcctId();
-            if (ownAcctId == null) {
-                // Nothing pins this session to an account yet, so there is no scope to browse
-                // within. The unrestricted browse belongs to the administrator path: handing a
-                // non-admin every card in the institution disclosed unrelated PANs, so the
-                // caller must name an account (ACCTSID) or reach the screen through its own.
-                outsideOwnAccount = effectiveAcctId == null;
-            } else if (effectiveAcctId == null) {
-                effectiveAcctId = ownAcctId;
-            } else if (!effectiveAcctId.equals(ownAcctId)) {
-                outsideOwnAccount = true;
-            }
-        }
-
-        // Fetch candidates, reproducing the CARDDAT keyed read / CARDAIX account browse.
-        List<Card> candidates;
-        if (outsideOwnAccount) {
-            candidates = List.of();
-        } else if (cardFilterSupplied) {
+        // Browse scope. COCRDLIC selects rows on the ACCTSID / CARDSID the operator typed and
+        // has no user-type branch (9500-FILTER-RECORDS, L1382-1390), so the supplied filters are
+        // the only scope: the account filter narrows the CARDAIX browse and the card filter
+        // resolves a single keyed CARDDAT read.
+        int page = Math.max(pageNumber, 1);
+        List<Card> windowRows;
+        if (cardFilterSupplied) {
             Card single = cardRepository.findById(cardNumFilter).orElse(null);
             boolean inScope = single != null
-                    && (effectiveAcctId == null || effectiveAcctId.equals(single.getCardAcctId()));
-            candidates = inScope ? List.of(single) : List.of();
-        } else if (effectiveAcctId != null) {
-            candidates = cardRepository.findByCardAcctId(effectiveAcctId);
+                    && (acctIdFilter == null || acctIdFilter.equals(single.getCardAcctId()));
+            // A keyed read yields at most one row, so only the first page can hold it.
+            windowRows = inScope && page == 1 ? List.of(single) : List.of();
         } else {
-            candidates = cardRepository.findAll();
+            // Read exactly one page plus one lookahead row, ordered by card number to match the
+            // VSAM primary-key browse order, so the store never materialises more than the
+            // screen needs however large the card base grows. The lookahead row is the
+            // WS-MAX-SCREEN-LINES + 1 record COBOL reads to learn a further page exists.
+            Pageable window = PageRequest.of(page - 1, MAX_SCREEN_LINES + 1);
+            windowRows = acctIdFilter != null
+                    ? cardRepository.findByCardAcctIdOrderByCardNumAsc(acctIdFilter, window)
+                    : cardRepository.findAllByOrderByCardNumAsc(window);
         }
 
-        // Order by card number to match the VSAM primary-key browse order.
-        List<Card> ordered = candidates.stream()
-                .sorted(Comparator.comparing(Card::getCardNum,
-                        Comparator.nullsLast(Comparator.naturalOrder())))
-                .toList();
-
-        // Paginate to at most MAX_SCREEN_LINES rows (page is one-based like WS-CA-SCREEN-NUM).
-        int page = Math.max(pageNumber, 1);
-        int offset = (page - 1) * MAX_SCREEN_LINES;
-        List<Card> pageRows = offset >= ordered.size()
-                ? List.of()
-                : ordered.subList(offset, Math.min(offset + MAX_SCREEN_LINES, ordered.size()));
-        // COBOL reads one extra record (WS-MAX-SCREEN-LINES + 1) to know a further page exists.
-        boolean morePagesExist = ordered.size() > offset + MAX_SCREEN_LINES;
+        boolean morePagesExist = windowRows.size() > MAX_SCREEN_LINES;
+        List<Card> pageRows = morePagesExist
+                ? List.copyOf(windowRows.subList(0, MAX_SCREEN_LINES))
+                : List.copyOf(windowRows);
 
         CardListResponseDto response = cardMapper.toListResponse(pageRows);
         response.setPageNumber(page);
@@ -309,7 +284,7 @@ public class CardService {
         // before 1400-SETUP-MESSAGE so an invalid flag wins over any paging banner, exactly
         // as WS-INVALID-ACTION-CODE does.
         if (action != null && !action.isBlank()) {
-            String canonical = action.trim().toUpperCase(java.util.Locale.ROOT);
+            String canonical = action.trim().toUpperCase(Locale.ROOT);
             if (!ACTION_SELECT.equals(canonical) && !ACTION_UPDATE.equals(canonical)) {
                 throw new CardDemoException(MSG_INVALID_ACTION_CODE);
             }
@@ -372,23 +347,30 @@ public class CardService {
      *  ``CCDL``) by its card number (``9100-GETCARD-BYACCTCARD``), joining the
      *  cross-reference for the owning customer linkage (AAP 0.6.4).
      * :param cardNumber: the sixteen-character card number to read.
-     * :param sessionContext: the caller session; a non-admin user may view only a
-     *  card owned by the account it carries. May be ``null``.
+     * :param acctIdFilter: the account number the operator supplied alongside the card
+     *  number (``ACCTSID``), completing the screen's composite selection; ``null`` when
+     *  the caller supplied none.
      * :returns: the card-detail response for the resolved card.
-     * :raises RecordNotFoundException: when no card matches the card number, or the
-     *  card is outside a non-admin caller's account.
+     * :raises CardDemoException: when the supplied account number is not a non-zero
+     *  eleven-digit value.
+     * :raises RecordNotFoundException: when no card matches the composite selection.
      */
     @Transactional(readOnly = true)
-    public CardDetailResponseDto getCardDetail(String cardNumber, SessionContext sessionContext) {
+    public CardDetailResponseDto getCardDetail(String cardNumber, Long acctIdFilter) {
+        // COCRDSLC 2210-EDIT-ACCOUNT: an account number supplied on the screen must be a
+        // non-zero eleven-digit value.
+        if (acctIdFilter != null && (acctIdFilter <= 0L || acctIdFilter > ACCT_ID_MAX)) {
+            throw new CardDemoException(MSG_ACCT_NON_ZERO_11);
+        }
+
         // Keyed read of the card master by card number (COBOL 9100 RIDFLD(card-number)).
         Card card = cardRepository.findById(cardNumber)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_DETAIL_NOT_FOUND));
 
-        // Non-admin scoping (AAP 0.6.3): a user cannot view another account's card.
-        if (sessionContext != null
-                && sessionContext.getUserType() == SessionContext.UserType.CDEMO_USRTYP_USER
-                && sessionContext.getAcctId() != null
-                && !sessionContext.getAcctId().equals(card.getCardAcctId())) {
+        // The screen collects an account number AND a card number, so the pair is the
+        // selection. A card outside the named account is not part of it and reports the same
+        // miss the COBOL read reports (DID-NOT-FIND-ACCTCARD-COMBO).
+        if (acctIdFilter != null && !acctIdFilter.equals(card.getCardAcctId())) {
             throw new RecordNotFoundException(MSG_DETAIL_NOT_FOUND);
         }
 
@@ -405,29 +387,37 @@ public class CardService {
      *  (``1230``-``1260``), the no-change short-circuit (``1200``), and the
      *  re-read-then-rewrite sequence (``9200``).
      * :param cardNumber: the sixteen-character card number to update.
+     * :param acctIdFilter: the account number the operator supplied alongside the card
+     *  number (``ACCTSID``), completing the screen's composite selection; ``null`` when
+     *  the caller supplied none.
      * :param request: the editable card fields (embossed name, active status, expiry
      *  date and CVV).
      * :param sessionContext: the caller session; the resolved card number and account
      *  id are propagated into it. May be ``null``.
      * :returns: the card-update response reflecting the persisted card.
-     * :raises CardDemoException: when a validation edit fails (name, active status,
-     *  expiry month or expiry year).
-     * :raises RecordNotFoundException: when no card matches the card number.
+     * :raises CardDemoException: when the supplied account number is not a non-zero
+     *  eleven-digit value, or a validation edit fails (name, active status, expiry month
+     *  or expiry year).
+     * :raises RecordNotFoundException: when no card matches the composite selection.
      * :raises OptimisticLockConflictException: when the request carries a display-time
      *  snapshot (``CCUP-OLD-*``) that no longer matches the re-read card, signalling a
      *  concurrent modification (``9300-CHECK-CHANGE-IN-REC``).
-     * :note: ``Card`` has no version column, so the legacy read-snapshot-compare-rewrite
-     *  concurrency check (``9300-CHECK-CHANGE-IN-REC``) is reproduced at the service layer:
-     *  when the request carries the display-time snapshot (``CCUP-OLD-*``) the re-read card
-     *  is compared field-by-field against it and a mismatch throws
-     *  ``OptimisticLockConflictException``; when no snapshot is supplied the check is skipped
-     *  and the update is guarded only by the in-transaction re-read and no-change
-     *  short-circuit. See ``docs/decision-log.md``.
+     * :note: Two independent proofs of what the caller read are honoured, and either alone is
+     *  sufficient: the ``Card`` ``@Version`` counter returned by the read paths, and the
+     *  display-time ``CCUP-OLD-*`` field snapshot that reproduces
+     *  ``9300-CHECK-CHANGE-IN-REC``. When neither is supplied the update is guarded only by
+     *  the in-transaction re-read under a row write lock and the no-change short-circuit.
      */
     @Transactional
     public CardUpdateResponseDto updateCard(String cardNumber,
+                                            Long acctIdFilter,
                                             CardUpdateRequestDto request,
                                             SessionContext sessionContext) {
+        // COCRDUPC 2210-EDIT-ACCOUNT: an account number supplied on the screen must be a
+        // non-zero eleven-digit value.
+        if (acctIdFilter != null && (acctIdFilter <= 0L || acctIdFilter > ACCT_ID_MAX)) {
+            throw new CardDemoException(MSG_ACCT_NON_ZERO_11);
+        }
         if (request == null) {
             // No editable fields supplied: reproduce the first (name) edit failure, which for an
             // absent name is the prompt literal, not the alphabetic-content one.
@@ -446,6 +436,14 @@ public class CardService {
         // all of them comparing against the same pre-race image.
         Card card = cardRepository.findForUpdateByCardNum(cardNumber)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_DETAIL_NOT_FOUND));
+
+        // The screen collects an account number AND a card number, so the pair is the
+        // selection. A card outside the named account is not part of it and reports the same
+        // miss the COBOL read reports (DID-NOT-FIND-ACCTCARD-COMBO).
+        if (acctIdFilter != null && !acctIdFilter.equals(card.getCardAcctId())) {
+            throw new RecordNotFoundException(MSG_DETAIL_NOT_FOUND);
+        }
+
         CardXref xref = cardXrefRepository.findById(cardNumber).orElse(null);
 
         // Step D -- read-snapshot-compare-rewrite concurrency check (COBOL 9300-CHECK-CHANGE-IN-REC).

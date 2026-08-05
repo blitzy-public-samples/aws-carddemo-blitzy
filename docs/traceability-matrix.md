@@ -54,6 +54,13 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
   (`app/data/EBCDIC`) recorded as excluded.
 - Plus rule-mandated build, containerization, observability, and documentation targets.
 
+The REVERSE direction is closed at file granularity in §21: every shipped React page, API module,
+type module, hook, shared component, backend controller and frontend test suite on disk carries a
+`target → source` row naming the legacy construct it re-expresses, or a `target → rule` row where
+the file exists to satisfy a user-specified rule or the standalone-operation requirement and has no
+legacy analogue. A frontend or controller file that appears on disk and in no §21 row would be a
+coverage gap by construction.
+
 ## 1. Online COBOL Programs (17) → Services / Controllers
 
 | Source Construct | Target Implementation | Direction |
@@ -176,7 +183,7 @@ The legacy inventory reconciled against the repository (AAP 0.1.3) and covered i
 | `COUSR02.CPY` `[app/cpy-bms/COUSR02.CPY]` | User-update `*RequestDto` / `*ResponseDto` + `frontend/src/types` (UserUpdatePage field contract) | `source → target` |
 | `COUSR03.CPY` `[app/cpy-bms/COUSR03.CPY]` | User-delete `*RequestDto` / `*ResponseDto` + `frontend/src/types` (UserDeletePage field contract) | `source → target` |
 | `CSSTRPFY.cpy` + `CSSETATY.cpy` + general screen shell | `frontend/src/components/Layout.tsx`, `Header.tsx`, `PFKeyBar.tsx`, `ErrorBanner.tsx` (shared shell; PF-key + attribute semantics) | `source → target` |
-| COMMAREA-carried SCREEN context — `CDEMO-LAST-MAP` / `CDEMO-LAST-MAPSET` `PIC X(7)`, the `TRNNAME` / `PGMNAME` / `TITLE01` / `TITLE02` header fields, the line-23 `ERRMSG` `X(78)` region and the line-24 key legend `[app/cpy/COCOM01Y.cpy:L18-L45; app/bms/COSGN00.bms]` | `frontend/src/components/Layout.tsx` `useScreenChrome` context (`ScreenChrome` / `ScreenChromeContextValue`: `transactionId`, `programName`, `title01`, `title02`, `errorMessage`, `infoMessage`, `pfKeys`; `setChrome` merge / `resetChrome`) — the per-screen half of the COMMAREA, held per mount, while the identity half stays in `SessionContext` (row above in §5) | `source → target` |
+| COMMAREA-carried SCREEN context — `CDEMO-LAST-MAP` / `CDEMO-LAST-MAPSET` `PIC X(7)`, the `TRNNAME` / `PGMNAME` / `TITLE01` / `TITLE02` header fields, the line-23 `ERRMSG` `X(78)` region and the line-24 key legend `[app/cpy/COCOM01Y.cpy:L18-L45; app/bms/COSGN00.bms]` | `frontend/src/components/Layout.tsx` `useScreenChrome` context. `ScreenChrome` carries `transactionId`, `programName`, `title01`, `title02`, `currentDate`, `currentTime`, `captionStyle`, `appId`, `sysId`, `errorMessage`, `infoMessage`, `pfKeys`, `busy` and `plainText`; `ScreenChromeActions` exposes `setChrome`, which REPLACES the published value outright (a send paints a whole map, it does not merge into the previous one), and `resetChrome`, which returns the frame to its published-nothing state and is called on a route change and from a page's own cleanup. `usePublishedChrome` reads the current value. This is the per-screen half of the COMMAREA, held per mount, while the identity half stays in `SessionContext` (row above in §5) | `source → target` |
 
 
 ## 7. JCL Job Streams (29) + Procs (2) → Spring Batch Configuration
@@ -543,6 +550,135 @@ every choice is in `docs/decision-log.md` §12.
 | `CSSETATY` re-entry attribute logic — `FLG-<field>-BLANK` marks a blank required field with `'*'` written into the map field `[app/cpy/CSSETATY.cpy; app/cbl/COCRDUPC.cbl:L623-L636]` | `CardUpdatePage` `.cardUpdate__marker` — a reserved one-character gutter per field cell filled from `fieldMarker`, so the `*` appears without overwriting the operator's value and without moving the field column (decision log Section 13) | `target → source (derived)` |
 | CICS `SEND MAP` atomicity — the body, the line-23 `ERRMSG` and the line-24 legend reach the terminal in one transmission `[app/bms/COCRDUP.bms; app/cbl/COCRDUPC.cbl:L1085-L1161]` | `CardUpdatePage` chrome publication from `useLayoutEffect` (flushed synchronously at commit), so the shell's message and PF keys never trail the body they belong to (decision log Section 13) | `target → source (derived)` |
 | Jest/jsdom test-runtime gap (no WHATWG encoding API for react-router) — rule-mandated test infrastructure, no legacy analogue | `frontend/src/setupTests.ts` — guarded `TextEncoder` / `TextDecoder` installation enabling every routed page suite to run | `target → rule` |
+
+## 21. Frontend Screen Layer — Exact Target-to-Source Rows (`target → source`)
+
+Every shipped React page, API module, type module, hook and shared component on disk, each
+traced back to the legacy construct it re-expresses. This closes the reverse direction at file
+granularity: no frontend file exists without a named source or an explicit rule mandate.
+
+### 21.1 Pages (17) — one per BMS mapset
+
+| Target (on disk) | Source construct | Direction |
+|---|---|---|
+| `frontend/src/pages/SignonPage.tsx` | `app/bms/COSGN00.bms` + `app/cbl/COSGN00C.cbl` (`CC00`) | `target → source` |
+| `frontend/src/pages/MainMenuPage.tsx` | `app/bms/COMEN01.bms` + `app/cbl/COMEN01C.cbl` (`CM00`) | `target → source` |
+| `frontend/src/pages/AdminMenuPage.tsx` | `app/bms/COADM01.bms` + `app/cbl/COADM01C.cbl` (`CA00`) | `target → source` |
+| `frontend/src/pages/AccountViewPage.tsx` | `app/bms/COACTVW.bms` + `app/cbl/COACTVWC.cbl` (`CAVW`) | `target → source` |
+| `frontend/src/pages/AccountUpdatePage.tsx` | `app/bms/COACTUP.bms` + `app/cbl/COACTUPC.cbl` (`CAUP`) | `target → source` |
+| `frontend/src/pages/CardListPage.tsx` | `app/bms/COCRDLI.bms` + `app/cbl/COCRDLIC.cbl` (`CCLI`) | `target → source` |
+| `frontend/src/pages/CardDetailPage.tsx` | `app/bms/COCRDSL.bms` + `app/cbl/COCRDSLC.cbl` (`CCDL`) | `target → source` |
+| `frontend/src/pages/CardUpdatePage.tsx` | `app/bms/COCRDUP.bms` + `app/cbl/COCRDUPC.cbl` (`CCUP`) | `target → source` |
+| `frontend/src/pages/TranListPage.tsx` | `app/bms/COTRN00.bms` + `app/cbl/COTRN00C.cbl` (`CT00`) | `target → source` |
+| `frontend/src/pages/TranViewPage.tsx` | `app/bms/COTRN01.bms` + `app/cbl/COTRN01C.cbl` (`CT01`) | `target → source` |
+| `frontend/src/pages/TranAddPage.tsx` | `app/bms/COTRN02.bms` + `app/cbl/COTRN02C.cbl` (`CT02`) | `target → source` |
+| `frontend/src/pages/BillPayPage.tsx` | `app/bms/COBIL00.bms` + `app/cbl/COBIL00C.cbl` (`CB00`) | `target → source` |
+| `frontend/src/pages/ReportPage.tsx` | `app/bms/CORPT00.bms` + `app/cbl/CORPT00C.cbl` (`CR00`) | `target → source` |
+| `frontend/src/pages/UserListPage.tsx` | `app/bms/COUSR00.bms` + `app/cbl/COUSR00C.cbl` (`CU00`) | `target → source` |
+| `frontend/src/pages/UserAddPage.tsx` | `app/bms/COUSR01.bms` + `app/cbl/COUSR01C.cbl` (`CU01`) | `target → source` |
+| `frontend/src/pages/UserUpdatePage.tsx` | `app/bms/COUSR02.bms` + `app/cbl/COUSR02C.cbl` (`CU02`) | `target → source` |
+| `frontend/src/pages/UserDeletePage.tsx` | `app/bms/COUSR03.bms` + `app/cbl/COUSR03C.cbl` (`CU03`) | `target → source` |
+
+### 21.2 Page-layer helpers
+
+| Target (on disk) | Source construct | Direction |
+|---|---|---|
+| `frontend/src/pages/programRoutes.ts` | The `XCTL PROGRAM(CDEMO-TO-PROGRAM)` transfer target carried in `CDEMO-TO-PROGRAM` `[app/cpy/COCOM01Y.cpy]`: maps a legacy program name to the SPA screen route | `target → source` |
+| `frontend/src/pages/tranAddFormat.ts` | `COTRN02C` field pictures — `WS-TRAN-AMT-E PIC +99999999.99` and the `PIC X(10)` date fields `[app/cbl/COTRN02C.cbl]`: formats a copied wire value into the picture the screen's own edits accept | `target → source` |
+
+### 21.3 API modules — one per service route group
+
+| Target (on disk) | Backend endpoint(s) | Source construct | Direction |
+|---|---|---|---|
+| `frontend/src/api/client.ts` | shared axios instance | The CICS terminal-to-region seam: `EXEC CICS SEND`/`RECEIVE MAP` plus `RESP(DFHRESP(...))` status handling `[app/cbl/COACTUPC.cbl:L3654-L3691]`, re-expressed as interceptors (CSRF double-submit, `X-Correlation-Id`, `401`/`403` session expiry, `409` → optimistic-lock conflict) | `target → source` |
+| `frontend/src/api/config.ts` | gateway base URL | `app/csd/CARDDEMO.CSD` transaction routing | `target → source` |
+| `frontend/src/api/auth.ts` | `POST /auth/signon`, `POST /logout` | `app/cbl/COSGN00C.cbl` (`CC00`) | `target → source` |
+| `frontend/src/api/menu.ts` | `GET/POST /menu`, `GET/POST /admin/menu` | `app/cbl/COMEN01C.cbl` + `app/cbl/COADM01C.cbl`, options from `app/cpy/COMEN02Y.cpy` + `app/cpy/COADM02Y.cpy` | `target → source` |
+| `frontend/src/api/accounts.ts` | `GET /accounts/{id}`, `PUT /accounts/{id}` | `app/cbl/COACTVWC.cbl` + `app/cbl/COACTUPC.cbl` | `target → source` |
+| `frontend/src/api/cards.ts` | `GET /cards`, `GET /cards/{cardNumber}`, `PUT /cards/{cardNumber}` | `app/cbl/COCRDLIC.cbl`, `COCRDSLC.cbl`, `COCRDUPC.cbl` | `target → source` |
+| `frontend/src/api/transactions.ts` | `GET /transactions`, `GET /transactions/{id}`, `GET /transactions/last`, `POST /transactions` | `app/cbl/COTRN00C.cbl`, `COTRN01C.cbl`, `COTRN02C.cbl` (`/transactions/last` serves the `F5=Copy Last Tran.` legend field) | `target → source` |
+| `frontend/src/api/billpay.ts` | `POST /billpay` | `app/cbl/COBIL00C.cbl` | `target → source` |
+| `frontend/src/api/reports.ts` | `POST /reports` | `app/cbl/CORPT00C.cbl` + the TDQ `'JOBS'` submission | `target → source` |
+| `frontend/src/api/users.ts` | `GET /users`, `GET /users/{id}`, `POST /users`, `PUT /users/{id}`, `DELETE /users/{id}` | `app/cbl/COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` | `target → source` |
+| `frontend/src/api/index.ts` | — | Module barrel; no legacy analogue (build-structure only) | `target → rule` |
+
+### 21.4 Type modules — the symbolic-map and COMMAREA field contracts
+
+| Target (on disk) | Source construct | Direction |
+|---|---|---|
+| `frontend/src/types/auth.ts` | `app/cpy-bms/COSGN00.CPY` + `app/cpy/CSUSR01Y.cpy` (`SEC-USR-TYPE` → role) | `target → source` |
+| `frontend/src/types/session.ts` | `app/cpy/COCOM01Y.cpy:L18-L45` COMMAREA identity half | `target → source` |
+| `frontend/src/types/menu.ts` | `app/cpy/COMEN02Y.cpy` + `app/cpy/COADM02Y.cpy` | `target → source` |
+| `frontend/src/types/account.ts` | `app/cpy/CVACT01Y.cpy` + `app/cpy/CVCUS01Y.cpy` + `app/cpy-bms/COACTVW.CPY` / `COACTUP.CPY` | `target → source` |
+| `frontend/src/types/card.ts` | `app/cpy/CVACT02Y.cpy` + `app/cpy/CVACT03Y.cpy` + `app/cpy-bms/COCRDLI.CPY` / `COCRDSL.CPY` / `COCRDUP.CPY` | `target → source` |
+| `frontend/src/types/transaction.ts` | `app/cpy/CVTRA05Y.cpy` + `app/cpy-bms/COTRN00.CPY` / `COTRN01.CPY` / `COTRN02.CPY` | `target → source` |
+| `frontend/src/types/billpay.ts` | `app/cpy-bms/COBIL00.CPY` + `app/cbl/COBIL00C.cbl` | `target → source` |
+| `frontend/src/types/report.ts` | `app/cpy-bms/CORPT00.CPY` + `app/cbl/CORPT00C.cbl` | `target → source` |
+| `frontend/src/types/user.ts` | `app/cpy/CSUSR01Y.cpy` + `app/cpy-bms/COUSR00.CPY` … `COUSR03.CPY` | `target → source` |
+| `frontend/src/types/messages.ts` | `app/cpy/CSMSG01Y.cpy` + `app/cpy/CSMSG02Y.cpy` (`CCDA-MSG-*` literals, `PIC X(50)` trailing blanks preserved) | `target → source` |
+| `frontend/src/types/titles.ts` | `app/cpy/COTTL01Y.cpy` (`CCDA-TITLE01` / `CCDA-TITLE02`) | `target → source` |
+| `frontend/src/types/common.ts` | Shared wire scalars + the `ErrorResponse` envelope | `target → source` |
+| `frontend/src/types/index.ts` | — | Module barrel; no legacy analogue | `target → rule` |
+
+### 21.5 Shared components and hooks
+
+| Target (on disk) | Source construct | Direction |
+|---|---|---|
+| `frontend/src/main.tsx` | — | SPA entry point; no legacy analogue (standalone-operation requirement) | `target → rule` |
+| `frontend/src/App.tsx` | The CICS transaction table and `XCTL` transfer graph `[app/csd/CARDDEMO.CSD]`, plus the `SEC-USR-TYPE` role gate `[app/cbl/COSGN00C.cbl:L227-L237]` — expressed as the route table with `RequireAuth` / `RequireAdmin` | `target → source` |
+| `frontend/src/components/Layout.tsx` | The 24×80 3270 frame and COMMAREA per-screen half (see §6 chrome row) | `target → source` |
+| `frontend/src/components/Header.tsx` | Rows 1–2 of every mapset: `TRNNAME`, `PGMNAME`, `TITLE01`/`TITLE02`, `CURDATE`, `CURTIME`, and `COSGN00`'s `APPLID`/`SYSID` | `target → source` |
+| `frontend/src/components/PFKeyBar.tsx` | `app/cpy/CSSTRPFY.cpy` + each mapset's row-24 legend field, including `ATTRB=DRK` fields (rendered as `dark`) | `target → source` |
+| `frontend/src/components/ErrorBanner.tsx` | The row-23 `ERRMSG PIC X(78)` region and `MOVE DFHRED/DFHGREEN TO ERRMSGC`; its `isFieldInError` / `fieldErrorClass` / `fieldMarker` helpers reproduce `FLG-x-NOT-OK OR FLG-x-BLANK` and the blank-field `MOVE '*'` of `app/cpy/CSSETATY.cpy`; its `invalidFieldProps` / `invalidValueProps` helpers express each program's `MOVE -1 TO <field>L` fault target as `aria-invalid` — `invalidFieldProps` additionally points the faulted control at the row-23 region, `invalidValueProps` omits the reference for a row-action column that publishes no message | `target → source` |
+| `frontend/src/components/OutputField.tsx` | `app/cpy/CSSETATY.cpy` `ATTRB=ASKIP` protected output fields — a term/value pair that carries an accessible name without being a tab stop | `target → source` |
+| `frontend/src/components/display.ts` | Shared display/parse helpers for the string wire formats (`NUMERIC(p,s)` money, `PIC X(10)` dates) | `target → source` |
+| `frontend/src/hooks/useApi.ts` | The CICS request/response turnaround: one in-flight task per terminal, with abort-and-generation handling replacing task cancellation | `target → source` |
+| `frontend/src/hooks/useSession.ts` | `app/cpy/COCOM01Y.cpy` COMMAREA identity half + `COSGN00C` sign-on/sign-off lifecycle | `target → source` |
+| `frontend/src/hooks/useScreenFocus.ts` | `ATTRB=IC` insert-cursor placement and every `MOVE -1 TO <field>L` cursor override, honoured on each send | `target → source` |
+| `frontend/src/hooks/index.ts` | — | Module barrel; no legacy analogue | `target → rule` |
+| `frontend/src/index.css` | The 24×80 character grid, `DFHBLUE`/`DFHGREEN`/`DFHRED`/`DFHTURQ`/`DFHYELLO`/`DFHNEUTR` attribute colours, and per-mapset field geometry | `target → source` |
+| `frontend/src/setupTests.ts` | — | Jest environment shim (`TextEncoder`/`TextDecoder` for the router's ESM build); no legacy analogue, recorded in the decision log | `target → rule` |
+| `frontend/eslint.config.js` | — | Mandatory lint gate; no legacy analogue (tooling requirement) | `target → rule` |
+| `frontend/src/pages/cardSelection.ts` | `CDEMO-CC00-CARD-SELECTED` + `CDEMO-CC00-ACCT-SELECTED` carried in the COMMAREA between `COCRDLIC` and `COCRDSLC`/`COCRDUPC` `[app/cpy/COCOM01Y.cpy]` — the composite hand-over, held in router location state so no card number reaches the address bar, history, a bookmark or a `Referer` header | `target → source` |
+| `frontend/src/vite-env.d.ts` | — | Build-tool ambient type declarations; no legacy analogue | `target → rule` |
+| `frontend/src/__mocks__/fileMock.ts` | — | Jest static-asset stub; no legacy analogue (test-harness requirement) | `target → rule` |
+
+### 21.6 Backend controllers — reverse direction
+
+| Target (on disk) | Source construct | Direction |
+|---|---|---|
+| `auth-service/.../AuthenticationController.java` | `app/cbl/COSGN00C.cbl` (`CC00`) | `target → source` |
+| `auth-service/.../SessionController.java` | `app/cpy/COCOM01Y.cpy` COMMAREA identity probe — replaces client-held session authority | `target → source` |
+| `auth-service/.../CsrfController.java` | — | CSRF double-submit token issue; no legacy analogue (the 3270 link needed none) | `target → rule` |
+| `api-gateway/.../MenuController.java` | `app/cbl/COMEN01C.cbl` + `app/cbl/COADM01C.cbl` | `target → source` |
+| `account-service/.../AccountController.java` | `app/cbl/COACTVWC.cbl` + `app/cbl/COACTUPC.cbl` | `target → source` |
+| `card-service/.../CardController.java` | `app/cbl/COCRDLIC.cbl`, `COCRDSLC.cbl`, `COCRDUPC.cbl` | `target → source` |
+| `transaction-service/.../TransactionController.java` | `app/cbl/COTRN00C.cbl`, `COTRN01C.cbl`, `COTRN02C.cbl` | `target → source` |
+| `billpay-service/.../BillPaymentController.java` | `app/cbl/COBIL00C.cbl` | `target → source` |
+| `reporting-service/.../ReportController.java` | `app/cbl/CORPT00C.cbl` | `target → source` |
+| `user-service/.../UserController.java` | `app/cbl/COUSR00C.cbl` … `COUSR03C.cbl` | `target → source` |
+| `batch-service/.../PostingJobController.java` | `app/jcl/POSTTRAN.jcl` + `app/cbl/CBTRN02C.cbl` | `target → source` |
+| `batch-service/.../BatchController.java` | `app/jcl/INTCALC.jcl`, `CREASTMT.jcl` and the TDQ `'JOBS'`-to-JES submission | `target → source` |
+| `carddemo-common/.../CardDemoErrorController.java` | `RESP(DFHRESP(...))` status handling → the shared `ErrorResponse` envelope | `target → source` |
+| `carddemo-common/.../json/CobolWireFormat.java`, `CobolNumberSerializers.java` | COMP-3 packed-decimal scale and fixed `PIC 9(n)` field widths `[app/cpy/CVACT01Y.cpy:L4-L17]` — serialize every numeric wire value as a string so scale and width survive JSON | `target → source` |
+
+### 21.7 Frontend test suites — reverse direction
+
+| Target (on disk) | What it pins | Direction |
+|---|---|---|
+| `frontend/src/api/client.test.ts` | CSRF echo, correlation-id propagation, `401`/`403` session expiry and the `409` optimistic-lock message | `target → source` |
+| `frontend/src/api/wireContract.test.ts` | The string wire contract for money, ids and dates | `target → source` |
+| `frontend/src/types/__tests__/contract.test.ts` | Symbolic-map field contracts | `target → source` |
+| `frontend/src/components/Layout.test.tsx` | Frame geometry, chrome lifecycle across a route change and a page's own cleanup, the unspaced `Tran:` caption family | `target → source` |
+| `frontend/src/components/Header.test.tsx` | Per-map header captions and the `COTTL01Y` titles | `target → source` |
+| `frontend/src/components/PFKeyBar.test.tsx` | Row-24 legend rendering, AID dispatch, `ATTRB=DRK` dark keys, and default cancellation for every declared AID | `target → source` |
+| `frontend/src/components/ErrorBanner.test.tsx` | Row-23 message region and its colour attribute | `target → source` |
+| `frontend/src/hooks/useApi.test.ts` | Request generation and abort handling | `target → source` |
+| `frontend/src/hooks/useSession.test.ts` | Sign-on/sign-off lifecycle and credential pass-through | `target → source` |
+| `frontend/src/hooks/useScreenFocus.test.tsx` | `ATTRB=IC` placement on every send, including after a disabled control is re-enabled | `target → source` |
+| `frontend/src/pages/programRoutes.test.ts` | `XCTL` program-to-route resolution | `target → source` |
+| `frontend/src/pages/tranAddFormat.test.ts` | `PIC +99999999.99` and `PIC X(10)` field edits | `target → source` |
+
 
 ## Coverage Assertion
 

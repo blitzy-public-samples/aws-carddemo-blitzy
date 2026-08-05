@@ -4,10 +4,16 @@
  *     the CardDemo single-page application. Re-expresses the CICS
  *     pseudo-conversational COMMAREA session / role field ``CDEMO-USER-TYPE``
  *     (``'A'`` administrator / ``'U'`` standard user) and the ``COSGN00C``
- *     sign-on routing as an externalized (cookie / JWT) session, surfaced to the
- *     route guards and menu gating through the :func:`useSession` hook.
+ *     sign-on routing as an externalized cookie session, surfaced to the route
+ *     guards and menu gating through the :func:`useSession` hook.
  * :output: The named ``useSession`` hook and its :ts:type:`UseSessionResult`
  *     return contract.
+ * :note: The SERVER is the authority. Identity and role are published only by
+ *     ``POST /auth/signon`` and by the ``GET /session`` probe that reads the
+ *     server-held session, and sign-out is not complete until
+ *     ``POST /logout`` has revoked that session. Browser storage holds no
+ *     authority: the store is in memory only, so editing storage cannot grant a
+ *     role.
  * :note: Provider-free — state lives in a module-level observable store consumed
  *     via React ``useSyncExternalStore``, so every caller shares one store with
  *     no surrounding React Context provider. Logic only; no UI, no design
@@ -15,7 +21,7 @@
  *     read here, so the module imports cleanly under Jest (jsdom).
  */
 
-import { useSyncExternalStore } from 'react';
+import { useEffect, useSyncExternalStore } from 'react';
 import type {
   Role,
   SessionContext,
@@ -23,13 +29,13 @@ import type {
   SignonResponseDto,
 } from '../types';
 import { CDEMO_USRTYP_ADMIN, CDEMO_USRTYP_USER } from '../types';
-import { signon } from '../api';
-
-/**
- * :purpose: ``sessionStorage`` key under which the externalized session is
- *     persisted for rehydration across page reloads. Never holds a password.
- */
-const STORAGE_KEY = 'carddemo.session';
+import {
+  clearLocalCredentials,
+  getSessionIdentity,
+  logout,
+  registerSessionExpiryHandler,
+  signon,
+} from '../api';
 
 /**
  * :purpose: First-entry program-context value, mirroring COMMAREA
@@ -51,14 +57,34 @@ interface SessionState {
   user: string | null;
   role: Role | null;
   session: SessionContext | null;
+  resolved: boolean;
 }
 
 /**
- * :purpose: Canonical signed-out state and the stable server snapshot. A single
- *     shared reference so ``useSyncExternalStore`` never observes a changing
- *     identity while signed out.
+ * :purpose: Canonical pre-probe state and the stable server snapshot: signed out and
+ *     NOT yet resolved, so a route guard waits for the server answer instead of
+ *     redirecting a deep link that carries a valid session cookie. A single shared
+ *     reference so ``useSyncExternalStore`` never observes a changing identity.
  */
-const EMPTY_STATE: SessionState = { user: null, role: null, session: null };
+const EMPTY_STATE: SessionState = {
+  user: null,
+  role: null,
+  session: null,
+  resolved: false,
+};
+
+/**
+ * :purpose: Signed-out state the SERVER has confirmed — the identity probe answered
+ *     "no session", the session was revoked through ``POST /logout``, or a request
+ *     reported it gone. Distinct from :data:`EMPTY_STATE` so a route guard can tell
+ *     "not asked yet" from "asked, and there is no session".
+ */
+const SIGNED_OUT_STATE: SessionState = {
+  user: null,
+  role: null,
+  session: null,
+  resolved: true,
+};
 
 /**
  * :purpose: Narrow an unknown value to a valid :ts:type:`Role`.
@@ -71,72 +97,27 @@ function isValidRole(value: unknown): value is Role {
 }
 
 /**
- * :purpose: Read the persisted session from ``sessionStorage`` on module load.
- * :returns: the rehydrated :ts:type:`SessionState`, or :data:`EMPTY_STATE` when
- *     no valid session is stored or the environment has no ``sessionStorage``.
+ * :purpose: Build the in-memory state for a server-published identity.
+ * :param user: the user id the server reported (``CDEMO-USER-ID``).
+ * :param role: the role the server reported (``CDEMO-USER-TYPE``).
+ * :returns: the populated :ts:type:`SessionState`.
  */
-function rehydrate(): SessionState {
-  if (typeof window === 'undefined' || typeof sessionStorage === 'undefined') {
-    return EMPTY_STATE;
-  }
-  try {
-    const raw = sessionStorage.getItem(STORAGE_KEY);
-    if (raw === null) {
-      return EMPTY_STATE;
-    }
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== 'object') {
-      return EMPTY_STATE;
-    }
-    const record = parsed as Record<string, unknown>;
-    const user = record.user;
-    const role = record.role;
-    if (typeof user !== 'string' || !isValidRole(role)) {
-      return EMPTY_STATE;
-    }
-    const session: SessionContext = {
-      userId: user,
-      userType: role,
-      programContext: PGM_CONTEXT_ENTER,
-    };
-    return { user, role, session };
-  } catch {
-    return EMPTY_STATE;
-  }
-}
-
-/**
- * :purpose: Persist (or clear) the session in ``sessionStorage``. Writes only
- *     the user id, role, and non-secret session fields; never a password.
- * :param state: the state to persist; a signed-out state removes the entry.
- */
-function persist(state: SessionState): void {
-  if (typeof window === 'undefined' || typeof sessionStorage === 'undefined') {
-    return;
-  }
-  try {
-    if (state.user !== null && state.role !== null) {
-      const payload = {
-        user: state.user,
-        role: state.role,
-        session: state.session,
-      };
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } else {
-      sessionStorage.removeItem(STORAGE_KEY);
-    }
-  } catch {
-    // sessionStorage may be unavailable (private mode / quota exceeded); the
-    // empty handler is intentional — persistence is best-effort and must never
-    // break sign-in or sign-out.
-  }
+function stateFor(user: string, role: Role): SessionState {
+  const session: SessionContext = {
+    userId: user,
+    userType: role,
+    programContext: PGM_CONTEXT_ENTER,
+  };
+  return { user, role, session, resolved: true };
 }
 
 /**
  * :purpose: Current store state; a single object reference that only
- *     :func:`setState` replaces, so :func:`getSnapshot` stays cached.
+ *     :func:`setState` replaces, so :func:`getSnapshot` stays cached. It starts
+ *     signed out on every load: the server, not the browser, republishes the
+ *     identity through :func:`refresh`.
  */
-let currentState: SessionState = rehydrate();
+let currentState: SessionState = EMPTY_STATE;
 
 /**
  * :purpose: Registered store subscribers, notified on every state change.
@@ -180,7 +161,6 @@ function subscribe(listener: () => void): () => void {
  */
 function setState(next: SessionState): void {
   currentState = next;
-  persist(next);
   listeners.forEach((listener) => listener());
 }
 
@@ -199,49 +179,93 @@ async function signIn(
   userId: string,
   password: string,
 ): Promise<SignonResponseDto> {
+  // The legacy sign-on screen was only ever reached by ending the current session
+  // (``RETURN-TO-SIGNON-SCREEN``), so a sign-on never arrived over a live one. The
+  // server is asked first whether one is live, and any live session is revoked
+  // before the credentials are sent, which keeps the same one-session-at-a-time
+  // sequence and leaves exactly one participant replacing the session id.
+  await probeIdentityOnce();
+  if (currentState.user !== null) {
+    await signOut();
+  }
   const request: SignonRequestDto = { userId, password };
   const response = await signon(request);
-  const session: SessionContext = {
-    userId: response.userId,
-    userType: response.userType,
-    programContext: PGM_CONTEXT_ENTER,
-  };
-  setState({ user: response.userId, role: response.userType, session });
+  setState(stateFor(response.userId, response.userType));
   return response;
 }
 
 /**
- * :purpose: Clear the local session, returning the store to the signed-out
- *     state and removing the persisted entry.
- * :returns: a promise that resolves once local sign-out is complete.
+ * :purpose: Sign out. The SERVER-side session is revoked first through the
+ *     CSRF-protected ``POST /logout``, and only then is the local session, the
+ *     optional bearer token and every cached response cleared, so a signed-out
+ *     screen is never presented over a session cookie that is still valid.
+ * :returns: a promise that resolves once the session has been revoked and the
+ *     local state cleared.
+ * :raises ApiError: when the revocation call fails; the local session is left in
+ *     place so the caller can report the failure instead of pretending the
+ *     session is gone.
  */
-function signOut(): Promise<void> {
-  setState(EMPTY_STATE);
-  return Promise.resolve();
+async function signOut(): Promise<void> {
+  await logout();
+  clearLocalCredentials();
+  identityProbe = null;
+  setState(SIGNED_OUT_STATE);
 }
 
 /**
- * :purpose: Seed the module-level store directly with a user id and role, without
- *     a network round trip, so a test can place the SPA in an authenticated or
- *     signed-out state. Passing ``null`` for both arguments restores the
- *     signed-out state.
- * :param user: the user id to publish (``CDEMO-USER-ID``), or ``null``.
- * :param role: the role to publish (``CDEMO-USER-TYPE`` — ``'A'`` / ``'U'``), or
- *     ``null``.
- * :note: Test seam only; never called by application code. It notifies
- *     ``useSyncExternalStore`` subscribers, so callers must wrap it in ``act``.
+ * :purpose: Drop the local authority without a server round trip, for the case
+ *     where the server has already told us the session is gone (a ``401`` or
+ *     ``403`` on any request).
  */
-export function __setSession(user: string | null, role: Role | null): void {
-  if (user === null || role === null) {
-    setState(EMPTY_STATE);
-    return;
+function abandonSession(): void {
+  clearLocalCredentials();
+  identityProbe = null;
+  if (currentState !== SIGNED_OUT_STATE) {
+    setState(SIGNED_OUT_STATE);
   }
-  const session: SessionContext = {
-    userId: user,
-    userType: role,
-    programContext: PGM_CONTEXT_ENTER,
-  };
-  setState({ user, role, session });
+}
+
+// Any rejected request republishes the signed-out state exactly once, so an
+// expired or revoked session cannot leave a stale role driving the UI.
+registerSessionExpiryHandler(abandonSession);
+
+/**
+ * :purpose: Re-resolve the signed-on identity from the server-held session through
+ *     ``GET /session``, so a reload or a deep link recovers the identity and role
+ *     from the authority that owns them.
+ * :returns: a promise resolving to ``true`` when the server published an identity
+ *     and ``false`` when it reported no usable session.
+ */
+async function refresh(): Promise<boolean> {
+  try {
+    const identity = await getSessionIdentity();
+    if (typeof identity.userId !== 'string' || !isValidRole(identity.userType)) {
+      setState(SIGNED_OUT_STATE);
+      return false;
+    }
+    setState(stateFor(identity.userId, identity.userType));
+    return true;
+  } catch {
+    setState(SIGNED_OUT_STATE);
+    return false;
+  }
+}
+
+/**
+ * :purpose: Memo of the in-flight or completed server identity probe, so the probe is
+ *     issued once however many components mount and every caller awaits the same
+ *     round trip. Cleared whenever the session ends, so the next mount re-asks the
+ *     server rather than trusting a stale conclusion.
+ */
+let identityProbe: Promise<void> | null = null;
+
+/**
+ * :purpose: Issue the server identity probe, at most once per session lifetime.
+ * :returns: a promise that settles once the probe has completed.
+ */
+function probeIdentityOnce(): Promise<void> {
+  identityProbe ??= refresh().then(() => undefined);
+  return identityProbe;
 }
 
 /**
@@ -250,21 +274,28 @@ export function __setSession(user: string | null, role: Role | null): void {
  * :field role: user role (``'A'`` / ``'U'``), or ``null`` when signed out.
  * :field session: externalized session context, or ``null`` when signed out.
  * :field isAuthenticated: ``true`` when both ``user`` and ``role`` are present.
+ * :field isSessionResolved: ``true`` once the server has answered the identity probe
+ *     (or an explicit sign-in / sign-out has settled it). ``false`` only in the
+ *     window before that answer, during which a route guard must wait rather than
+ *     treat the caller as signed out.
  * :field isAdmin: ``true`` only for the administrator role (``'A'``).
  * :field signIn: authenticate and establish the session.
- * :field signOut: clear the local session.
+ * :field signOut: revoke the server session, then clear the local session.
+ * :field refresh: re-resolve the identity from the server-held session.
  */
 export interface UseSessionResult {
   user: string | null;
   role: Role | null;
   session: SessionContext | null;
   isAuthenticated: boolean;
+  isSessionResolved: boolean;
   isAdmin: boolean;
   signIn: (
     userId: string,
     password: string,
   ) => Promise<SessionContext | SignonResponseDto>;
   signOut: () => Promise<void>;
+  refresh: () => Promise<boolean>;
 }
 
 /**
@@ -275,6 +306,11 @@ export interface UseSessionResult {
  */
 export function useSession(): UseSessionResult {
   const state = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  // One server probe per page load republishes the identity the server holds, so a
+  // reload or a deep link recovers it from the authority rather than from storage.
+  useEffect(() => {
+    void probeIdentityOnce();
+  }, []);
   const isAuthenticated = state.user !== null && state.role !== null;
   const isAdmin = state.role === CDEMO_USRTYP_ADMIN;
   return {
@@ -282,8 +318,10 @@ export function useSession(): UseSessionResult {
     role: state.role,
     session: state.session,
     isAuthenticated,
+    isSessionResolved: state.resolved,
     isAdmin,
     signIn,
     signOut,
+    refresh,
   };
 }

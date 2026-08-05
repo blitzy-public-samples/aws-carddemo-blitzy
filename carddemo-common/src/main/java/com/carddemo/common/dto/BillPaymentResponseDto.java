@@ -16,6 +16,8 @@
 package com.carddemo.common.dto;
 
 import java.math.BigDecimal;
+import com.carddemo.common.json.CobolNumberSerializers;
+import tools.jackson.databind.annotation.JsonSerialize;
 
 /**
  * :purpose: Outbound response DTO for the COBIL00 bill-payment screen (CICS
@@ -32,6 +34,7 @@ public class BillPaymentResponseDto {
     private String accountId;
 
     /** :purpose: Account balance to display (COBIL00 ``CURBAL`` bound to ``ACCT-CURR-BAL`` NUMERIC(12,2)). */
+    @JsonSerialize(using = CobolNumberSerializers.Money.class)
     private BigDecimal currentBalance;
 
     /** :purpose: Generated 16-character zero-padded transaction id of a posted payment (``TRAN-ID`` PIC X(16)); null on preview/cancel. */

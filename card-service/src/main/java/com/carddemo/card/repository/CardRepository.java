@@ -21,6 +21,7 @@ import java.util.Optional;
 
 import jakarta.persistence.LockModeType;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -57,6 +58,35 @@ public interface CardRepository extends JpaRepository<Card, String> {
      *     account; an empty list means no cards were found for the account id.
      */
     List<Card> findByCardAcctId(Long cardAcctId);
+
+    /**
+     * Finds one ordered window of the cards belonging to a single owning account.
+     *
+     * :purpose: Reproduces the ``CARDAIX`` account-index browse of ``COCRDLIC``
+     *     while reading only the rows one screen needs: the caller asks for
+     *     ``WS-MAX-SCREEN-LINES`` rows plus the one lookahead record the COBOL
+     *     browse reads to learn whether a further page exists.
+     * :param cardAcctId: the owning account identifier used as the
+     *     alternate-index key.
+     * :param pageable: the offset/limit window, ordered by card number to match
+     *     the VSAM primary-key browse order.
+     * :output: a possibly-empty ``List<Card>`` holding at most
+     *     ``pageable.getPageSize()`` cards of the account, ascending by card number.
+     */
+    List<Card> findByCardAcctIdOrderByCardNumAsc(Long cardAcctId, Pageable pageable);
+
+    /**
+     * Finds one ordered window of the unfiltered card master browse.
+     *
+     * :purpose: Reproduces the unfiltered ``CARDDAT`` browse of ``COCRDLIC`` while
+     *     reading only the rows one screen needs, so the store never materialises
+     *     the whole card base for a seven-row page.
+     * :param pageable: the offset/limit window, ordered by card number to match
+     *     the VSAM primary-key browse order.
+     * :output: a possibly-empty ``List<Card>`` holding at most
+     *     ``pageable.getPageSize()`` cards, ascending by card number.
+     */
+    List<Card> findAllByOrderByCardNumAsc(Pageable pageable);
 
     /**
      * :purpose: Read a card for the ``COCRDUPC`` rewrite while holding a database write lock on

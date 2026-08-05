@@ -18,6 +18,8 @@ package com.carddemo.common.dto;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
+import com.carddemo.common.json.CobolNumberSerializers;
+import tools.jackson.databind.annotation.JsonSerialize;
 
 /**
  * :purpose: Outbound response DTO for the COTRN01 transaction-view screen (CICS
@@ -46,6 +48,7 @@ public class TransactionViewResponseDto {
     private String tranTypeCd;
 
     /** :purpose: Transaction category code (COTRN01 ``TCATCDI`` / ``TRAN-CAT-CD`` PIC 9(04)). */
+    @JsonSerialize(using = CobolNumberSerializers.TranCategoryCode.class)
     private Integer tranCatCd;
 
     /** :purpose: Origination source (COTRN01 ``TRNSRCI`` / ``TRAN-SOURCE`` PIC X(10)). */
@@ -53,6 +56,7 @@ public class TransactionViewResponseDto {
     private String tranSource;
 
     /** :purpose: Monetary amount (COTRN01 ``TRNAMTI`` / ``TRAN-AMT`` PIC S9(09)V99 -> NUMERIC(11,2)). */
+    @JsonSerialize(using = CobolNumberSerializers.Money.class)
     private BigDecimal tranAmt;
 
     /** :purpose: Transaction description (COTRN01 ``TDESCI`` / ``TRAN-DESC`` PIC X(100)). */
@@ -68,6 +72,7 @@ public class TransactionViewResponseDto {
     private String tranProcTs;
 
     /** :purpose: Merchant id (COTRN01 ``MIDI`` / ``TRAN-MERCHANT-ID`` PIC 9(09)). */
+    @JsonSerialize(using = CobolNumberSerializers.MerchantId.class)
     private Long tranMerchantId;
 
     /** :purpose: Merchant name (COTRN01 ``MNAMEI`` / ``TRAN-MERCHANT-NAME`` PIC X(50)). */

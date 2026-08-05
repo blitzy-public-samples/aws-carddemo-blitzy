@@ -10,9 +10,14 @@
  * :output: The named exports ``listTransactions`` (``GET /transactions``,
  *   ten rows per page), ``getTransaction`` (``GET /transactions/{id}``), and
  *   ``addTransaction`` (``POST /transactions``).
- * :note: Wire formats are preserved untouched — the 16-digit transaction id,
- *   the ``NUMERIC(11,2)`` monetary amount, and the 26-character origination and
- *   processing timestamps all travel as ``string`` with no numeric coercion.
+ * :note: Wire formats are preserved untouched — the 16-digit transaction id, the
+ *   ``NUMERIC(11,2)`` monetary amount, the four-digit category code, the nine-digit
+ *   merchant id and the origination and processing timestamps all travel as
+ *   ``string`` with no numeric coercion in either direction.
+ * :note: On the add path the two timestamps carry the ten-character ``YYYY-MM-DD``
+ *   date the screen collects and are stored in their 26-character fields verbatim,
+ *   exactly as ``COTRN02C`` L464-L465 moves ``TORIGDT`` / ``TPROCDT`` into
+ *   ``TRAN-ORIG-TS`` / ``TRAN-PROC-TS``; no value is expanded to a full timestamp.
  * :note: The add path never carries a client-supplied ``tranId``; the server
  *   assigns the 16-digit zero-padded id from a database sequence, replacing the
  *   legacy browse-last-then-increment scheme (rationale in
@@ -68,11 +73,23 @@ export async function getTransaction(
 }
 
 /**
+ * :purpose: Fetch the last transaction on file, backing the add screen's
+ *   ``F5=Copy Last Tran.`` action (``COTRN02C COPY-LAST-TRAN-DATA``, which reaches the
+ *   same record with ``MOVE HIGH-VALUES TO TRAN-ID`` followed by ``STARTBR`` /
+ *   ``READPREV``).
+ * :returns: a promise resolving to the last transaction's full detail.
+ */
+export async function getLastTransaction(): Promise<TranViewResponseDto> {
+  const response = await apiClient.get<TranViewResponseDto>('/transactions/last');
+  return response.data;
+}
+
+/**
  * :purpose: Add a new transaction from the ``TranAddPage`` screen, re-expressing
  *   CICS transaction ``CT02`` (``COTRN02C``).
  * :param request: the entry payload. It deliberately omits ``tranId`` — the
  *   server assigns the 16-digit zero-padded id — so no client-supplied id is
- *   ever transmitted; the monetary amount and timestamps remain ``string``.
+ *   ever transmitted; every numeric member and both timestamps remain ``string``.
  * :returns: a promise resolving to the server-assigned transaction id and an
  *   optional informational message.
  */

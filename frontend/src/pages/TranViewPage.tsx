@@ -17,13 +17,16 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { ChangeEvent, ReactElement } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { TranViewResponseDto } from '../types';
 import { getTransaction, ApiError } from '../api';
-import { useApi } from '../hooks';
+import { useApi, useFocusOnChange, useFocusOnSettled, useInitialFocus } from '../hooks';
+import { displayField } from '../components/display';
+import OutputField from '../components/OutputField';
+import { invalidFieldProps } from '../components/ErrorBanner';
 
 /** Legacy ``PROCESS-ENTER-KEY`` message for a blank transaction id. */
 const EMPTY_TRAN_ID_MESSAGE = 'Tran ID can NOT be empty...';
@@ -37,23 +40,29 @@ const HTTP_NOT_FOUND = 404;
 /** Width of the ``TRNIDIN`` entry field and the ``TRNID`` display field. */
 const TRAN_ID_WIDTH = 16;
 
-/**
- * :purpose: Render a value inside its BMS field width, reproducing the
- *     truncation a COBOL ``MOVE`` into a ``PIC X(n)`` symbolic-map field
- *     performs — notably the 26-character ``TRAN-ORIG-TS`` /
- *     ``TRAN-PROC-TS`` timestamps moved into the ``X(10)`` ``TORIGDT`` /
- *     ``TPROCDT`` fields, which display the ``YYYY-MM-DD`` date portion.
- * :param value: the wire value; numbers are stringified and absent values
- *     become the empty string so no field ever shows ``null`` / ``undefined``.
- * :param width: the BMS ``LENGTH=`` of the target field.
- * :returns: the display text for the field.
- */
-function displayValue(value: string | number | null | undefined, width: number): string {
-  if (value === null || value === undefined) {
-    return '';
-  }
-  return String(value).slice(0, width);
-}
+/** ``TRNIDIN`` caption of ``app/bms/COTRN01.bms`` (line 6, TURQUOISE). */
+const TRAN_ID_LABEL = 'Enter Tran ID:';
+
+/** Field name of the only unprotected field on the map (BMS ``TRNIDIN``). */
+const TRAN_ID_FIELD_NAME = 'TRNIDIN';
+
+/** ENTER entry of the mapset line-24 legend. */
+const ENTER_LABEL = 'ENTER=Fetch';
+
+/** PF3 entry of the mapset line-24 legend. */
+const BACK_LABEL = 'F3=Back';
+
+/** PF4 entry of the mapset line-24 legend. */
+const CLEAR_LABEL = 'F4=Clear';
+
+/** PF5 entry of the mapset line-24 legend. */
+const BROWSE_LABEL = 'F5=Browse Tran.';
+
+/** Route of the transaction-list screen (``CT00`` / ``COTRN00C``). */
+const TRAN_LIST_ROUTE = '/transactions';
+
+/** Route of the main menu, the PF3 target when no caller screen is recorded. */
+const MENU_ROUTE = '/menu';
 
 /**
  * :purpose: Resolve the line-23 message for a failed lookup. A ``404`` yields
@@ -73,46 +82,6 @@ function resolveApiMessage(error: unknown): string {
 }
 
 /**
- * :purpose: Props for :func:`DetailField`.
- * :param id: control id, also used as the control name.
- * :param label: the BMS caption, rendered verbatim.
- * :param value: the display text.
- * :param width: the BMS ``LENGTH=`` of the field, used as its visible size.
- */
-interface DetailFieldProps {
-  id: string;
-  label: string;
-  value: string;
-  width: number;
-}
-
-/**
- * :purpose: One protected (``ATTRB=ASKIP``) detail field: its turquoise caption
- *     plus the blue read-only value, associated so assistive technology and
- *     tests resolve the value by its caption.
- * :param props: see :class:`DetailFieldProps`.
- * :returns: the rendered caption/value pair.
- */
-function DetailField({ id, label, value, width }: DetailFieldProps): ReactElement {
-  return (
-    <span className="detailField">
-      <label className="prompt" htmlFor={id}>
-        {label}
-      </label>{' '}
-      <input
-        id={id}
-        name={id}
-        className="label"
-        type="text"
-        value={value}
-        size={width}
-        readOnly
-      />
-    </span>
-  );
-}
-
-/**
  * :purpose: The ``COTRN01`` view-transaction screen.
  * :returns: The rendered screen body.
  */
@@ -120,7 +89,7 @@ export default function TranViewPage(): ReactElement {
   const { transactionId } = useParams<{ transactionId: string }>();
   const navigate = useNavigate();
   const { setChrome } = useScreenChrome();
-  const { data, error, run } = useApi<TranViewResponseDto, [string]>(getTransaction);
+  const { data, error, loading, run, reset } = useApi<TranViewResponseDto, [string]>(getTransaction);
 
   // BMS TRNIDIN: the only unprotected field on the map.
   const [searchTranId, setSearchTranId] = useState<string>('');
@@ -129,6 +98,18 @@ export default function TranViewPage(): ReactElement {
   const [validationMessage, setValidationMessage] = useState<string>('');
 
   const errorMessage = validationMessage !== '' ? validationMessage : resolveApiMessage(error);
+
+  // ``COTRN01C`` faults TRNIDIN for the blank-id edit and for a key that is not on
+  // file; an infrastructure failure reports neither.
+  const faultedTranId =
+    errorMessage === EMPTY_TRAN_ID_MESSAGE || errorMessage === TRANSACTION_NOT_FOUND_MESSAGE;
+
+  // COTRN01 marks TRNIDIN ``ATTRB=(FSET,IC,NORM,UNPROT)`` and every COTRN01C path ends
+  // with ``MOVE -1 TO TRNIDINL``, so the cursor starts on the entry field, returns there
+  // once a lookup settles, and returns there whenever the screen reports an outcome.
+  const tranIdRef = useInitialFocus<HTMLInputElement>();
+  useFocusOnSettled(loading, tranIdRef);
+  useFocusOnChange(errorMessage === '' ? null : errorMessage, tranIdRef);
 
   // Legacy entry path: a transaction id arriving in CDEMO-CT01-TRN-SELECTED is
   // moved into TRNIDIN and PROCESS-ENTER-KEY runs immediately.
@@ -155,39 +136,75 @@ export default function TranViewPage(): ReactElement {
     void run(enteredTranId);
   }, [searchTranId, run]);
 
+  /**
+   * :purpose: PF3 — leave for the caller screen. ``COTRN01C`` returns to
+   *     ``CDEMO-FROM-PROGRAM`` and falls back to ``COMEN01C`` when no caller is
+   *     recorded; arriving with a route parameter is this screen's drill-through
+   *     from the list, which is the caller in that case.
+   */
   const handleExit = useCallback((): void => {
-    navigate('/transactions');
+    void navigate(transactionId === undefined || transactionId === '' ? MENU_ROUTE : TRAN_LIST_ROUTE);
+  }, [navigate, transactionId]);
+
+  /**
+   * :purpose: PF4 — ``CLEAR-CURRENT-SCREEN``: blank the entry field and every display
+   *     field, clear the message, and leave the cursor on ``TRNIDIN``.
+   */
+  const handleClear = useCallback((): void => {
+    setSearchTranId('');
+    setValidationMessage('');
+    reset();
+  }, [reset]);
+
+  /** :purpose: PF5 — ``Browse Tran.``: return to the transaction list (``COTRN00C``). */
+  const handleBrowse = useCallback((): void => {
+    void navigate(TRAN_LIST_ROUTE);
   }, [navigate]);
 
   useEffect(() => {
     const pfKeys: PFKeyDef[] = [
-      { action: PfKeyAction.Enter, label: 'ENTER=Search', onActivate: handleSearch },
-      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: handleExit },
+      { action: PfKeyAction.Enter, label: ENTER_LABEL, onActivate: handleSearch },
+      { action: PfKeyAction.PF3, label: BACK_LABEL, onActivate: handleExit },
+      { action: PfKeyAction.PF4, label: CLEAR_LABEL, onActivate: handleClear },
+      { action: PfKeyAction.PF5, label: BROWSE_LABEL, onActivate: handleBrowse },
     ];
     setChrome({
       transactionId: 'CT01',
       programName: 'COTRN01C',
-      title01: 'CardDemo',
-      title02: 'View Transaction',
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
       errorMessage,
       infoMessage: '',
       pfKeys,
+      busy: loading,
     });
-  }, [setChrome, errorMessage, handleSearch, handleExit]);
+  }, [
+    setChrome,
+    errorMessage,
+    handleBrowse,
+    handleClear,
+    handleSearch,
+    handleExit,
+    loading,
+  ]);
 
   return (
     <div className="tranViewPage">
-      <h3 className="neutral">View Transaction</h3>
+      <h2 className="neutral">View Transaction</h2>
 
       <div className="screenLine">
-        <label className="prompt" htmlFor="trnIdIn">
-          Search Tran ID:
+        <label className="prompt" htmlFor={TRAN_ID_FIELD_NAME}>
+          {TRAN_ID_LABEL}
         </label>{' '}
         <input
-          id="trnIdIn"
-          name="trnIdIn"
+          ref={tranIdRef}
+          id={TRAN_ID_FIELD_NAME}
+          {...invalidFieldProps(faultedTranId)}
+          name={TRAN_ID_FIELD_NAME}
+          data-testid={TRAN_ID_FIELD_NAME}
           className="field"
           type="text"
+          disabled={loading}
           value={searchTranId}
           maxLength={TRAN_ID_WIDTH}
           size={TRAN_ID_WIDTH}
@@ -197,101 +214,101 @@ export default function TranViewPage(): ReactElement {
 
       <hr className="neutral" />
 
-      <div className="screenLine">
-        <DetailField
-          id="tranId"
+      <dl className="screenLine">
+        <OutputField
+          testId="tranId"
           label="Transaction ID:"
           width={TRAN_ID_WIDTH}
-          value={displayValue(data?.tranId, TRAN_ID_WIDTH)}
+          value={displayField(data?.tranId, TRAN_ID_WIDTH)}
         />
-        <DetailField
-          id="tranCardNum"
+        <OutputField
+          testId="tranCardNum"
           label="Card Number:"
           width={16}
-          value={displayValue(data?.tranCardNum, 16)}
+          value={displayField(data?.tranCardNum, 16)}
         />
-      </div>
+      </dl>
 
-      <div className="screenLine">
-        <DetailField
-          id="tranTypeCd"
+      <dl className="screenLine">
+        <OutputField
+          testId="tranTypeCd"
           label="Type CD:"
           width={2}
-          value={displayValue(data?.tranTypeCd, 2)}
+          value={displayField(data?.tranTypeCd, 2)}
         />
-        <DetailField
-          id="tranCatCd"
+        <OutputField
+          testId="tranCatCd"
           label="Category CD:"
           width={4}
-          value={displayValue(data?.tranCatCd, 4)}
+          value={displayField(data?.tranCatCd, 4)}
         />
-        <DetailField
-          id="tranSource"
+        <OutputField
+          testId="tranSource"
           label="Source:"
           width={10}
-          value={displayValue(data?.tranSource, 10)}
+          value={displayField(data?.tranSource, 10)}
         />
-      </div>
+      </dl>
 
-      <div className="screenLine">
-        <DetailField
-          id="tranDesc"
+      <dl className="screenLine">
+        <OutputField
+          testId="tranDesc"
           label="Description:"
           width={60}
-          value={displayValue(data?.tranDesc, 60)}
+          value={displayField(data?.tranDesc, 60)}
         />
-      </div>
+      </dl>
 
-      <div className="screenLine">
-        <DetailField
-          id="tranAmt"
+      <dl className="screenLine">
+        <OutputField
+          testId="tranAmt"
           label="Amount:"
           width={12}
-          value={displayValue(data?.tranAmt, 12)}
+          value={displayField(data?.tranAmt, 12)}
         />
-        <DetailField
-          id="tranOrigTs"
+        <OutputField
+          testId="tranOrigTs"
           label="Orig Date:"
           width={10}
-          value={displayValue(data?.tranOrigTs, 10)}
+          value={displayField(data?.tranOrigTs, 10)}
         />
-        <DetailField
-          id="tranProcTs"
+        <OutputField
+          testId="tranProcTs"
           label="Proc Date:"
           width={10}
-          value={displayValue(data?.tranProcTs, 10)}
+          value={displayField(data?.tranProcTs, 10)}
         />
-      </div>
+      </dl>
 
-      <div className="screenLine">
-        <DetailField
-          id="tranMerchantId"
+      <dl className="screenLine">
+        <OutputField
+          testId="tranMerchantId"
           label="Merchant ID:"
           width={9}
-          value={displayValue(data?.tranMerchantId, 9)}
+          value={displayField(data?.tranMerchantId, 9)}
         />
-        <DetailField
-          id="tranMerchantName"
+        <OutputField
+          testId="tranMerchantName"
           label="Merchant Name:"
           width={30}
-          value={displayValue(data?.tranMerchantName, 30)}
+          value={displayField(data?.tranMerchantName, 30)}
         />
-      </div>
+      </dl>
 
-      <div className="screenLine">
-        <DetailField
-          id="tranMerchantCity"
+      <dl className="screenLine">
+        <OutputField
+          testId="tranMerchantCity"
           label="Merchant City:"
           width={25}
-          value={displayValue(data?.tranMerchantCity, 25)}
+          value={displayField(data?.tranMerchantCity, 25)}
         />
-        <DetailField
-          id="tranMerchantZip"
+        <OutputField
+          testId="tranMerchantZip"
           label="Merchant Zip:"
           width={10}
-          value={displayValue(data?.tranMerchantZip, 10)}
+          value={displayField(data?.tranMerchantZip, 10)}
         />
-      </div>
+      </dl>
     </div>
   );
 }

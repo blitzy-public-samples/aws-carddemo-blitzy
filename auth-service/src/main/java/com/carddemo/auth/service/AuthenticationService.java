@@ -83,9 +83,9 @@ public class AuthenticationService {
 
     /**
      * :purpose: Storage-format hash of a random value, used to perform the same one-way
-     *  hashing work for an unknown user id as for a known one, so response time no
-     *  longer reveals whether an id exists (CWE-204). It can never match a submitted
-     *  password because the encoded value is discarded.
+     *  hashing work for an unknown user id as for a known one so response time does not
+     *  reveal whether an id exists. It can never match a submitted password because the
+     *  encoded value is discarded.
      */
     private final String timingEqualizationHash;
 
@@ -173,7 +173,7 @@ public class AuthenticationService {
     /**
      * :purpose: Issue a fresh session id for the authenticated caller before any
      *  authenticated state is written to it, so a session id obtained before sign-on
-     *  can never become an authenticated one (session fixation, CWE-384).
+     *  can never become an authenticated one.
      * :param httpRequest: the current HTTP request.
      * :returns: the session that must carry the sign-on context.
      */

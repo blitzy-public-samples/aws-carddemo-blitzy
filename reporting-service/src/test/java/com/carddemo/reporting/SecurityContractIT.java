@@ -122,6 +122,37 @@ class SecurityContractIT {
         assertThat(status).isNotIn(401, 403);
     }
 
+    /**
+     * :purpose: Build the signed-on session context an administrator presents.
+     * :returns: an administrator session context.
+     */
+    private SessionContext adminSession() {
+        SessionContext session = new SessionContext();
+        session.setUserId("ADMIN001");
+        session.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        return session;
+    }
+
+    @Test
+    @DisplayName("the CREASTMT statement stream is refused for a signed-on regular user")
+    void statementStreamIsAdministratorOnly() throws Exception {
+        mockMvc.perform(post("/reports/statements")
+                        .sessionAttr(SessionContext.SESSION_ATTRIBUTE_NAME, userSession()))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @DisplayName("the CREASTMT statement stream passes authorization for an administrator")
+    void statementStreamIsAuthorizedForAnAdministrator() throws Exception {
+        int status = mockMvc.perform(post("/reports/statements")
+                        .sessionAttr(SessionContext.SESSION_ATTRIBUTE_NAME, adminSession()))
+                .andReturn()
+                .getResponse()
+                .getStatus();
+
+        assertThat(status).isNotIn(401, 403);
+    }
+
     @Test
     @DisplayName("the health probe stays reachable without credentials")
     void healthProbeIsAnonymous() throws Exception {

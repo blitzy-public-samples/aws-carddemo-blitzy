@@ -12,9 +12,11 @@
  *   :ts:type:`OptimisticLockConflict`.
  * :note: Member names use the backend camelCase JSON property names so REST
  *   payloads bind without field remapping. Per the account optimistic-locking
- *   design (AAP 0.6.2) the contract carries the ``version`` snapshot and the
- *   read-only ``acctAddrZip``. Monetary and identifier fields are typed ``string``
- *   to preserve ``NUMERIC(p,s)`` scale and zero-padded field width on the wire.
+ *   design (AAP 0.6.2) the contract carries the ``version`` snapshot. Every
+ *   monetary, identifier and numeric field is typed ``string`` because the
+ *   services serialize them as strings, preserving ``NUMERIC(p,s)`` scale and
+ *   zero-padded COBOL field width on the wire; ``version`` is the sole numeric
+ *   member.
  * :note: The identifier ``acctExpiraionDate`` retains the legacy copybook
  *   misspelling (missing the second ``T``, from COBOL ``ACCT-EXPIRAION-DATE``)
  *   verbatim as a frozen contract; it must NOT be "corrected" by inserting the
@@ -27,8 +29,7 @@ import type { ActiveStatus } from './common';
  * :purpose: The account and customer attributes exchanged on BOTH the account
  *   update request and the account view / update responses — the editable field
  *   set of the ``COACTUP`` maintenance screen, excluding the server-managed
- *   identity fields (``acctId``, ``custId``) and the read-only account address ZIP
- *   (``acctAddrZip``) that the responses add on top.
+ *   identity fields (``acctId``, ``custId``) that the responses add on top.
  * :note: Internal composition base (not part of the public API) declared once so
  *   the misspelled ``acctExpiraionDate`` and every shared member appear exactly
  *   once; the exported DTOs below re-expose every member through inheritance.
@@ -91,9 +92,23 @@ interface AccountMutableFields {
   custEftAccountId: string;
   /** ``CUST-PRI-CARD-HOLDER-IND`` X(01) — single-character primary-card-holder flag. */
   custPriCardHolderInd: string;
-  /** ``CUST-FICO-CREDIT-SCORE`` 9(03) — numeric FICO credit score. */
-  custFicoCreditScore: number;
+  /** ``CUST-FICO-CREDIT-SCORE`` 9(03) — FICO credit score; ``string`` preserves the three-digit field width. */
+  custFicoCreditScore: string;
 }
+
+/**
+ * :purpose: The ``old*`` snapshot counterpart of every editable member, mirroring the
+ *   ``ACUP-OLD-*`` working-storage group ``COACTUPC`` fills when it displays the
+ *   record (L3875 and neighbours) and compares field by field before its ``REWRITE``
+ *   (L4131-L4189).
+ * :output: One ``old<Field>`` member per :ts:type:`AccountMutableFields` member,
+ *   carrying the value read at display time.
+ * :note: Derived from :ts:type:`AccountMutableFields` so the snapshot set can never
+ *   drift from the editable set.
+ */
+export type AccountUpdateSnapshotFields = {
+  [K in keyof AccountMutableFields as `old${Capitalize<K>}`]: AccountMutableFields[K];
+};
 
 /**
  * :purpose: Request body for ``PUT /accounts/{id}`` (``AccountUpdatePage``, CICS
@@ -111,8 +126,13 @@ interface AccountMutableFields {
  *   ``ApiErrorResponse`` message "Record changed by some one else. Please review"
  *   (see :ts:type:`OptimisticLockConflict`), reproducing the legacy
  *   read-snapshot-compare-rewrite concurrency check.
+ * :note: The :ts:type:`AccountUpdateSnapshotFields` members are optional. Supplying
+ *   them enables the field-by-field comparison ``COACTUPC`` performs in addition to
+ *   the ``version`` check; omitting them leaves ``version`` as the sole guard.
  */
-export interface AccountUpdateRequestDto extends AccountMutableFields {
+export interface AccountUpdateRequestDto
+  extends AccountMutableFields,
+    Partial<AccountUpdateSnapshotFields> {
   version: number;
 }
 
@@ -124,8 +144,6 @@ export interface AccountUpdateRequestDto extends AccountMutableFields {
  *   server-managed identity fields and the optimistic-lock version.
  * :param acctId: ``ACCT-ID`` 9(11) — 11-digit account identifier; ``string``
  *   preserves the zero-padded field width.
- * :param acctAddrZip: ``ACCT-ADDR-ZIP`` X(10) — account address ZIP (read-only on
- *   the account screens; distinct from the customer ``custAddrZip``).
  * :param custId: ``CUST-ID`` 9(09) — 9-digit owning-customer identifier;
  *   ``string`` preserves the zero-padded field width.
  * :param version: the current optimistic-lock version; the client echoes it back
@@ -133,7 +151,6 @@ export interface AccountUpdateRequestDto extends AccountMutableFields {
  */
 export interface AccountViewResponseDto extends AccountMutableFields {
   acctId: string;
-  acctAddrZip: string;
   custId: string;
   version: number;
 }
@@ -148,7 +165,7 @@ export interface AccountViewResponseDto extends AccountMutableFields {
  *   controller returns the freshly-read record; declared as a distinct named type
  *   so callers can express update-result intent.
  */
-export interface AccountUpdateResponseDto extends AccountViewResponseDto {}
+export type AccountUpdateResponseDto = AccountViewResponseDto;
 
 /* ------------------------------------------------------------------------- *
  * Optional page-level helpers (NOT REST wire contracts)                     *

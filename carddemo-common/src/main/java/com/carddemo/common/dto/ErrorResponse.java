@@ -20,11 +20,13 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * :purpose: Standardized JSON error body returned by the CardDemo REST APIs and
- *  produced by the shared global exception handler. This is a framework-light POJO
- *  that carries only non-sensitive error metadata (status, message, path, timestamp,
- *  trace id, and optional per-field validation messages); it never echoes card
- *  numbers, passwords, SSNs, or other PII/PCI values. Rule-mandated observability
+ * :purpose: Standardized JSON error body returned by the CardDemo REST APIs and produced by
+ *  the shared global exception handler. This is a framework-light POJO carrying error
+ *  metadata: status, domain error code, message, request path, timestamp, the trace and
+ *  correlation ids a caller can quote for support, and optional per-field validation
+ *  messages. It never carries a password or a raw PII value, and the ``path`` is
+ *  PAN-redacted by every producer before the envelope is built, so a card resource URI
+ *  reaches the client with only the last four digits. Rule-mandated observability
  *  infrastructure with no legacy COBOL source.
  */
 public class ErrorResponse {
@@ -51,7 +53,10 @@ public class ErrorResponse {
     /** :purpose: Human-readable, non-sensitive detail message. */
     private String message;
 
-    /** :purpose: Request URI that produced the error. */
+    /**
+     * :purpose: Request URI that produced the error, with every PAN-shaped digit run reduced
+     *  to its last four digits by the producing handler.
+     */
     private String path;
 
     /**
@@ -64,7 +69,8 @@ public class ErrorResponse {
     /**
      * :purpose: Business correlation id of the failing request (the ``X-Correlation-Id`` echoed on
      *  the response and stamped on every log record for the request), so a caller can quote one id
-     *  that always resolves in the log stream even when tracing is disabled or unsampled.
+     *  that always resolves in the log stream even when tracing is disabled or unsampled. It is
+     *  the safe support reference the client surfaces to the operator.
      */
     private String correlationId;
 

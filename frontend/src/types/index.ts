@@ -8,8 +8,8 @@
  *   from '../types'``) instead of reaching into each sibling module. Gives the
  *   ``api``, ``hooks``, ``components``, and ``pages`` folders one stable,
  *   ergonomic import path per the AAP ES-module convention.
- * :output: The merged named-export namespace of the ten sibling modules
- *   (``common``, ``session``, ``auth``, ``menu``, ``account``, ``card``,
+ * :output: The merged named-export namespace of the sibling modules
+ *   (``common``, ``titles``, ``messages``, ``session``, ``auth``, ``menu``, ``account``, ``card``,
  *   ``transaction``, ``billpay``, ``report``, ``user``). Every exported name
  *   across those modules is unique, so the wildcard re-exports combine into one
  *   collision-free namespace.
@@ -19,6 +19,8 @@
  */
 
 export * from './common';
+export * from './titles';
+export * from './messages';
 export * from './session';
 export * from './auth';
 export * from './menu';

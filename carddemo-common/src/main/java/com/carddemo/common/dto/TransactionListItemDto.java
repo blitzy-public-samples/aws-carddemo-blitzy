@@ -18,6 +18,8 @@ package com.carddemo.common.dto;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
+import com.carddemo.common.json.CobolNumberSerializers;
+import tools.jackson.databind.annotation.JsonSerialize;
 
 /**
  * :purpose: Outbound single-row DTO for the COTRN00 transaction-list screen (CICS
@@ -45,6 +47,7 @@ public class TransactionListItemDto {
     private String tranDesc;
 
     /** :purpose: Monetary amount (COTRN00 ``TRAN-AMT`` PIC S9(09)V99 -> NUMERIC(11,2)). */
+    @JsonSerialize(using = CobolNumberSerializers.Money.class)
     private BigDecimal tranAmt;
 
     /**

@@ -16,27 +16,29 @@
  *     ten row-selection flags. Wire values (``MM/DD/YY`` date, scale-2 amount
  *     string, 16-character transaction id) are rendered verbatim.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
+import { invalidFieldProps, invalidValueProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, SCREEN_NAMES } from '../types';
+
+/**
+ * Row-4 screen name of ``app/bms/COTRN00.bms``, rendered as the screen's own
+ * body heading. The two header title lines are the shared ``COTTL01Y`` pair.
+ */
+const SCREEN_NAME = SCREEN_NAMES.COTRN00;
 import type { TranListItemDto } from '../types';
 import { listTransactions, ApiError } from '../api';
-import { useApi, usePagination, TRANSACTION_LIST_PAGE_SIZE } from '../hooks';
+import { useApi, useFocusOnChange, useFocusOnSettled, useInitialFocus } from '../hooks';
+import { displayText } from '../components/display';
 
 /** CICS transaction identifier of the legacy screen. */
 const TRANSACTION_ID = 'CT00';
 
 /** Legacy program name of the screen. */
 const PROGRAM_NAME = 'COTRN00C';
-
-/** First header title line. */
-const TITLE01 = 'CardDemo';
-
-/** Second header title line, which is also the screen heading. */
-const TITLE02 = 'List Transactions';
 
 /** Prompt of the ``TRNIDIN`` browse filter. */
 const FILTER_LABEL = 'Search Tran ID:';
@@ -72,14 +74,33 @@ const MSG_INVALID_SELECTION = 'Invalid selection. Valid value is S';
 /** Rejection message for a non-numeric browse filter (``COTRN00C``). */
 const MSG_TRAN_ID_NUMERIC = 'Tran ID must be Numeric ...';
 
-/** Empty-result text shown in place of the ten row lines. */
-const MSG_NO_RECORDS = 'NO RECORDS FOUND';
+/**
+ * :purpose: Whether a ``Sel`` entry is a value ``COTRN00C`` rejects. A blank entry is
+ *     not a selection at all, so only a non-blank value other than ``S`` faults its
+ *     control.
+ * :param value: the row's current ``Sel`` entry.
+ * :returns: ``true`` when the entry would raise the invalid-selection message.
+ */
+function isRowSelectionInvalid(value: string | undefined): boolean {
+  const canonical = (value ?? '').trim().toUpperCase();
+  return canonical !== '' && canonical !== SELECTION_VALUE;
+}
+
+/**
+ * Placeholder occupying the row region when the browse returns nothing. The line-23
+ * banner is the only carrier of a legacy message, so this text is deliberately not
+ * shaped like one.
+ */
+const EMPTY_ROW_TEXT = 'No transactions to display';
 
 /** Static line-21 instruction literal of the mapset. */
 const SELECTION_HINT = "Type 'S' to View Transaction details from the list";
 
 /** Static ``Page:`` caption of the mapset (line 4). */
 const PAGE_LABEL = 'Page:';
+
+/** First page of a browse, shown before the first response arrives. */
+const FIRST_PAGE = 1;
 
 /** ENTER entry of the mapset line-24 legend, carried by the submit control. */
 const SUBMIT_LABEL = 'ENTER=Continue';
@@ -92,6 +113,15 @@ const ACTION_FORWARD = 'PF8';
 
 /** Route of the main menu, reached with PF3 (legacy ``XCTL`` to ``COMEN01C``). */
 const MENU_ROUTE = '/menu';
+
+/** PF3 entry of the mapset line-24 legend. */
+const EXIT_LABEL = 'F3=Back';
+
+/** PF7 entry of the mapset line-24 legend. */
+const BACKWARD_LABEL = 'F7=Backward';
+
+/** PF8 entry of the mapset line-24 legend. */
+const FORWARD_LABEL = 'F8=Forward';
 
 /** Route prefix of the transaction-view screen (``CT01`` / ``COTRN01C``). */
 const TRANSACTION_VIEW_ROUTE = '/transactions/';
@@ -106,30 +136,6 @@ const NUMERIC_PATTERN = /^\d+$/;
  */
 function selectionFieldName(rowIndex: number): string {
   return `SEL${String(rowIndex + 1).padStart(4, '0')}`;
-}
-
-/**
- * :purpose: Render a wire value as display text without ever surfacing ``null``
- *     or ``undefined`` to the user.
- * :param value: the value carried by the list-row DTO.
- * :returns: the value, or the empty string when it is absent.
- */
-function displayText(value: string | null | undefined): string {
-  return value ?? '';
-}
-
-/**
- * :purpose: Render the amount column of a row.
- * :param value: the amount as carried by the list-row DTO — a ``NUMERIC(11,2)``
- *     decimal string, or the same value deserialized as a JSON number.
- * :returns: a string value verbatim; a numeric value at the declared two-decimal
- *     scale, so the cents of a whole amount are never dropped.
- */
-function amountText(value: string | number | null | undefined): string {
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? value.toFixed(2) : '';
-  }
-  return displayText(value);
 }
 
 /**
@@ -159,33 +165,16 @@ export default function TranListPage(): ReactElement {
   /** Client-side rejection text for the current turn, or the empty string. */
   const [validationMessage, setValidationMessage] = useState('');
 
-  const { data, error, run } = useApi(listTransactions);
+  const { data, error, loading, run } = useApi(listTransactions);
 
-  const rows: TranListItemDto[] = data?.transactions ?? [];
-  const serverPageNumber = data?.pageNumber ?? 0;
-  const serverHasNextPage = data?.nextPage ?? false;
+  // COTRN00C browses the file itself and returns exactly one screen of rows, so the
+  // page shown is the page the service reports; there is no second, client-side slice.
+  const rows: TranListItemDto[] = useMemo(() => data?.transactions ?? [], [data]);
+  const pageNumber = data?.pageNumber ?? FIRST_PAGE;
+  const hasNextPage = data?.nextPage ?? false;
   const serverMessage = data?.message ?? '';
   const serverTranIdFirst = data?.tranIdFirst ?? '';
   const serverTranIdLast = data?.tranIdLast ?? '';
-
-  const {
-    page: localPage,
-    pageRows,
-    hasPrevious,
-    hasNext,
-    prevPage,
-    nextPage,
-    reset: resetLocalPage,
-  } = usePagination(rows, TRANSACTION_LIST_PAGE_SIZE);
-
-  // PF7 / PF8 stay enabled while either the client slice or the server browse
-  // still has a page in that direction.
-  const canPageBackward = hasPrevious || serverPageNumber > 1;
-  const canPageForward = hasNext || serverHasNextPage;
-
-  // Displayed page number: the server page carrying the rows, advanced by the
-  // client slice when a caller supplied more than one page of rows at once.
-  const displayedPageNumber = (serverPageNumber > 0 ? serverPageNumber : 1) + localPage;
 
   // Read the first forward page on entry, from the top of the file.
   useEffect(() => {
@@ -209,7 +198,7 @@ export default function TranListPage(): ReactElement {
   const handleEnter = useCallback((): void => {
     let selectedFlag = '';
     let selectedTranId = '';
-    for (const [index, row] of pageRows.entries()) {
+    for (const [index, row] of rows.entries()) {
       const flag = displayText(selectionFlags[selectionFieldName(index)]).trim();
       const rowTranId = displayText(row.tranId).trim();
       if (flag !== '' && rowTranId !== '') {
@@ -222,7 +211,7 @@ export default function TranListPage(): ReactElement {
     if (selectedFlag !== '') {
       if (selectedFlag.toUpperCase() === SELECTION_VALUE) {
         setValidationMessage('');
-        navigate(`${TRANSACTION_VIEW_ROUTE}${selectedTranId}`);
+        void navigate(`${TRANSACTION_VIEW_ROUTE}${selectedTranId}`);
         return;
       }
       setValidationMessage(MSG_INVALID_SELECTION);
@@ -237,135 +226,120 @@ export default function TranListPage(): ReactElement {
 
     setValidationMessage('');
     setSelectionFlags({});
-    resetLocalPage();
     void run(filter === '' ? {} : { tranIdFilter: filter });
-  }, [navigate, pageRows, resetLocalPage, run, selectionFlags, tranIdFilter]);
+  }, [navigate, rows, run, selectionFlags, tranIdFilter]);
 
-  /** :purpose: PF7 — page backward within the slice, else browse the previous server page. */
+  /**
+   * :purpose: PF7 — page backward. The key is never withdrawn: ``PROCESS-PF7-KEY``
+   *     receives the AID unconditionally and its own ``IF CDEMO-CT00-PAGE-NUM > 1``
+   *     branch decides between browsing and re-sending the screen with the
+   *     top-boundary message, so the AID is always sent and the service decides.
+   */
   const handleBackward = useCallback((): void => {
     setValidationMessage('');
     setSelectionFlags({});
-    if (hasPrevious) {
-      prevPage();
-      return;
-    }
-    resetLocalPage();
     void run({
       action: ACTION_BACKWARD,
-      pageNumber: serverPageNumber,
+      pageNumber,
       tranIdFirst: serverTranIdFirst,
       tranIdLast: serverTranIdLast,
-      nextPage: serverHasNextPage,
+      nextPage: hasNextPage,
     });
-  }, [
-    hasPrevious,
-    prevPage,
-    resetLocalPage,
-    run,
-    serverHasNextPage,
-    serverPageNumber,
-    serverTranIdFirst,
-    serverTranIdLast,
-  ]);
+  }, [hasNextPage, pageNumber, run, serverTranIdFirst, serverTranIdLast]);
 
-  /** :purpose: PF8 — page forward within the slice, else browse the next server page. */
+  /**
+   * :purpose: PF8 — page forward. Also never withdrawn: ``PROCESS-PF8-KEY`` tests
+   *     ``NEXT-PAGE-YES`` itself and otherwise re-sends the screen carrying the
+   *     bottom-boundary message.
+   */
   const handleForward = useCallback((): void => {
     setValidationMessage('');
     setSelectionFlags({});
-    if (hasNext) {
-      nextPage();
-      return;
-    }
-    resetLocalPage();
     void run({
       action: ACTION_FORWARD,
-      pageNumber: serverPageNumber,
+      pageNumber,
       tranIdFirst: serverTranIdFirst,
       tranIdLast: serverTranIdLast,
-      nextPage: serverHasNextPage,
+      nextPage: hasNextPage,
     });
-  }, [
-    hasNext,
-    nextPage,
-    resetLocalPage,
-    run,
-    serverHasNextPage,
-    serverPageNumber,
-    serverTranIdFirst,
-    serverTranIdLast,
-  ]);
+  }, [hasNextPage, pageNumber, run, serverTranIdFirst, serverTranIdLast]);
 
   /** :purpose: PF3 — leave the screen for the main menu (legacy ``COMEN01C``). */
   const handleExit = useCallback((): void => {
-    navigate(MENU_ROUTE);
+    void navigate(MENU_ROUTE);
   }, [navigate]);
 
   // A client-side rejection wins the single line-23 region; otherwise the
   // normalized request error, if the most recent browse failed, is shown.
-  const errorMessage =
-    validationMessage !== '' ? validationMessage : requestErrorText(error);
-  const infoMessage = errorMessage === '' ? serverMessage : '';
+  let errorMessage = validationMessage !== '' ? validationMessage : requestErrorText(error);
+  if (errorMessage === '') {
+    errorMessage = serverMessage;
+  }
+  const infoMessage = '';
+
+  // Every COTRN00C path ends with ``MOVE -1 TO TRNIDINL``, placing the cursor on the
+  // browse filter. The screen reads its rows before painting them and disables the
+  // entry fields while that read is outstanding, so the placement is driven by each
+  // completed map send rather than by mount alone.
+  const filterRef = useInitialFocus<HTMLInputElement>();
+  useFocusOnSettled(loading, filterRef);
+  useFocusOnChange(errorMessage === '' ? null : errorMessage, filterRef);
 
   useEffect(() => {
+    // Every key the mapset's line-24 legend declares is registered and stays live:
+    // COTRN00C rewrites nothing away, and each handler's own branch — or the service's
+    // — decides the outcome, so gating a key here would make that branch unreachable.
     const pfKeys: PFKeyDef[] = [
-      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: handleExit },
-      {
-        action: PfKeyAction.PF7,
-        label: 'F7=Backward',
-        onActivate: handleBackward,
-        enabled: canPageBackward,
-      },
-      {
-        action: PfKeyAction.PF8,
-        label: 'F8=Forward',
-        onActivate: handleForward,
-        enabled: canPageForward,
-      },
+      { action: PfKeyAction.Enter, label: SUBMIT_LABEL, onActivate: handleEnter },
+      { action: PfKeyAction.PF3, label: EXIT_LABEL, onActivate: handleExit },
+      { action: PfKeyAction.PF7, label: BACKWARD_LABEL, onActivate: handleBackward },
+      { action: PfKeyAction.PF8, label: FORWARD_LABEL, onActivate: handleForward },
     ];
     setChrome({
       transactionId: TRANSACTION_ID,
       programName: PROGRAM_NAME,
-      title01: TITLE01,
-      title02: TITLE02,
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
       errorMessage,
       infoMessage,
       pfKeys,
+      busy: loading,
     });
   }, [
-    canPageBackward,
-    canPageForward,
     errorMessage,
     handleBackward,
+    handleEnter,
     handleExit,
     handleForward,
     infoMessage,
+    loading,
     setChrome,
   ]);
 
   return (
-    <section className="tranList" aria-label={TITLE02}>
-      <h2 className="title">{TITLE02}</h2>
-
-      <div className="tranListPage">
-        <span className="prompt">{PAGE_LABEL}</span>{' '}
-        <span className="label" data-testid="page-number">
-          {displayedPageNumber}
-        </span>
+    <section className="tranList" aria-label={SCREEN_NAME}>
+      <div className="screenTitleLine">
+        <h2 className="title">{SCREEN_NAME}</h2>
+        <p className="screenTitleLine__page">
+          <span className="prompt">{PAGE_LABEL}</span>{' '}
+          <span className="label" data-testid="page-number">
+            {pageNumber}
+          </span>
+        </p>
       </div>
 
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          handleEnter();
-        }}
-      >
+      <div className="tranList__body">
         <div className="tranListSearch">
           <label className="prompt" htmlFor={FILTER_FIELD_NAME}>
             {FILTER_LABEL}
           </label>{' '}
           <input
+            ref={filterRef}
             className="field"
+            data-testid={FILTER_FIELD_NAME}
+            disabled={loading}
             id={FILTER_FIELD_NAME}
+            {...invalidFieldProps(validationMessage === MSG_TRAN_ID_NUMERIC)}
             name={FILTER_FIELD_NAME}
             type="text"
             maxLength={TRAN_ID_LENGTH}
@@ -386,29 +360,29 @@ export default function TranListPage(): ReactElement {
             </tr>
           </thead>
           <tbody>
-            {pageRows.length === 0 ? (
+            {rows.length === 0 ? (
               <tr>
-                <td colSpan={COLUMNS.length} data-testid="tran-list-empty">
-                  {MSG_NO_RECORDS}
+                <td className="neutral" colSpan={COLUMNS.length} data-testid="tran-list-empty">
+                  {EMPTY_ROW_TEXT}
                 </td>
               </tr>
             ) : (
-              pageRows.map((row: TranListItemDto, index: number) => {
+              rows.map((row: TranListItemDto, index: number) => {
                 const fieldName = selectionFieldName(index);
                 const flag = displayText(selectionFlags[fieldName]);
                 const tranId = displayText(row.tranId);
                 return (
                   <tr key={fieldName} className={flag.trim() === '' ? undefined : 'selected'}>
                     <td>
-                      {/* BLITZY [A11Y]: one-character field per the BMS ``SEL000n``
-                          ``PIC X(01)`` layout; its target is below the WCAG 2.5.8
-                          minimum. Flagged for designer review. */}
                       <input
                         className="field"
+                        data-testid={`tran-select-${String(index + 1)}`}
+                        disabled={loading}
                         id={fieldName}
                         name={fieldName}
                         type="text"
-                        aria-label={`${COLUMNS[0].caption} ${tranId}`}
+                        aria-label={`Select transaction in row ${String(index + 1)}`}
+                        {...invalidValueProps(isRowSelectionInvalid(flag))}
                         maxLength={SELECTION_LENGTH}
                         size={SELECTION_LENGTH}
                         value={flag}
@@ -418,7 +392,7 @@ export default function TranListPage(): ReactElement {
                     <td>{tranId}</td>
                     <td>{displayText(row.tranDate)}</td>
                     <td>{displayText(row.tranDesc)}</td>
-                    <td className="amount">{amountText(row.tranAmt)}</td>
+                    <td className="amount">{displayText(row.tranAmt)}</td>
                   </tr>
                 );
               })
@@ -426,10 +400,9 @@ export default function TranListPage(): ReactElement {
           </tbody>
         </table>
 
-        <button type="submit">{SUBMIT_LABEL}</button>
-      </form>
+      </div>
 
-      <p className="neutral">{SELECTION_HINT}</p>
+      <p className="neutral screenNote">{SELECTION_HINT}</p>
     </section>
   );
 }

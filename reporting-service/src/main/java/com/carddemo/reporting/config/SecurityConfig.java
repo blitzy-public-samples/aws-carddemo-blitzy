@@ -23,6 +23,7 @@ import jakarta.servlet.DispatcherType;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.web.SecurityFilterChain;
@@ -59,7 +60,9 @@ public class SecurityConfig {
      *     hardening (session-derived principal, no persisted security context, no
      *     saved-request cache, hardened response headers, ``401`` entry point,
      *     audited denials), permits the anonymous health endpoints and the container
-     *     ``ERROR`` dispatch, and requires a ``ROLE_USER`` or ``ROLE_ADMIN`` authority for every other request.
+     *     ``ERROR`` dispatch, restricts the ``CREASTMT`` statement job-stream submission to
+     *     ``ROLE_ADMIN`` (the legacy operator who submitted that job stream), and requires a
+     *     ``ROLE_USER`` or ``ROLE_ADMIN`` authority for every other request.
      * :param http: the Spring Security ``HttpSecurity`` builder.
      * :returns: the configured ``SecurityFilterChain``.
      * :raises Exception: if the filter chain cannot be built.
@@ -76,6 +79,11 @@ public class SecurityConfig {
                     "/actuator/health",
                     "/actuator/health/**",
                     "/actuator/info").permitAll()
+                // CORPT00 is the only report surface an ordinary signed-on user reaches. The
+                // CREASTMT / CBSTM03A statement job stream was an operator-submitted batch
+                // stream with no online transaction, so its submission carries the
+                // administrator authority.
+                .requestMatchers(HttpMethod.POST, "/reports/statements").hasRole("ADMIN")
                 .anyRequest().hasAnyRole("USER", "ADMIN"))
             .httpBasic(httpBasic -> httpBasic.disable())
             .formLogin(formLogin -> formLogin.disable());

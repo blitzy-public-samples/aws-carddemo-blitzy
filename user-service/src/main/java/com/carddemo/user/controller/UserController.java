@@ -80,8 +80,13 @@ public class UserController {
     /**
      * :purpose: List users (10 per page, ascending by id) exactly as ``COUSR00C`` /
      *     ``CU00`` does: keyset paging driven by the legacy ``PF7``/``PF8`` actions with a
-     *     ``cursor``, otherwise page-based via ``page``, plus the row-selection handling
-     *     that the legacy screen uses to reach the update and delete programs.
+     *     ``cursor``, otherwise a browse positioned at ``userId`` or page-based via
+     *     ``page``, plus the row-selection handling that the legacy screen uses to reach
+     *     the update and delete programs.
+     * :param userId: optional browse-start user id, the ``Search User ID`` field
+     *     (``USRIDIN``) the legacy screen positions its ``STARTBR`` with (L218-L221).
+     *     Honoured only when no paging action is supplied, because ``PF7``/``PF8`` browse
+     *     from the COMMAREA cursors rather than from the search field.
      * :param page: zero-based page index for page-based listing; defaults to ``0``.
      * :param direction: optional paging action. The legacy vocabulary is ``"PF7"``
      *     (page back) and ``"PF8"`` (page forward); ``"backward"`` and ``"forward"`` are
@@ -99,12 +104,13 @@ public class UserController {
      */
     @GetMapping
     public UserListResponseDto listUsers(
+            @RequestParam(name = "userId", required = false) String userId,
             @RequestParam(name = "page", defaultValue = "0") int page,
             @RequestParam(name = "direction", required = false) String direction,
             @RequestParam(name = "cursor", required = false) String cursor,
             @RequestParam(name = "selection", required = false) String selection,
             @RequestParam(name = "selectedUserId", required = false) String selectedUserId) {
-        UserListResponseDto response = pageUsers(page, direction, cursor);
+        UserListResponseDto response = pageUsers(userId, page, direction, cursor);
         applySelection(response, selection, selectedUserId);
         return response;
     }
@@ -113,15 +119,19 @@ public class UserController {
      * :purpose: Resolve the requested paging action to the corresponding browse, preserving
      *     the legacy ``PF7``/``PF8`` vocabulary and rejecting an unrecognised action with the
      *     verbatim ``CSMSG01Y`` invalid-key message rather than silently ignoring it.
-     * :param page: zero-based page index used when no paging action is supplied.
+     * :param userId: the browse-start user id, honoured only in the no-action case.
+     * :param page: zero-based page index used when no paging action and no start id are
+     *     supplied.
      * :param direction: the requested paging action, possibly ``null``.
      * :param cursor: the user id anchoring keyset paging.
      * :returns: the page of users.
      * :raises CardDemoException: when the paging action is not a recognised key.
      */
-    private UserListResponseDto pageUsers(int page, String direction, String cursor) {
+    private UserListResponseDto pageUsers(String userId, int page, String direction, String cursor) {
         if (direction == null || direction.isBlank()) {
-            return userService.listUsers(page);
+            return userId == null || userId.isBlank()
+                    ? userService.listUsers(page)
+                    : userService.listUsersFrom(userId);
         }
         String action = direction.trim();
         boolean forward = ACTION_PF8.equalsIgnoreCase(action) || ALIAS_FORWARD.equalsIgnoreCase(action);
@@ -166,10 +176,8 @@ public class UserController {
      * :param request: the new user's id, first name, last name, user type, and raw password.
      * :returns: the created user wrapped in a ``201 Created`` response.
      * :raises CardDemoException: on a duplicate id, an empty field, or a persistence failure.
-     * :note: The credential is read from the request BODY and never from the query string: a
-     *     URL is recorded verbatim by the access log and by every client/server tracing span,
-     *     so a password carried there leaks into telemetry (CWE-598). This also matches the
-     *     frontend contract, which declares ``password`` on the add-user body.
+     * :note: The credential is read from the request body, never from the query string, so it
+     *     is not recorded by an access log or a tracing span.
      */
     @PostMapping
     public ResponseEntity<UserWriteResponseDto> addUser(

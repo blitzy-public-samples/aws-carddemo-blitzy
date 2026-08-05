@@ -152,6 +152,17 @@ class UserRepositoryTest extends AbstractIntegrationTest {
     }
 
     @Test
+    @DisplayName("findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc includes the search key (STARTBR GTEQ)")
+    void searchKeyBrowseIncludesTheKeyItself() {
+        seedUsers(12);
+
+        List<SecurityUser> from = userRepository
+                .findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc("USER0010", PageRequest.of(0, 10));
+        assertThat(from).extracting(SecurityUser::getSecUsrId)
+                .containsExactly("USER0010", "USER0011", "USER0012");
+    }
+
+    @Test
     @DisplayName("findBySecUsrIdGreaterThanOrderBySecUsrIdAsc returns the next forward block (PF8)")
     void forwardCursorReturnsNextBlockAscending() {
         seedUsers(12);

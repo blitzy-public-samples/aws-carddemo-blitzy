@@ -37,12 +37,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * :purpose: Tests how the report hand-off reports its outcome. ``CORPT00C``'s
- *   ``Unable to Write TDQ (JOBS)...`` literal means one specific thing -- the hand-off
- *   itself could not be written -- so using it for a submission batch-service ANSWERED and
- *   REFUSED told the user the wrong cause and invited a retry of a request that could never
- *   succeed. A refusal must therefore carry its reason, while an unreachable batch-service
- *   keeps the frozen literal.
+ * :purpose: Tests how the report hand-off reports its outcome. ``CORPT00C`` emits exactly one
+ *   hand-off failure message -- ``Unable to Write TDQ (JOBS)...`` on any non-normal
+ *   ``WRITEQ TD QUEUE('JOBS')`` response (L517-531) -- so every failure, whether
+ *   batch-service refused the run or could not be reached at all, must surface that frozen
+ *   literal and nothing else. The refusal reason belongs in the log stream.
  * :output: Assertions over the exception messages and the accepted execution handle.
  * :note: A real loopback HTTP server is used rather than a stubbed ``RestClient``, because the
  *   component builds its own client from the configured base URI and the response-status
@@ -139,13 +138,13 @@ class BatchJobClientTest {
     }
 
     /**
-     * :purpose: batch-service answered and refused, so the reason reaches the caller instead
-     *     of the TDQ literal, which would misstate the cause.
+     * :purpose: batch-service answered and refused the run, so the caller still receives the
+     *     single frozen ``CORPT00C`` hand-off message and none of the downstream detail.
      * :raises IOException: if the loopback server cannot be started.
      */
     @Test
-    @DisplayName("a refusal carries its reason, not the frozen TDQ literal")
-    void refusalCarriesItsReason() throws IOException {
+    @DisplayName("a refusal surfaces the frozen TDQ literal, not the downstream reason")
+    void refusalSurfacesTheFrozenLiteral() throws IOException {
         String reason = "Unable to submit batch job transactionDetailReportJob: "
                 + "A job instance already exists and is complete for identifying parameters";
         String baseUri = startServer(400, "{\"status\":400,\"error\":\"Bad Request\","
@@ -154,24 +153,23 @@ class BatchJobClientTest {
         assertThatThrownBy(() -> clientFor(baseUri)
                 .submitTransactionDetailReport("2026-08-01", "2026-08-31"))
                 .isInstanceOf(CardDemoException.class)
-                .hasMessage(BatchJobClient.SUBMISSION_REFUSED_PREFIX + reason);
+                .hasMessage(BatchJobClient.SUBMIT_FAILURE_MESSAGE)
+                .hasMessageNotContaining("already exists");
     }
 
     /**
-     * :purpose: A refusal whose body carries no message still reports a refusal rather than a
-     *     failed hand-off.
+     * :purpose: A refusal whose body carries no message also surfaces the frozen literal.
      * :raises IOException: if the loopback server cannot be started.
      */
     @Test
-    @DisplayName("a refusal without a message body still reports a refusal")
-    void refusalWithoutMessageStillReportsARefusal() throws IOException {
+    @DisplayName("a refusal without a message body also surfaces the frozen TDQ literal")
+    void refusalWithoutMessageAlsoSurfacesTheFrozenLiteral() throws IOException {
         String baseUri = startServer(503, "");
 
         assertThatThrownBy(() -> clientFor(baseUri)
                 .submitTransactionDetailReport("2026-08-01", "2026-08-31"))
                 .isInstanceOf(CardDemoException.class)
-                .hasMessageStartingWith(BatchJobClient.SUBMISSION_REFUSED_PREFIX)
-                .hasMessageNotContaining(BatchJobClient.SUBMIT_FAILURE_MESSAGE);
+                .hasMessage(BatchJobClient.SUBMIT_FAILURE_MESSAGE);
     }
 
     /**

@@ -19,8 +19,13 @@
  *   single-character status flags, and the legacy misspelling
  *   ``cardExpiraionDate``.
  * :note: The 7-rows-per-page contract is enforced by ``card-service`` (the
- *   backend page size), so this module sends only the zero-based ``page`` index
+ *   backend page size), so this module sends only the one-based ``page`` index
  *   and relies on the backend default rather than hard-coding a page size.
+ * :note: The card number reaches these routes on the same-origin request path
+ *   and query string only. It is never placed in an application URL, so it does
+ *   not enter the address bar, the session history, or an outbound ``Referer``.
+ *   The gateway masks PAN-shaped digit runs before a request path is logged and
+ *   before it is echoed on an error envelope.
  */
 
 import apiClient from './client';
@@ -36,12 +41,16 @@ import type {
  * :purpose: List cards for the ``CardListPage`` screen (CICS ``CCLI`` /
  *   ``COCRDLIC``). The account-scoped browse can additionally narrow to a single
  *   card number, and pages 7 rows at a time.
- * :param request: optional ``accountId`` and ``cardNum`` filters plus the
- *   ``page`` index; carried as query parameters (undefined values are omitted by
- *   axios and never sent as empty strings). The card filter is sent under the
- *   ``cardNumber`` parameter name bound by the ``card-service`` card-list route,
- *   while the client-side field keeps its ``cardNum`` DTO spelling.
- * :returns: the page of card rows as a :ts:type:`CardListResponseDto`.
+ * :param request: optional ``accountId`` and ``cardNum`` filters, the one-based
+ *   ``page`` index, the ``aid`` paging key (``PF7`` / ``PF8``), and the ``action``
+ *   plus ``selectedCardNumber`` row selection; carried as query parameters
+ *   (undefined values are omitted by axios and never sent as empty strings). The
+ *   card filter is sent under the ``cardNumber`` parameter name bound by the
+ *   ``card-service`` card-list route, while the client-side field keeps its
+ *   ``cardNum`` DTO spelling.
+ * :returns: the page of card rows together with the server paging state, the
+ *   resolved row selection, and the legacy banners, as a
+ *   :ts:type:`CardListResponseDto`.
  */
 export async function listCards(
   request: CardListRequestDto,
@@ -51,6 +60,9 @@ export async function listCards(
       accountId: request.accountId,
       cardNumber: request.cardNum,
       page: request.page,
+      aid: request.aid,
+      action: request.action,
+      selectedCardNumber: request.selectedCardNumber,
     },
   });
   return response.data;
@@ -61,13 +73,18 @@ export async function listCards(
  *   screen (CICS ``CCDL`` / ``COCRDSLC``).
  * :param cardNumber: the 16-digit card number (PAN) as a ``string``; encoded as
  *   a path segment.
+ * :param accountId: the ``ACCTSID`` the screen collects alongside ``CARDSID``,
+ *   completing the composite selection ``COCRDSLC`` requires (``2200-EDIT-MAP-
+ *   INPUTS``). Omitted from the query string when ``undefined``.
  * :returns: the card detail as a :ts:type:`CardDetailResponseDto`.
  */
 export async function getCard(
   cardNumber: string,
+  accountId?: string,
 ): Promise<CardDetailResponseDto> {
   const response = await apiClient.get<CardDetailResponseDto>(
     `/cards/${encodeURIComponent(cardNumber)}`,
+    { params: { accountId } },
   );
   return response.data;
 }
@@ -81,15 +98,19 @@ export async function getCard(
  * :param cardNumber: the 16-digit card number (PAN) as a ``string``; encoded as
  *   a path segment.
  * :param request: the editable card fields to persist.
+ * :param accountId: the ``ACCTSID`` completing the composite selection, as on
+ *   :func:`getCard`. Omitted from the query string when ``undefined``.
  * :returns: the refreshed card record as a :ts:type:`CardUpdateResponseDto`.
  */
 export async function updateCard(
   cardNumber: string,
   request: CardUpdateRequestDto,
+  accountId?: string,
 ): Promise<CardUpdateResponseDto> {
   const response = await apiClient.put<CardUpdateResponseDto>(
     `/cards/${encodeURIComponent(cardNumber)}`,
     request,
+    { params: { accountId } },
   );
   return response.data;
 }

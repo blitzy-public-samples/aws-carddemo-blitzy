@@ -669,6 +669,54 @@ class TransactionServiceTest {
     }
 
     @Nested
+    @DisplayName("viewLastTransaction (COTRN02C COPY-LAST-TRAN-DATA)")
+    class ViewLastTransaction {
+
+        @Test
+        @DisplayName("the descending-order read reproduces the HIGH-VALUES / READPREV browse")
+        void readsTheHighestKeyedTransaction() {
+            when(transactionRepository.findFirstByOrderByTranIdDesc())
+                    .thenReturn(Optional.of(transaction("0000000000000099")));
+
+            TransactionViewResponseDto response = service.viewLastTransaction();
+
+            assertThat(response.getTranId()).isEqualTo("0000000000000099");
+            verify(transactionRepository).findFirstByOrderByTranIdDesc();
+        }
+
+        @Test
+        @DisplayName("every copyable field of the last transaction is mapped")
+        void allCopyableFieldsAreMapped() {
+            when(transactionRepository.findFirstByOrderByTranIdDesc())
+                    .thenReturn(Optional.of(transaction("0000000000000099")));
+
+            TransactionViewResponseDto response = service.viewLastTransaction();
+
+            assertThat(response.getTranTypeCd()).isEqualTo("01");
+            assertThat(response.getTranCatCd()).isEqualTo(5001);
+            assertThat(response.getTranSource()).isEqualTo("POS TERM");
+            assertThat(response.getTranAmt()).isEqualTo(new BigDecimal("250.75"));
+            assertThat(response.getTranDesc()).isEqualTo("Point of sale purchase");
+            assertThat(response.getTranOrigTs()).isEqualTo("2024-06-15-13.45.30.123456");
+            assertThat(response.getTranProcTs()).isEqualTo("2024-06-16-01.00.00.000000");
+            assertThat(response.getTranMerchantId()).isEqualTo(123456789L);
+            assertThat(response.getTranMerchantName()).isEqualTo("Mercado Central");
+            assertThat(response.getTranMerchantCity()).isEqualTo("Springfield");
+            assertThat(response.getTranMerchantZip()).isEqualTo("22770");
+        }
+
+        @Test
+        @DisplayName("an empty transaction file raises 'Transaction ID NOT found...' (404)")
+        void emptyFileIsNotFound() {
+            when(transactionRepository.findFirstByOrderByTranIdDesc()).thenReturn(Optional.empty());
+
+            assertThatThrownBy(() -> service.viewLastTransaction())
+                    .isInstanceOf(RecordNotFoundException.class)
+                    .hasMessage("Transaction ID NOT found...");
+        }
+    }
+
+    @Nested
     @DisplayName("listTransactions (CT00 / COTRN00C)")
     class ListTransactions {
 
@@ -756,6 +804,40 @@ class TransactionServiceTest {
         }
 
         @Test
+        @DisplayName("a list description is truncated to the TDESC0n field width of 26")
+        void listDescriptionIsTruncatedToTheMapFieldWidth() {
+            Transaction row = transaction("0000000000000001");
+            row.setTranDesc("Return item at Nitzsche, Nicolas and Lowe");
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of(row));
+
+            TransactionListResponseDto response =
+                    service.listTransactions(new TransactionListRequestDto(), null);
+
+            // COTRN00C moves TRAN-DESC PIC X(100) into TDESC0nI PIC X(26); the 3270 field
+            // is a fixed 26-cell window, so the row can never occupy more than one line.
+            assertThat(response.getTransactions()).hasSize(1);
+            assertThat(response.getTransactions().get(0).getTranDesc())
+                    .isEqualTo("Return item at Nitzsche, N")
+                    .hasSize(26);
+        }
+
+        @Test
+        @DisplayName("a description already within the field width is left unchanged")
+        void shortListDescriptionIsUnchanged() {
+            Transaction row = transaction("0000000000000001");
+            row.setTranDesc("Purchase at Guann LLC");
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of(row));
+
+            TransactionListResponseDto response =
+                    service.listTransactions(new TransactionListRequestDto(), null);
+
+            assertThat(response.getTransactions().get(0).getTranDesc())
+                    .isEqualTo("Purchase at Guann LLC");
+        }
+
+        @Test
         @DisplayName("the page reads exactly ten rows per page")
         void pageSizeIsTen() {
             when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
@@ -770,7 +852,7 @@ class TransactionServiceTest {
         }
 
         @Test
-        @DisplayName("PF8 at the bottom of the file surfaces the boundary banner and reads nothing")
+        @DisplayName("PF8 at the bottom surfaces the banner and leaves the displayed rows in place")
         void pageForwardAtTheBottomSurfacesTheBanner() {
             TransactionListRequestDto request = new TransactionListRequestDto();
             request.setAction("PF8");
@@ -778,17 +860,22 @@ class TransactionServiceTest {
             request.setPageNumber(3);
             request.setTranIdFirst("0000000000000021");
             request.setTranIdLast("0000000000000030");
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of(transaction("0000000000000021")));
 
             TransactionListResponseDto response = service.listTransactions(request, null);
 
             assertThat(response.getMessage()).isEqualTo("You are already at the bottom of the page...");
             assertThat(response.getPageNumber()).isEqualTo(3);
             assertThat(response.getTranIdFirst()).isEqualTo("0000000000000021");
-            verifyNoInteractions(transactionRepository);
+            // PROCESS-PF8-KEY reaches SEND-TRNLST-SCREEN with SEND-ERASE-NO, which re-sends
+            // the map without erasing it, so the rows already on the screen stay visible.
+            assertThat(response.getTransactions()).hasSize(1);
+            assertThat(response.isNextPage()).isFalse();
         }
 
         @Test
-        @DisplayName("PF7 on the first page surfaces the top boundary banner and reads nothing")
+        @DisplayName("PF7 on the first page with nothing yet displayed surfaces the banner and reads nothing")
         void pageBackwardOnTheFirstPageSurfacesTheBanner() {
             TransactionListRequestDto request = new TransactionListRequestDto();
             request.setAction("PF7");
@@ -797,7 +884,33 @@ class TransactionServiceTest {
             TransactionListResponseDto response = service.listTransactions(request, null);
 
             assertThat(response.getMessage()).isEqualTo("You are already at the top of the page...");
+            assertThat(response.getTransactions()).isEmpty();
             verifyNoInteractions(transactionRepository);
+        }
+
+        @Test
+        @DisplayName("PF7 on the first page re-reads the page on display so its rows stay visible")
+        void pageBackwardOnTheFirstPageRedisplaysItsRows() {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setAction("PF7");
+            request.setPageNumber(1);
+            request.setTranIdFirst("0000000000000001");
+            request.setTranIdLast("0000000000000010");
+            request.setNextPage(true);
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of(transaction("0000000000000001")));
+
+            TransactionListResponseDto response = service.listTransactions(request, null);
+
+            assertThat(response.getMessage()).isEqualTo("You are already at the top of the page...");
+            assertThat(response.getTransactions()).hasSize(1);
+            assertThat(response.getPageNumber()).isEqualTo(1);
+            assertThat(response.isNextPage()).isTrue();
+            // The cursor is made inclusive so the same page comes back, not the next one.
+            ArgumentCaptor<String> cursor = ArgumentCaptor.forClass(String.class);
+            verify(transactionRepository).findByTranIdGreaterThanOrderByTranIdAsc(
+                    cursor.capture(), any(Pageable.class));
+            assertThat(cursor.getValue()).isEqualTo("0000000000000000");
         }
 
         @Test

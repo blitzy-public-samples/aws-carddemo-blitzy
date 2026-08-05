@@ -25,6 +25,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.web.SecurityFilterChain;
@@ -108,10 +109,9 @@ public class SecurityConfig {
         csrfTokenRepository.setCookieName(CSRF_COOKIE_NAME);
         csrfTokenRepository.setHeaderName(CSRF_HEADER_NAME);
         // The token cookie is deliberately script-readable (double submit needs it), but it
-        // otherwise carries the same transport policy as the session cookie: SameSite=Strict
-        // so it is never attached to a cross-site request, and Secure gated by the same
-        // CARDDEMO_COOKIE_SECURE switch that gates the session cookie, so a plain-HTTP local
-        // run can still be exercised while every deployed profile is HTTPS-only (CWE-614).
+        // otherwise carries the same transport policy as the session cookie: SameSite=Strict,
+        // and Secure gated by the same CARDDEMO_COOKIE_SECURE switch, so a plain-HTTP local run
+        // can be exercised while every deployed profile stays HTTPS-only.
         csrfTokenRepository.setCookieCustomizer(cookie -> cookie
                 .sameSite(CSRF_COOKIE_SAME_SITE)
                 .secure(cookieSecure));
@@ -124,6 +124,10 @@ public class SecurityConfig {
                 .requestMatchers("/auth/**", "/csrf").permitAll()
                 .requestMatchers("/actuator/health/**", "/actuator/health", "/actuator/info").permitAll()
                 .requestMatchers("/admin/**", "/users/**").hasRole("ADMIN")
+                // The CREASTMT / CBSTM03A statement job stream had no online transaction: it
+                // was submitted by an operator, so its route carries the administrator
+                // authority while CORPT00's own POST /reports stays open to a signed-on user.
+                .requestMatchers(HttpMethod.POST, "/reports/statements").hasRole("ADMIN")
                 .requestMatchers("/menu/**", "/accounts/**", "/cards/**", "/transactions/**",
                         "/billpay/**", "/reports/**", "/batch/**").hasAnyRole("USER", "ADMIN")
                 .anyRequest().authenticated())

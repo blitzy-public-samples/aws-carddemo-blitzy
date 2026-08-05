@@ -398,7 +398,7 @@ class OptimisticLockConflictIT {
 
         OptimisticLockConflictException exception = assertThrows(
                 OptimisticLockConflictException.class,
-                () -> cardService.updateCard(TARGET_CARD_NUM, request, adminSession()));
+                () -> cardService.updateCard(TARGET_CARD_NUM, null, request, adminSession()));
         assertEquals(OptimisticLockConflictException.MESSAGE, exception.getMessage());
 
         // The failed conflict check must not have persisted any change.

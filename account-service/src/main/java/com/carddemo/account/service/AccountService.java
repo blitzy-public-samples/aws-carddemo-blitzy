@@ -209,9 +209,8 @@ public class AccountService {
      * :raises OptimisticLockConflictException: (HTTP 409) when the submitted version no
      *  longer matches the stored record, or when the account is modified concurrently
      *  between load and flush.
-     * :note: The account and customer persists are ordered customer then account for
-     *  cross-service deadlock avoidance; the rationale for this deviation from the
-     *  legacy account-then-customer rewrite order is recorded in docs/decision-log.md.
+     * :note: Persists customer first, then account - the reverse of the legacy
+     *  account-then-customer ``REWRITE`` order. See docs/decision-log.md.
      */
     @Transactional
     public AccountUpdateResponseDto updateAccount(Long acctId,

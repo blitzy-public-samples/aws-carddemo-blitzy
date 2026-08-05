@@ -17,6 +17,7 @@
 package com.carddemo.common.config;
 
 import com.carddemo.common.dto.ErrorResponse;
+import com.carddemo.common.security.SensitiveDataMasker;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.context.request.WebRequest;
@@ -60,31 +61,30 @@ final class ErrorResponseFactory {
     }
 
     /**
-     * :purpose: Derive the request URI from a {@link WebRequest} without the servlet API.
+     * :purpose: Derive the request URI from a {@link WebRequest} without the servlet API and
+     *  redact any PAN-shaped segment it carries, so the envelope's ``path`` can never echo a
+     *  card number back to a client, a proxy log, or a browser history entry.
      * :param request: the current web request; may be ``null``.
-     * :returns: the request path with the leading ``"uri="`` stripped, or the raw
-     *  description when the prefix is absent.
+     * :returns: the request path with the leading ``"uri="`` stripped and every PAN reduced
+     *  to its last four digits, or the raw description when the prefix is absent.
      */
     static String path(WebRequest request) {
         if (request == null) {
             return null;
         }
         String description = request.getDescription(false);
-        if (description != null && description.startsWith(URI_PREFIX)) {
-            return description.substring(URI_PREFIX.length());
-        }
-        return description;
+        String uri = description != null && description.startsWith(URI_PREFIX)
+                ? description.substring(URI_PREFIX.length())
+                : description;
+        return SensitiveDataMasker.maskPan(uri);
     }
 
     /**
      * :purpose: Resolve the DISTRIBUTED-TRACE id of the current request from the ``traceId``
      *  MDC entry published by Micrometer Tracing.
      * :returns: the current trace id, or ``null`` when the request was not traced.
-     * :note: This deliberately does NOT fall back to the business correlation id. That
-     *  fallback meant the ``traceId`` field usually carried a correlation UUID no trace
-     *  backend could resolve, and a caller had no way to tell which kind of id it held.
-     *  The envelope now reports the two ids in their own fields (``traceId`` and
-     *  ``correlationId``), so every value it returns is looked up where it actually exists.
+     * :note: Returns ``null`` rather than falling back to the business correlation id; the
+     *  envelope carries the two ids in their own ``traceId`` and ``correlationId`` fields.
      */
     static String traceId() {
         String traceId = MDC.get(MDC_TRACE_ID);

@@ -353,15 +353,8 @@ the nine backend services, an OTLP trace collector, Prometheus, and Grafana:
 docker compose up -d --build
 ```
 
-The React SPA is delivered in a later tranche (`frontend/src` currently ships the
-REST client, shared components, hooks, and types — the Vite entry point and the 17
-page components are still to come), so the `frontend` service is behind the
-`frontend` Compose profile and is **not** started by the command above. Enable it
-once the SPA lands:
-
-```bash
-docker compose --profile frontend up -d --build frontend
-```
+That command starts the datastores, the nine backend services, the observability
+stack and the React SPA together.
 
 Container health checks use a curl-free probe (bash `/dev/tcp` against
 `/actuator/health`) because the `eclipse-temurin:21-jre` base image ships neither
@@ -383,6 +376,15 @@ Add `-v` to also drop the PostgreSQL and Redis volumes for a clean slate:
 docker compose down -v
 ```
 
+The frontend's nginx resolves `api-gateway` once when it starts, so after recreating
+the gateway on its own (`docker compose up -d --force-recreate api-gateway`) recreate
+the frontend as well, otherwise its `/api/` proxy keeps addressing the gateway's
+previous container:
+
+```bash
+docker compose up -d --force-recreate frontend
+```
+
 ### Reachable URLs
 
 | Component | URL |
@@ -391,10 +393,10 @@ docker compose down -v
 | Prometheus | <http://localhost:9090> (bound to loopback only) |
 | Grafana | <http://localhost:3001> (bound to loopback only) |
 | Jaeger (OTLP trace collector UI) | <http://localhost:16686> (bound to loopback only) |
-| Frontend (React SPA) | <http://localhost:3000> — only with `--profile frontend`, once the SPA tranche lands |
+| Frontend (React SPA) | <http://localhost:3000> |
 
-Only the API gateway (`8080`) — plus the frontend (`3000`) when its profile is
-enabled — publishes a host port for application traffic. The
+Only the API gateway (`8080`) and the frontend (`3000`) publish a host port for
+application traffic. The
 individual backend services and the datastores (PostgreSQL, Redis) are **not**
 exposed on the host — they are reachable only on the private Compose network and,
 for the browser, exclusively through the gateway (the SPA calls the same-origin

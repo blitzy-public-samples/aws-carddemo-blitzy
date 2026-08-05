@@ -271,6 +271,36 @@ public class UserService {
     }
 
     /**
+     * :purpose: List users from a starting id (``COUSR00C`` ENTER with the ``Search User ID``
+     *     field filled, L218-L221): the browse is positioned at the first user id greater
+     *     than or equal to the entered key, exactly as the legacy ``STARTBR`` GTEQ does, and
+     *     the first ten rows from that position are returned.
+     * :param startUserId: the entered browse-start user id; a blank value restarts the browse
+     *     at the first record (the legacy ``LOW-VALUES`` key).
+     * :returns: the page of users from that position together with its paging cursors.
+     * :raises CardDemoException: when the ordered browse fails unexpectedly.
+     */
+    @Transactional(readOnly = true)
+    public UserListResponseDto listUsersFrom(String startUserId) {
+        if (startUserId == null || startUserId.isBlank()) {
+            return listUsers(0);
+        }
+        List<SecurityUser> rows;
+        try {
+            rows = userRepository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                    startUserId.trim(), Pageable.ofSize(PAGE_SIZE));
+        } catch (DataAccessException ex) {
+            throw new CardDemoException(MSG_UNABLE_LOOKUP, ex);
+        }
+        UserListResponseDto response = toListResponse(rows, 0);
+        response.setNextPage(rows.size() == PAGE_SIZE);
+        if (rows.isEmpty()) {
+            response.setMessage(MSG_REACHED_BOTTOM);
+        }
+        return response;
+    }
+
+    /**
      * :purpose: Page forward from the last displayed user id (``COUSR00C`` PF8), returning
      *     the next ascending slice of users.
      * :param lastUserId: the last user id shown on the current page (exclusive lower bound).

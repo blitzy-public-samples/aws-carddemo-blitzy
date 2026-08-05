@@ -21,6 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -205,7 +206,7 @@ class CardControllerTest {
      */
     @Test
     void getCardDetail_withValid16DigitNumber_returns200() throws Exception {
-        when(cardService.getCardDetail(eq(VALID_CARD), any(SessionContext.class)))
+        when(cardService.getCardDetail(eq(VALID_CARD), isNull()))
                 .thenReturn(detailStub());
 
         mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD).session(signedOnSession()))
@@ -215,7 +216,7 @@ class CardControllerTest {
                 .andExpect(jsonPath("$.cardActiveStatus").value("Y"))
                 .andExpect(jsonPath("$.cardExpiraionDate").value("2027-12-31"));
 
-        verify(cardService).getCardDetail(eq(VALID_CARD), any(SessionContext.class));
+        verify(cardService).getCardDetail(eq(VALID_CARD), isNull());
     }
 
     /**
@@ -241,7 +242,7 @@ class CardControllerTest {
      */
     @Test
     void getCardDetail_whenServiceThrowsRecordNotFound_returns404() throws Exception {
-        when(cardService.getCardDetail(eq(VALID_CARD), any(SessionContext.class)))
+        when(cardService.getCardDetail(eq(VALID_CARD), isNull()))
                 .thenThrow(new RecordNotFoundException("Did not find cards for this search condition"));
 
         mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD).session(signedOnSession()))
@@ -256,7 +257,7 @@ class CardControllerTest {
      */
     @Test
     void updateCard_withValidBody_returns200AndInvokesService() throws Exception {
-        when(cardService.updateCard(eq(VALID_CARD), any(CardUpdateRequestDto.class), any(SessionContext.class)))
+        when(cardService.updateCard(eq(VALID_CARD), isNull(), any(CardUpdateRequestDto.class), any(SessionContext.class)))
                 .thenReturn(updateResponseStub());
         String json = objectMapper.writeValueAsString(updateRequest("Y"));
 
@@ -267,7 +268,7 @@ class CardControllerTest {
                 .andExpect(jsonPath("$.cardActiveStatus").value("Y"));
 
         ArgumentCaptor<CardUpdateRequestDto> captor = ArgumentCaptor.forClass(CardUpdateRequestDto.class);
-        verify(cardService).updateCard(eq(VALID_CARD), captor.capture(), any(SessionContext.class));
+        verify(cardService).updateCard(eq(VALID_CARD), isNull(), captor.capture(), any(SessionContext.class));
         assertThat(captor.getValue().getCardActiveStatus()).isEqualTo("Y");
         assertThat(captor.getValue().getCardExpiraionDate()).isEqualTo("2027-12-31");
     }
@@ -278,7 +279,7 @@ class CardControllerTest {
      */
     @Test
     void updateCard_whenServiceRejectsField_returns400WithVerbatimMessage() throws Exception {
-        when(cardService.updateCard(eq(VALID_CARD), any(CardUpdateRequestDto.class), any(SessionContext.class)))
+        when(cardService.updateCard(eq(VALID_CARD), isNull(), any(CardUpdateRequestDto.class), any(SessionContext.class)))
                 .thenThrow(new CardDemoException("Card Active Status must be Y or N"));
         String json = objectMapper.writeValueAsString(updateRequest("X"));
 
@@ -289,7 +290,7 @@ class CardControllerTest {
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.message").value("Card Active Status must be Y or N"));
 
-        verify(cardService).updateCard(eq(VALID_CARD), any(CardUpdateRequestDto.class), any(SessionContext.class));
+        verify(cardService).updateCard(eq(VALID_CARD), isNull(), any(CardUpdateRequestDto.class), any(SessionContext.class));
     }
 
     /**
@@ -303,7 +304,7 @@ class CardControllerTest {
                         .content("{ \"cardActiveStatus\": "))
                 .andExpect(status().isBadRequest());
 
-        verify(cardService, never()).updateCard(any(), any(), any());
+        verify(cardService, never()).updateCard(any(), any(), any(), any());
     }
 
     /**
@@ -312,7 +313,7 @@ class CardControllerTest {
      */
     @Test
     void updateCard_whenServiceThrowsOptimisticLockConflict_returns409() throws Exception {
-        when(cardService.updateCard(eq(VALID_CARD), any(CardUpdateRequestDto.class), any(SessionContext.class)))
+        when(cardService.updateCard(eq(VALID_CARD), isNull(), any(CardUpdateRequestDto.class), any(SessionContext.class)))
                 .thenThrow(new OptimisticLockConflictException());
         String json = objectMapper.writeValueAsString(updateRequest("Y"));
 
@@ -348,12 +349,12 @@ class CardControllerTest {
     }
 
     /**
-     * :purpose: The controller reuses the existing {@link SessionContext}, passes that same
-     *  instance to the service, and writes it back under the shared attribute key.
+     * :purpose: The controller reuses the existing {@link SessionContext}, records the resolved
+     *  card and account on that same instance, and writes it back under the shared attribute key.
      */
     @Test
     void getCardDetail_bridgesSessionContext_reusesWhenPresent() throws Exception {
-        when(cardService.getCardDetail(eq(VALID_CARD), any(SessionContext.class)))
+        when(cardService.getCardDetail(eq(VALID_CARD), isNull()))
                 .thenReturn(detailStub());
         SessionContext existing = new SessionContext();
         MockHttpSession session = new MockHttpSession();
@@ -362,10 +363,45 @@ class CardControllerTest {
         mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD).session(session))
                 .andExpect(status().isOk());
 
-        ArgumentCaptor<SessionContext> captor = ArgumentCaptor.forClass(SessionContext.class);
-        verify(cardService).getCardDetail(eq(VALID_CARD), captor.capture());
-        assertThat(captor.getValue()).isSameAs(existing);
+        verify(cardService).getCardDetail(eq(VALID_CARD), isNull());
         assertThat(session.getAttribute(SESSION_CONTEXT_ATTRIBUTE)).isSameAs(existing);
+        assertThat(existing.getCardNum()).isEqualTo(VALID_CARD);
+        assertThat(existing.getAcctId()).isEqualTo(VALID_ACCT_ID);
+    }
+
+    /**
+     * :purpose: The ``ACCTSID`` the COCRDSL screen collects alongside ``CARDSID`` reaches the
+     *  service as the composite selection instead of being discarded.
+     */
+    @Test
+    void getCardDetail_forwardsAccountFilterAsCompositeSelection() throws Exception {
+        when(cardService.getCardDetail(eq(VALID_CARD), eq(VALID_ACCT_ID)))
+                .thenReturn(detailStub());
+
+        mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD)
+                        .param("accountId", String.valueOf(VALID_ACCT_ID)))
+                .andExpect(status().isOk());
+
+        verify(cardService).getCardDetail(VALID_CARD, VALID_ACCT_ID);
+    }
+
+    /**
+     * :purpose: The card-update route forwards the same composite selection.
+     */
+    @Test
+    void updateCard_forwardsAccountFilterAsCompositeSelection() throws Exception {
+        when(cardService.updateCard(eq(VALID_CARD), eq(VALID_ACCT_ID),
+                any(CardUpdateRequestDto.class), any(SessionContext.class)))
+                .thenReturn(updateResponseStub());
+
+        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD)
+                        .param("accountId", String.valueOf(VALID_ACCT_ID))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(updateRequest("Y"))))
+                .andExpect(status().isOk());
+
+        verify(cardService).updateCard(eq(VALID_CARD), eq(VALID_ACCT_ID),
+                any(CardUpdateRequestDto.class), any(SessionContext.class));
     }
 
     /**
@@ -433,9 +469,9 @@ class CardControllerTest {
     void cardEndpointsCreateNoSessionForSessionlessCaller() throws Exception {
         when(cardService.listCards(any(), any(), eq(1), any(SessionContext.class)))
                 .thenReturn(listStub(1));
-        when(cardService.getCardDetail(eq(VALID_CARD), any(SessionContext.class)))
+        when(cardService.getCardDetail(eq(VALID_CARD), isNull()))
                 .thenReturn(detailStub());
-        when(cardService.updateCard(eq(VALID_CARD), any(CardUpdateRequestDto.class),
+        when(cardService.updateCard(eq(VALID_CARD), isNull(), any(CardUpdateRequestDto.class),
                 any(SessionContext.class)))
                 .thenReturn(updateResponseStub());
 

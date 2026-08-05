@@ -86,8 +86,8 @@ class GlobalExceptionHandlerLoggingTest {
     }
 
     @Test
-    @DisplayName("a card number in the request path is masked in the log but kept in the response body")
-    void panInPathIsMaskedInLogsOnly() {
+    @DisplayName("a card number in the request path is masked in both the log and the response body")
+    void panInPathIsMaskedEverywhere() {
         ServletWebRequest request = new ServletWebRequest(
                 new MockHttpServletRequest("GET", "/cards/" + PAN));
 
@@ -97,8 +97,9 @@ class GlobalExceptionHandlerLoggingTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().getPath())
-                .as("the response reports the path the caller requested")
-                .isEqualTo("/cards/" + PAN);
+                .as("the envelope path is redacted so it cannot echo a card number back")
+                .isEqualTo("/cards/************5740");
+        assertThat(response.getBody().getPath()).doesNotContain(PAN);
 
         String logged = capturedText();
         assertThat(logged).contains("Record not found at");

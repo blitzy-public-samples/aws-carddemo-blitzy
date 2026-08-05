@@ -44,6 +44,9 @@ body,
   --term-font-size: 16px;
   --term-line-height: 1.3;
   --term-cols: 80;
+  --term-rows: 24;
+  /* One character cell of frame padding on each side, added OUTSIDE the 80 columns. */
+  --term-pad-x: 1ch;
   --term-line: calc(var(--term-font-size) * var(--term-line-height));
 }
 
@@ -60,15 +63,70 @@ body {
   text-rendering: optimizeSpeed;
 }
 
-/* Fixed-width 80-column frame used by the shared Layout component. */
+/*
+ * The 24x80 frame the shared Layout component renders.
+ *
+ * Width: the 80 character columns are the CONTENT box. Because `box-sizing:
+ * border-box` applies globally, the frame's own one-cell padding is added to the
+ * 80ch width instead of being taken out of it, so a screen really has all 80
+ * columns to place fields in.
+ *
+ * Height: 24 character rows -- header rows 1-2 (3 on the sign-on mapset), body rows
+ * 3-22, the line-23 message region and the line-24 key legend. There is no vertical
+ * padding, so the row arithmetic stays exact.
+ */
 .screen,
 .terminal {
   display: flex;
   flex-direction: column;
-  max-width: calc(var(--term-cols) * 1ch);
-  min-height: 100%;
+  width: calc(var(--term-cols) * 1ch + 2 * var(--term-pad-x));
+  max-width: 100%;
+  min-height: calc(var(--term-rows) * var(--term-line));
   margin: 0 auto;
-  padding: 0.5rem 1ch;
+  padding: 0 var(--term-pad-x);
+}
+
+/*
+ * The routed screen body (rows 3-22). It reserves nineteen rows so a 3-row sign-on
+ * header still totals exactly 24, grows to fill the frame when the header uses two
+ * rows, and scrolls rather than pushing the line-23/24 regions off the frame when a
+ * screen is taller than its region.
+ */
+.screen__body {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: calc(19 * var(--term-line));
+  overflow: auto;
+}
+
+/*
+ * The single line an `EXEC CICS SEND TEXT ... ERASE` leaves on an erased device: it
+ * occupies row 1 of an otherwise empty frame, so the frame keeps its 24-row height
+ * with nothing else rendered in it.
+ */
+.screen__plainText {
+  flex: 1 1 auto;
+  width: 100%;
+  margin: 0;
+  color: var(--term-neutral);
+  white-space: pre;
+}
+
+/*
+ * Announcement-only live region for the in-flight state. Removed from the visual
+ * frame entirely -- it must not consume one of the 24 rows or add output to a screen
+ * -- while staying in the accessibility tree so the wait is announced.
+ */
+.screen__busy {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* ------------------------------------------------------------------ */
@@ -90,7 +148,12 @@ body {
   color: var(--term-neutral);
 }
 
-/* Green-screen entry fields. */
+/*
+ * Green-screen entry fields. A field occupies one terminal character row, which is
+ * shorter than the 24 CSS-pixel minimum target size (WCAG 2.5.8), so the row height is
+ * raised to that floor. The field WIDTH still comes from the BMS `LENGTH` through the
+ * control's `size`, so no field changes the columns it occupies.
+ */
 .field,
 input,
 select,
@@ -101,6 +164,7 @@ textarea {
   caret-color: var(--term-green);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.6);
   padding: 0 0.25ch;
+  min-height: 24px;
 }
 
 /* Every editable control keeps the terminal monospace font. */
@@ -116,6 +180,28 @@ textarea::placeholder {
   color: var(--term-green-dim);
 }
 
+/* A wide entry field (25-50 characters) is bounded by its region instead of pushing
+ * the screen past the 80-column frame. */
+input,
+select,
+textarea {
+  max-width: 100%;
+}
+
+/*
+ * Single-character BMS entry fields (the COCRDLI CRDSELn selection column, the
+ * COTRN00 selection column, and the COBIL00 / CORPT00 / COTRN02 / COCRDUP confirm
+ * fields) keep their one-character value and one-character `size`, but their hit area
+ * is enlarged to the 24x24 CSS-pixel minimum (WCAG 2.5.8) and the character stays
+ * centred in it.
+ */
+input[maxlength="1"],
+input[size="1"] {
+  min-width: 24px;
+  min-height: 24px;
+  text-align: center;
+}
+
 .field:focus,
 input:focus,
 select:focus,
@@ -124,12 +210,18 @@ textarea:focus {
   outline-offset: 0;
 }
 
-/* Flat terminal-style keys (no 3D/material styling). */
+/*
+ * Flat terminal-style keys (no 3D/material styling). The 24x24 CSS-pixel minimum
+ * (WCAG 2.5.8) is applied to the height as well: a one-character terminal row is
+ * shorter than that, and a key is only ever activated by pointer or keyboard, so the
+ * larger hit area costs nothing on the character grid.
+ */
 button {
   color: var(--term-neutral);
   background: transparent;
   border: 1px solid var(--term-neutral-dim);
   padding: 0 0.5ch;
+  min-height: 24px;
   cursor: pointer;
 }
 
@@ -402,6 +494,19 @@ main dl dt {
   vertical-align: top;
 }
 
+/*
+ * A 3270 field is a fixed-width window: text longer than the field is truncated by the
+ * MOVE that fills it and can never wrap, so every list row occupies exactly one terminal
+ * row. Keeping cells on a single line preserves that, and is what holds the densest
+ * screens inside the 24-row frame.
+ */
+.dataTable th,
+.dataTable td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: clip;
+}
+
 /* Right-align numeric / amount columns. */
 .dataTable .amount,
 .dataTable .num,
@@ -452,4 +557,335 @@ main dl dt {
 /* Keep the report-window selection indicator on the GREEN entry-field tone. */
 .reportPage__types input {
   accent-color: var(--term-green);
+}
+
+/* ------------------------------------------------------------------ */
+/* Screen composition primitives                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * One character row of a mapset: captions and their fields sit on a single line, one
+ * blank column apart, and the runs of spaces a BMS caption literal carries are
+ * preserved so every value lands in the column the mapset places it in.
+ */
+.screenLine,
+.accountUpdate__row,
+.accountView__field,
+.billPay__row,
+.detailField,
+.reportPage__dateRow,
+.reportPage__option,
+.signon__row,
+.tranAdd__row,
+.userAdd__row,
+.userDelete__row,
+.userUpdate__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 1ch;
+  min-height: var(--term-line);
+}
+
+/*
+ * The line-4 title row of the browse screens. COTRN00, COCRDLI and COUSR00 each declare
+ * the screen name, the `Page:` caption and the page-number field at three positions on
+ * the SAME row - COTRN00 at columns 30, 65 and 71 - so the three fields occupy one
+ * terminal row. The page indicator carries the trailing columns the mapset gives it.
+ */
+.screenTitleLine {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 1ch;
+  min-height: var(--term-line);
+}
+
+.screenTitleLine__page {
+  display: flex;
+  column-gap: 1ch;
+  margin: 0 0 0 auto;
+}
+
+/*
+ * COSGN00 places its body literals at fixed columns, so each one is indented by the
+ * columns that precede it: the row-5 description at column 6, the rows 7-15 note block
+ * at column 21, the row-17 prompt at column 16, and the rows 19-20 captions at column
+ * 29. Every block fits inside the 80-column frame.
+ */
+.signon__description {
+  margin: 0;
+  min-height: var(--term-line);
+  padding-left: 5ch;
+}
+
+.signon__note {
+  margin: 0;
+  padding-left: 20ch;
+  font: inherit;
+  line-height: var(--term-line);
+  white-space: pre;
+}
+
+.signon__prompt {
+  margin: 0;
+  min-height: var(--term-line);
+  padding-left: 15ch;
+}
+
+.signon__row {
+  padding-left: 28ch;
+}
+
+.screenLine > label,
+.accountUpdate__row > label,
+.signon__row > label,
+.billPay__row > label,
+.detailField > label,
+.tranAdd__row > label,
+.userAdd__row > label,
+.userDelete__row > label,
+.userUpdate__row > label,
+/*
+ * A protected value's caption is a BMS literal field like any other, so the columns
+ * it declares are significant: `COUSR03` paints `'User Type: '` with the trailing
+ * column included. `OutputField` renders that caption as the `dt` of its term/value
+ * pair rather than as a `label`, so the term carries the same rule as the labels
+ * beside it.
+ */
+.detailField > dt,
+.accountView__field > dt,
+.cardUpdate__outputRow > dt {
+  white-space: pre;
+}
+
+/*
+ * A screen root: the body region's own column, stacked one character row at a time.
+ */
+.accountView,
+.accountUpdate,
+.billPay,
+.reportPage,
+.tranAdd,
+.tranList,
+.tranViewPage,
+.userAdd,
+.userDelete,
+.userUpdate {
+  display: flex;
+  flex-direction: column;
+  row-gap: 0;
+  width: 100%;
+}
+
+/*
+ * A standalone BMS literal line inside a screen body - `COUSR00` row 21 and
+ * `COTRN00` row 21 each paint one such field. It is a single terminal row like every
+ * other field, so it carries none of the block margins a paragraph would default to:
+ * a 24-row frame has no spare rows to give away.
+ */
+.screenNote {
+  margin: 0;
+  min-height: var(--term-line);
+}
+
+/* The keyed search / lookup region above a screen's detail area. */
+.accountView__search,
+.tranListSearch,
+.userListSearch,
+.userDelete__lookup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 1ch;
+  width: 100%;
+}
+
+/* A read-only detail block: caption column, value column, one row per field. */
+.accountView__details,
+.userDelete__detail {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  margin: 0;
+}
+
+/* The account-update caption/field grid keeps its captions in one column. */
+.accountUpdate__field {
+  display: flex;
+  align-items: baseline;
+  column-gap: 1ch;
+}
+
+/*
+ * A field the mapset splits across several 3270 fields (the three account dates, the
+ * date of birth, the SSN and the two phone numbers) renders its segments as one
+ * inline run, one blank column apart exactly as the mapset spaces them, with the
+ * literal separator fields carrying no gap of their own.
+ */
+.accountUpdate__field > span {
+  display: inline-flex;
+  align-items: baseline;
+  column-gap: 0;
+}
+
+.accountUpdate__field > span + span {
+  margin-left: 1ch;
+}
+
+.accountUpdate__field > span > .label {
+  padding: 0 0.25ch;
+}
+
+/* An action row (the confirm keys a screen renders in its body). */
+.userDelete__actions {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 2ch;
+  min-height: var(--term-line);
+}
+
+/* A confirmation prompt and its one-character field on a single row. */
+.reportPage__confirm,
+.tranAdd__confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 1ch;
+  min-height: var(--term-line);
+}
+
+/* The card-list body: the two browse filters and the seven-row table. */
+.cardList__body {
+  display: flex;
+  flex-direction: column;
+  row-gap: 0;
+  width: 100%;
+}
+
+/* The user-list body: the browse filter and the ten-row table. */
+.userList__body {
+  display: flex;
+  flex-direction: column;
+  row-gap: 0;
+  width: 100%;
+}
+
+/* The transaction-list body: the browse filter and the ten-row table. */
+.tranList__body {
+  display: flex;
+  flex-direction: column;
+  row-gap: 0;
+  width: 100%;
+}
+
+/*
+ * The two protected rows of the card-update screen. They are a definition list so the
+ * values carry an accessible name without being keyboard stops, yet they must still lay
+ * out on the same caption/value grid as the editable rows beside them.
+ */
+.cardUpdate__protected {
+  display: contents;
+  margin: 0;
+}
+
+.cardUpdate__outputRow {
+  display: contents;
+}
+
+/* Grouped fields inside one mapset row (for example a date's segments). */
+.tranAdd__group {
+  display: inline-flex;
+  align-items: baseline;
+  column-gap: 0;
+}
+
+/* The report date range occupies its own two rows. */
+.reportPage__range {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+/* A decorative separator literal the mapset draws across the 80 columns. */
+.billPay__separator,
+.tranAdd__rule,
+.userDelete__rule,
+.userUpdate__separator {
+  width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  min-height: var(--term-line);
+}
+
+/* A body screen heading renders as plain screen text on the character grid. */
+.userDelete__heading {
+  margin: 0;
+  font: inherit;
+  font-weight: normal;
+}
+
+/* The user-update form is the screen's own column. */
+.userUpdate__form {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+/* ------------------------------------------------------------------ */
+/* Responsive fallback                                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The 80-column frame needs about 46rem at the base 16px character cell. Below the
+ * two breakpoints the character cell shrinks so the 80 columns keep fitting; the
+ * frame then fills the viewport and every region that can still be wider than the
+ * viewport scrolls inside itself rather than clipping or widening the frame.
+ */
+@media (max-width: 48rem) {
+  :root {
+    --term-font-size: 14px;
+  }
+
+  .screen,
+  .terminal {
+    width: 100%;
+    min-height: 100vh;
+  }
+
+  .screen__body {
+    overflow-x: auto;
+  }
+
+  .dataTable {
+    min-width: 60ch;
+  }
+
+  .pfKeyBar {
+    gap: 1ch;
+  }
+}
+
+@media (max-width: 32rem) {
+  :root {
+    --term-font-size: 12px;
+  }
+
+  .accountView__search,
+  .tranListSearch,
+  .userDelete__lookup {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/*
+ * Honour a reduced-motion preference: the shell animates nothing, so this only pins
+ * the behaviour for the scroll containers introduced above.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .screen__body,
+  .dataTable {
+    scroll-behavior: auto;
+  }
 }

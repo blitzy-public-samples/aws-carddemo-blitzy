@@ -3,9 +3,9 @@
  * :purpose: Foundational, dependency-free shared TypeScript primitives for the
  *   CardDemo single-page-application type layer. Declares the message aliases,
  *   the PF-key action enum, the client-side field-error/highlight map, the
- *   pagination shapes, the standardized API error-response contract, and the
- *   shared active-status flag consumed by every other ``frontend/src/types``
- *   module and by the ``api``, ``hooks``, ``components``, and ``pages`` folders.
+ *   standardized API error-response contract, and the shared active-status flag
+ *   consumed by every other ``frontend/src/types`` module and by the ``api``,
+ *   ``hooks``, ``components``, and ``pages`` folders.
  */
 
 /**
@@ -66,33 +66,6 @@ export interface FieldErrorState {
  *   to message); this map carries only the local highlight flags.
  */
 export type FieldErrorMap = Record<string, FieldErrorState>;
-
-/**
- * :purpose: Pagination state for the list screens, modelling the BMS
- *   ``PAGENUM`` / ``PAGENO`` field together with the PF7/PF8 paging controls.
- * :field pageNumber: one-based index of the currently displayed page.
- * :field pageSize: number of rows displayed per page (7 for the card list
- *   COCRDLI; 10 for the transaction list COTRN00 and the user list COUSR00).
- * :field hasNext: ``true`` when a following page exists (PF8 enabled).
- * :field hasPrevious: ``true`` when a preceding page exists (PF7 enabled).
- */
-export interface PageInfo {
-  pageNumber: number;
-  pageSize: number;
-  hasNext: boolean;
-  hasPrevious: boolean;
-}
-
-/**
- * :purpose: Reusable paged-result wrapper composed by the list response DTOs
- *   (card list, transaction list, user list).
- * :field items: the rows for the current page.
- * :field page: the pagination state for the current page.
- */
-export interface Page<T> {
-  items: T[];
-  page: PageInfo;
-}
 
 /**
  * :purpose: Standardized JSON error body returned by the CardDemo REST APIs,

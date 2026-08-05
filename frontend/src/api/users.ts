@@ -29,25 +29,51 @@ import type {
   UserListResponseDto,
   UserDto,
   UserAddRequestDto,
+  UserAddResponseDto,
   UserUpdateRequestDto,
+  UserUpdateResponseDto,
 } from '../types';
+
+/**
+ * :purpose: Translate the screen's one-based page counter to the zero-based
+ *   ``page`` index the ``GET /users`` route binds.
+ * :param page: the one-based page number held by the screen
+ *   (``CDEMO-CU00-PAGE-NUM``), or ``undefined``.
+ * :returns: the zero-based wire index, or ``undefined`` when no page was given.
+ *   Values below one clamp to the first page.
+ */
+function toWirePage(page: number | undefined): number | undefined {
+  if (page === undefined) {
+    return undefined;
+  }
+  return page > 1 ? page - 1 : 0;
+}
 
 /**
  * :purpose: List security users for the user-list screen ``COUSR00`` (CICS
  *   ``CU00``). Reproduces the legacy ``STARTBR`` / ``READNEXT`` browse over the
  *   ``USRSEC`` file, paged ten rows per page (``USER-REC OCCURS 10 TIMES``).
- * :param request: the list query; ``userId`` optionally positions the browse and
- *   ``page`` selects the one-based page driving PF7 (backward) / PF8 (forward)
- *   paging. Both members are optional and are omitted from the query string when
- *   ``undefined``.
- * :returns: a promise resolving to the paged, password-free user list
- *   (``UserListResponseDto`` = ``Page<UserListItemDto>``, ten rows per page).
+ * :param request: the list query. ``userId`` positions the browse at the
+ *   ``Search User ID`` key; ``page`` is the screen's one-based counter and is sent
+ *   as the route's zero-based ``page``; ``direction`` plus ``cursor`` drive PF7 /
+ *   PF8 keyset paging; ``selection`` plus ``selectedUserId`` carry the row
+ *   selection. Every member is optional and ``undefined`` members are omitted
+ *   from the query string.
+ * :returns: a promise resolving to the password-free user list with its paging
+ *   cursors, resolved selection, and legacy banner.
  */
 export async function listUsers(
   request: UserListRequestDto,
 ): Promise<UserListResponseDto> {
   const response = await apiClient.get<UserListResponseDto>('/users', {
-    params: { userId: request.userId, page: request.page },
+    params: {
+      userId: request.userId,
+      page: toWirePage(request.page),
+      direction: request.direction,
+      cursor: request.cursor,
+      selection: request.selection,
+      selectedUserId: request.selectedUserId,
+    },
   });
   return response.data;
 }
@@ -72,10 +98,13 @@ export async function getUser(userId: string): Promise<UserDto> {
  *   ``USRSEC`` file (route ``POST /users``).
  * :param request: the add-user body (``UserAddRequestDto``), which carries the
  *   raw password the service encodes; forwarded as an opaque body.
- * :returns: a promise resolving to the created, password-free ``UserDto``.
+ * :returns: a promise resolving to the created, password-free user together with
+ *   the verbatim legacy confirmation banner (``UserAddResponseDto``).
  */
-export async function addUser(request: UserAddRequestDto): Promise<UserDto> {
-  const response = await apiClient.post<UserDto>('/users', request);
+export async function addUser(
+  request: UserAddRequestDto,
+): Promise<UserAddResponseDto> {
+  const response = await apiClient.post<UserAddResponseDto>('/users', request);
   return response.data;
 }
 
@@ -88,13 +117,14 @@ export async function addUser(request: UserAddRequestDto): Promise<UserDto> {
  *   path-encoded.
  * :param request: the update-user body (``UserUpdateRequestDto``); forwarded as
  *   an opaque body.
- * :returns: a promise resolving to the updated, password-free ``UserDto``.
+ * :returns: a promise resolving to the updated, password-free user together with
+ *   the verbatim legacy confirmation banner (``UserUpdateResponseDto``).
  */
 export async function updateUser(
   userId: string,
   request: UserUpdateRequestDto,
-): Promise<UserDto> {
-  const response = await apiClient.put<UserDto>(
+): Promise<UserUpdateResponseDto> {
+  const response = await apiClient.put<UserUpdateResponseDto>(
     `/users/${encodeURIComponent(userId)}`,
     request,
   );

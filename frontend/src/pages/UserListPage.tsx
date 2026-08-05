@@ -15,13 +15,20 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
+import { invalidValueProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction } from '../types';
-import type { UserListItemDto } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import type { UserListItemDto, UserListRequestDto } from '../types';
 import { listUsers, ApiError } from '../api';
-import { useApi, usePagination, USER_LIST_PAGE_SIZE } from '../hooks';
+import {
+  useApi,
+  useFocusOnChange,
+  useFocusOnSettled,
+  useInitialFocus,
+} from '../hooks';
+import { displayText, resolveApiErrorMessage } from '../components/display';
 
 /** ``Sel`` value routing to the update-user screen (``COUSR02C``). */
 const SELECT_UPDATE = 'U';
@@ -32,6 +39,18 @@ const SELECT_DELETE = 'D';
 /** Line-23 text for a ``Sel`` value that is neither ``U`` nor ``D``. */
 const INVALID_SELECTION_MESSAGE = 'Invalid selection. Valid values are U and D';
 
+/**
+ * :purpose: Whether a ``Sel`` entry is a value ``COUSR00C`` rejects. A blank entry is
+ *     not a selection at all, so only a non-blank value other than ``U`` or ``D``
+ *     faults its control.
+ * :param value: the row's current ``Sel`` entry.
+ * :returns: ``true`` when the entry would raise the invalid-selection message.
+ */
+function isRowSelectionInvalid(value: string | undefined): boolean {
+  const canonical = (value ?? '').trim().toUpperCase();
+  return canonical !== '' && canonical !== SELECT_UPDATE && canonical !== SELECT_DELETE;
+}
+
 /** Route of the update-user screen ``COUSR02`` reached by selecting ``U``. */
 const UPDATE_USER_ROUTE = '/users/update';
 
@@ -41,8 +60,20 @@ const DELETE_USER_ROUTE = '/users/delete';
 /** Route of the administrator menu ``COADM01`` reached with F3. */
 const ADMIN_MENU_ROUTE = '/admin';
 
-/** First one-based server page requested from ``GET /users``. */
+/** First page of the browse, on the one-based counter the screen displays. */
 const FIRST_PAGE = 1;
+
+/** Line-23 text for PF7 pressed on the first page (``COUSR00C`` L251). */
+const ALREADY_TOP_MESSAGE = 'You are already at the top of the page...';
+
+/** Line-23 text for PF8 pressed on the last page (``COUSR00C`` L272). */
+const ALREADY_BOTTOM_MESSAGE = 'You are already at the bottom of the page...';
+
+/** ``COUSR00`` line-24 legend keys, verbatim. */
+const PF_ENTER_LABEL = 'ENTER=Continue';
+const PF3_LABEL = 'F3=Back';
+const PF7_LABEL = 'F7=Backward';
+const PF8_LABEL = 'F8=Forward';
 
 /** Width of the ``USRIDIN`` filter field (``PIC X(8)``). */
 const USER_ID_FIELD_WIDTH = 8;
@@ -68,29 +99,13 @@ function selectFieldName(index: number): string {
 }
 
 /**
- * :purpose: Render a row value as display text.
- * :param value: the value held by the row, possibly absent on the wire.
- * :returns: the value, or an empty string when it is ``null`` / ``undefined``.
- */
-function displayText(value: string | null | undefined): string {
-  return value ?? '';
-}
-
-/**
  * :purpose: Resolve the line-23 text for a failed list request.
  * :param error: the normalized error of the most recent call, or ``null``.
  * :returns: the backend message when the response carried one, the client
  *     message otherwise, and an empty string when the last call succeeded.
  */
 function resolveErrorMessage(error: ApiError | null): string {
-  if (error === null) {
-    return '';
-  }
-  const backendMessage = error.body?.message;
-  if (backendMessage !== undefined && backendMessage !== '') {
-    return backendMessage;
-  }
-  return error.message;
+  return error === null ? '' : resolveApiErrorMessage(error);
 }
 
 /**
@@ -101,84 +116,77 @@ export default function UserListPage(): ReactElement {
   const navigate = useNavigate();
   const { setChrome } = useScreenChrome();
 
-  // ``USRIDIN`` — the text currently in the filter field, and the value the
-  // browse is positioned on, which ENTER commits.
+  // ``USRIDIN`` — the text currently in the filter field.
   const [searchUserId, setSearchUserId] = useState('');
-  const [appliedUserId, setAppliedUserId] = useState('');
 
   // ``SEL0001``..``SEL0010`` values, keyed by the user id of the row they were
   // typed against.
   const [selections, setSelections] = useState<Record<string, string>>({});
 
-  // Line-23 validation text produced by the most recent ENTER.
+  // Line-23 validation text produced by the most recent ENTER or PF7.
   const [selectionError, setSelectionError] = useState('');
 
-  // One-based server page (``CDEMO-CU00-PAGE-NUM``) currently requested.
-  const [serverPage, setServerPage] = useState(FIRST_PAGE);
+  // ``CDEMO-CU00-PAGE-NUM`` — the one-based counter the screen displays after
+  // ``Page:``. The program owns it: ENTER restarts it at one and a completed
+  // PF7 / PF8 browse steps it, so it is never derived from the rows.
+  const [pageNumber, setPageNumber] = useState(FIRST_PAGE);
 
   const { data, loading, error, run } = useApi(listUsers);
 
-  const rows = data?.items ?? EMPTY_ROWS;
+  // One response is one screen: the service returns at most ten rows and the
+  // page renders exactly those, so the rows are never re-sliced here.
+  const pageRows = data?.users ?? EMPTY_ROWS;
 
-  // The rows of one server response are sliced at USER_LIST_PAGE_SIZE: the
-  // screen renders at most ten rows.
-  const {
-    page: clientPage,
-    pageRows,
-    hasPrevious: clientHasPrevious,
-    hasNext: clientHasNext,
-    prevPage: clientPrevPage,
-    nextPage: clientNextPage,
-    reset: resetClientPage,
-  } = usePagination(rows, USER_LIST_PAGE_SIZE);
-
-  // ``PageInfo`` from the response continues the browse past the slice held in
-  // memory.
-  const serverPageInfo = data?.page;
-  const serverHasPrevious = serverPageInfo?.hasPrevious === true;
-  const serverHasNext = serverPageInfo?.hasNext === true;
-
-  const hasPrevious = clientHasPrevious || serverHasPrevious;
-  const hasNext = clientHasNext || serverHasNext;
-
-  // One-based page number shown after the ``Page:`` caption: the server page
-  // plus the current client slice.
-  const displayedPage = serverPage + clientPage;
+  // PROCESS-PF8-KEY browses forward while NEXT-PAGE-YES holds, and
+  // PROCESS-PF7-KEY browses backward while CDEMO-CU00-PAGE-NUM > 1. Both keys
+  // stay live either way: the 3270 legend on line 24 is static text and every
+  // AID reaches the program, which answers a boundary with its own message
+  // rather than ignoring the key (L248-L253, L270-L276).
+  const hasNext = data?.nextPage === true;
+  const hasPrevious = pageNumber > FIRST_PAGE;
 
   useEffect(() => {
-    void run({
-      userId: appliedUserId === '' ? undefined : appliedUserId,
-      page: serverPage,
-    });
-  }, [run, appliedUserId, serverPage]);
+    void run({ page: FIRST_PAGE });
+  }, [run]);
 
   const handleExit = useCallback((): void => {
-    navigate(ADMIN_MENU_ROUTE);
+    void navigate(ADMIN_MENU_ROUTE);
   }, [navigate]);
 
+  /**
+   * :purpose: Issue one browse and step the displayed page counter only when it
+   *     completed, so a boundary rejection leaves the counter where it was.
+   */
+  const browse = useCallback(
+    async (request: UserListRequestDto, step: number): Promise<void> => {
+      const response = await run(request);
+      if (response !== undefined) {
+        setPageNumber((current) => Math.max(current + step, FIRST_PAGE));
+      }
+    },
+    [run],
+  );
+
   const prevPage = useCallback((): void => {
-    setSelectionError('');
-    if (clientHasPrevious) {
-      clientPrevPage();
+    if (!hasPrevious) {
+      setSelectionError(ALREADY_TOP_MESSAGE);
       return;
     }
-    if (serverHasPrevious) {
-      resetClientPage();
-      setServerPage((current) => Math.max(current - 1, FIRST_PAGE));
-    }
-  }, [clientHasPrevious, clientPrevPage, serverHasPrevious, resetClientPage]);
+    setSelectionError('');
+    void browse(
+      { direction: 'PF7', cursor: data?.userIdFirst ?? undefined },
+      -1,
+    );
+  }, [browse, data, hasPrevious]);
 
   const nextPage = useCallback((): void => {
-    setSelectionError('');
-    if (clientHasNext) {
-      clientNextPage();
+    if (!hasNext) {
+      setSelectionError(ALREADY_BOTTOM_MESSAGE);
       return;
     }
-    if (serverHasNext) {
-      resetClientPage();
-      setServerPage((current) => current + 1);
-    }
-  }, [clientHasNext, clientNextPage, serverHasNext, resetClientPage]);
+    setSelectionError('');
+    void browse({ direction: 'PF8', cursor: data?.userIdLast ?? undefined }, 1);
+  }, [browse, data, hasNext]);
 
   const handleSelectionChange = useCallback(
     (userId: string, value: string): void => {
@@ -201,11 +209,11 @@ export default function UserListPage(): ReactElement {
         .trim()
         .toUpperCase();
       if (selectFlag === SELECT_UPDATE) {
-        navigate(UPDATE_USER_ROUTE, { state: { userId: selectedRow.userId } });
+        void navigate(UPDATE_USER_ROUTE, { state: { userId: selectedRow.userId } });
         return;
       }
       if (selectFlag === SELECT_DELETE) {
-        navigate(DELETE_USER_ROUTE, { state: { userId: selectedRow.userId } });
+        void navigate(DELETE_USER_ROUTE, { state: { userId: selectedRow.userId } });
         return;
       }
       setSelectionError(INVALID_SELECTION_MESSAGE);
@@ -213,86 +221,91 @@ export default function UserListPage(): ReactElement {
       setSelectionError('');
     }
 
-    // ENTER also re-positions the browse from the filter field and restarts at
-    // the first page.
-    setAppliedUserId(searchUserId.trim());
-    resetClientPage();
-    setServerPage(FIRST_PAGE);
-  }, [pageRows, selections, navigate, searchUserId, resetClientPage]);
+    // ENTER also re-positions the browse at the filter field and restarts the
+    // page counter, exactly as PROCESS-ENTER-KEY does (L218-L228).
+    const startId = searchUserId.trim();
+    setPageNumber(FIRST_PAGE);
+    void run({ userId: startId === '' ? undefined : startId, page: FIRST_PAGE });
+  }, [pageRows, selections, navigate, searchUserId, run]);
 
+  // One line-23 region, filled in the legacy order: the validation text of the
+  // current key press first, then a failed browse, then the banner the service
+  // carried with a boundary or empty page.
   const errorMessage =
-    selectionError !== '' ? selectionError : resolveErrorMessage(error);
+    selectionError !== ''
+      ? selectionError
+      : error !== null
+        ? resolveErrorMessage(error)
+        : displayText(data?.message);
+
+  const searchRef = useInitialFocus<HTMLInputElement>();
+  useFocusOnSettled(loading, searchRef);
+  useFocusOnChange(errorMessage === '' ? null : errorMessage, searchRef);
 
   useEffect(() => {
     const pfKeys: PFKeyDef[] = [
-      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: handleExit },
       {
-        action: PfKeyAction.PF7,
-        label: 'F7=Backward',
-        onActivate: prevPage,
-        enabled: hasPrevious,
+        action: PfKeyAction.Enter,
+        label: PF_ENTER_LABEL,
+        onActivate: handleEnter,
       },
-      {
-        action: PfKeyAction.PF8,
-        label: 'F8=Forward',
-        onActivate: nextPage,
-        enabled: hasNext,
-      },
+      { action: PfKeyAction.PF3, label: PF3_LABEL, onActivate: handleExit },
+      { action: PfKeyAction.PF7, label: PF7_LABEL, onActivate: prevPage },
+      { action: PfKeyAction.PF8, label: PF8_LABEL, onActivate: nextPage },
     ];
     setChrome({
       transactionId: 'CU00',
       programName: 'COUSR00C',
-      title01: 'CardDemo',
-      title02: 'List Users',
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
       errorMessage,
       infoMessage: '',
       pfKeys,
+      busy: loading,
     });
   }, [
     setChrome,
     errorMessage,
+    loading,
+    handleEnter,
     handleExit,
     prevPage,
     nextPage,
-    hasPrevious,
-    hasNext,
   ]);
 
   return (
     <section aria-labelledby="user-list-heading">
-      <h2 className="neutral" id="user-list-heading">
-        List Users
-      </h2>
+      <div className="screenTitleLine">
+        <h2 className="neutral" id="user-list-heading">
+          List Users
+        </h2>
+        <p className="prompt screenTitleLine__page">
+          <span>Page:</span>{' '}
+          <span className="label" data-testid="page-number">
+            {pageNumber}
+          </span>
+        </p>
+      </div>
 
-      <p className="prompt">
-        <span>Page:</span>{' '}
-        <span className="label" data-testid="page-number">
-          {displayedPage}
-        </span>
-      </p>
-
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          handleEnter();
-        }}
-      >
-        <p>
+      <div className="userList__body">
+        <div className="userListSearch">
           <label className="prompt" htmlFor="USRIDIN">
             Search User ID:
           </label>{' '}
           <input
+            ref={searchRef}
             className="field"
             id="USRIDIN"
             name="USRIDIN"
             type="text"
             autoComplete="off"
+            disabled={loading}
             maxLength={USER_ID_FIELD_WIDTH}
             size={USER_ID_FIELD_WIDTH}
             value={searchUserId}
             onChange={(event) => setSearchUserId(event.target.value)}
           />
-        </p>
+        </div>
 
         <table
           className="dataTable"
@@ -321,7 +334,11 @@ export default function UserListPage(): ReactElement {
                       name={fieldName}
                       type="text"
                       autoComplete="off"
+                      disabled={loading}
                       aria-label={`Select user ${row.userId}`}
+                      {...invalidValueProps(
+                        isRowSelectionInvalid(selections[row.userId]),
+                      )}
                       maxLength={SELECT_FIELD_WIDTH}
                       size={SELECT_FIELD_WIDTH}
                       value={selections[row.userId] ?? ''}
@@ -340,13 +357,11 @@ export default function UserListPage(): ReactElement {
           </tbody>
         </table>
 
-        <p className="neutral">
+        <p className="neutral screenNote">
           Type &apos;U&apos; to Update or &apos;D&apos; to Delete a User from the
           list
         </p>
-
-        <button type="submit">ENTER=Continue</button>
-      </form>
+      </div>
     </section>
   );
 }

@@ -137,11 +137,8 @@ public class AccountController {
      * :purpose: Resolve the externalized session context from the request's
      *  *already-established* HTTP session, returning a fresh empty context when the
      *  caller has no session or the session carries no context (pre-navigation /
-     *  tests). ``getSession(false)`` is deliberate (QA Issue 22): declaring an
-     *  ``HttpSession`` controller parameter made Spring's argument resolver call
-     *  ``getSession()`` on every request, so each anonymous call created and persisted
-     *  a brand-new Spring Session entry in Redis even though no pseudo-conversational
-     *  state was ever carried into it.
+     *  tests). ``getSession(false)`` never creates a session, so an anonymous call
+     *  persists no Spring Session entry.
      * :param httpRequest: the current servlet request.
      * :returns: the existing {@link SessionContext}, or a new empty instance.
      */
@@ -158,8 +155,7 @@ public class AccountController {
      * :purpose: Flush the (possibly mutated) session context back to the caller's HTTP
      *  session so the next stateless request sees the updated COMMAREA replacement.
      *  Only an existing session is written to: a caller without one carries no
-     *  pseudo-conversational state to preserve, and creating a session for it would
-     *  reintroduce the Redis session churn of QA Issue 22.
+     *  pseudo-conversational state to preserve.
      * :param httpRequest: the current servlet request.
      * :param context: the session context to persist.
      */

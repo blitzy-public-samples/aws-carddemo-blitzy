@@ -15,6 +15,9 @@
  */
 package com.carddemo.common.dto;
 
+import com.carddemo.common.json.CobolNumberSerializers;
+import tools.jackson.databind.annotation.JsonSerialize;
+
 /**
  * :purpose: Outbound single-row DTO for the card list screen (COCRDLIC, CICS CCLI, seven rows per page). Carries the three columns the legacy list map surfaces per row: owning account id, card number, and active status.
  * :output: A mutable row carrier of the owning account id, card number, and active status.
@@ -22,6 +25,7 @@ package com.carddemo.common.dto;
 public class CardListItemDto {
 
     /** :purpose: the owning account id (``CARD-ACCT-ID``). */
+    @JsonSerialize(using = CobolNumberSerializers.AccountId.class)
     private Long cardAcctId;
 
     /** :purpose: the card number (``CARD-NUM`` PIC X(16)). */

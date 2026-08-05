@@ -38,7 +38,7 @@ import org.springframework.web.client.RestClientResponseException;
  *  statement job instead, leaving the transaction-detail report with no caller at all.
  * :output: A {@link BatchJobExecutionDto} carrying the accepted run's durable execution
  *  handle, or a {@link CardDemoException} bearing the frozen ``Unable to Write TDQ
- *  (JOBS)...`` message when the hand-off is refused.
+ *  (JOBS)...`` message for every hand-off failure.
  * :note: The caller's ``SESSION`` cookie is forwarded so the launch is authorized as the
  *  signed-on user against batch-service's own authorization boundary; the shared Redis
  *  session makes that cookie meaningful in either service. The hand-off is synchronous
@@ -52,14 +52,6 @@ public class BatchJobClient {
 
     /** Frozen ``CORPT00C`` message for a failed submission hand-off. */
     public static final String SUBMIT_FAILURE_MESSAGE = "Unable to Write TDQ (JOBS)...";
-
-    /**
-     * Prefix used when batch-service ANSWERS but refuses the run, so the caller reads the
-     * real reason (an already-running or already-complete instance, a restart violation,
-     * unusable parameters) instead of the TDQ literal, which means only "the hand-off itself
-     * could not be written" and misrepresents a refusal.
-     */
-    public static final String SUBMISSION_REFUSED_PREFIX = "Report submission was not accepted: ";
 
     /** Job stream submitted for a report request, named verbatim as its job bean. */
     private static final String TRANSACTION_DETAIL_REPORT_JOB = "transactionDetailReportJob";
@@ -93,8 +85,9 @@ public class BatchJobClient {
      *  (``PARM-END-DATE``).
      * :returns: the accepted run's durable execution handle.
      * :raises CardDemoException: with the frozen ``Unable to Write TDQ (JOBS)...``
-     *  message when batch-service refuses or cannot be reached, so a refused hand-off is
-     *  never reported to the user as a successful submission.
+     *  message whenever batch-service refuses the run or cannot be reached, so a failed
+     *  hand-off is never reported to the user as a successful submission and no message
+     *  other than the one ``CORPT00C`` emits ever reaches the screen.
      */
     public BatchJobExecutionDto submitTransactionDetailReport(String startDate, String endDate) {
         LOGGER.info("Submitting {} to batch-service (startDate={}, endDate={})",
@@ -116,15 +109,14 @@ public class BatchJobClient {
                     accepted.jobExecutionId(), accepted.status());
             return accepted;
         } catch (RestClientResponseException e) {
-            // batch-service answered, so the hand-off itself was written: the run was
-            // REFUSED. Report why, rather than claiming the TDQ write failed.
-            String reason = refusalReason(e);
+            // batch-service answered but refused the run. CORPT00C carries exactly one
+            // hand-off failure message (WRITEQ TD QUEUE('JOBS'), L517-531), so the refusal
+            // reason is diagnostic detail for the log stream, never screen output.
             LOGGER.error("Submission of {} was refused with status {}: {}",
-                    TRANSACTION_DETAIL_REPORT_JOB, e.getStatusCode().value(), reason);
-            throw new CardDemoException(SUBMISSION_REFUSED_PREFIX + reason, e);
+                    TRANSACTION_DETAIL_REPORT_JOB, e.getStatusCode().value(), refusalReason(e));
+            throw new CardDemoException(SUBMIT_FAILURE_MESSAGE, e);
         } catch (RestClientException e) {
-            // No answer at all (batch-service unreachable, timeout, unreadable response):
-            // the hand-off never landed, which is exactly what the frozen literal reports.
+            // No answer at all (batch-service unreachable, timeout, unreadable response).
             LOGGER.error("Submission of {} could not be handed off: {}",
                     TRANSACTION_DETAIL_REPORT_JOB, e.getMessage());
             throw new CardDemoException(SUBMIT_FAILURE_MESSAGE, e);
@@ -135,7 +127,7 @@ public class BatchJobClient {
      * :purpose: Extract the reason batch-service gave for refusing a run from its error
      *  response body, falling back to the HTTP status text when the body carries no message.
      * :param e: the error response raised by the REST client.
-     * :returns: a single-line reason suitable for the user-facing refusal message.
+     * :returns: a single-line reason recorded in the log stream for diagnosis.
      */
     private static String refusalReason(RestClientResponseException e) {
         String body = e.getResponseBodyAsString();

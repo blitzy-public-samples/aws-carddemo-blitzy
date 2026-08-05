@@ -16,6 +16,8 @@
 package com.carddemo.common.dto;
 
 import java.math.BigDecimal;
+import com.carddemo.common.json.CobolNumberSerializers;
+import tools.jackson.databind.annotation.JsonSerialize;
 
 /**
  * :purpose: Outbound DTO echoing the persisted account and customer state after an update (COACTUPC, CICS CAUP). Uses the same field set as the account view response; monetary fields are scale-2 BigDecimal.
@@ -31,24 +33,30 @@ public class AccountUpdateResponseDto {
     private Long version;
 
     /** :purpose: the account id primary key (``ACCT-ID``). */
+    @JsonSerialize(using = CobolNumberSerializers.AccountId.class)
     private Long acctId;
 
     /** :purpose: the account active status (``ACCT-ACTIVE-STATUS``). */
     private String acctActiveStatus;
 
     /** :purpose: the current balance (``ACCT-CURR-BAL``) at scale 2. */
+    @JsonSerialize(using = CobolNumberSerializers.Money.class)
     private BigDecimal acctCurrBal;
 
     /** :purpose: the credit limit (``ACCT-CREDIT-LIMIT``) at scale 2. */
+    @JsonSerialize(using = CobolNumberSerializers.Money.class)
     private BigDecimal acctCreditLimit;
 
     /** :purpose: the cash credit limit (``ACCT-CASH-CREDIT-LIMIT``) at scale 2. */
+    @JsonSerialize(using = CobolNumberSerializers.Money.class)
     private BigDecimal acctCashCreditLimit;
 
     /** :purpose: the current-cycle credit total (``ACCT-CURR-CYC-CREDIT``) at scale 2. */
+    @JsonSerialize(using = CobolNumberSerializers.Money.class)
     private BigDecimal acctCurrCycCredit;
 
     /** :purpose: the current-cycle debit total (``ACCT-CURR-CYC-DEBIT``) at scale 2. */
+    @JsonSerialize(using = CobolNumberSerializers.Money.class)
     private BigDecimal acctCurrCycDebit;
 
     /** :purpose: the account open date (``ACCT-OPEN-DATE``, YYYY-MM-DD). */
@@ -64,6 +72,7 @@ public class AccountUpdateResponseDto {
     private String acctGroupId;
 
     /** :purpose: the owning customer id (``CUST-ID``). */
+    @JsonSerialize(using = CobolNumberSerializers.CustomerId.class)
     private Long custId;
 
     /** :purpose: the customer first name (``CUST-FIRST-NAME``). */
@@ -115,6 +124,7 @@ public class AccountUpdateResponseDto {
     private String custPriCardHolderInd;
 
     /** :purpose: customer FICO credit score (``CUST-FICO-CREDIT-SCORE``). */
+    @JsonSerialize(using = CobolNumberSerializers.FicoScore.class)
     private Integer custFicoCreditScore;
 
     /**

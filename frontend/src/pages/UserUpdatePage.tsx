@@ -16,22 +16,21 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { FormEvent, ReactElement } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
+import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { Role, UserDto, UserUpdateRequestDto } from '../types';
 import { ApiError, getUser, updateUser } from '../api';
 import { useApi } from '../hooks';
+import { resolveApiErrorMessage } from '../components/display';
 
 /** :purpose: CICS transaction id of this screen (``WS-TRANID``). */
 const TRANSACTION_ID = 'CU02';
 
 /** :purpose: Legacy program name reproduced by this screen (``WS-PGMNAME``). */
 const PROGRAM_NAME = 'COUSR02C';
-
-/** :purpose: First header title line. */
-const TITLE01 = 'CardDemo';
 
 /**
  * :purpose: Second header title line, also the screen heading rendered by the
@@ -108,6 +107,43 @@ const PF4_LABEL = 'F4=Clear';
 /** :purpose: Line-24 legend of PF5. */
 const PF5_LABEL = 'F5=Save';
 
+/** ``COUSR02`` line-24 ``F12`` key, verbatim. */
+const PF12_LABEL = 'F12=Cancel';
+
+/**
+ * :purpose: Control that receives the cursor for each line-23 outcome. ``COUSR02C``
+ *     ends every path with ``MOVE -1 TO <field>L``: the five emptiness edits and the
+ *     two not-found outcomes name their own field, while the remaining paths return
+ *     the cursor to ``USRIDIN`` (the mapset's ``IC`` field) or to ``FNAME``.
+ */
+const CURSOR_BY_MESSAGE: Readonly<Record<string, string>> = {
+  [MSG_USER_ID_EMPTY]: 'usridin',
+  [MSG_FIRST_NAME_EMPTY]: 'fname',
+  [MSG_LAST_NAME_EMPTY]: 'lname',
+  [MSG_PASSWORD_EMPTY]: 'passwd',
+  [MSG_USER_TYPE_EMPTY]: 'usrtype',
+  [MSG_USER_ID_NOT_FOUND]: 'usridin',
+  [MSG_UNABLE_LOOKUP_USER]: 'fname',
+  [MSG_UNABLE_UPDATE_USER]: 'fname',
+};
+
+/**
+ * :purpose: The messages that fault the entered value of their cursor field, as
+ *     opposed to reporting a failed lookup or write. Only these mark the control
+ *     ``aria-invalid``; the cursor still moves for every outcome.
+ */
+const FIELD_FAULT_MESSAGES: ReadonlySet<string> = new Set([
+  MSG_USER_ID_EMPTY,
+  MSG_FIRST_NAME_EMPTY,
+  MSG_LAST_NAME_EMPTY,
+  MSG_PASSWORD_EMPTY,
+  MSG_USER_TYPE_EMPTY,
+  MSG_USER_ID_NOT_FOUND,
+]);
+
+/** ``USRIDIN`` carries the mapset's ``IC`` attribute. */
+const DEFAULT_CURSOR_FIELD = 'usridin';
+
 /** :purpose: Router-state keys the user-list screen may carry the selected id in. */
 const INCOMING_USER_ID_KEYS = ['userId', 'selectedUserId'];
 
@@ -149,8 +185,7 @@ function resolveErrorMessage(error: ApiError, fallback: string): string {
   if (error.status === HTTP_NOT_FOUND) {
     return MSG_USER_ID_NOT_FOUND;
   }
-  const message = error.body?.message ?? error.message;
-  return message.trim().length > 0 ? message : fallback;
+  return resolveApiErrorMessage(error, fallback);
 }
 
 /**
@@ -174,7 +209,12 @@ export default function UserUpdatePage(): ReactElement {
   const [validationMessage, setValidationMessage] = useState<string>('');
   const [outcomeMessage, setOutcomeMessage] = useState<string>('');
 
-  const { run: runFetch, reset: resetFetch, error: fetchError } = useApi(getUser);
+  const {
+    run: runFetch,
+    reset: resetFetch,
+    error: fetchError,
+    loading: fetchLoading,
+  } = useApi(getUser);
   const {
     run: runUpdate,
     reset: resetUpdate,
@@ -193,6 +233,25 @@ export default function UserUpdatePage(): ReactElement {
       ? resolveErrorMessage(updateError, MSG_UNABLE_UPDATE_USER)
       : '');
   const infoMessage = errorMessage.length > 0 ? '' : outcomeMessage;
+
+  // The keyboard-locked interval covers both the fetch and the update.
+  const busy = fetchLoading || updateLoading;
+
+  // ``MOVE -1 TO <field>L``: the cursor follows the current line-23 outcome. The
+  // entry fields are disabled while a call is outstanding and focusing a disabled
+  // control is a no-op, so placement waits for the call to settle.
+  useEffect(() => {
+    if (busy) {
+      return;
+    }
+    const field = CURSOR_BY_MESSAGE[errorMessage] ?? DEFAULT_CURSOR_FIELD;
+    document.getElementById(field)?.focus();
+  }, [busy, errorMessage]);
+
+  // The cursor moves for every outcome, but only a rejected value is invalid.
+  const faultedField: string | null = FIELD_FAULT_MESSAGES.has(errorMessage)
+    ? (CURSOR_BY_MESSAGE[errorMessage] ?? null)
+    : null;
 
   /**
    * :purpose: Read the record of a user id and seed the editable fields
@@ -320,10 +379,15 @@ export default function UserUpdatePage(): ReactElement {
    *     the ``UPDATE-USER-INFO`` then ``XCTL COADM01C`` sequence behind the
    *     ``F3=Save&Exit`` legend.
    */
-  const handleExit = useCallback((): void => {
-    void saveUser();
-    navigate(ADMIN_MENU_ROUTE);
+  const handleExit = useCallback(async (): Promise<void> => {
+    await saveUser();
+    void navigate(ADMIN_MENU_ROUTE);
   }, [navigate, saveUser]);
+
+  // DFHPF12 returns to the caller without performing UPDATE-USER-INFO.
+  const handleCancel = useCallback((): void => {
+    void navigate(ADMIN_MENU_ROUTE);
+  }, [navigate]);
 
   /**
    * :purpose: PF4 — blank every field and the message region
@@ -365,21 +429,31 @@ export default function UserUpdatePage(): ReactElement {
   useEffect(() => {
     const pfKeys: PFKeyDef[] = [
       { action: PfKeyAction.Enter, label: PF_ENTER_LABEL, onActivate: handleFetch },
-      { action: PfKeyAction.PF3, label: PF3_LABEL, onActivate: handleExit },
+      {
+        action: PfKeyAction.PF3,
+        label: PF3_LABEL,
+        onActivate: () => {
+          void handleExit();
+        },
+      },
       { action: PfKeyAction.PF4, label: PF4_LABEL, onActivate: handleClear },
       { action: PfKeyAction.PF5, label: PF5_LABEL, onActivate: handleSave },
+      { action: PfKeyAction.PF12, label: PF12_LABEL, onActivate: handleCancel },
     ];
     setChrome({
       transactionId: TRANSACTION_ID,
       programName: PROGRAM_NAME,
-      title01: TITLE01,
-      title02: SCREEN_TITLE,
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
       errorMessage,
       infoMessage,
       pfKeys,
+      busy,
     });
   }, [
+    busy,
     errorMessage,
+    handleCancel,
     handleClear,
     handleExit,
     handleFetch,
@@ -401,9 +475,11 @@ export default function UserUpdatePage(): ReactElement {
           </label>{' '}
           <input
             className="field"
+            disabled={busy}
             data-testid="usridin"
             id="usridin"
             name="usridin"
+            {...invalidFieldProps(faultedField === 'usridin')}
             type="text"
             autoComplete="off"
             maxLength={USER_ID_MAX_LENGTH}
@@ -423,9 +499,11 @@ export default function UserUpdatePage(): ReactElement {
           </label>{' '}
           <input
             className="field"
+            disabled={busy}
             data-testid="fname"
             id="fname"
             name="fname"
+            {...invalidFieldProps(faultedField === 'fname')}
             type="text"
             autoComplete="off"
             maxLength={NAME_MAX_LENGTH}
@@ -438,9 +516,11 @@ export default function UserUpdatePage(): ReactElement {
           </label>{' '}
           <input
             className="field"
+            disabled={busy}
             data-testid="lname"
             id="lname"
             name="lname"
+            {...invalidFieldProps(faultedField === 'lname')}
             type="text"
             autoComplete="off"
             maxLength={NAME_MAX_LENGTH}
@@ -456,12 +536,13 @@ export default function UserUpdatePage(): ReactElement {
           </label>{' '}
           <input
             className="field"
+            disabled={busy}
             data-testid="passwd"
             id="passwd"
             name="passwd"
             type="password"
             autoComplete="new-password"
-            aria-describedby="passwdHint"
+            {...invalidFieldProps(faultedField === 'passwd', 'passwdHint')}
             maxLength={PASSWORD_MAX_LENGTH}
             size={PASSWORD_MAX_LENGTH}
             value={password}
@@ -478,12 +559,13 @@ export default function UserUpdatePage(): ReactElement {
           </label>{' '}
           <input
             className="field"
+            disabled={busy}
             data-testid="usrtype"
             id="usrtype"
             name="usrtype"
             type="text"
             autoComplete="off"
-            aria-describedby="usrtypeHint"
+            {...invalidFieldProps(faultedField === 'usrtype', 'usrtypeHint')}
             maxLength={USER_TYPE_MAX_LENGTH}
             size={USER_TYPE_MAX_LENGTH}
             value={userType}

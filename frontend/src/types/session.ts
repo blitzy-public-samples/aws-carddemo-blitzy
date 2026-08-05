@@ -123,3 +123,16 @@ export interface SessionContext {
   lastMap?: string;
   lastMapset?: string;
 }
+
+/**
+ * :purpose: Identity half of the externalized COMMAREA returned by ``GET /session``.
+ *   It is the SERVER's answer to "who is signed on", so the SPA resolves the user id
+ *   and role from it rather than from client-writable browser storage.
+ * :field userId: the signed-on user id (``CDEMO-USER-ID`` / ``SEC-USR-ID``).
+ * :field userType: the signed-on role code (``CDEMO-USER-TYPE``) — ``'A'`` for
+ *   ``CDEMO-USRTYP-ADMIN`` or ``'U'`` for ``CDEMO-USRTYP-USER``.
+ */
+export interface SessionIdentityDto {
+  userId: string;
+  userType: Role;
+}

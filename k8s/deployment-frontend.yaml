@@ -88,6 +88,10 @@ spec:
           env:
             - name: VITE_API_BASE_URL
               value: "/api"
+            # Sign-on header AppID: field (legacy EXEC CICS ASSIGN APPLID); also baked
+            # at BUILD time by frontend/Dockerfile.
+            - name: VITE_APP_ID
+              value: "CARDDEMO"
           # Writable scratch required by nginx under the read-only root fs.
           volumeMounts:
             - name: nginx-cache

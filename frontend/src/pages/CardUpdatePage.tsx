@@ -12,13 +12,25 @@
  *     line-24 function keys are published to the shared shell through
  *     :func:`useScreenChrome`, so this page renders none of them itself.
  */
-import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { fieldErrorClass, fieldMarker } from '../components/ErrorBanner';
-import { PfKeyAction } from '../types';
+import {
+  ERROR_LINE_ID,
+  fieldErrorClass,
+  fieldMarker,
+  isFieldInError,
+} from '../components/ErrorBanner';
+import OutputField from '../components/OutputField';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, SCREEN_NAMES } from '../types';
+
+/**
+ * Row-4 screen name of ``app/bms/COCRDUP.bms``, rendered as the screen's own
+ * body heading. The two header title lines are the shared ``COTTL01Y`` pair.
+ */
+const SCREEN_NAME = SCREEN_NAMES.COCRDUP;
 import type {
   CardDetailResponseDto,
   CardUpdateRequestDto,
@@ -26,19 +38,14 @@ import type {
   FieldErrorMap,
 } from '../types';
 import { ApiError, getCard, updateCard } from '../api';
-import { useApi } from '../hooks';
+import { useApi, useFocusOnChange, useInitialFocus } from '../hooks';
+import { CARD_DETAIL_ROUTE, readCardSelection } from './cardSelection';
 
 /** CICS transaction id of this screen (``LIT-THISTRANID``). */
 const TRANSACTION_ID = 'CCUP';
 
 /** Legacy program name shown in the header (``LIT-THISPGM``). */
 const PROGRAM_NAME = 'COCRDUPC';
-
-/** First header title line. */
-const TITLE01 = 'CardDemo';
-
-/** Second header title line and the screen heading (BMS row 4, ``X(26)``). */
-const TITLE02 = 'Update Credit Card Details';
 
 /** BMS caption of ``ACCTSID`` (row 7, ``X(19)``); the padding aligns the column. */
 const LABEL_ACCOUNT_NUMBER = 'Account Number    :';
@@ -57,6 +64,18 @@ const LABEL_EXPIRY_DATE = 'Expiry Date       :';
 
 /** ``FOUND-CARDS-FOR-ACCOUNT`` — shown once the record has been read. */
 const FOUND_CARDS_FOR_ACCOUNT = 'Details of selected card shown above';
+
+/** ENTER half of the BMS ``FKEYS`` legend ``ENTER=Process F3=Exit``. */
+const PF_PROCESS_LABEL = 'ENTER=Process';
+
+/** PF3 half of the BMS ``FKEYS`` legend ``ENTER=Process F3=Exit``. */
+const PF_EXIT_LABEL = 'F3=Exit';
+
+/** First half of the BMS ``FKEYSC`` legend ``F5=Save F12=Cancel``, declared ``DRK``. */
+const PF_SAVE_LABEL = 'F5=Save';
+
+/** Second half of the BMS ``FKEYSC`` legend ``F5=Save F12=Cancel``, declared ``DRK``. */
+const PF_CANCEL_LABEL = 'F12=Cancel';
 
 /** ``PROMPT-FOR-CONFIRMATION`` — clean edits awaiting the F5 rewrite. */
 const PROMPT_FOR_CONFIRMATION = 'Changes validated.Press F5 to save';
@@ -101,6 +120,19 @@ const MAX_EXPIRY_YEAR = 2099;
 
 /** Active-status values accepted by ``88 FLG-YES-NO-VALID VALUES 'Y', 'N'``. */
 const CARD_ACTIVE_STATUS_YES = 'Y';
+
+/**
+ * :purpose: Every editable field of the ``COCRDUP`` mapset in screen order — rows 11,
+ *     13 and 15 — which is the order ``COCRDUPC`` walks when deciding where to leave
+ *     the cursor. ``ACCTSID`` is ``PROT`` and ``CARDSID`` is presented read-only, so
+ *     neither can hold the cursor.
+ */
+const SCREEN_FIELD_ORDER: readonly string[] = [
+  'crdname',
+  'crdstcd',
+  'expmon',
+  'expyear',
+];
 const CARD_ACTIVE_STATUS_NO = 'N';
 
 /**
@@ -262,13 +294,16 @@ function editMapInputs(inputs: CardUpdateInputs): ValidationOutcome {
 }
 
 /**
- * :purpose: The ``COCRDUP`` card-update screen. Reads the card named by the
- *     ``cardNumber`` route segment, edits the mutable fields, and rewrites the
- *     record through ``PUT /cards/{cardNumber}``.
+ * :purpose: The ``COCRDUP`` card-update screen. Reads the card handed over in the
+ *     router location state, edits the mutable fields, and rewrites the record
+ *     through ``PUT /cards/{cardNumber}``.
  * :returns: The rendered screen body.
  */
 export default function CardUpdatePage(): ReactElement {
-  const { cardNumber = '' } = useParams();
+  const location = useLocation();
+  // The composite selection arrives in the router location state, so neither the
+  // card number nor the account id is ever part of this screen's URL.
+  const { cardNumber, accountId } = readCardSelection(location.state);
   const navigate = useNavigate();
   const { setChrome } = useScreenChrome();
   const { run: runGetCard, error: fetchError } = useApi(getCard);
@@ -282,6 +317,11 @@ export default function CardUpdatePage(): ReactElement {
   const [infoMessage, setInfoMessage] = useState('');
   const [fieldErrors, setFieldErrors] = useState<FieldErrorMap>({});
   const [changesValidated, setChangesValidated] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Synchronous guard: two activations of F5 inside one render cannot both reach the
+  // service, because the ref is read and set before the first await.
+  const saveLatch = useRef<boolean>(false);
 
   /**
    * :purpose: Seed the display and entry fields from a card record, splitting the
@@ -298,9 +338,9 @@ export default function CardUpdatePage(): ReactElement {
   }, []);
 
   /**
-   * :purpose: Read the card addressed by the route. The key is edited first; a
-   *     malformed route segment publishes the card-number message and issues no
-   *     request.
+   * :purpose: Read the card handed over by the previous screen. The key is edited
+   *     first; a malformed or absent selection publishes the card-number message
+   *     and issues no request.
    */
   const loadCard = useCallback(async (): Promise<void> => {
     if (!CARD_NUMBER_PATTERN.test(cardNumber)) {
@@ -309,7 +349,10 @@ export default function CardUpdatePage(): ReactElement {
       setInfoMessage('');
       return;
     }
-    const record = await runGetCard(cardNumber);
+    const record = await runGetCard(
+      cardNumber,
+      accountId === '' ? undefined : accountId,
+    );
     if (record !== undefined) {
       applyCard(record);
       setFieldErrors({});
@@ -317,7 +360,7 @@ export default function CardUpdatePage(): ReactElement {
       setInfoMessage(FOUND_CARDS_FOR_ACCOUNT);
       setChangesValidated(false);
     }
-  }, [applyCard, cardNumber, runGetCard]);
+  }, [accountId, applyCard, cardNumber, runGetCard]);
 
   useEffect(() => {
     void loadCard();
@@ -364,9 +407,21 @@ export default function CardUpdatePage(): ReactElement {
           expiry.day,
         ),
         version: record.version,
+        // The values read at display time, so the service can reproduce the
+        // field-by-field comparison COCRDUPC performs before its REWRITE
+        // (L1503) in addition to the version check.
+        oldCardEmbossedName: record.cardEmbossedName,
+        oldCardActiveStatus: record.cardActiveStatus,
+        oldCardExpiraionDate: record.cardExpiraionDate,
       };
+      saveLatch.current = true;
+      setSaving(true);
       try {
-        const updated: CardUpdateResponseDto = await updateCard(cardNumber, request);
+        const updated: CardUpdateResponseDto = await updateCard(
+          cardNumber,
+          request,
+          accountId === '' ? undefined : accountId,
+        );
         applyCard(updated);
         setFieldErrors({});
         setChangesValidated(false);
@@ -382,9 +437,12 @@ export default function CardUpdatePage(): ReactElement {
         }
         setChangesValidated(false);
         setInfoMessage('');
+      } finally {
+        saveLatch.current = false;
+        setSaving(false);
       }
     },
-    [applyCard, cardActiveStatus, cardName, cardNumber, expiryMonth, expiryYear],
+    [accountId, applyCard, cardActiveStatus, cardName, cardNumber, expiryMonth, expiryYear],
   );
 
   /**
@@ -409,15 +467,8 @@ export default function CardUpdatePage(): ReactElement {
    *     the edit pass runs first, and the rewrite proceeds only once it is clean.
    */
   const handleSave = useCallback((): void => {
-    if (!changesValidated) {
-      const outcome = editCurrentInputs();
-      if (outcome.message.length > 0) {
-        setErrorMessage(outcome.message);
-        setInfoMessage('');
-        setChangesValidated(false);
-        return;
-      }
-      setChangesValidated(true);
+    if (saveLatch.current) {
+      return;
     }
     if (card === null) {
       setErrorMessage('');
@@ -425,88 +476,122 @@ export default function CardUpdatePage(): ReactElement {
       return;
     }
     void saveChanges(card);
-  }, [card, changesValidated, editCurrentInputs, saveChanges]);
+  }, [card, saveChanges]);
 
   /** :purpose: F3 — leave the screen for the card list. */
   const handleExit = useCallback((): void => {
-    navigate('/cards');
+    void navigate('/cards');
   }, [navigate]);
 
   /** :purpose: F12 — abandon the edits and return to the card detail screen. */
   const handleCancel = useCallback((): void => {
-    navigate(`/cards/${cardNumber}`);
-  }, [cardNumber, navigate]);
+    void navigate(CARD_DETAIL_ROUTE, { state: { cardNumber, accountId } });
+  }, [accountId, cardNumber, navigate]);
 
   // Flushed synchronously at commit: the message and the function keys reach the
   // shell in the same frame as the body they belong to.
   useLayoutEffect(() => {
+    // COCRDUPC L413-423: only ENTER, PF3, PF5-while-awaiting-confirmation and
+    // PF12-once-details-are-fetched are valid AIDs; anything else is rewritten to ENTER.
+    // COCRDUP.bms declares FKEYSC — the single field carrying BOTH 'F5=Save' and
+    // 'F12=Cancel' — ATTRB=(ASKIP,DRK), and L1315-1317 un-darkens it only while the
+    // confirmation is prompted, so the two legends appear and disappear together.
+    const awaitingConfirmation = changesValidated;
+    const detailsFetched = card !== null;
     const pfKeys: PFKeyDef[] = [
-      { action: PfKeyAction.Enter, label: 'ENTER=Process', onActivate: handleProcess },
-      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: handleExit },
-      { action: PfKeyAction.PF5, label: 'F5=Save', onActivate: handleSave },
-      { action: PfKeyAction.PF12, label: 'F12=Cancel', onActivate: handleCancel },
+      { action: PfKeyAction.Enter, label: PF_PROCESS_LABEL, onActivate: handleProcess },
+      { action: PfKeyAction.PF3, label: PF_EXIT_LABEL, onActivate: handleExit },
+      {
+        action: PfKeyAction.PF5,
+        label: PF_SAVE_LABEL,
+        dark: !awaitingConfirmation,
+        onActivate: () => {
+          if (!awaitingConfirmation) {
+            handleProcess();
+            return;
+          }
+          handleSave();
+        },
+      },
+      {
+        action: PfKeyAction.PF12,
+        label: PF_CANCEL_LABEL,
+        dark: !awaitingConfirmation,
+        onActivate: () => {
+          if (!detailsFetched) {
+            handleProcess();
+            return;
+          }
+          handleCancel();
+        },
+      },
     ];
     setChrome({
       transactionId: TRANSACTION_ID,
       programName: PROGRAM_NAME,
-      title01: TITLE01,
-      title02: TITLE02,
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
+      busy: saving,
       errorMessage,
       infoMessage,
       pfKeys,
     });
   }, [
+    card,
+    changesValidated,
     errorMessage,
     handleCancel,
     handleExit,
     handleProcess,
     handleSave,
     infoMessage,
+    saving,
     setChrome,
   ]);
 
   const accountNumber = card?.cardAcctId ?? '';
 
+  // COCRDUPC leaves the cursor on the first field, in screen order, whose edit failed;
+  // with no failure it rests on the first editable field of the fetched card.
+  const firstErrorField = SCREEN_FIELD_ORDER.find((field) =>
+    isFieldInError(fieldErrors[field]),
+  );
+  const focusField = firstErrorField ?? SCREEN_FIELD_ORDER[0];
+  const focusRef = useInitialFocus<HTMLInputElement>();
+  useFocusOnChange(`${focusField}:${errorMessage}`, focusRef);
+
+  /**
+   * :purpose: Associate the field the line-23 message was raised for with that message.
+   * :param field: the field being rendered.
+   * :returns: the ``aria-describedby`` value, or ``undefined`` for every other field.
+   */
+  const describedBy = (field: string): string | undefined =>
+    field === firstErrorField ? ERROR_LINE_ID : undefined;
+
   return (
     <div className="cardUpdate">
-      <h3 className="cardUpdate__heading neutral">{TITLE02}</h3>
+      <h3 className="cardUpdate__heading neutral">{SCREEN_NAME}</h3>
 
-      <label className="cardUpdate__label prompt" htmlFor="acctsid">
-        {LABEL_ACCOUNT_NUMBER}
-      </label>
-      <span className="cardUpdate__value">
-        <span className="cardUpdate__marker" aria-hidden="true">
-          {fieldMarker(fieldErrors.acctsid)}
-        </span>
-        <input
-          id="acctsid"
-          data-testid="acctsid"
-          type="text"
+      <dl className="cardUpdate__protected">
+        <OutputField
+          className="cardUpdate__outputRow"
+          label={LABEL_ACCOUNT_NUMBER}
+          labelClassName="cardUpdate__label prompt"
+          testId="acctsid"
           value={accountNumber}
-          readOnly
-          size={11}
-          maxLength={11}
+          valueClassName="cardUpdate__value label"
+          width={11}
         />
-      </span>
-
-      <label className="cardUpdate__label prompt" htmlFor="cardsid">
-        {LABEL_CARD_NUMBER}
-      </label>
-      <span className="cardUpdate__value">
-        <span className="cardUpdate__marker" aria-hidden="true">
-          {fieldMarker(fieldErrors.cardsid)}
-        </span>
-        <input
-          id="cardsid"
-          data-testid="cardsid"
-          className={classNames(fieldErrorClass(fieldErrors.cardsid))}
-          type="text"
+        <OutputField
+          className="cardUpdate__outputRow"
+          label={LABEL_CARD_NUMBER}
+          labelClassName="cardUpdate__label prompt"
+          testId="cardsid"
           value={cardNumber}
-          readOnly
-          size={16}
-          maxLength={16}
+          valueClassName="cardUpdate__value label"
+          width={16}
         />
-      </span>
+      </dl>
 
       <label className="cardUpdate__label prompt" htmlFor="crdname">
         {LABEL_NAME_ON_CARD}
@@ -518,10 +603,15 @@ export default function CardUpdatePage(): ReactElement {
         <input
           id="crdname"
           data-testid="crdname"
+          ref={focusField === 'crdname' ? focusRef : undefined}
+          className={classNames(fieldErrorClass(fieldErrors.crdname))}
           type="text"
           value={cardName}
           size={50}
           maxLength={50}
+          disabled={saving}
+          aria-invalid={isFieldInError(fieldErrors.crdname) || undefined}
+          aria-describedby={describedBy('crdname')}
           onChange={(event) => setCardName(event.target.value)}
         />
       </span>
@@ -536,11 +626,15 @@ export default function CardUpdatePage(): ReactElement {
         <input
           id="crdstcd"
           data-testid="crdstcd"
+          ref={focusField === 'crdstcd' ? focusRef : undefined}
           className={classNames(fieldErrorClass(fieldErrors.crdstcd))}
           type="text"
           value={cardActiveStatus}
           size={1}
           maxLength={1}
+          disabled={saving}
+          aria-invalid={isFieldInError(fieldErrors.crdstcd) || undefined}
+          aria-describedby={describedBy('crdstcd')}
           onChange={(event) => setCardActiveStatus(event.target.value)}
         />
       </span>
@@ -555,11 +649,15 @@ export default function CardUpdatePage(): ReactElement {
         <input
           id="expmon"
           data-testid="expmon"
+          ref={focusField === 'expmon' ? focusRef : undefined}
           className={classNames(fieldErrorClass(fieldErrors.expmon))}
           type="text"
           value={expiryMonth}
           size={2}
           maxLength={2}
+          disabled={saving}
+          aria-invalid={isFieldInError(fieldErrors.expmon) || undefined}
+          aria-describedby={describedBy('expmon')}
           onChange={(event) => setExpiryMonth(event.target.value)}
         />
         <span className="cardUpdate__separator" aria-hidden="true">
@@ -571,22 +669,20 @@ export default function CardUpdatePage(): ReactElement {
         <input
           id="expyear"
           data-testid="expyear"
+          ref={focusField === 'expyear' ? focusRef : undefined}
           className={classNames(fieldErrorClass(fieldErrors.expyear))}
           type="text"
           aria-label="Expiry Year"
           value={expiryYear}
           size={4}
           maxLength={4}
+          disabled={saving}
+          aria-invalid={isFieldInError(fieldErrors.expyear) || undefined}
+          aria-describedby={describedBy('expyear')}
           onChange={(event) => setExpiryYear(event.target.value)}
         />
       </span>
 
-      <span className="cardUpdate__actions">
-        <button type="button" onClick={handleSave}>
-          Save
-        </button>
-      </span>
     </div>
   );
 }
-

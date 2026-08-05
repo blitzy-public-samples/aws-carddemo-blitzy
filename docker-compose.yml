@@ -478,14 +478,14 @@ services:
   # =========================================================================
 
   frontend:
-    # Behind an explicit profile: the SPA entry module and the page components are
-    # delivered in a later tranche, so this image cannot build yet and a default
-    # `docker compose up` must not fail on it. Start it with `--profile frontend`.
-    profiles: ["frontend"]
     build:
       context: ./frontend
       args:
         VITE_API_BASE_URL: /api
+        # Sign-on header AppID: field (legacy EXEC CICS ASSIGN APPLID). CARDDEMO is
+        # the application's own name in app/csd/CARDDEMO.CSD and fits the mapset's
+        # 8-character APPLID field exactly.
+        VITE_APP_ID: CARDDEMO
     # Tag the built image exactly as k8s/deployment-frontend.yaml references it, so
     # `docker compose build` produces the artifact the manifests apply against
     # (QA Issue 17). Registry and tag are overridable for a private registry or a
@@ -493,6 +493,7 @@ services:
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/frontend:${CARDDEMO_IMAGE_TAG:-1.0.0}
     environment:
       VITE_API_BASE_URL: /api
+      VITE_APP_ID: CARDDEMO
     ports:
       - "3000:80"
     depends_on:

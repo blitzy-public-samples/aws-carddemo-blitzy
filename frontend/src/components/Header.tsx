@@ -2,31 +2,87 @@
  * Header
  * ======
  *
- * :purpose: Reproduce the BMS 3270 screen header (``app/bms/COSGN00.bms``) as up
- *     to three left/center/right rows. Row 1: ``Tran :`` + transaction id, the
- *     screen title, ``Date :`` + date. Row 2: ``Prog :`` + program name, the
- *     second title line, ``Time :`` + time. Optional row 3 (rendered only when an
- *     application or system id is supplied): ``AppID:`` + application id and
- *     ``SysID:`` + system id. Date renders ``MM/DD/YY`` and time renders 24-hour
- *     ``HH:MM:SS`` per ``FUNCTION CURRENT-DATE`` formatting in
- *     ``app/cpy/CSDAT01Y.cpy``. Labels/values are BLUE; the titles are YELLOW.
+ * :purpose: Reproduce the BMS 3270 screen header as up to three left/center/right
+ *     rows. Row 1: the transaction caption + transaction id, the first title line,
+ *     the date caption + date. Row 2: the program caption + program name, the second
+ *     title line, the time caption + time. Row 3, rendered only for the sign-on
+ *     mapset: ``AppID:`` + application id and ``SysID:`` + system id.
  * :output: The rendered ``<header>`` element.
+ * :note: The captions are per-mapset BMS literals and differ between the sign-on
+ *     mapset and the other sixteen. ``app/bms/COSGN00.bms`` L33/L46/L56/L69 spell
+ *     them ``'Tran :'``, ``'Date :'``, ``'Prog :'``, ``'Time :'`` and add the
+ *     ``'AppID:'`` (L79) / ``'SysID:'`` (L88) row; the sixteen sibling mapsets spell
+ *     them ``'Tran:'``, ``'Date:'``, ``'Prog:'``, ``'Time:'`` and have no third row.
+ *     :data:`SIGNON_CAPTIONS` and :data:`STANDARD_CAPTIONS` hold the two sets
+ *     verbatim, selected by the ``captionStyle`` prop.
+ * :note: Date renders ``MM/DD/YY`` and time renders 24-hour ``HH:MM:SS`` per
+ *     ``FUNCTION CURRENT-DATE`` formatting in ``app/cpy/CSDAT01Y.cpy``.
+ *     Captions/values are BLUE; the titles are YELLOW.
  */
 import { useState } from 'react';
 import type { ReactElement } from 'react';
 
 /**
+ * :purpose: The four header captions of one mapset, held verbatim.
+ * :field tran: caption preceding the transaction id.
+ * :field prog: caption preceding the program name.
+ * :field date: caption preceding the date.
+ * :field time: caption preceding the time.
+ */
+export interface HeaderCaptions {
+  readonly tran: string;
+  readonly prog: string;
+  readonly date: string;
+  readonly time: string;
+}
+
+/**
+ * :purpose: Sign-on mapset captions, verbatim from ``app/bms/COSGN00.bms`` L33
+ *     (``'Tran :'``), L56 (``'Prog :'``), L46 (``'Date :'``) and L69 (``'Time :'``).
+ */
+export const SIGNON_CAPTIONS: HeaderCaptions = {
+  tran: 'Tran :',
+  prog: 'Prog :',
+  date: 'Date :',
+  time: 'Time :',
+};
+
+/**
+ * :purpose: Captions of the sixteen sibling mapsets (``COMEN01`` through
+ *     ``COUSR03``), which spell the same four literals without the space before the
+ *     colon.
+ */
+export const STANDARD_CAPTIONS: HeaderCaptions = {
+  tran: 'Tran:',
+  prog: 'Prog:',
+  date: 'Date:',
+  time: 'Time:',
+};
+
+/**
+ * :purpose: Which mapset's caption literals a screen uses. ``'signon'`` selects
+ *     :data:`SIGNON_CAPTIONS` and renders the ``AppID:`` / ``SysID:`` row that only
+ *     ``COSGN00`` carries; ``'standard'`` selects :data:`STANDARD_CAPTIONS`.
+ */
+export type HeaderCaptionStyle = 'signon' | 'standard';
+
+/**
  * :purpose: Props for :func:`Header`.
- * :param transactionId: 4-char CICS transaction id shown after ``Tran :``.
- * :param programName: Program / screen name shown after ``Prog :``.
+ * :param transactionId: 4-char CICS transaction id shown after the transaction
+ *     caption.
+ * :param programName: Program / screen name shown after the program caption.
  * :param title01: First title line (screen title), rendered YELLOW as ``<h1>``.
  * :param title02: Second title line, rendered YELLOW as ``<h2>``.
  * :param currentDate: Authoritative server ``MM/DD/YY`` date captured at response
  *     time; when omitted, a single client snapshot taken at mount is used.
  * :param currentTime: Authoritative server 24-hour ``HH:MM:SS`` time captured at
  *     response time; when omitted, a single client snapshot taken at mount is used.
- * :param appId: Application id shown after ``AppID:``; its presence renders row 3.
- * :param sysId: System id shown after ``SysID:``; its presence renders row 3.
+ * :param captionStyle: Which mapset's caption literals to render; defaults to
+ *     ``'standard'``, the spelling used by sixteen of the seventeen mapsets.
+ * :param appId: Application id shown after ``AppID:`` (``COSGN00.bms`` ``APPLID``,
+ *     ``LENGTH=8``); rendered only for the ``'signon'`` caption style.
+ * :param sysId: System id shown after ``SysID:`` (``COSGN00.bms`` ``SYSID``,
+ *     ``LENGTH=8``); rendered only for the ``'signon'`` caption style.
  */
 export interface HeaderProps {
   transactionId?: string;
@@ -35,6 +91,7 @@ export interface HeaderProps {
   title02?: string;
   currentDate?: string;
   currentTime?: string;
+  captionStyle?: HeaderCaptionStyle;
   appId?: string;
   sysId?: string;
 }
@@ -83,6 +140,7 @@ export default function Header({
   title02 = '',
   currentDate,
   currentTime,
+  captionStyle = 'standard',
   appId,
   sysId,
 }: HeaderProps): ReactElement {
@@ -92,29 +150,32 @@ export default function Header({
   const [snapshot] = useState<Date>(() => new Date());
   const dateText = currentDate ?? formatDate(snapshot);
   const timeText = currentTime ?? formatTime(snapshot);
-  const showAppRow = appId !== undefined || sysId !== undefined;
+  const captions = captionStyle === 'signon' ? SIGNON_CAPTIONS : STANDARD_CAPTIONS;
+  // Only COSGN00.bms carries the row; its APPLID field has no INITIAL and its SYSID
+  // field is INITIAL='        ', so blank values are the mapset's own defaults.
+  const showAppRow = captionStyle === 'signon';
 
   return (
     <header className="appHeader">
       <div className="appHeader__row">
         <span className="appHeader__left">
-          <span className="label">Tran :</span>{' '}
+          <span className="label">{captions.tran}</span>{' '}
           <span className="label" data-testid="tran-id">{transactionId}</span>
         </span>
         <h1 className="appHeader__center title" data-testid="title01">{title01}</h1>
         <span className="appHeader__right">
-          <span className="label">Date :</span>{' '}
+          <span className="label">{captions.date}</span>{' '}
           <span className="label" data-testid="cur-date">{dateText}</span>
         </span>
       </div>
       <div className="appHeader__row">
         <span className="appHeader__left">
-          <span className="label">Prog :</span>{' '}
+          <span className="label">{captions.prog}</span>{' '}
           <span className="label" data-testid="pgm-name">{programName}</span>
         </span>
         <h2 className="appHeader__center title" data-testid="title02">{title02}</h2>
         <span className="appHeader__right">
-          <span className="label">Time :</span>{' '}
+          <span className="label">{captions.time}</span>{' '}
           <span className="label" data-testid="cur-time">{timeText}</span>
         </span>
       </div>

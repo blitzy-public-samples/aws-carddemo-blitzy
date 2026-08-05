@@ -1,9 +1,11 @@
 /**
  * Header component tests.
  *
- * :purpose: Verify the BMS-faithful header (``app/bms/COSGN00.bms``): the
- *     ``Tran :`` / ``Prog :`` / ``Date :`` / ``Time :`` labels and their values,
- *     the BLUE ``.label`` value styling and YELLOW ``.title`` heading styling, the
+ * :purpose: Verify the BMS-faithful header: the per-mapset caption literals and
+ *     their values -- the unspaced ``Tran:`` / ``Prog:`` / ``Date:`` / ``Time:`` of
+ *     the sixteen sibling mapsets and the spaced ``Tran :`` family plus the
+ *     ``AppID:`` / ``SysID:`` row that only ``app/bms/COSGN00.bms`` carries -- the
+ *     BLUE ``.label`` value styling and YELLOW ``.title`` heading styling, the
  *     ``MM/DD/YY`` and 24-hour ``HH:MM:SS`` formatting derived from
  *     ``app/cpy/CSDAT01Y.cpy``, and the static server-snapshot timestamp that does
  *     not tick (legacy ``POPULATE-HEADER-INFO`` captures the time once at send).
@@ -19,18 +21,51 @@ describe('Header', () => {
     jest.useRealTimers();
   });
 
-  it('renders both header rows with labels and provided values', () => {
+  it('renders the sixteen sibling mapsets\' unspaced captions by default', () => {
     render(
-      <Header transactionId="CC00" programName="COSGN00C" title01="Sign On" title02="CardDemo" />,
+      <Header
+        transactionId="CM00"
+        programName="COMEN01C"
+        title01="AWS Mainframe Modernization"
+        title02="CardDemo"
+      />,
+    );
+    expect(screen.getByText('Tran:')).toBeInTheDocument();
+    expect(screen.getByText('Prog:')).toBeInTheDocument();
+    expect(screen.getByText('Date:')).toBeInTheDocument();
+    expect(screen.getByText('Time:')).toBeInTheDocument();
+    expect(screen.queryByText('Tran :')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tran-id')).toHaveTextContent('CM00');
+    expect(screen.getByTestId('pgm-name')).toHaveTextContent('COMEN01C');
+    expect(screen.getByTestId('title01')).toHaveTextContent(
+      'AWS Mainframe Modernization',
+    );
+    expect(screen.getByTestId('title02')).toHaveTextContent('CardDemo');
+    // Only COSGN00.bms carries the third row.
+    expect(screen.queryByTestId('app-sys-row')).not.toBeInTheDocument();
+  });
+
+  it('renders COSGN00\'s spaced captions and its AppID/SysID row', () => {
+    render(
+      <Header
+        transactionId="CC00"
+        programName="COSGN00C"
+        title01="AWS Mainframe Modernization"
+        title02="CardDemo"
+        captionStyle="signon"
+        appId="CARDDEMO"
+      />,
     );
     expect(screen.getByText('Tran :')).toBeInTheDocument();
     expect(screen.getByText('Prog :')).toBeInTheDocument();
     expect(screen.getByText('Date :')).toBeInTheDocument();
     expect(screen.getByText('Time :')).toBeInTheDocument();
-    expect(screen.getByTestId('tran-id')).toHaveTextContent('CC00');
-    expect(screen.getByTestId('pgm-name')).toHaveTextContent('COSGN00C');
-    expect(screen.getByTestId('title01')).toHaveTextContent('Sign On');
-    expect(screen.getByTestId('title02')).toHaveTextContent('CardDemo');
+    expect(screen.queryByText('Tran:')).not.toBeInTheDocument();
+    expect(screen.getByText('AppID:')).toBeInTheDocument();
+    expect(screen.getByText('SysID:')).toBeInTheDocument();
+    expect(screen.getByTestId('app-id')).toHaveTextContent('CARDDEMO');
+    // The mapset's SYSID field is INITIAL='        ', so an unset value is blank.
+    expect(screen.getByTestId('sys-id')).toHaveTextContent('');
   });
 
   it('renders values BLUE (.label) and titles YELLOW (.title)', () => {

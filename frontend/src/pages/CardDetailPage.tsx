@@ -5,7 +5,8 @@
  * :purpose: Read-only credit-card detail screen — the SPA replacement for the BMS
  *     mapset ``app/bms/COCRDSL.bms`` / symbolic map ``app/cpy-bms/COCRDSL.CPY``
  *     (CICS transaction ``CCDL``, program ``app/cbl/COCRDSLC.cbl``). Accepts the
- *     ``ACCTSID`` and ``CARDSID`` search filters, reads one card through
+ *     ``ACCTSID`` and ``CARDSID`` search filters, sends both as the composite
+ *     selection ``COCRDSLC`` edits, reads one card through
  *     ``GET /cards/{cardNumber}``, and displays the embossed name, the
  *     active-status flag, and the expiry month / year.
  * :output: The rendered screen body. The line-1/2 header, the line-23 message and
@@ -14,25 +15,27 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
+import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, SCREEN_NAMES } from '../types';
+
+/**
+ * Row-4 screen name of ``app/bms/COCRDSL.bms``, rendered as the screen's own
+ * body heading. The two header title lines are the shared ``COTTL01Y`` pair.
+ */
+const SCREEN_NAME = SCREEN_NAMES.COCRDSL;
 import type { CardDetailResponseDto } from '../types';
 import { getCard } from '../api';
-import { useApi } from '../hooks';
+import { useApi, useFocusOnChange, useInitialFocus } from '../hooks';
+import { readCardSelection } from './cardSelection';
 
 /** CICS transaction id of this screen (``LIT-THISTRANID``). */
 const TRANSACTION_ID = 'CCDL';
 
 /** Legacy program name of this screen (``LIT-THISPGM``). */
 const PROGRAM_NAME = 'COCRDSLC';
-
-/** First header title line. */
-const TITLE01 = 'CardDemo';
-
-/** Second header title line, and the body heading (BMS line 4). */
-const TITLE02 = 'View Credit Card Detail';
 
 /** ``ACCTSID`` caption (BMS line 7, TURQUOISE). */
 const LABEL_ACCOUNT_NUMBER = 'Account Number    :';
@@ -48,6 +51,19 @@ const LABEL_CARD_ACTIVE = 'Card Active Y/N   :';
 
 /** ``EXPMON`` / ``EXPYEAR`` caption (BMS line 15, TURQUOISE). */
 const LABEL_EXPIRY_DATE = 'Expiry Date       :';
+
+/**
+ * :purpose: ``COCRDSLC`` ``FOUND-CARDS-FOR-ACCOUNT`` info message, set once the keyed
+ *     read succeeds (``COCRDSLC.cbl:L129-130``). The three leading spaces are part of
+ *     the literal.
+ */
+const FOUND_CARDS_FOR_ACCOUNT = '   Displaying requested details';
+
+/**
+ * :purpose: ``COCRDSLC`` ``WS-PROMPT-FOR-INPUT`` info message, the default whenever no
+ *     other info message was set (``COCRDSLC.cbl:L131-132, L490-492``).
+ */
+const PROMPT_FOR_INPUT = 'Please enter Account and Card Number';
 
 /** ENTER entry of the line-24 legend (BMS ``FKEYS``). */
 const PF_ENTER_LABEL = 'ENTER=Search Cards';
@@ -78,6 +94,18 @@ const MSG_ACCOUNT_FILTER_11_DIGITS = 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DI
 
 /** ``2220-EDIT-CARD`` non-numeric filter literal. */
 const MSG_CARD_FILTER_16_DIGITS = 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER';
+
+/**
+ * :purpose: The control each ``COCRDSLC`` edit faults for the value it rejected. A
+ *     failed read reports an absent record rather than a rejected value, so its
+ *     message is absent and marks neither control invalid.
+ */
+const FAULTED_FIELD_BY_MESSAGE: Readonly<Record<string, 'acctsid' | 'cardsid'>> = {
+  [MSG_ACCOUNT_NON_ZERO_11]: 'acctsid',
+  [MSG_ACCOUNT_FILTER_11_DIGITS]: 'acctsid',
+  [MSG_CARD_16_DIGITS]: 'cardsid',
+  [MSG_CARD_FILTER_16_DIGITS]: 'cardsid',
+};
 
 /** ``2200-EDIT-MAP-INPUTS`` treats ``*`` as "filter not supplied". */
 const FILTER_WILDCARD = '*';
@@ -168,12 +196,17 @@ function splitExpiraionDate(cardExpiraionDate: string | undefined): {
  * :returns: The rendered screen body.
  */
 export default function CardDetailPage(): ReactElement {
-  const { cardNumber } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const { setChrome } = useScreenChrome();
 
-  const [acctInput, setAcctInput] = useState('');
-  const [cardInput, setCardInput] = useState(cardNumber ?? '');
+  // The card list hands the composite selection over in the router location
+  // state, so neither value is ever part of this screen's URL.
+  const { cardNumber: selectedCardNumber, accountId: selectedAccountId } =
+    readCardSelection(location.state);
+
+  const [acctInput, setAcctInput] = useState(selectedAccountId);
+  const [cardInput, setCardInput] = useState(selectedCardNumber);
   const [validationMessage, setValidationMessage] = useState('');
 
   const { data, loading, error, run } = useApi(getCard);
@@ -183,12 +216,31 @@ export default function CardDetailPage(): ReactElement {
   // service's normalized message is surfaced verbatim.
   const errorMessage = validationMessage !== '' ? validationMessage : (error?.message ?? '');
 
+  // 'SETUP MESSAGE' (L489-492): a successful keyed read reports the details are shown,
+  // and with no other info message the screen falls back to prompting for both keys.
+  const infoMessage = card !== null ? FOUND_CARDS_FOR_ACCOUNT : PROMPT_FOR_INPUT;
+
+  // COCRDSL marks ACCTSID ``ATTRB=(FSET,IC,NORM,UNPROT)``, so the cursor starts there
+  // and returns there whenever the screen reports a new outcome.
+  const accountFilterRef = useInitialFocus<HTMLInputElement>();
+  // The control the current line-23 message faults, mirroring ``MOVE -1 TO <field>L``.
+  const faultedField = FAULTED_FIELD_BY_MESSAGE[errorMessage] ?? null;
+
+  useFocusOnChange(errorMessage === '' ? null : errorMessage, accountFilterRef);
+
   const runSearch = useCallback(
     (accountFilter: string, cardFilter: string): void => {
       const message = validateSearchFilters(accountFilter, cardFilter);
       setValidationMessage(message);
       if (message === '') {
-        void run(normalizeFilter(cardFilter));
+        // Both edited values are sent: COCRDSLC reads by card number and
+        // qualifies the record with ACCTSID, so dropping the account would
+        // widen the selection the screen collected.
+        const account = normalizeFilter(accountFilter);
+        void run(
+          normalizeFilter(cardFilter),
+          account === '' ? undefined : account,
+        );
       }
     },
     [run],
@@ -198,16 +250,16 @@ export default function CardDetailPage(): ReactElement {
     runSearch(acctInput, cardInput);
   }, [runSearch, acctInput, cardInput]);
 
-  // Route-driven read: /cards/:cardNumber displays that card on entry, and keeps
-  // the CARDSID filter in step when the route parameter changes.
+  // Hand-over read: a selection carried in from the card list displays that card
+  // on entry and seeds both search fields with it.
   useEffect(() => {
-    const routeCardNumber = cardNumber ?? '';
-    if (routeCardNumber === '') {
+    if (selectedCardNumber === '') {
       return;
     }
-    setCardInput(routeCardNumber);
-    runSearch('', routeCardNumber);
-  }, [cardNumber, runSearch]);
+    setAcctInput(selectedAccountId);
+    setCardInput(selectedCardNumber);
+    runSearch(selectedAccountId, selectedCardNumber);
+  }, [selectedCardNumber, selectedAccountId, runSearch]);
 
   useEffect(() => {
     const pfKeys: PFKeyDef[] = [
@@ -216,29 +268,30 @@ export default function CardDetailPage(): ReactElement {
         action: PfKeyAction.PF3,
         label: PF_EXIT_LABEL,
         onActivate: () => {
-          navigate(CARD_LIST_ROUTE);
+          void navigate(CARD_LIST_ROUTE);
         },
       },
     ];
     setChrome({
       transactionId: TRANSACTION_ID,
       programName: PROGRAM_NAME,
-      title01: TITLE01,
-      title02: TITLE02,
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
       errorMessage,
-      infoMessage: '',
+      infoMessage,
       pfKeys,
+      busy: loading,
     });
-  }, [setChrome, errorMessage, handleSearch, navigate]);
+  }, [setChrome, errorMessage, infoMessage, loading, handleSearch, navigate]);
 
   const { expiryMonth, expiryYear } = splitExpiraionDate(card?.cardExpiraionDate);
   const cardName = (card?.cardEmbossedName ?? '').slice(0, CARD_NAME_LENGTH);
   const cardStatus = (card?.cardActiveStatus ?? '').slice(0, CARD_STATUS_LENGTH);
 
   return (
-    <section aria-labelledby="card-detail-heading" aria-busy={loading}>
+    <section aria-labelledby="card-detail-heading">
       <h2 className="neutral screenTitle" id="card-detail-heading">
-        {TITLE02}
+        {SCREEN_NAME}
       </h2>
 
       <form
@@ -252,8 +305,10 @@ export default function CardDetailPage(): ReactElement {
             {LABEL_ACCOUNT_NUMBER}
           </label>{' '}
           <input
+            ref={accountFilterRef}
             className="field"
             data-testid="acctsid"
+            {...invalidFieldProps(faultedField === 'acctsid')}
             id="acctsid"
             name="acctsid"
             type="text"
@@ -274,6 +329,7 @@ export default function CardDetailPage(): ReactElement {
           <input
             className="field"
             data-testid="cardsid"
+            {...invalidFieldProps(faultedField === 'cardsid')}
             id="cardsid"
             name="cardsid"
             type="text"

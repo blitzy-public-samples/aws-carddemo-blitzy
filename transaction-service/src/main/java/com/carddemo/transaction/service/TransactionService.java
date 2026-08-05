@@ -262,7 +262,7 @@ public class TransactionService {
      */
     private TransactionListResponseDto pageForward(TransactionListRequestDto req) {
         if (!req.isNextPage()) {
-            TransactionListResponseDto resp = echoState(req);
+            TransactionListResponseDto resp = redisplayCurrentPage(req);
             resp.setMessage(MSG_ALREADY_BOTTOM);
             return resp;
         }
@@ -280,7 +280,7 @@ public class TransactionService {
      */
     private TransactionListResponseDto pageBackward(TransactionListRequestDto req) {
         if (req.getPageNumber() <= 1) {
-            TransactionListResponseDto resp = echoState(req);
+            TransactionListResponseDto resp = redisplayCurrentPage(req);
             resp.setMessage(MSG_ALREADY_TOP);
             return resp;
         }
@@ -356,6 +356,32 @@ public class TransactionService {
     }
 
     /**
+     * :purpose: Re-read the page currently on display and echo the request's cursor, so a
+     *  page-boundary turn answers with the rows still shown rather than with none. The
+     *  boundary branches of ``PROCESS-PF7-KEY`` and ``PROCESS-PF8-KEY`` reach
+     *  ``SEND-TRNLST-SCREEN`` with ``SEND-ERASE-NO``, which re-sends the map without
+     *  erasing it and therefore leaves the displayed rows in place.
+     * :param req: the normalized list request, carrying the first id on display.
+     * :returns: the current page's rows with the request's page number and next-page flag
+     *  preserved; no rows when nothing has been displayed yet.
+     */
+    private TransactionListResponseDto redisplayCurrentPage(TransactionListRequestDto req) {
+        String first = defaultIfBlank(req.getTranIdFirst(), "");
+        if (first.isEmpty()) {
+            return echoState(req);
+        }
+        List<Transaction> rows = transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(
+                inclusiveLowerCursor(pad16(first)), PageRequest.of(0, PAGE_SIZE));
+        if (rows.isEmpty()) {
+            return echoState(req);
+        }
+        TransactionListResponseDto resp = buildPage(rows);
+        resp.setPageNumber(req.getPageNumber());
+        resp.setNextPage(req.isNextPage());
+        return resp;
+    }
+
+    /**
      * :purpose: Retrieve a single posted transaction by its sixteen-character id and
      *  map every field to the view response (COTRN01C, ``CT01``).
      * :param tranId: the transaction id entered on the view screen.
@@ -373,6 +399,22 @@ public class TransactionService {
         String key = pad16(tranId.trim());
         log.debug("viewTransaction lookup for tranId key");
         Transaction entity = transactionRepository.findById(key)
+                .orElseThrow(() -> new RecordNotFoundException(MSG_TRAN_ID_NOT_FOUND));
+        return transactionMapper.toViewResponse(entity);
+    }
+
+    /**
+     * :purpose: Read the highest-keyed transaction on file, backing the add screen's
+     *  ``F5=Copy Last Tran.`` action. ``COPY-LAST-TRAN-DATA`` reaches the same record by
+     *  moving ``HIGH-VALUES`` into ``TRAN-ID`` and issuing ``STARTBR`` / ``READPREV`` /
+     *  ``ENDBR``; the descending-order read here is that browse.
+     * :returns: a {@link TransactionViewResponseDto} for the last transaction on file.
+     * :raises RecordNotFoundException: when no transaction exists, the equivalent of the
+     *  browse returning end-of-file.
+     */
+    public TransactionViewResponseDto viewLastTransaction() {
+        log.debug("viewLastTransaction reading the highest-keyed transaction");
+        Transaction entity = transactionRepository.findFirstByOrderByTranIdDesc()
                 .orElseThrow(() -> new RecordNotFoundException(MSG_TRAN_ID_NOT_FOUND));
         return transactionMapper.toViewResponse(entity);
     }

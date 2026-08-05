@@ -11,15 +11,18 @@
  *     request carries no ``tranId``; the assigned id arrives on
  *     ``TranAddResponseDto.tranId`` and is surfaced on the line-23 confirmation.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction } from '../types';
-import type { TranAddRequestDto, TranAddResponseDto } from '../types';
-import { addTransaction, ApiError } from '../api';
-import { useApi } from '../hooks';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import type { TranAddRequestDto, TranAddResponseDto, TranViewResponseDto } from '../types';
+import { addTransaction, getLastTransaction } from '../api';
+import { useApi, useFocusOnSettled } from '../hooks';
+import { invalidFieldProps } from '../components/ErrorBanner';
+import { resolveApiErrorMessage } from '../components/display';
+import { toAmountPicture, toMapDate } from './tranAddFormat';
 
 /** The line-23 message literals of ``COTRN02C``, reproduced verbatim. */
 const MESSAGES = {
@@ -50,6 +53,17 @@ const MESSAGES = {
   confirmRequired: 'Confirm to add this transaction...',
   invalidYesNo: 'Invalid value. Valid values are (Y/N)...',
 } as const;
+
+/**
+ * :purpose: The field ``COTRN02C`` faults for each message raised by the server rather
+ *     than by the on-screen edits, reproducing its ``MOVE -1 TO <field>L`` placements.
+ *     Any message absent from the map faults the account key field, which is the
+ *     program's own fallback target.
+ */
+const CURSOR_BY_SERVER_MESSAGE: Readonly<Record<string, TranAddField>> = {
+  [MESSAGES.cardNumberNotFound]: 'tranCardNum',
+  [MESSAGES.cardNumberNumeric]: 'tranCardNum',
+};
 
 /** Hint shown with the amount field (BMS line 15). */
 const AMOUNT_HINT = '(-99999999.99)';
@@ -164,6 +178,7 @@ function matchesDateShape(value: string): boolean {
   return /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(value);
 }
 
+
 /**
  * :purpose: Report whether a year is a leap year under the Gregorian rule.
  * :param year: Four-digit year.
@@ -258,16 +273,6 @@ function focusField(field: TranAddField): void {
 }
 
 /**
- * :purpose: Resolve the line-23 text of a rejected add, preferring the standardized
- *     ``ApiErrorResponse.message`` carried by the response body.
- * :param error: Normalized client error.
- * :returns: The message to publish.
- */
-function resolveErrorMessage(error: ApiError): string {
-  return error.body?.message ?? error.message;
-}
-
-/**
  * :purpose: Resolve the confirmation text of a successful add, keeping the
  *     server-assigned transaction id on screen.
  * :param response: Add response carrying the assigned id and its message.
@@ -288,25 +293,74 @@ function resolveSuccessMessage(response: TranAddResponseDto): string {
  * :returns: The screen body; the header, the line-23 message and the line-24 function
  *     keys are supplied by the shared shell through :func:`useScreenChrome`.
  */
+/** ENTER entry of the ``app/bms/COTRN02.bms`` line-24 legend. */
+const ENTER_LABEL = 'ENTER=Continue';
+
+/** PF3 entry of the mapset line-24 legend. */
+const BACK_LABEL = 'F3=Back';
+
+/** PF4 entry of the mapset line-24 legend. */
+const CLEAR_LABEL = 'F4=Clear';
+
+/** PF5 entry of the mapset line-24 legend. */
+const COPY_LAST_LABEL = 'F5=Copy Last Tran.';
+
 export default function TranAddPage(): ReactElement {
   const navigate = useNavigate();
   const { setChrome } = useScreenChrome();
   const [form, setForm] = useState<TranAddFormState>(EMPTY_FORM);
   const [errorMessage, setErrorMessage] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
+  // The one field the screen faults for the current line-23 message. It tracks the
+  // ``MOVE -1 TO <field>L`` target exactly, so the accessible invalid state and the
+  // cursor placement are driven by the same decision rather than derived twice.
+  const [faultedField, setFaultedField] = useState<TranAddField | null>(null);
   const {
     run: runAdd,
     loading: adding,
     error: addError,
   } = useApi<TranAddResponseDto, [TranAddRequestDto]>(addTransaction);
+  const { run: runCopyLast, error: copyLastError } =
+    useApi<TranViewResponseDto, []>(getLastTransaction);
+
+  // A ref, not the render-derived ``adding`` flag, is what makes a second ENTER
+  // arriving in the same tick a no-op: state updates are asynchronous, so two
+  // activations can both observe ``adding === false`` and each create a distinct
+  // transaction with its own generated id.
+  const submitLatch = useRef<boolean>(false);
 
   useEffect(() => {
     if (addError === null) {
       return;
     }
+    const message = resolveApiErrorMessage(addError);
     setInfoMessage('');
-    setErrorMessage(resolveErrorMessage(addError));
+    setErrorMessage(message);
+    setFaultedField(CURSOR_BY_SERVER_MESSAGE[message] ?? 'acctId');
   }, [addError]);
+
+  useEffect(() => {
+    if (copyLastError === null) {
+      return;
+    }
+    const message = resolveApiErrorMessage(copyLastError);
+    setInfoMessage('');
+    setErrorMessage(message);
+    setFaultedField(CURSOR_BY_SERVER_MESSAGE[message] ?? 'acctId');
+  }, [copyLastError]);
+
+  // COTRN02 marks ACTIDIN ``ATTRB=(FSET,IC,NORM,UNPROT)``, so the cursor starts on the
+  // account key field when the screen is first shown.
+  useEffect(() => {
+    focusField('acctId');
+  }, []);
+
+  // Both completed-add outcomes place the cursor back on the account field:
+  // ``INITIALIZE-ALL-FIELDS`` does so after a successful write and the duplicate-key
+  // branch does so explicitly. The entry fields are disabled for the whole in-flight
+  // interval and focusing a disabled field is a no-op, so the placement has to happen on
+  // the settle rather than in the request's own continuation.
+  const acctIdRef = useFocusOnSettled<HTMLInputElement>(adding);
 
   const updateField = useCallback((field: TranAddField, value: string): void => {
     setForm((previous) => ({ ...previous, [field]: value }));
@@ -316,7 +370,7 @@ export default function TranAddPage(): ReactElement {
     async (current: TranAddFormState): Promise<void> => {
       const request: TranAddRequestDto = {
         tranTypeCd: current.tranTypeCd.trim(),
-        tranCatCd: Number(current.tranCatCd.trim()),
+        tranCatCd: current.tranCatCd.trim(),
         tranSource: current.tranSource.trim(),
         tranDesc: current.tranDesc.trim(),
         tranAmt: current.tranAmt.trim(),
@@ -337,32 +391,38 @@ export default function TranAddPage(): ReactElement {
         request.tranCardNum = cardNum;
       }
 
-      const response = await runAdd(request);
-      if (response === undefined) {
-        return;
+      try {
+        const response = await runAdd(request);
+        if (response === undefined) {
+          return;
+        }
+        setForm(EMPTY_FORM);
+        setErrorMessage('');
+        setFaultedField(null);
+        setInfoMessage(resolveSuccessMessage(response));
+      } finally {
+        submitLatch.current = false;
       }
-      setForm(EMPTY_FORM);
-      setErrorMessage('');
-      setInfoMessage(resolveSuccessMessage(response));
-      focusField('acctId');
     },
     [runAdd],
   );
 
   const handleEnter = useCallback((): void => {
-    if (adding) {
+    if (submitLatch.current || adding) {
       return;
     }
     const failure = validateForm(form);
     if (failure !== null) {
       setInfoMessage('');
       setErrorMessage(failure.message);
+      setFaultedField(failure.field);
       focusField(failure.field);
       return;
     }
 
     const flag = form.confirm.trim().toUpperCase();
     if (flag === 'Y') {
+      submitLatch.current = true;
       void submitAdd(form);
       return;
     }
@@ -373,36 +433,84 @@ export default function TranAddPage(): ReactElement {
     } else {
       setErrorMessage(MESSAGES.invalidYesNo);
     }
+    setFaultedField('confirm');
     focusField('confirm');
   }, [adding, form, submitAdd]);
 
   const handleExit = useCallback((): void => {
-    navigate('/transactions');
+    void navigate('/transactions');
   }, [navigate]);
 
   const handleClear = useCallback((): void => {
     setForm(EMPTY_FORM);
     setErrorMessage('');
     setInfoMessage('');
+    setFaultedField(null);
     focusField('acctId');
   }, []);
 
+  /**
+   * :purpose: PF5 — ``COPY-LAST-TRAN-DATA``: read the last transaction on file and copy
+   *     its editable fields onto the screen. The account and card key fields are
+   *     deliberately left untouched, exactly as the legacy paragraph copies only
+   *     ``TTYPCD`` through ``MZIP``.
+   */
+  const handleCopyLast = useCallback((): void => {
+    void (async (): Promise<void> => {
+      const last = await runCopyLast();
+      if (last === undefined) {
+        return;
+      }
+      setErrorMessage('');
+      setInfoMessage('');
+      setForm((previous) => ({
+        ...previous,
+        tranTypeCd: last.tranTypeCd,
+        tranCatCd: last.tranCatCd,
+        tranSource: last.tranSource,
+        tranDesc: last.tranDesc,
+        // The legacy paragraph moves the amount through PIC +99999999.99 and the
+        // timestamps into PIC X(10) fields, so the copied values arrive already edited
+        // into the shapes the screen's own checks require.
+        tranAmt: toAmountPicture(last.tranAmt),
+        tranOrigTs: toMapDate(last.tranOrigTs),
+        tranProcTs: toMapDate(last.tranProcTs),
+        tranMerchantId: last.tranMerchantId,
+        tranMerchantName: last.tranMerchantName,
+        tranMerchantCity: last.tranMerchantCity,
+        tranMerchantZip: last.tranMerchantZip,
+      }));
+      focusField('acctId');
+    })();
+  }, [runCopyLast]);
+
   useEffect(() => {
     const pfKeys: PFKeyDef[] = [
-      { action: PfKeyAction.Enter, label: 'ENTER=Add', onActivate: handleEnter },
-      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: handleExit },
-      { action: PfKeyAction.PF4, label: 'F4=Clear', onActivate: handleClear },
+      { action: PfKeyAction.Enter, label: ENTER_LABEL, onActivate: handleEnter },
+      { action: PfKeyAction.PF3, label: BACK_LABEL, onActivate: handleExit },
+      { action: PfKeyAction.PF4, label: CLEAR_LABEL, onActivate: handleClear },
+      { action: PfKeyAction.PF5, label: COPY_LAST_LABEL, onActivate: handleCopyLast },
     ];
     setChrome({
       transactionId: 'CT02',
       programName: 'COTRN02C',
-      title01: 'CardDemo',
-      title02: 'Add Transaction',
+      title01: CCDA_TITLE01,
+      title02: CCDA_TITLE02,
       errorMessage,
       infoMessage,
       pfKeys,
+      busy: adding,
     });
-  }, [setChrome, errorMessage, infoMessage, handleEnter, handleExit, handleClear]);
+  }, [
+    adding,
+    setChrome,
+    errorMessage,
+    infoMessage,
+    handleCopyLast,
+    handleEnter,
+    handleExit,
+    handleClear,
+  ]);
 
   return (
     <form
@@ -414,22 +522,25 @@ export default function TranAddPage(): ReactElement {
         handleEnter();
       }}
     >
-      <h3 className="neutral" id="tranAddHeading">
+      <h2 className="neutral" id="tranAddHeading">
         Add Transaction
-      </h3>
+      </h2>
 
       <div className="tranAdd__row">
         <label className="prompt" htmlFor="acctId">
           Enter Acct #:
         </label>{NBSP}
         <input
+          ref={acctIdRef}
           className="field"
+          disabled={adding}
           id="acctId"
           name="acctId"
           type="text"
           inputMode="numeric"
           maxLength={11}
           size={11}
+          {...invalidFieldProps(faultedField === 'acctId')}
           value={form.acctId}
           onChange={(event) => updateField('acctId', event.target.value)}
         />{' '}
@@ -439,12 +550,14 @@ export default function TranAddPage(): ReactElement {
         </label>{NBSP}
         <input
           className="field"
+          disabled={adding}
           id="tranCardNum"
           name="tranCardNum"
           type="text"
           inputMode="numeric"
           maxLength={16}
           size={16}
+          {...invalidFieldProps(faultedField === 'tranCardNum')}
           value={form.tranCardNum}
           onChange={(event) => updateField('tranCardNum', event.target.value)}
         />
@@ -460,12 +573,14 @@ export default function TranAddPage(): ReactElement {
         </label>{NBSP}
         <input
           className="field"
+          disabled={adding}
           id="tranTypeCd"
           name="tranTypeCd"
           type="text"
           inputMode="numeric"
           maxLength={2}
           size={2}
+          {...invalidFieldProps(faultedField === 'tranTypeCd')}
           value={form.tranTypeCd}
           onChange={(event) => updateField('tranTypeCd', event.target.value)}
         />{' '}
@@ -474,12 +589,14 @@ export default function TranAddPage(): ReactElement {
         </label>{NBSP}
         <input
           className="field"
+          disabled={adding}
           id="tranCatCd"
           name="tranCatCd"
           type="text"
           inputMode="numeric"
           maxLength={4}
           size={4}
+          {...invalidFieldProps(faultedField === 'tranCatCd')}
           value={form.tranCatCd}
           onChange={(event) => updateField('tranCatCd', event.target.value)}
         />{' '}
@@ -488,11 +605,13 @@ export default function TranAddPage(): ReactElement {
         </label>{NBSP}
         <input
           className="field"
+          disabled={adding}
           id="tranSource"
           name="tranSource"
           type="text"
           maxLength={10}
           size={10}
+          {...invalidFieldProps(faultedField === 'tranSource')}
           value={form.tranSource}
           onChange={(event) => updateField('tranSource', event.target.value)}
         />
@@ -504,11 +623,13 @@ export default function TranAddPage(): ReactElement {
         </label>{NBSP}
         <input
           className="field"
+          disabled={adding}
           id="tranDesc"
           name="tranDesc"
           type="text"
           maxLength={60}
           size={60}
+          {...invalidFieldProps(faultedField === 'tranDesc')}
           value={form.tranDesc}
           onChange={(event) => updateField('tranDesc', event.target.value)}
         />
@@ -521,12 +642,13 @@ export default function TranAddPage(): ReactElement {
           </label>{NBSP}
           <input
             className="field"
+          disabled={adding}
             id="tranAmt"
             name="tranAmt"
             type="text"
             maxLength={12}
             size={12}
-            aria-describedby="tranAmtHint"
+            {...invalidFieldProps(faultedField === 'tranAmt', 'tranAmtHint')}
             value={form.tranAmt}
             onChange={(event) => updateField('tranAmt', event.target.value)}
           />{NBSP}
@@ -540,12 +662,13 @@ export default function TranAddPage(): ReactElement {
           </label>{NBSP}
           <input
             className="field"
+          disabled={adding}
             id="tranOrigTs"
             name="tranOrigTs"
             type="text"
             maxLength={10}
             size={10}
-            aria-describedby="tranOrigTsHint"
+            {...invalidFieldProps(faultedField === 'tranOrigTs', 'tranOrigTsHint')}
             value={form.tranOrigTs}
             onChange={(event) => updateField('tranOrigTs', event.target.value)}
           />{NBSP}
@@ -559,12 +682,13 @@ export default function TranAddPage(): ReactElement {
           </label>{NBSP}
           <input
             className="field"
+          disabled={adding}
             id="tranProcTs"
             name="tranProcTs"
             type="text"
             maxLength={10}
             size={10}
-            aria-describedby="tranProcTsHint"
+            {...invalidFieldProps(faultedField === 'tranProcTs', 'tranProcTsHint')}
             value={form.tranProcTs}
             onChange={(event) => updateField('tranProcTs', event.target.value)}
           />{NBSP}
@@ -580,12 +704,14 @@ export default function TranAddPage(): ReactElement {
         </label>{NBSP}
         <input
           className="field"
+          disabled={adding}
           id="tranMerchantId"
           name="tranMerchantId"
           type="text"
           inputMode="numeric"
           maxLength={9}
           size={9}
+          {...invalidFieldProps(faultedField === 'tranMerchantId')}
           value={form.tranMerchantId}
           onChange={(event) => updateField('tranMerchantId', event.target.value)}
         />{' '}
@@ -594,11 +720,13 @@ export default function TranAddPage(): ReactElement {
         </label>{NBSP}
         <input
           className="field"
+          disabled={adding}
           id="tranMerchantName"
           name="tranMerchantName"
           type="text"
           maxLength={30}
           size={30}
+          {...invalidFieldProps(faultedField === 'tranMerchantName')}
           value={form.tranMerchantName}
           onChange={(event) => updateField('tranMerchantName', event.target.value)}
         />
@@ -610,11 +738,13 @@ export default function TranAddPage(): ReactElement {
         </label>{NBSP}
         <input
           className="field"
+          disabled={adding}
           id="tranMerchantCity"
           name="tranMerchantCity"
           type="text"
           maxLength={25}
           size={25}
+          {...invalidFieldProps(faultedField === 'tranMerchantCity')}
           value={form.tranMerchantCity}
           onChange={(event) => updateField('tranMerchantCity', event.target.value)}
         />{' '}
@@ -623,11 +753,13 @@ export default function TranAddPage(): ReactElement {
         </label>{NBSP}
         <input
           className="field"
+          disabled={adding}
           id="tranMerchantZip"
           name="tranMerchantZip"
           type="text"
           maxLength={10}
           size={10}
+          {...invalidFieldProps(faultedField === 'tranMerchantZip')}
           value={form.tranMerchantZip}
           onChange={(event) => updateField('tranMerchantZip', event.target.value)}
         />
@@ -639,12 +771,13 @@ export default function TranAddPage(): ReactElement {
         </label>{NBSP}
         <input
           className="field"
+          disabled={adding}
           id="confirm"
           name="confirm"
           type="text"
           maxLength={1}
           size={1}
-          aria-describedby="confirmValues"
+          {...invalidFieldProps(faultedField === 'confirm', 'confirmValues')}
           value={form.confirm}
           onChange={(event) => updateField('confirm', event.target.value)}
         />{NBSP}
@@ -655,4 +788,3 @@ export default function TranAddPage(): ReactElement {
     </form>
   );
 }
-

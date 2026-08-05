@@ -15,6 +15,9 @@
  */
 package com.carddemo.common.dto;
 
+import com.carddemo.common.json.CobolNumberSerializers;
+import tools.jackson.databind.annotation.JsonSerialize;
+
 /**
  * :purpose: Outbound read-only DTO for the card detail screen (COCRDSLC, CICS CCDL). Carries the card number, owning account id, embossed name, expiry date, active status, and resolved owning customer id; the sensitive CVV is never surfaced.
  * :output: A mutable carrier of the card detail fields shown on the legacy detail map.
@@ -25,6 +28,7 @@ public class CardDetailResponseDto {
     private String cardNum;
 
     /** :purpose: the owning account id (``CARD-ACCT-ID``). */
+    @JsonSerialize(using = CobolNumberSerializers.AccountId.class)
     private Long cardAcctId;
 
     /** :purpose: the embossed name (``CARD-EMBOSSED-NAME``). */
@@ -37,6 +41,7 @@ public class CardDetailResponseDto {
     private String cardActiveStatus;
 
     /** :purpose: the owning customer id resolved from the card cross-reference (``XREF-CUST-ID``). */
+    @JsonSerialize(using = CobolNumberSerializers.CustomerId.class)
     private Long custId;
     /**
      * :purpose: the optimistic-lock version of the stored card (``@Version``; no legacy field).

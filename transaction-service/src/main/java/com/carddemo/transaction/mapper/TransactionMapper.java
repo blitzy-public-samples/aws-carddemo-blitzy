@@ -47,6 +47,12 @@ public class TransactionMapper {
     private static final DateTimeFormatter SHORT_DATE = DateTimeFormatter.ofPattern("MM/dd/yy");
 
     /**
+     * Width of the ``TDESC01``..``TDESC10`` list description fields, declared
+     * ``LENGTH=26`` in ``app/bms/COTRN00.bms`` and ``PIC X(26)`` in the symbolic map.
+     */
+    private static final int LIST_DESC_WIDTH = 26;
+
+    /**
      * :purpose: Build the COTRN01 transaction-view response echoing all thirteen
      *   posted transaction fields; the amount is normalized to scale 2 and the
      *   26-character timestamps are passed through unchanged.
@@ -92,9 +98,25 @@ public class TransactionMapper {
         TransactionListItemDto row = new TransactionListItemDto();
         row.setTranId(entity.getTranId());
         row.setTranDate(formatShortDate(entity.getTranOrigTs()));
-        row.setTranDesc(entity.getTranDesc());
+        row.setTranDesc(truncateToListDescWidth(entity.getTranDesc()));
         row.setTranAmt(scale2(entity.getTranAmt()));
         return row;
+    }
+
+    /**
+     * :purpose: Reduce a stored description to the width the list map field holds,
+     *   reproducing ``MOVE TRAN-DESC TO TDESC0nI`` where the source is ``PIC X(100)`` and
+     *   the target ``PIC X(26)``. The 3270 field is a fixed 26-cell window that cannot
+     *   wrap, so the leftmost 26 characters are all the screen ever shows and the row
+     *   always occupies exactly one line.
+     * :param value: the stored description; may be ``null``.
+     * :returns: the leftmost 26 characters, or ``null`` when ``value`` is ``null``.
+     */
+    private static String truncateToListDescWidth(String value) {
+        if (value == null || value.length() <= LIST_DESC_WIDTH) {
+            return value;
+        }
+        return value.substring(0, LIST_DESC_WIDTH);
     }
 
     /**

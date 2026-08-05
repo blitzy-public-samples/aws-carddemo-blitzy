@@ -90,6 +90,7 @@ class UserServiceTest {
     private static final String MSG_INVALID_SEL = "Invalid selection. Valid values are U and D";
     private static final String MSG_ALREADY_TOP = "You are already at the top of the page...";
     private static final String MSG_ALREADY_BOTTOM = "You are already at the bottom of the page...";
+    private static final String MSG_REACHED_BOTTOM = "You have reached the bottom of the page...";
 
     @Mock
     private UserRepository userRepository;
@@ -848,6 +849,58 @@ class UserServiceTest {
         UserListResponseDto result = userService.listUsers(4);
 
         assertThat(result.getUsers()).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("listUsersFrom positions the browse inclusively at the entered search key")
+    void listUsersFrom_searchKey_browsesGreaterThanEqual() {
+        List<UserResponseDto> dtos = dtosList(10);
+        when(userRepository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(eq("USER0003"), any(Pageable.class)))
+                .thenReturn(usersList(10));
+        when(userMapper.toResponseList(anyList())).thenReturn(dtos);
+
+        UserListResponseDto result = userService.listUsersFrom("  USER0003  ");
+
+        assertThat(result.getUsers()).isSameAs(dtos).hasSize(10);
+        assertThat(result.getPageNumber()).isZero();
+        assertThat(result.isNextPage()).isTrue();
+        assertThat(result.getMessage()).isNull();
+
+        ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
+        verify(userRepository)
+                .findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(eq("USER0003"), pageableCaptor.capture());
+        assertThat(pageableCaptor.getValue().getPageSize()).isEqualTo(10);
+        verify(userRepository, never()).findAllByOrderBySecUsrIdAsc(any(Pageable.class));
+    }
+
+    @Test
+    @DisplayName("listUsersFrom with no match carries the bottom banner instead of failing")
+    void listUsersFrom_noMatch_carriesBottomBanner() {
+        when(userRepository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(eq("ZZZZZZZZ"), any(Pageable.class)))
+                .thenReturn(Collections.emptyList());
+        when(userMapper.toResponseList(anyList())).thenReturn(List.of());
+
+        UserListResponseDto result = userService.listUsersFrom("ZZZZZZZZ");
+
+        assertThat(result.getUsers()).isEmpty();
+        assertThat(result.isNextPage()).isFalse();
+        assertThat(result.getMessage()).isEqualTo(MSG_REACHED_BOTTOM);
+    }
+
+    @Test
+    @DisplayName("listUsersFrom with a blank key restarts the browse at the first page")
+    void listUsersFrom_blankKey_listsFirstPage() {
+        when(userRepository.findAllByOrderBySecUsrIdAsc(any(Pageable.class)))
+                .thenReturn(new PageImpl<>(usersList(10)));
+        when(userMapper.toResponseList(anyList())).thenReturn(dtosList(10));
+
+        UserListResponseDto result = userService.listUsersFrom("   ");
+
+        assertThat(result.getUsers()).hasSize(10);
+        assertThat(result.getPageNumber()).isZero();
+        verify(userRepository).findAllByOrderBySecUsrIdAsc(any(Pageable.class));
+        verify(userRepository, never())
+                .findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(any(), any(Pageable.class));
     }
 
     @Test

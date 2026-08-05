@@ -89,8 +89,7 @@ public class ReportController {
      * :purpose: Submit the ``CREASTMT`` statement-generation job stream (legacy
      *     ``CBSTM03A``), which produces the plain-text and HTML account statements. It is
      *     the entry point for the statement path, kept distinct from the ``CORPT00C``
-     *     report request that submits the transaction-detail report; without it the
-     *     statement job stream would have no caller at all.
+     *     report request that submits the transaction-detail report.
      * :param stmtFile: optional plain-text statement output file name (the ``STMTFILE``
      *     DD name); the configured default is used when omitted.
      * :param htmlFile: optional HTML statement output file name (the ``HTMLFILE`` DD
@@ -98,15 +97,12 @@ public class ReportController {
      * :returns: the accepted run's durable execution handle (HTTP 202).
      * :raises com.carddemo.common.exception.CardDemoException: when the job cannot be
      *     submitted; mapped by the shared ``GlobalExceptionHandler``.
-     * :note: The endpoint takes no report type and no date window. ``CREASTMT`` carries
-     *     no ``PARM``: its SORT step re-keys the entire ``TRANSACT`` file by card number
-     *     and transaction id with no date filter, so ``CBSTM03A`` always statements a
-     *     card's full history [app/jcl/CREASTMT.JCL]. A mandatory
-     *     ``reportType``/``startDate``/``endDate`` triple used to be accepted and
-     *     recorded as identifying job parameters even though nothing in the job could
-     *     read them, which told the caller a windowed statement had been produced and
-     *     keyed duplicate detection on values that could not change the output. Callers
-     *     that still send them are unaffected: unknown query parameters are ignored.
+     * :note: ``CREASTMT`` had no online transaction and was submitted by an operator, so
+     *     the route requires ``ROLE_ADMIN`` at both the gateway and this service.
+     * :note: The endpoint takes no report type and no date window: ``CREASTMT`` carries no
+     *     ``PARM`` and its SORT step re-keys the entire ``TRANSACT`` file by card number and
+     *     transaction id with no date filter, so ``CBSTM03A`` always statements a card's
+     *     full history [app/jcl/CREASTMT.JCL].
      */
     @PostMapping("/statements")
     @ResponseStatus(HttpStatus.ACCEPTED)

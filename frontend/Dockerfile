@@ -34,6 +34,13 @@ COPY . .
 # for the same-origin, nginx-reverse-proxied deployment topology.
 ARG VITE_API_BASE_URL=http://localhost:8080
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+# The sign-on screen's AppID:/SysID: fields (app/bms/COSGN00.bms APPLID/SYSID, each
+# LENGTH=8) were filled by EXEC CICS ASSIGN from the region serving the screen, so the
+# deployment supplies them here. Unset renders the mapset's own blank default.
+ARG VITE_APP_ID=CARDDEMO
+ENV VITE_APP_ID=$VITE_APP_ID
+ARG VITE_SYS_ID=
+ENV VITE_SYS_ID=$VITE_SYS_ID
 
 RUN npm run build
 
