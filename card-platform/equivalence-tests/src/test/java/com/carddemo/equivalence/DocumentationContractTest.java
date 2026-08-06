@@ -174,8 +174,8 @@ class DocumentationContractTest {
         for (int expected = 1; expected <= 26; expected++) {
             assertEquals(expected, identifiers.get(expected - 1).intValue());
         }
-        assertTrue(flags.contains("## One resolved naming defect"));
-        assertTrue(flags.contains("app/cpy/CVACT01Y.cpy:L12-L13"));
+        assertTrue(flags.contains("## Resolved rather than flagged"));
+        assertTrue(flags.contains("app/cpy/CVACT01Y.cpy:L13-L14"));
         assertTrue(flags.contains("`RECOVERY(NONE) JOURNAL(NO)`"));
     }
 

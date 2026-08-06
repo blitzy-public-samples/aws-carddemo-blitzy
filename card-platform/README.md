@@ -378,7 +378,7 @@ Interest is verified but not migrated. `BillingCycleService` reproduces only the
 | [Suggested Next Tasks](docs/suggested-next-tasks.md) | Follow-up work with locations and verification criteria |
 | [Decision Log](docs/decision-log.md) | Alternatives, reasons, accepted risks, and declared deviations |
 | [Traceability Matrix](docs/traceability-matrix.md) | Bidirectional source-to-target classification |
-| [Business Rule Flags](docs/business-rule-flags.md) | Thirty-two entries covering the specification's twenty-six ambiguous, inconsistent, or undocumented source rules, plus one declared departure |
+| [Business Rule Flags](docs/business-rule-flags.md) | The twenty-six ambiguous, inconsistent, or undocumented source rules, each with its citation and its handling, plus two declared platform departures |
 | [Architecture, Before and After](docs/architecture-before-after.md) | Paired Mermaid migration views |
 | [Event Flow](docs/event-flow.md) | Topics, groups, outboxes, projections, and idempotency |
 | [Data Model](docs/data-model.md) | Service-owned tables and copybook-to-column provenance |
