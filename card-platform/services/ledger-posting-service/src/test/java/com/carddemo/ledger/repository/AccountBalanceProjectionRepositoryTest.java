@@ -28,7 +28,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
- * Runs {@link AccountBalanceProjectionRepository#applyStateChange} against a real database.
+ * Runs the two native statements of {@link AccountBalanceProjectionRepository} against a real
+ * database.
  *
  * <p>This class exists because that statement is native, and nothing else would have run it before a
  * deployment did. Spring Data derives and checks a method-name query at start-up and Hibernate
@@ -104,7 +105,7 @@ class AccountBalanceProjectionRepositoryTest {
     /**
      * Runs one modifying statement in its own committed transaction.
      *
-     * <p>{@code applyStateChange} carries {@code @Modifying} and no transaction of its own, so it is
+     * <p>Each statement carries {@code @Modifying} and no transaction of its own, so it is
      * called inside a transaction in production and must be here too. Committing rather than rolling
      * back also means every read below opens a fresh persistence context: the statement is native, so
      * a session that had already loaded the row would not learn of the change from it.
@@ -143,7 +144,7 @@ class AccountBalanceProjectionRepositoryTest {
     }
 
     /**
-     * Applies one change through the statement under test.
+     * Opens a row for the account through the bootstrap statement under test.
      *
      * @param balance     the balance the change reports
      * @param cycleCredit the cycle-credit accumulator the change reports
@@ -151,10 +152,22 @@ class AccountBalanceProjectionRepositoryTest {
      * @param occurredAt  the producer's clock reading
      * @return the row count the statement answered
      */
-    private int apply(String balance, String cycleCredit, String cycleDebit, Instant occurredAt) {
-        return boundary.execute(status -> projections.applyStateChange(NEW_ACCOUNT,
+    private int bootstrap(String balance, String cycleCredit, String cycleDebit,
+            Instant occurredAt) {
+        return boundary.execute(status -> projections.insertMissingProjection(NEW_ACCOUNT,
                 new BigDecimal(balance), new BigDecimal(cycleCredit), new BigDecimal(cycleDebit),
                 UUID.randomUUID(), occurredAt));
+    }
+
+    /**
+     * Closes a billing cycle through the accumulator-zeroing statement under test.
+     *
+     * @param occurredAt the producer's clock reading
+     * @return the row count the statement answered
+     */
+    private int closeCycle(Instant occurredAt) {
+        return boundary.execute(status ->
+                projections.closeBillingCycle(NEW_ACCOUNT, UUID.randomUUID(), occurredAt));
     }
 
     @Nested
@@ -167,7 +180,7 @@ class AccountBalanceProjectionRepositoryTest {
             assertTrue(projections.findById(NEW_ACCOUNT).isEmpty(),
                     "this account carries no seeded row, which is the condition under test");
 
-            int applied = apply("193.00", "10.00", "-4.00", EARLIER);
+            int applied = bootstrap("193.00", "10.00", "-4.00", EARLIER);
 
             AccountBalanceProjectionEntity stored = projections.findById(NEW_ACCOUNT).orElseThrow();
             assertAll(
@@ -185,82 +198,128 @@ class AccountBalanceProjectionRepositoryTest {
     }
 
     @Nested
-    @DisplayName("Replacement and ordering over a row that already exists")
-    class ReplacementAndOrdering {
+    @DisplayName("Ownership and ordering over a row that already exists")
+    class OwnershipAndOrdering {
 
         @Test
-        @DisplayName("a later change replaces all three values rather than adding to them")
-        void aLaterChangeReplacesTheValues() {
-            apply("193.00", "10.00", "-4.00", EARLIER);
+        @DisplayName("a second change leaves all three values as the posting path left them")
+        void aSecondChangeLeavesTheValuesAlone() {
+            bootstrap("193.00", "10.00", "-4.00", EARLIER);
+            // Stand in for a posting: the amount was added to the balance and to the credit
+            // accumulator, exactly as app/cbl/CBTRN02C.cbl:L547-L549 does.
+            database.update("""
+                    UPDATE ledger_service.account_balance_projection
+                       SET current_balance = ?, cycle_credit = ?
+                     WHERE account_id = ?
+                    """, new BigDecimal("243.00"), new BigDecimal("60.00"), NEW_ACCOUNT);
 
-            int applied = apply("50.00", "0.00", "0.00", LATER);
+            int applied = bootstrap("50.00", "0.00", "0.00", LATER);
 
             AccountBalanceProjectionEntity stored = projections.findById(NEW_ACCOUNT).orElseThrow();
             assertAll(
-                    () -> assertEquals(1, applied, "the conflict path reports one row"),
-                    () -> assertEquals(new BigDecimal("50.00"), stored.getCurrentBalance(),
-                            "the balance is replaced: 50.00 and not 243.00, because the account "
-                                    + "service rewrites the record it owns"),
+                    () -> assertEquals(0, applied,
+                            "the conflict path reports no row, because a held row is not opened "
+                                    + "a second time"),
+                    () -> assertEquals(new BigDecimal("243.00"), stored.getCurrentBalance(),
+                            "the posted balance stands: the account service's copy carries no "
+                                    + "posting, so writing it here would discard the movement "
+                                    + "app/cbl/CBTRN02C.cbl:L547 applied"),
+                    () -> assertEquals(new BigDecimal("60.00"), stored.getCycleCredit(),
+                            "and the posted accumulator stands with it"),
+                    () -> assertEquals(new BigDecimal("-4.00"), stored.getCycleDebit(),
+                            "the untouched accumulator is untouched"),
+                    () -> assertEquals(EARLIER, stored.getSourceOccurredAt(),
+                            "and no provenance is claimed for a change that wrote nothing"));
+        }
+
+        @Test
+        @DisplayName("a cycle close zeroes both accumulators and leaves the balance")
+        void aCycleCloseZeroesBothAccumulatorsOnly() {
+            bootstrap("193.00", "10.00", "-4.00", EARLIER);
+
+            int applied = closeCycle(LATER);
+
+            AccountBalanceProjectionEntity stored = projections.findById(NEW_ACCOUNT).orElseThrow();
+            assertAll(
+                    () -> assertEquals(1, applied, "the cycle close reports one row"),
+                    () -> assertEquals(new BigDecimal("193.00"), stored.getCurrentBalance(),
+                            "app/cbl/CBACT04C.cbl:L353-L354 moves zero into the two accumulators "
+                                    + "and names ACCT-CURR-BAL nowhere"),
                     () -> assertEquals(new BigDecimal("0.00"), stored.getCycleCredit(),
-                            "a cycle close zeroes the accumulator rather than adding zero"),
+                            "ACCT-CURR-CYC-CREDIT is zeroed"),
                     () -> assertEquals(new BigDecimal("0.00"), stored.getCycleDebit(),
-                            "and the same for the debit accumulator"),
+                            "and so is ACCT-CURR-CYC-DEBIT"),
                     () -> assertEquals(LATER, stored.getSourceOccurredAt(),
                             "the row now carries the later clock reading"));
         }
 
         @Test
-        @DisplayName("a change behind the stored one is discarded and reports no row")
-        void anEarlierChangeIsDiscarded() {
-            apply("50.00", "0.00", "0.00", LATER);
+        @DisplayName("a cycle close behind the stored change is discarded and reports no row")
+        void anEarlierCycleCloseIsDiscarded() {
+            bootstrap("193.00", "10.00", "-4.00", LATER);
 
-            int applied = apply("193.00", "10.00", "-4.00", EARLIER);
+            int applied = closeCycle(EARLIER);
 
             AccountBalanceProjectionEntity stored = projections.findById(NEW_ACCOUNT).orElseThrow();
             assertAll(
                     () -> assertEquals(0, applied,
                             "the guard discards it, which is what the consumer reads as a "
                                     + "redelivery arriving behind a newer change"),
-                    () -> assertEquals(new BigDecimal("50.00"), stored.getCurrentBalance(),
-                            "the newer balance stands"),
+                    () -> assertEquals(new BigDecimal("10.00"), stored.getCycleCredit(),
+                            "so the accumulator the newer change left stands"),
                     () -> assertEquals(LATER, stored.getSourceOccurredAt(),
                             "and so does the newer clock reading"));
         }
 
         @Test
-        @DisplayName("a change at the same instant is discarded, so a redelivery is a no-op")
-        void aChangeAtTheSameInstantIsDiscarded() {
-            apply("50.00", "0.00", "0.00", LATER);
+        @DisplayName("a cycle close at the same instant is discarded, so a redelivery is a no-op")
+        void aCycleCloseAtTheSameInstantIsDiscarded() {
+            bootstrap("193.00", "10.00", "-4.00", LATER);
 
-            int applied = apply("999.00", "1.00", "1.00", LATER);
+            int applied = closeCycle(LATER);
 
             assertAll(
                     () -> assertEquals(0, applied,
                             "the comparison is strictly-after, so an equal instant does not win"),
-                    () -> assertEquals(new BigDecimal("50.00"),
-                            projections.findById(NEW_ACCOUNT).orElseThrow().getCurrentBalance(),
+                    () -> assertEquals(new BigDecimal("10.00"),
+                            projections.findById(NEW_ACCOUNT).orElseThrow().getCycleCredit(),
                             "which makes a redelivery of one change harmless"));
         }
 
         @Test
-        @DisplayName("a row the posting path created carries no provenance and accepts any change")
-        void aRowWithNoProvenanceAcceptsAnyChange() {
+        @DisplayName("a cycle close names an account no row carries and reports no row")
+        void aCycleCloseOnAnAbsentRowReportsNoRow() {
+            assertTrue(projections.findById(NEW_ACCOUNT).isEmpty(),
+                    "this account carries no row, which is the condition under test");
+
+            assertEquals(0, closeCycle(LATER),
+                    "the zeroing statement creates nothing, so the consumer opens the row through "
+                            + "the bootstrap first");
+        }
+
+        @Test
+        @DisplayName("a row the posting path created carries no provenance and accepts a close")
+        void aRowWithNoProvenanceAcceptsAClose() {
             database.update("""
                     INSERT INTO ledger_service.account_balance_projection
                         (account_id, current_balance, cycle_credit, cycle_debit)
                     VALUES (?, ?, ?, ?)
-                    """, NEW_ACCOUNT, new BigDecimal("7.00"), new BigDecimal("0.00"),
+                    """, NEW_ACCOUNT, new BigDecimal("7.00"), new BigDecimal("3.00"),
                     new BigDecimal("0.00"));
 
-            int applied = apply("50.00", "0.00", "0.00", EARLIER);
+            int applied = closeCycle(EARLIER);
 
+            AccountBalanceProjectionEntity stored = projections.findById(NEW_ACCOUNT).orElseThrow();
             assertAll(
                     () -> assertEquals(1, applied,
                             "a row carrying no clock reading has nothing to compare against, so "
                                     + "the first change to reach it wins and the projection "
                                     + "converges"),
-                    () -> assertEquals(EARLIER,
-                            projections.findById(NEW_ACCOUNT).orElseThrow().getSourceOccurredAt(),
+                    () -> assertEquals(new BigDecimal("0.00"), stored.getCycleCredit(),
+                            "the accumulator is zeroed"),
+                    () -> assertEquals(new BigDecimal("7.00"), stored.getCurrentBalance(),
+                            "and the seeded balance stands"),
+                    () -> assertEquals(EARLIER, stored.getSourceOccurredAt(),
                             "and the row now carries provenance"));
         }
     }
@@ -272,7 +331,7 @@ class AccountBalanceProjectionRepositoryTest {
         @Test
         @DisplayName("the two provenance columns are written together or not at all")
         void theTwoProvenanceColumnsMoveTogether() {
-            apply("193.00", "10.00", "-4.00", EARLIER);
+            bootstrap("193.00", "10.00", "-4.00", EARLIER);
             AccountBalanceProjectionEntity stored = projections.findById(NEW_ACCOUNT).orElseThrow();
 
             assertEquals(stored.getSourceEventId() == null, stored.getSourceOccurredAt() == null,

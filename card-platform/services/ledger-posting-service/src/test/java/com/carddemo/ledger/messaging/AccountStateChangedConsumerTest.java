@@ -47,6 +47,13 @@ import tools.jackson.databind.node.ObjectNode;
  * <p>The third property asserted here is ordering. The projection is a copy, so a redelivery arriving
  * behind a newer change must leave the row alone: a regressed cycle balance raises nothing and quietly
  * accumulates onto a number the account service had already superseded.
+ *
+ * <p>The fourth is ownership, and it is the property this listener previously broke. All three value
+ * columns are produced by the posting arithmetic at {@code app/cbl/CBTRN02C.cbl:L545-L560}, and the
+ * account service's copy of them carries no posting at all, because it consumes no
+ * {@code TransactionPosted}. So a change that names an ordinary field update must leave a row this
+ * projection already holds exactly as it stands, and only a cycle close may write to one — zeroing
+ * the two accumulators and nothing else.
  */
 @DisplayName("The account-state listener that keeps the balance projection current")
 class AccountStateChangedConsumerTest {
@@ -114,11 +121,30 @@ class AccountStateChangedConsumerTest {
                 .thenReturn(1);
     }
 
-    /** Answers the projection write with {@code 1}, so the change is the newest one. */
-    private void writeApplies() {
-        when(accountBalances.applyStateChange(anyString(), any(BigDecimal.class),
+    /** Answers the bootstrap insert with {@code 1}, so the projection held no row for the account. */
+    private void bootstrapInserts() {
+        when(accountBalances.insertMissingProjection(anyString(), any(BigDecimal.class),
                 any(BigDecimal.class), any(BigDecimal.class), any(UUID.class), any(Instant.class)))
                 .thenReturn(1);
+    }
+
+    /** Answers the bootstrap insert with {@code 0}, so the projection already holds the row. */
+    private void rowAlreadyHeld() {
+        when(accountBalances.insertMissingProjection(anyString(), any(BigDecimal.class),
+                any(BigDecimal.class), any(BigDecimal.class), any(UUID.class), any(Instant.class)))
+                .thenReturn(0);
+    }
+
+    /** Answers the accumulator zeroing with {@code 1}, so the cycle close is the newest change. */
+    private void cycleCloseApplies() {
+        when(accountBalances.closeBillingCycle(anyString(), any(UUID.class), any(Instant.class)))
+                .thenReturn(1);
+    }
+
+    /** Answers the accumulator zeroing with {@code 0}, so a later change already stood. */
+    private void cycleCloseDiscarded() {
+        when(accountBalances.closeBillingCycle(anyString(), any(UUID.class), any(Instant.class)))
+                .thenReturn(0);
     }
 
     /**
@@ -132,6 +158,22 @@ class AccountStateChangedConsumerTest {
      */
     private static JsonNode message(String balance, String cycleCredit, String cycleDebit,
             Instant occurredAt) {
+        return message(balance, cycleCredit, cycleDebit, occurredAt,
+                AccountStateChanged.CHANGE_KIND_ACCOUNT_UPDATED);
+    }
+
+    /**
+     * Builds one schema-shaped message tree naming one change kind.
+     *
+     * @param balance     ACCT-CURR-BAL as the producer sends it, a decimal string
+     * @param cycleCredit ACCT-CURR-CYC-CREDIT as a decimal string
+     * @param cycleDebit  ACCT-CURR-CYC-DEBIT as a decimal string
+     * @param occurredAt  the producer's clock
+     * @param changeKind  the value the {@code changeKind} property carries
+     * @return the tree the deserializer would hand over
+     */
+    private static JsonNode message(String balance, String cycleCredit, String cycleDebit,
+            Instant occurredAt, String changeKind) {
         ObjectNode tree = MAPPER.createObjectNode();
         tree.put("eventId", UUID.randomUUID().toString());
         tree.put("eventType", AccountStateChanged.EVENT_TYPE);
@@ -144,13 +186,27 @@ class AccountStateChangedConsumerTest {
         tree.put("currentCycleCredit", cycleCredit);
         tree.put("currentCycleDebit", cycleDebit);
         tree.put("expirationDate", "2099-12-31");
-        tree.put("changeKind", "ACCOUNT_UPDATED");
+        tree.put("changeKind", changeKind);
         return tree;
     }
 
-    /** A change carrying the fixture values of record one. */
+    /** A change carrying the fixture values of record one, naming an ordinary field update. */
     private static JsonNode aChange() {
         return message("193.00", "0.00", "0.00", Instant.parse("2026-01-01T00:00:00Z"));
+    }
+
+    /**
+     * A cycle close, which is what {@code app/cbl/CBACT04C.cbl:L353-L354} publishes.
+     *
+     * <p>The account service zeroes both accumulators before it publishes, so the payload carries
+     * zeroes. This replica reads the change kind and not those values, because a cycle close is a
+     * command rather than a reading.
+     *
+     * @return the tree the deserializer would hand over
+     */
+    private static JsonNode aCycleClose() {
+        return message("193.00", "0.00", "0.00", Instant.parse("2026-02-01T00:00:00Z"),
+                AccountStateChanged.CHANGE_KIND_BILLING_CYCLE_CLOSED);
     }
 
     /**
@@ -170,41 +226,105 @@ class AccountStateChangedConsumerTest {
     class Bootstrap {
 
         @Test
-        @DisplayName("one change reaches the projection and the delivery acknowledges")
-        void oneChangeReachesTheProjection() {
+        @DisplayName("an absent row is opened from the values the change carried")
+        void anAbsentRowIsOpenedFromTheChange() {
             claimSucceeds();
-            writeApplies();
+            bootstrapInserts();
 
             consumer.onAccountStateChanged(aChange(), acknowledgment, TOPIC);
 
-            verify(accountBalances, times(1)).applyStateChange(eq(ACCOUNT_ID),
+            verify(accountBalances, times(1)).insertMissingProjection(eq(ACCOUNT_ID),
                     eq(new BigDecimal("193.00")), eq(new BigDecimal("0.00")),
                     eq(new BigDecimal("0.00")), any(UUID.class), any(Instant.class));
             verify(acknowledgment, times(1)).acknowledge();
         }
 
         @Test
-        @DisplayName("the write is an upsert, so an absent row is inserted rather than skipped")
-        void theWriteIsAnUpsert() {
+        @DisplayName("the bootstrap reports that the projection moved")
+        void theBootstrapReportsThatTheProjectionMoved() {
             claimSucceeds();
-            writeApplies();
+            bootstrapInserts();
 
             assertTrue(consumer.applyOneEvent(AccountStateChanged.from(aChange()), TOPIC),
                     "an absent row is inserted, which is how a new account first gets one");
         }
 
         @Test
-        @DisplayName("a cycle close arrives as an ordinary change carrying zeroes")
-        void aCycleCloseArrivesAsZeroes() {
+        @DisplayName("a bootstrap needs no cycle-close write, whatever the change kind names")
+        void aBootstrapNeedsNoSecondWrite() {
             claimSucceeds();
-            writeApplies();
-            JsonNode closed = message("193.00", "0.00", "0.00",
-                    Instant.parse("2026-02-01T00:00:00Z"));
+            bootstrapInserts();
 
-            consumer.onAccountStateChanged(closed, acknowledgment, TOPIC);
+            consumer.onAccountStateChanged(aCycleClose(), acknowledgment, TOPIC);
 
-            verify(accountBalances).applyStateChange(eq(ACCOUNT_ID), any(BigDecimal.class),
-                    eq(new BigDecimal("0.00")), eq(new BigDecimal("0.00")), any(UUID.class),
+            verify(accountBalances, times(1)).insertMissingProjection(anyString(),
+                    any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class),
+                    any(UUID.class), any(Instant.class));
+            verify(accountBalances, never()).closeBillingCycle(anyString(), any(UUID.class),
+                    any(Instant.class));
+        }
+    }
+
+    @Nested
+    @DisplayName("Ownership of the three value columns the posting arithmetic derives")
+    class Ownership {
+
+        @Test
+        @DisplayName("an ordinary field update leaves a row this projection already holds alone")
+        void anAccountUpdateLeavesAHeldRowAlone() {
+            claimSucceeds();
+            rowAlreadyHeld();
+
+            assertFalse(consumer.applyOneEvent(AccountStateChanged.from(aChange()), TOPIC),
+                    "the balance and both accumulators are derived here, and this change carries"
+                            + " the account service's copy of them, which holds no posting");
+
+            verify(accountBalances, never()).closeBillingCycle(anyString(), any(UUID.class),
+                    any(Instant.class));
+        }
+
+        @Test
+        @DisplayName("an ordinary field update still acknowledges and counts no failure")
+        void anAccountUpdateStillAcknowledges() {
+            claimSucceeds();
+            rowAlreadyHeld();
+
+            consumer.onAccountStateChanged(aChange(), acknowledgment, TOPIC);
+
+            verify(acknowledgment, times(1)).acknowledge();
+            assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "process"),
+                    "writing nothing is the correct outcome and not a fault");
+        }
+
+        @Test
+        @DisplayName("a cycle close zeroes both accumulators and names no balance")
+        void aCycleCloseZeroesBothAccumulators() {
+            claimSucceeds();
+            rowAlreadyHeld();
+            cycleCloseApplies();
+
+            assertTrue(consumer.applyOneEvent(AccountStateChanged.from(aCycleClose()), TOPIC),
+                    "the cycle close is the one change this replica carries out on a held row");
+
+            verify(accountBalances, times(1)).closeBillingCycle(eq(ACCOUNT_ID), any(UUID.class),
+                    eq(Instant.parse("2026-02-01T00:00:00Z")));
+        }
+
+        @Test
+        @DisplayName("a cycle close carrying a stale balance cannot move the balance")
+        void aCycleCloseCarryingAStaleBalanceCannotMoveIt() {
+            claimSucceeds();
+            rowAlreadyHeld();
+            cycleCloseApplies();
+            JsonNode staleBalance = message("1.00", "0.00", "0.00",
+                    Instant.parse("2026-02-01T00:00:00Z"),
+                    AccountStateChanged.CHANGE_KIND_BILLING_CYCLE_CLOSED);
+
+            consumer.onAccountStateChanged(staleBalance, acknowledgment, TOPIC);
+
+            // The zeroing statement names two columns and takes no balance argument at all, so a
+            // balance in the payload has no route to the column that holds the posted value.
+            verify(accountBalances, times(1)).closeBillingCycle(anyString(), any(UUID.class),
                     any(Instant.class));
         }
     }
@@ -214,14 +334,14 @@ class AccountStateChangedConsumerTest {
     class Ordering {
 
         @Test
-        @DisplayName("a change a later one superseded writes nothing and still acknowledges")
-        void asupersededChangeWritesNothing() {
+        @DisplayName("a cycle close a later change superseded writes nothing and still"
+                + " acknowledges")
+        void asupersededCycleCloseWritesNothing() {
             claimSucceeds();
-            when(accountBalances.applyStateChange(anyString(), any(BigDecimal.class),
-                    any(BigDecimal.class), any(BigDecimal.class), any(UUID.class),
-                    any(Instant.class))).thenReturn(0);
+            rowAlreadyHeld();
+            cycleCloseDiscarded();
 
-            assertFalse(consumer.applyOneEvent(AccountStateChanged.from(aChange()), TOPIC),
+            assertFalse(consumer.applyOneEvent(AccountStateChanged.from(aCycleClose()), TOPIC),
                     "the row already carries a later change, so this one leaves it alone");
         }
 
@@ -229,11 +349,10 @@ class AccountStateChangedConsumerTest {
         @DisplayName("a write that moved nothing is not a failure")
         void aWriteThatMovedNothingIsNotAFailure() {
             claimSucceeds();
-            when(accountBalances.applyStateChange(anyString(), any(BigDecimal.class),
-                    any(BigDecimal.class), any(BigDecimal.class), any(UUID.class),
-                    any(Instant.class))).thenReturn(0);
+            rowAlreadyHeld();
+            cycleCloseDiscarded();
 
-            consumer.onAccountStateChanged(aChange(), acknowledgment, TOPIC);
+            consumer.onAccountStateChanged(aCycleClose(), acknowledgment, TOPIC);
 
             verify(acknowledgment, times(1)).acknowledge();
             assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "process"),
@@ -244,13 +363,27 @@ class AccountStateChangedConsumerTest {
         @DisplayName("the producer clock travels to the write, not this service's clock")
         void theProducerClockTravelsToTheWrite() {
             claimSucceeds();
-            writeApplies();
+            rowAlreadyHeld();
+            cycleCloseApplies();
+            Instant occurredAt = Instant.parse("2026-03-04T05:06:07Z");
+
+            consumer.applyOneEvent(AccountStateChanged.from(message("1.00", "0.00", "0.00",
+                    occurredAt, AccountStateChanged.CHANGE_KIND_BILLING_CYCLE_CLOSED)), TOPIC);
+
+            verify(accountBalances).closeBillingCycle(anyString(), any(UUID.class), eq(occurredAt));
+        }
+
+        @Test
+        @DisplayName("the bootstrap carries the producer clock as the provenance of the new row")
+        void theBootstrapCarriesTheProducerClock() {
+            claimSucceeds();
+            bootstrapInserts();
             Instant occurredAt = Instant.parse("2026-03-04T05:06:07Z");
 
             consumer.applyOneEvent(
                     AccountStateChanged.from(message("1.00", "0.00", "0.00", occurredAt)), TOPIC);
 
-            verify(accountBalances).applyStateChange(anyString(), any(BigDecimal.class),
+            verify(accountBalances).insertMissingProjection(anyString(), any(BigDecimal.class),
                     any(BigDecimal.class), any(BigDecimal.class), any(UUID.class), eq(occurredAt));
         }
     }
@@ -299,7 +432,7 @@ class AccountStateChangedConsumerTest {
         @DisplayName("a write fault refuses the acknowledgement and counts one failure")
         void aWriteFaultRefusesTheAcknowledgement() {
             claimSucceeds();
-            when(accountBalances.applyStateChange(anyString(), any(BigDecimal.class),
+            when(accountBalances.insertMissingProjection(anyString(), any(BigDecimal.class),
                     any(BigDecimal.class), any(BigDecimal.class), any(UUID.class),
                     any(Instant.class))).thenThrow(new IllegalStateException("the store refused"));
 
@@ -312,10 +445,26 @@ class AccountStateChangedConsumerTest {
         }
 
         @Test
+        @DisplayName("a cycle-close fault refuses the acknowledgement and counts one failure")
+        void aCycleCloseFaultRefusesTheAcknowledgement() {
+            claimSucceeds();
+            rowAlreadyHeld();
+            when(accountBalances.closeBillingCycle(anyString(), any(UUID.class),
+                    any(Instant.class))).thenThrow(new IllegalStateException("the store refused"));
+
+            assertThrows(IllegalStateException.class,
+                    () -> consumer.onAccountStateChanged(aCycleClose(), acknowledgment, TOPIC));
+
+            verify(acknowledgment, never()).acknowledge();
+            assertEquals(1.0d, counter("carddemo.ledger.failures", "stage", "process"),
+                    "the fault is counted, and the offset stays uncommitted");
+        }
+
+        @Test
         @DisplayName("no log line and no meter tag carries the account identifier")
         void nothingCarriesTheAccountIdentifier() {
             claimSucceeds();
-            writeApplies();
+            bootstrapInserts();
 
             consumer.onAccountStateChanged(aChange(), acknowledgment, TOPIC);
 
@@ -330,18 +479,39 @@ class AccountStateChangedConsumerTest {
     class Payload {
 
         @Test
-        @DisplayName("the record holds the three columns the projection carries, and no more")
-        void theRecordHoldsTheThreeProjectedColumns() {
+        @DisplayName("the record holds the change kind and the three projected columns, and no more")
+        void theRecordHoldsTheChangeKindAndTheThreeProjectedColumns() {
             AccountStateChanged event = AccountStateChanged.from(aChange());
 
             assertEquals(ACCOUNT_ID, event.accountId(), "the account the change describes");
+            assertEquals(AccountStateChanged.CHANGE_KIND_ACCOUNT_UPDATED, event.changeKind(),
+                    "the change kind decides what this delivery writes, so it is bound");
             assertEquals(new BigDecimal("193.00"), event.currentBalance(), "ACCT-CURR-BAL");
             assertEquals(new BigDecimal("0.00"), event.currentCycleCredit(),
                     "ACCT-CURR-CYC-CREDIT");
             assertEquals(new BigDecimal("0.00"), event.currentCycleDebit(), "ACCT-CURR-CYC-DEBIT");
-            assertEquals(6, AccountStateChanged.class.getRecordComponents().length,
+            assertEquals(7, AccountStateChanged.class.getRecordComponents().length,
                     "the credit limit and the expiry date belong to the decline rules, so this "
                             + "service does not hold a copy of either");
+        }
+
+        @Test
+        @DisplayName("the change kind names which of the two mutations produced the event")
+        void theChangeKindNamesTheMutation() {
+            assertFalse(AccountStateChanged.from(aChange()).closesBillingCycle(),
+                    "a field update closes no cycle");
+            assertTrue(AccountStateChanged.from(aCycleClose()).closesBillingCycle(),
+                    "a cycle close is the one change this replica carries out on a held row");
+        }
+
+        @Test
+        @DisplayName("a change kind the schema does not enumerate is refused")
+        void anUnknownChangeKindIsRefused() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> AccountStateChanged.from(message("193.00", "0.00", "0.00",
+                            Instant.parse("2026-01-01T00:00:00Z"), "BALANCE_ADJUSTED")),
+                    "this replica decides what to write from the change kind, so a value it does"
+                            + " not recognise names a producer it no longer understands");
         }
 
         @Test

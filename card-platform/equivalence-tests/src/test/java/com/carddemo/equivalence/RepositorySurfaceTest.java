@@ -155,7 +155,7 @@ class RepositorySurfaceTest {
         return List.of(
                 new Surface(AccountBalanceProjectionRepository.class,
                         Set.of("findById", "findForUpdateById", "save", "count",
-                                "applyStateChange")),
+                                "insertMissingProjection", "closeBillingCycle")),
                 new Surface(TransactionRepository.class,
                         Set.of("save", "findById", "existsById", "count")),
                 new Surface(RejectedTransactionRepository.class,

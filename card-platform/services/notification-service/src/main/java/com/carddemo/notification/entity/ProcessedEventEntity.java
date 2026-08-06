@@ -1,24 +1,35 @@
 package com.carddemo.notification.entity;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.Embeddable;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
+import java.io.Serializable;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
 
 /**
- * Records one event identifier the notification service has processed.
+ * Records one event identifier the notification service has processed, on one topic.
  *
- * <p>One instance maps to one row of the table {@code processed_event}. Three columns come from
- * {@code src/main/resources/db/migration/V1__schema.sql}, which is authoritative for them:
- * {@code event_id} as the primary key {@code pk_processed_event}, {@code processed_at}, and
- * {@code consumed_topic}. A retention index over {@code processed_at} accompanies them, and a
- * second insert of one identifier violates that primary key.
- * {@code messaging.TransactionPostedConsumer} is the one writer, and it commits this row in the
- * same local transaction as the read-model row it guards.</p>
+ * <p>One instance maps to one row of the table {@code processed_event}. Its columns come from
+ * {@code src/main/resources/db/migration/V1__schema.sql} and
+ * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql}, which are authoritative
+ * for them: {@code event_id} and {@code consumed_topic} together carry the primary key
+ * {@code pk_processed_event}, and {@code processed_at} carries the retention index. A second insert
+ * of one identifier on one topic violates that primary key. All four listeners write here, and each
+ * commits its row in the same local transaction as the read-model row it guards.</p>
+ *
+ * <p><b>Why the topic is part of the identity.</b> Four listener groups share this table and read
+ * four different topics, and the event identifiers on those topics are assigned independently by
+ * three different producing services. Two events on two topics may therefore carry the same
+ * identifier without either producer being at fault. Keyed on the identifier alone, the second of
+ * the two lost its claim to the first and its listener wrote nothing at all: the right outcome for a
+ * redelivery, and a silently dropped read-model row for a different event. Keyed on the identifier
+ * and the topic, duplicate suppression within one topic is unchanged and the cross-topic collision
+ * stops being one.</p>
  *
  * <p>No COBOL ancestor: no Common Business Oriented Language (COBOL) copybook and no COBOL program
  * declares an equivalent record. CardDemo detects no duplicate delivery anywhere. The transaction
@@ -34,14 +45,25 @@ import java.util.UUID;
 public class ProcessedEventEntity {
 
     /**
-     * Identifier of the processed event, assigned by the service that published it.
-     *
-     * <p>Maps to {@code event_id UUID NOT NULL}, which carries the primary key
-     * {@code pk_processed_event}.</p>
+     * Widest value {@code consumed_topic} holds, from {@code consumed_topic VARCHAR(128)} in
+     * {@code src/main/resources/db/migration/V1__schema.sql}.
      */
-    @Id
-    @Column(name = "event_id", nullable = false, updatable = false)
-    private UUID eventId;
+    public static final int CONSUMED_TOPIC_MAX_LENGTH = 128;
+
+    /**
+     * Topic recorded for a delivery that carried no topic header.
+     *
+     * <p>A key column cannot be null, so a delivery with no topic to record takes this text instead.
+     * It holds spaces and parentheses and a Kafka topic name holds only {@code [a-zA-Z0-9._-]}, so
+     * it can never collide with a real topic name.
+     * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql} backfills the same
+     * text into the rows written before {@code consumed_topic} existed.</p>
+     */
+    public static final String NO_CONSUMED_TOPIC = "(no topic header)";
+
+    /** Holds the composite key: the event identifier and the topic it arrived on. */
+    @EmbeddedId
+    private ProcessedEventId id;
 
     /**
      * Instant at which the notification service finished processing the event.
@@ -52,57 +74,61 @@ public class ProcessedEventEntity {
     private Instant processedAt;
 
     /**
-     * Widest value {@code consumed_topic} holds, from {@code consumed_topic VARCHAR(128)} in
-     * {@code src/main/resources/db/migration/V1__schema.sql}.
-     */
-    public static final int CONSUMED_TOPIC_MAX_LENGTH = 128;
-
-    /**
-     * Which topic the delivery that first handled this event arrived on, or null when the
-     * marker was written without one.
-     *
-     * <p>A marker on its own says an event was handled and nothing about where it came from,
-     * which is not enough to investigate a replay. The same identifier can be redelivered on the
-     * topic it came from, or arrive on a dead-letter topic during a recovery. Those are different
-     * situations, and recording the topic separates them.
-     */
-    @Column(name = "consumed_topic", length = CONSUMED_TOPIC_MAX_LENGTH)
-    private String consumedTopic;
-
-    /**
      * No-argument constructor for the Jakarta Persistence provider.
      *
      * <p>The provider calls it while materialising a row, then assigns both fields. Application
-     * code calls {@link #ProcessedEventEntity(UUID, Instant)}.</p>
+     * code calls {@link #ProcessedEventEntity(UUID, Instant, String)}.</p>
      */
     protected ProcessedEventEntity() {
     }
 
     /**
-     * Builds a marker for one processed event.
+     * Builds a marker for one processed event on one topic.
      *
-     * @param eventId     identifier of the processed event
-     * @param processedAt instant at which processing finished
-     * @throws NullPointerException when either argument is {@code null}, naming the field
+     * <p>The topic is required rather than optional because it is half of the key. A caller with no
+     * topic header to record passes {@link #NO_CONSUMED_TOPIC}, which states that absence rather
+     * than leaving the key half unset.</p>
+     *
+     * @param eventId       identifier of the processed event
+     * @param processedAt   instant at which processing finished
+     * @param consumedTopic the topic the delivery arrived on, or {@link #NO_CONSUMED_TOPIC}
+     * @throws NullPointerException     when any argument is {@code null}, naming the field
+     * @throws IllegalArgumentException when {@code consumedTopic} is blank or too long
      */
-    public ProcessedEventEntity(UUID eventId, Instant processedAt) {
-        this.eventId = Objects.requireNonNull(eventId, "eventId must not be null");
+    public ProcessedEventEntity(UUID eventId, Instant processedAt, String consumedTopic) {
+        this.id = new ProcessedEventId(eventId, consumedTopic);
         this.processedAt = Objects.requireNonNull(processedAt, "processedAt must not be null");
     }
 
-    public UUID getEventId() {
-        return eventId;
+    /** @return the composite key, never {@code null} for a constructed marker */
+    public ProcessedEventId getId() {
+        return id;
     }
 
+    /** @return the identifier of the processed event */
+    public UUID getEventId() {
+        return id == null ? null : id.getEventId();
+    }
+
+    /** @return the instant at which processing finished */
     public Instant getProcessedAt() {
         return processedAt;
     }
 
     /**
-     * Compares two markers by {@code eventId} alone, which is the whole primary key.
+     * Returns which topic the delivery that handled this event arrived on.
+     *
+     * @return the topic name, or {@link #NO_CONSUMED_TOPIC} when the delivery carried no header
+     */
+    public String getConsumedTopic() {
+        return id == null ? null : id.getConsumedTopic();
+    }
+
+    /**
+     * Compares two markers by their key, which is the event identifier and the topic together.
      *
      * @param other the object to compare with this marker
-     * @return {@code true} when {@code other} is a marker whose {@code eventId} equals this one
+     * @return {@code true} when {@code other} is a marker carrying an equal key
      */
     @Override
     public boolean equals(Object other) {
@@ -112,51 +138,90 @@ public class ProcessedEventEntity {
         if (!(other instanceof ProcessedEventEntity that)) {
             return false;
         }
-        return Objects.equals(eventId, that.eventId);
+        return Objects.equals(id, that.id);
     }
 
     /**
-     * Derives the hash code from {@code eventId} alone, matching {@link #equals(Object)}.
+     * Derives the hash code from the key alone, matching {@link #equals(Object)}.
      *
-     * @return the hash code of the event identifier, and zero while the identifier is unset
+     * @return the hash code of the key, and zero while the key is unset
      */
     @Override
     public int hashCode() {
-        return Objects.hashCode(eventId);
+        return Objects.hashCode(id);
     }
 
     /**
-     * Renders both fields. The event identifier is opaque and the instant is operational, so
-     * neither field names an account, an amount or a cardholder.
+     * Renders the key and the instant. The event identifier is opaque, the topic is configuration
+     * and the instant is operational, so no field names an account, an amount or a cardholder.
      *
-     * @return the simple class name followed by the event identifier and the processing instant
+     * @return the simple class name followed by the key parts and the processing instant
      */
     @Override
     public String toString() {
-        return "ProcessedEventEntity[eventId=" + eventId + ", processedAt=" + processedAt + "]";
+        return "ProcessedEventEntity[eventId=" + getEventId()
+                + ", consumedTopic=" + getConsumedTopic()
+                + ", processedAt=" + processedAt + "]";
     }
 
     /**
-     * Returns which topic the delivery that first handled this event arrived on.
+     * The composite key: the event identifier then the topic the delivery arrived on.
      *
-     * @return the topic name, or null when the marker carries none
+     * <p>The identifier half comes from {@code EventEnvelope.eventId} of the consumed event. The
+     * topic half comes from the {@code RECEIVED_TOPIC} header of the delivery itself, so a listener
+     * records what it observed rather than what it was configured as; a key built from a consumer
+     * group name would change identity whenever a group was renamed.</p>
+     *
+     * <p>{@code src/main/resources/db/migration/V3__processed_event_topic_key.sql} is authoritative
+     * for both columns and carries the reasoning at length.</p>
      */
-    public String getConsumedTopic() {
-        return consumedTopic;
-    }
+    @Embeddable
+    public static class ProcessedEventId implements Serializable {
 
-    /**
-     * Records which topic the delivery that first handled this event arrived on.
-     *
-     * <p>A value longer than {@value #CONSUMED_TOPIC_MAX_LENGTH} characters is refused rather than
-     * truncated, because a truncated topic name names a topic that does not exist and is worse than
-     * none.
-     *
-     * @param consumedTopic the topic name, or null to record none
-     * @throws IllegalArgumentException if {@code consumedTopic} is blank or too long
-     */
-    public void setConsumedTopic(String consumedTopic) {
-        if (consumedTopic != null) {
+        /** Serialization identity of this key. */
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * Identifier of the processed event, assigned by the service that published it.
+         *
+         * <p>Maps to {@code event_id UUID NOT NULL}.</p>
+         */
+        @Column(name = "event_id", nullable = false, updatable = false)
+        private UUID eventId;
+
+        /**
+         * Which topic the delivery that handled this event arrived on.
+         *
+         * <p>Maps to {@code consumed_topic VARCHAR(128) NOT NULL}. A marker naming only the event
+         * says it was handled and nothing about where it came from, which is not enough to
+         * investigate a replay: the same identifier can be redelivered on the topic it came from, or
+         * arrive on a dead-letter topic during a recovery, and those are different situations.</p>
+         */
+        @Column(name = "consumed_topic", nullable = false, updatable = false,
+                length = CONSUMED_TOPIC_MAX_LENGTH)
+        private String consumedTopic;
+
+        /** Required by the persistence provider. */
+        protected ProcessedEventId() {
+        }
+
+        /**
+         * Takes both key parts.
+         *
+         * <p>A blank topic is refused rather than accepted, and a topic longer than
+         * {@value ProcessedEventEntity#CONSUMED_TOPIC_MAX_LENGTH} characters is refused rather than
+         * truncated, because a truncated topic name names a topic that does not exist and would key
+         * a row nothing can find again.</p>
+         *
+         * @param eventId       the event identifier
+         * @param consumedTopic the topic the delivery arrived on, or
+         *                      {@link ProcessedEventEntity#NO_CONSUMED_TOPIC}
+         * @throws NullPointerException     when an argument is {@code null}
+         * @throws IllegalArgumentException when {@code consumedTopic} is blank or too long
+         */
+        public ProcessedEventId(UUID eventId, String consumedTopic) {
+            Objects.requireNonNull(eventId, "eventId must not be null");
+            Objects.requireNonNull(consumedTopic, "consumedTopic must not be null");
             if (consumedTopic.isBlank()) {
                 throw new IllegalArgumentException("consumedTopic is blank");
             }
@@ -165,7 +230,58 @@ public class ProcessedEventEntity {
                         + " characters, over the " + CONSUMED_TOPIC_MAX_LENGTH
                         + " its column holds");
             }
+            this.eventId = eventId;
+            this.consumedTopic = consumedTopic;
         }
-        this.consumedTopic = consumedTopic;
+
+        /** @return the identifier of the processed event */
+        public UUID getEventId() {
+            return eventId;
+        }
+
+        /** @return the topic the delivery arrived on */
+        public String getConsumedTopic() {
+            return consumedTopic;
+        }
+
+        /**
+         * Compares both key parts.
+         *
+         * @param other the object to compare with this key
+         * @return {@code true} when {@code other} is a key with an equal identifier and topic
+         */
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            }
+            if (!(other instanceof ProcessedEventId that)) {
+                return false;
+            }
+            return Objects.equals(eventId, that.eventId)
+                    && Objects.equals(consumedTopic, that.consumedTopic);
+        }
+
+        /**
+         * Derives the hash code from both key parts, matching {@link #equals(Object)}.
+         *
+         * @return the combined hash code
+         */
+        @Override
+        public int hashCode() {
+            return Objects.hash(eventId, consumedTopic);
+        }
+
+        /**
+         * Renders both key parts. The identifier is opaque and the topic is configuration, so
+         * neither names an account, an amount or a cardholder.
+         *
+         * @return the simple class name followed by the identifier and the topic
+         */
+        @Override
+        public String toString() {
+            return "ProcessedEventId[eventId=" + eventId
+                    + ", consumedTopic=" + consumedTopic + "]";
+        }
     }
 }

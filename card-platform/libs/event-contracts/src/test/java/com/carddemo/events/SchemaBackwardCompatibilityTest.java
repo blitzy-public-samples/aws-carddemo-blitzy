@@ -3175,6 +3175,100 @@ class SchemaBackwardCompatibilityTest {
     }
 
     /**
+     * Asserts a governed version-one authorization produces a version-one posted event rather than
+     * a refusal.
+     *
+     * <p>Version one of the authorized document stays in {@code EventSchemas.SCHEMA_DOCUMENTS} and
+     * declares no {@code cardToken}, so a producer that has not moved to version two publishes an
+     * event a consumer must be able to apply. The factory therefore answers the version the
+     * authorization supports: the card token decides, because it is the one component of a posted
+     * event no other component can supply.
+     *
+     * <p>Building a version-two posted event from a version-one authorization would have to invent
+     * a card token, and refusing the authorization outright would abandon the balance movement the
+     * ledger owns over a component its arithmetic never reads. This test pins the third outcome:
+     * one version-one posted event, valid against version one, carrying none of the ten
+     * descriptive components and the six payload values version one declares.
+     */
+    @Test
+    void aVersionOneAuthorizationProducesAVersionOnePostedEvent() {
+        TransactionAuthorized versionOne = anAuthorizedRecordAtVersionOne();
+
+        TransactionPosted posted = TransactionPosted.forAuthorized(versionOne,
+                new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE);
+
+        assertEquals(EventEnvelope.SCHEMA_VERSION, posted.schemaVersion(),
+                "an authorization carrying no card token produces a version-one posted event");
+        assertFalse(posted.carriesTransactionDetail(),
+                "a version-one posted event carries no descriptive detail");
+        assertNull(posted.cardToken(),
+                "no card token may be invented for an authorization that carried none");
+        assertEquals(versionOne.accountId(), posted.accountId(),
+                "the two events must name one account");
+        assertEquals(versionOne.transactionId(), posted.transactionId(),
+                "the two events must name one transaction");
+        assertEquals(versionOne.amount(), posted.amount(),
+                "the amount must travel unchanged");
+        assertEquals(versionOne.maskedCardNumber(), posted.maskedCardNumber(),
+                "the masked card number must travel unchanged");
+
+        JsonNode wire = MAPPER.readTree(RECORD_MAPPER.writeValueAsString(posted));
+        assertTrue(validate(POSTED, wire).isEmpty(),
+                () -> "the posted event following a version-one authorization must validate against"
+                        + " the version-one document: " + messagesOf(validate(POSTED, wire)));
+        assertFalse(validate(POSTED_WITH_DETAIL, wire).isEmpty(),
+                "a version-one payload must not validate against the version-two document, which"
+                        + " requires the card token and the nine descriptive values");
+
+        assertEquals(posted.schemaVersion(),
+                TransactionPosted.from(versionOne, new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE)
+                        .schemaVersion(),
+                "every name of the factory must resolve to one construction");
+        assertEquals(posted.schemaVersion(),
+                TransactionPosted.forPostedAuthorization(versionOne,
+                        new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE).schemaVersion(),
+                "every name of the factory must resolve to one construction");
+    }
+
+    /**
+     * Asserts a caller-supplied envelope decides the version, and that a detail envelope still
+     * requires the card token.
+     *
+     * <p>The overload taking an envelope is what a test uses to pin an event identifier. The
+     * envelope names the version there, so a version-one envelope produces a version-one event
+     * from either authorization version, and a version-two envelope refuses an authorization with
+     * no token rather than inventing one.
+     */
+    @Test
+    void aSuppliedEnvelopeDecidesThePostedVersionAndADetailEnvelopeStillNeedsTheToken() {
+        TransactionAuthorized versionOne = anAuthorizedRecordAtVersionOne();
+        TransactionAuthorized versionTwo = anAuthorizedRecord();
+
+        TransactionPosted fromVersionOne = TransactionPosted.of(
+                EventEnvelope.of(TransactionPosted.EVENT_TYPE, ACCOUNT_IDENTIFIER,
+                        EventEnvelope.SCHEMA_VERSION),
+                versionOne, new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE);
+        TransactionPosted fromVersionTwo = TransactionPosted.of(
+                EventEnvelope.of(TransactionPosted.EVENT_TYPE, ACCOUNT_IDENTIFIER,
+                        EventEnvelope.SCHEMA_VERSION),
+                versionTwo, new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE);
+
+        assertFalse(fromVersionOne.carriesTransactionDetail(),
+                "a version-one envelope produces a version-one event");
+        assertFalse(fromVersionTwo.carriesTransactionDetail(),
+                "a version-one envelope drops the detail a version-two authorization carried");
+        assertNull(fromVersionTwo.cardToken(),
+                "a version-one event carries no card token, whatever the authorization held");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> TransactionPosted.of(
+                        EventEnvelope.of(TransactionPosted.EVENT_TYPE, ACCOUNT_IDENTIFIER,
+                                TransactionPosted.DETAIL_SCHEMA_VERSION),
+                        versionOne, new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE),
+                "a detail envelope must refuse an authorization that carries no card token");
+    }
+
+    /**
      * Asserts a version-one posted event omits the nine descriptive properties on the wire.
      *
      * <p>Writing them as null would break the version-one document, which closes its property set.

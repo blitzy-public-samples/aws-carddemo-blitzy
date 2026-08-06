@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.notification.entity.ProcessedEventEntity;
+import com.carddemo.notification.entity.ProcessedEventEntity.ProcessedEventId;
 import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
@@ -26,14 +27,23 @@ import org.springframework.data.repository.ListCrudRepository;
  * service, against the migrated schema.
  *
  * <p>Two inherited members carry the guard. {@code existsById} reads a marker and {@code save}
- * writes one. Three tests drive both over a live database, and three read the declared surface of
+ * writes one. Four tests drive both over a live database, and three read the declared surface of
  * the interface through reflection.
  *
- * <p>A marker holds a universally unique identifier (UUID) and the instant a listener finished
- * with the event. The table {@code processed_event} in
- * {@code src/main/resources/db/migration/V1__schema.sql} keeps that instant to microsecond
- * precision, so every instant below is truncated to microseconds before it is written. A value
- * carrying nanoseconds fails an equality assertion on the digits the column drops.
+ * <p>The two declared native statements, {@code claimEvent} and
+ * {@code deleteMarkersProcessedBefore}, are exercised in
+ * {@code entity/NotificationEntityPersistenceTest} instead. A native statement names its table
+ * unqualified, and only a context that has applied the migration into the named schema resolves
+ * that name; this Jakarta Persistence slice resolves mapped entities and not raw SQL.
+ *
+ * <p>A marker holds a universally unique identifier (UUID), the topic the delivery arrived on, and
+ * the instant a listener finished with the event. The identifier and the topic together are the key:
+ * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql} widened it, because four
+ * listener groups share this table and three producing services assign identifiers independently, so
+ * the same identifier can reach two topics without either producer being at fault. The table
+ * {@code processed_event} in {@code src/main/resources/db/migration/V1__schema.sql} keeps the instant
+ * to microsecond precision, so every instant below is truncated to microseconds before it is written.
+ * A value carrying nanoseconds fails an equality assertion on the digits the column drops.
  *
  * <p>Each test method runs inside a transaction the Jakarta Persistence (JPA) slice rolls back, and
  * each method generates its own identifier. No method reads a row another method wrote, and no
@@ -66,8 +76,17 @@ final class ProcessedEventRepositoryTest extends NotificationRepositoryTestSuppo
     /** Package prefix of the Spring Data paging, sorting and specification types. */
     private static final String SPRING_DATA_PACKAGE = "org.springframework.data";
 
-    /** Rows one event identifier occupies, however many deliveries carry it. */
+    /** Rows one event identifier on one topic occupies, however many deliveries carry it. */
     private static final long ONE_ROW = 1L;
+
+    /** Rows one event identifier occupies when it is claimed on two topics. */
+    private static final long TWO_ROWS = 2L;
+
+    /** The topic most markers below record, one of the four this service reads. */
+    private static final String MARKER_TOPIC = "transaction.posted";
+
+    /** A second topic this service reads, for the cross-topic assertions. */
+    private static final String OTHER_TOPIC = "fraud.assessed";
 
     /** The guard under test. */
     @Autowired
@@ -87,13 +106,17 @@ final class ProcessedEventRepositoryTest extends NotificationRepositoryTestSuppo
     void existsByIdReportsFalseBeforeTheMarkerReachesTheDatabaseAndTrueAfter() {
         UUID eventId = UUID.randomUUID();
 
-        assertFalse(markers.existsById(eventId), "no marker names the event yet");
+        assertFalse(markers.existsById(key(eventId, MARKER_TOPIC)),
+                "no marker names the event on this topic yet");
 
-        markers.save(new ProcessedEventEntity(eventId, FIRST_PASS));
+        markers.save(new ProcessedEventEntity(eventId, FIRST_PASS, MARKER_TOPIC));
         entityManager.flush();
         entityManager.clear();
 
-        assertTrue(markers.existsById(eventId), "the marker is in the database");
+        assertTrue(markers.existsById(key(eventId, MARKER_TOPIC)),
+                "the marker is in the database");
+        assertFalse(markers.existsById(key(eventId, OTHER_TOPIC)),
+                "and it says nothing about the same identifier on another topic");
     }
 
     /**
@@ -108,16 +131,16 @@ final class ProcessedEventRepositoryTest extends NotificationRepositoryTestSuppo
     void aRepeatedSaveOfOneEventIdentifierLeavesOneRowCarryingTheLaterInstant() {
         UUID eventId = UUID.randomUUID();
 
-        markers.save(new ProcessedEventEntity(eventId, FIRST_PASS));
+        markers.save(new ProcessedEventEntity(eventId, FIRST_PASS, MARKER_TOPIC));
         entityManager.flush();
         entityManager.clear();
 
         ProcessedEventEntity secondPass =
-                markers.save(new ProcessedEventEntity(eventId, SECOND_PASS));
+                markers.save(new ProcessedEventEntity(eventId, SECOND_PASS, MARKER_TOPIC));
         entityManager.flush();
         entityManager.clear();
 
-        ProcessedEventEntity stored = markers.findById(eventId).orElseThrow();
+        ProcessedEventEntity stored = markers.findById(key(eventId, MARKER_TOPIC)).orElseThrow();
         assertAll(
                 () -> assertEquals(ONE_ROW, markers.count(), "two saves, one row"),
                 () -> assertNotSame(secondPass, stored, "the read loaded the row"),
@@ -138,11 +161,12 @@ final class ProcessedEventRepositoryTest extends NotificationRepositoryTestSuppo
     void aMarkerInsertsOnItsOwnWithNoReadModelRowBesideIt() {
         UUID eventId = UUID.randomUUID();
 
-        ProcessedEventEntity written = markers.save(new ProcessedEventEntity(eventId, FIRST_PASS));
+        ProcessedEventEntity written =
+                markers.save(new ProcessedEventEntity(eventId, FIRST_PASS, MARKER_TOPIC));
         entityManager.flush();
         entityManager.clear();
 
-        ProcessedEventEntity stored = markers.findById(eventId).orElseThrow();
+        ProcessedEventEntity stored = markers.findById(key(eventId, MARKER_TOPIC)).orElseThrow();
         assertAll(
                 () -> assertEquals(ONE_ROW, markers.count(), "the insert stands alone"),
                 () -> assertNotSame(written, stored, "the read loaded the row"),
@@ -154,14 +178,17 @@ final class ProcessedEventRepositoryTest extends NotificationRepositoryTestSuppo
 
     /**
      * Pins the supertype of the interface to the list-based Spring Data
-     * create-read-update-delete contract over the marker entity and a UUID identifier.
+     * create-read-update-delete contract over the marker entity and its composite key.
      *
-     * <p>The identifier type matches the {@code eventId} field of the event envelope in
-     * {@code card-platform/libs/event-contracts}, which is a {@code java.util.UUID}.
+     * <p>The key holds the {@code eventId} field of the event envelope in
+     * {@code card-platform/libs/event-contracts}, which is a {@code java.util.UUID}, and the topic
+     * the delivery arrived on. A repository parameterised with the identifier alone would let a
+     * caller look a marker up without naming the topic, which is the read that made a cross-topic
+     * collision look like a duplicate.
      */
     @Test
-    @DisplayName("The interface is parameterised with the marker entity and a UUID identifier")
-    void theInterfaceIsParameterisedWithTheMarkerEntityAndAUuidIdentifier() {
+    @DisplayName("The interface is parameterised with the marker entity and its composite key")
+    void theInterfaceIsParameterisedWithTheMarkerEntityAndItsCompositeKey() {
         Type[] supertypes = ProcessedEventRepository.class.getGenericInterfaces();
         assertEquals(1, supertypes.length, "the interface extends one supertype");
 
@@ -172,7 +199,7 @@ final class ProcessedEventRepositoryTest extends NotificationRepositoryTestSuppo
                         "the list-based create-read-update-delete contract"),
                 () -> assertEquals(2, arguments.length, "two type arguments"),
                 () -> assertSame(ProcessedEventEntity.class, arguments[0], "the marker entity"),
-                () -> assertSame(UUID.class, arguments[1], "a UUID identifier"));
+                () -> assertSame(ProcessedEventId.class, arguments[1], "its composite key"));
     }
 
     /**
@@ -221,6 +248,47 @@ final class ProcessedEventRepositoryTest extends NotificationRepositoryTestSuppo
 
         assertEquals(0, ProcessedEventRepository.class.getDeclaredClasses().length,
                 "the interface nests no type");
+    }
+
+    /**
+     * Holds that one identifier claimed on two topics occupies two rows.
+     *
+     * <p>This is the property the single-column key denied. Two producing services assign event
+     * identifiers independently, so a {@code FraudFlagged} event and a {@code TransactionPosted}
+     * event may carry the same one. Both are real events and both have work to do, so both must be
+     * claimable.
+     */
+    @Test
+    @DisplayName("One identifier on two topics occupies two rows")
+    void oneIdentifierOnTwoTopicsOccupiesTwoRows() {
+        UUID eventId = UUID.randomUUID();
+
+        markers.save(new ProcessedEventEntity(eventId, FIRST_PASS, MARKER_TOPIC));
+        markers.save(new ProcessedEventEntity(eventId, SECOND_PASS, OTHER_TOPIC));
+        entityManager.flush();
+        entityManager.clear();
+
+        assertAll(
+                () -> assertEquals(TWO_ROWS, markers.count(), "one row per topic"),
+                () -> assertEquals(FIRST_PASS,
+                        markers.findById(key(eventId, MARKER_TOPIC)).orElseThrow()
+                                .getProcessedAt(),
+                        "each row keeps its own instant"),
+                () -> assertEquals(SECOND_PASS,
+                        markers.findById(key(eventId, OTHER_TOPIC)).orElseThrow()
+                                .getProcessedAt(),
+                        "and neither row overwrote the other"));
+    }
+
+    /**
+     * Builds the composite key of one marker.
+     *
+     * @param eventId       the event identifier
+     * @param consumedTopic the topic the delivery arrived on
+     * @return the key both columns of {@code pk_processed_event} carry
+     */
+    private static ProcessedEventId key(UUID eventId, String consumedTopic) {
+        return new ProcessedEventId(eventId, consumedTopic);
     }
 
     /**

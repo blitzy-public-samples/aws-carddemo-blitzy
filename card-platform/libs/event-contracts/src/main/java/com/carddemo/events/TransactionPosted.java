@@ -651,7 +651,8 @@ public record TransactionPosted(
     }
 
     /**
-     * Builds the version-2 event that follows one authorized transaction.
+     * Builds the event that follows one authorized transaction, at the version the authorized event
+     * supports.
      *
      * <p>Ten of the fifteen payload values are copied from the authorized event, so a producer
      * cannot transpose two of them or leave one blank. The account identifier, the transaction
@@ -662,27 +663,53 @@ public record TransactionPosted(
      * onto the posted record, and {@code app/cbl/CBTRN02C.cbl:L438} stamps the posting timestamp,
      * which is the argument below.
      *
-     * @param authorized the authorized transaction this posting applied, at
+     * <h2>Why the version is derived and not assumed</h2>
+     *
+     * <p>The card token is the one component of a posted event that no other component can supply.
+     * {@code schemas/transaction-authorized-v2.json} requires it and
+     * {@code schemas/transaction-authorized-v1.json} declares no such property at all, so an event
+     * at {@link EventEnvelope#SCHEMA_VERSION} carries none and
+     * {@link TransactionAuthorized#cardToken()} answers {@code null} for it. Both versions stay
+     * governed by {@code EventSchemas.SCHEMA_DOCUMENTS}, because evolution here is additive only: a
+     * version is never withdrawn, so a producer that has not yet moved to version 2 keeps working.
+     *
+     * <p>This factory therefore answers the version the authorized event supports rather than
+     * refusing the older one. A token present answers
+     * {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} carrying the whole posted record. A token absent
+     * answers {@link EventEnvelope#SCHEMA_VERSION} carrying the five envelope components and the
+     * balance, the transaction identifier, the account identifier, the posting timestamp, the
+     * amount and the masked card number, which is exactly the payload
+     * {@code schemas/transaction-posted-v1.json} declares and the shape
+     * {@link #forAccount(String, String, BigDecimal, String, BigDecimal, String)} builds. The nine
+     * remaining detail components travel only beside the token, because
+     * {@code schemas/transaction-posted-v1.json} declares none of them and the canonical
+     * constructor refuses a version-1 event that carries one.
+     *
+     * <p>Refusing a version-1 authorization instead would have left a governed, schema-valid event
+     * that no consumer could apply: the ledger's posting arithmetic needs no card token, so the
+     * balance movement it owns would have been abandoned over a component it never reads. A
+     * consumer that does need the token, such as the card-keyed read model of the notification
+     * service, declines a version-1 posted event on its own terms and says so.
+     *
+     * @param authorized the authorized transaction this posting applied, at either
+     *                   {@link EventEnvelope#SCHEMA_VERSION} or
      *                   {@link TransactionAuthorized#CARD_TOKEN_SCHEMA_VERSION}
      * @param newBalance the account balance after the posting, at up to ten integer digits
      * @param postedAt   the twenty-six-character posting timestamp, shaped
      *                   {@code YYYY-MM-DD-HH.MM.SS.NN0000}
-     * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}, with both money components
-     *         at scale {@link #MONEY_SCALE}
+     * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} when the authorized event
+     *         carries a card token and at {@link EventEnvelope#SCHEMA_VERSION} when it does not,
+     *         with both money components at scale {@link #MONEY_SCALE}
      * @throws NullPointerException     when {@code authorized} is {@code null}
-     * @throws IllegalArgumentException when the authorized event carries no card token, or when any
-     *                                 component fails the canonical constructor
+     * @throws IllegalArgumentException when any component fails the canonical constructor
      */
     public static TransactionPosted forAuthorized(TransactionAuthorized authorized,
             BigDecimal newBalance, String postedAt) {
         Objects.requireNonNull(authorized, "authorized must be present");
 
         if (authorized.cardToken() == null) {
-            throw new IllegalArgumentException("the authorized event must carry a card token, so it"
-                    + " must be at schemaVersion "
-                    + TransactionAuthorized.CARD_TOKEN_SCHEMA_VERSION
-                    + ", and the supplied event is at schemaVersion "
-                    + authorized.schemaVersion());
+            return forAccount(authorized.accountId(), authorized.transactionId(), newBalance,
+                    postedAt, authorized.amount(), authorized.maskedCardNumber());
         }
 
         EventEnvelope envelope = EventEnvelope.of(EVENT_TYPE, authorized.accountId(),
@@ -817,7 +844,8 @@ public record TransactionPosted(
      * @param authorized the authorization this posting settles
      * @param newBalance the account balance after the posting arithmetic
      * @param postedAt   the processing timestamp, twenty-six characters
-     * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}
+     * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} when {@code authorized}
+     *         carries a card token, and at {@link EventEnvelope#SCHEMA_VERSION} when it does not
      */
     public static TransactionPosted from(TransactionAuthorized authorized, BigDecimal newBalance,
             String postedAt) {
@@ -834,7 +862,8 @@ public record TransactionPosted(
      * @param authorized the authorization this posting settles
      * @param newBalance the account balance after the posting arithmetic
      * @param postedAt   the processing timestamp, twenty-six characters
-     * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}
+     * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} when {@code authorized}
+     *         carries a card token, and at {@link EventEnvelope#SCHEMA_VERSION} when it does not
      */
     public static TransactionPosted forPostedAuthorization(TransactionAuthorized authorized,
             BigDecimal newBalance, String postedAt) {
@@ -852,9 +881,12 @@ public record TransactionPosted(
      * @param authorized the authorization this posting settles
      * @param newBalance the account balance after the posting arithmetic
      * @param postedAt   the processing timestamp, twenty-six characters
-     * @return the event carrying {@code envelope} and the detail of {@code authorized}
+     * @return the event carrying {@code envelope}, and the detail of {@code authorized} when
+     *         {@code envelope} names {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}
      * @throws NullPointerException     when {@code envelope} or {@code authorized} is {@code null}
-     * @throws IllegalArgumentException when the authorized event carries no card token, or when any
+     * @throws IllegalArgumentException when {@code envelope} names
+     *                                  {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} and the
+     *                                  authorized event carries no card token, or when any
      *                                  component fails the canonical constructor
      */
     public static TransactionPosted of(EventEnvelope envelope, TransactionAuthorized authorized,
@@ -862,9 +894,20 @@ public record TransactionPosted(
         Objects.requireNonNull(envelope, "envelope must be present");
         Objects.requireNonNull(authorized, "authorized must be present");
 
+        // The envelope names the version here, because the caller supplied it. A version-1
+        // envelope therefore carries the six payload values schemas/transaction-posted-v1.json
+        // declares and none of the ten the canonical constructor refuses at that version, whether
+        // or not the authorization it follows carried a card token.
+        if (envelope.schemaVersion() == EventEnvelope.SCHEMA_VERSION) {
+            return of(envelope, authorized.transactionId(), newBalance, postedAt,
+                    authorized.amount(), authorized.maskedCardNumber(), null, null, null, null,
+                    null, null, null, null, null, null);
+        }
+
         if (authorized.cardToken() == null) {
-            throw new IllegalArgumentException("the authorized event must carry a card token, so it"
-                    + " must be at schemaVersion "
+            throw new IllegalArgumentException("the authorized event must carry a card token to"
+                    + " build a posted event at schemaVersion "
+                    + TRANSACTION_DETAIL_SCHEMA_VERSION + ", so it must be at schemaVersion "
                     + TransactionAuthorized.CARD_TOKEN_SCHEMA_VERSION
                     + ", and the supplied event is at schemaVersion "
                     + authorized.schemaVersion());

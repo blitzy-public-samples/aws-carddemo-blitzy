@@ -19,6 +19,7 @@ import com.carddemo.notification.domain.NotificationService.CardholderDetails;
 import com.carddemo.notification.entity.CardholderContextEntity;
 import com.carddemo.notification.entity.NotificationLogEntity;
 import com.carddemo.notification.entity.ProcessedEventEntity;
+import com.carddemo.notification.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.notification.entity.StatementTransactionEntity;
 import com.carddemo.notification.entity.StatementTransactionEntity.StatementTransactionId;
 import com.carddemo.notification.repository.CardholderContextRepository;
@@ -829,11 +830,19 @@ class TransactionPostedConsumerTest {
         }
     }
 
-    /** Store of duplicate-delivery markers, claiming one event identifier once. */
+    /**
+     * Store of duplicate-delivery markers, claiming one event identifier once per topic.
+     *
+     * <p>The claim is keyed on the identifier AND the topic, as {@code pk_processed_event} is after
+     * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql}. A fake keyed on the
+     * identifier alone would suppress a different event that happened to share one, which is the
+     * defect the migration removed, and a test running against it would pass while the shipped
+     * schema behaved differently.
+     */
     private static final class FakeProcessedEvents implements ProcessedEventRepository {
 
         private final List<String> sequence;
-        private final Set<UUID> claimed = new LinkedHashSet<>();
+        private final Set<ProcessedEventId> claimed = new LinkedHashSet<>();
         private final List<UUID> claimedEvents = new ArrayList<>();
         private final List<String> recordedTopics = new ArrayList<>();
         private int claimCalls;
@@ -859,7 +868,7 @@ class TransactionPostedConsumerTest {
             this.sequence.add(MARKER_CLAIMED);
             this.claimCalls++;
             this.recordedTopics.add(consumedTopic);
-            if (!this.claimed.add(eventId)) {
+            if (!this.claimed.add(new ProcessedEventId(eventId, consumedTopic))) {
                 return ProcessedEventRepository.ALREADY_CLAIMED;
             }
             this.claimedEvents.add(eventId);
@@ -867,9 +876,9 @@ class TransactionPostedConsumerTest {
         }
 
         @Override
-        public boolean existsById(UUID eventId) {
+        public boolean existsById(ProcessedEventId key) {
             this.existenceReads++;
-            return this.claimed.contains(eventId);
+            return this.claimed.contains(key);
         }
 
         @Override
@@ -879,10 +888,11 @@ class TransactionPostedConsumerTest {
         }
 
         // Operations the listener leaves alone.
-        @Override public Optional<ProcessedEventEntity> findById(UUID eventId) { throw unused(); }
+        @Override
+        public Optional<ProcessedEventEntity> findById(ProcessedEventId key) { throw unused(); }
         @Override public List<ProcessedEventEntity> findAll() { throw unused(); }
         @Override public long count() { throw unused(); }
-        @Override public void deleteById(UUID eventId) { throw unused(); }
+        @Override public void deleteById(ProcessedEventId key) { throw unused(); }
         @Override public void delete(ProcessedEventEntity marker) { throw unused(); }
         @Override public void deleteAll() { throw unused(); }
 
@@ -895,10 +905,12 @@ class TransactionPostedConsumerTest {
         }
 
         @Override
-        public List<ProcessedEventEntity> findAllById(Iterable<UUID> eventIds) { throw unused(); }
+        public List<ProcessedEventEntity> findAllById(Iterable<ProcessedEventId> keys) {
+            throw unused();
+        }
 
         @Override
-        public void deleteAllById(Iterable<? extends UUID> eventIds) { throw unused(); }
+        public void deleteAllById(Iterable<? extends ProcessedEventId> keys) { throw unused(); }
 
         @Override
         public void deleteAll(Iterable<? extends ProcessedEventEntity> batch) { throw unused(); }

@@ -168,6 +168,34 @@ class EntitySchemaMappingContractTest {
             "ALTER\\s+TABLE\\s+(\\w+)\\s+ADD\\s+COLUMN\\s+(\\w+)\\s+([^;]+);",
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
+    /**
+     * Matches one later migration setting or dropping the {@code NOT NULL} of an existing column,
+     * capturing the table, the column and which of the two it did.
+     *
+     * <p>A column a later migration made mandatory is mandatory in the migrated schema, and an
+     * entity mapping that still admitted a null there would be reported by a comparison that read
+     * only the {@code CREATE TABLE}. Reading the whole migration set is what makes the comparison
+     * describe the schema the service actually runs against.
+     */
+    private static final Pattern ALTER_COLUMN_NULLABILITY = Pattern.compile(
+            "ALTER\\s+TABLE\\s+(\\w+)\\s+ALTER\\s+COLUMN\\s+(\\w+)\\s+"
+                    + "(SET|DROP)\\s+NOT\\s+NULL",
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Matches one later migration adding a primary key to an existing table, capturing the table and
+     * the key columns.
+     *
+     * <p>A table can carry one primary key, so this replaces whatever the {@code CREATE TABLE}
+     * declared. The {@code DROP CONSTRAINT} that has to precede it needs no handler of its own: it
+     * removes the key this statement then supplies, and a migration that dropped a key and supplied
+     * none would leave a table no entity could be keyed against, which the key comparison reports.
+     */
+    private static final Pattern ALTER_ADD_PRIMARY_KEY = Pattern.compile(
+            "ALTER\\s+TABLE\\s+(\\w+)\\s+ADD\\s+CONSTRAINT\\s+\\w+\\s+"
+                    + "PRIMARY\\s+KEY\\s*\\(([^)]*)\\)",
+            Pattern.CASE_INSENSITIVE);
+
     /** Matches one {@code CREATE INDEX} statement, the name and the {@code ON} clause included. */
     private static final Pattern CREATE_INDEX =
             Pattern.compile("CREATE\\s+(UNIQUE\\s+)?INDEX\\s+(\\w+)\\s+ON\\s+(\\w+)\\s*\\(([^)]*)\\)",
@@ -548,6 +576,45 @@ class EntitySchemaMappingContractTest {
             }
             tables.put(tableName, new DdlTable(tableName, Map.copyOf(alteredColumns),
                     altered.primaryKey()));
+        }
+        Matcher nullability = ALTER_COLUMN_NULLABILITY.matcher(statements);
+        while (nullability.find()) {
+            String tableName = nullability.group(1);
+            String columnName = nullability.group(2);
+            boolean nowNullable = "DROP".equalsIgnoreCase(nullability.group(3));
+            DdlTable altered = tables.get(tableName);
+            if (altered == null) {
+                throw new IllegalStateException(path + " alters the nullability of " + columnName
+                        + " on the table " + tableName + ", which no migration creates");
+            }
+            DdlColumn before = altered.columns().get(columnName);
+            if (before == null) {
+                throw new IllegalStateException(path + " alters the nullability of " + columnName
+                        + ", which the table " + tableName + " does not declare");
+            }
+            Map<String, DdlColumn> alteredColumns = new LinkedHashMap<>(altered.columns());
+            alteredColumns.put(columnName,
+                    new DdlColumn(columnName, before.type(), nowNullable));
+            tables.put(tableName, new DdlTable(tableName, Map.copyOf(alteredColumns),
+                    altered.primaryKey()));
+        }
+        Matcher addedKey = ALTER_ADD_PRIMARY_KEY.matcher(statements);
+        while (addedKey.find()) {
+            String tableName = addedKey.group(1);
+            DdlTable altered = tables.get(tableName);
+            if (altered == null) {
+                throw new IllegalStateException(path + " adds a primary key to the table "
+                        + tableName + ", which no migration creates");
+            }
+            List<String> replacement = splitList(addedKey.group(2));
+            for (String column : replacement) {
+                if (!altered.columns().containsKey(column)) {
+                    throw new IllegalStateException(path + " keys the table " + tableName + " on "
+                            + column + ", which it does not declare");
+                }
+            }
+            tables.put(tableName, new DdlTable(tableName, altered.columns(),
+                    List.copyOf(replacement)));
         }
         List<String> sequences = new ArrayList<>();
         Matcher sequence = CREATE_SEQUENCE.matcher(statements);
@@ -1356,6 +1423,64 @@ class EntitySchemaMappingContractTest {
             assertEquals(1, parsed.indexes().size(), "one index is read");
             assertTrue(parsed.indexes().get(0).unique(), "a unique index is read as unique");
             assertEquals(List.of("probe_seq"), parsed.sequences(), "one sequence is read");
+        }
+
+        /**
+         * The parser reads a later migration that narrows a column and widens a primary key.
+         *
+         * <p>A comparison that read only the {@code CREATE TABLE} would describe the schema as it
+         * stood at the first migration, and would report a correct entity mapping as wrong the
+         * moment any service evolved a column or a key. Every statement form the platform's
+         * migrations use is read here so that comparison describes what the service runs against.
+         */
+        @Test
+        @DisplayName("the parser applies a later SET NOT NULL and a later composite primary key")
+        void theParserAppliesALaterNarrowingAndALaterKey() {
+            MigrationSchema parsed = parseMigration("""
+                    CREATE TABLE marker (
+                        event_id UUID NOT NULL,
+                        processed_at TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+                        consumed_topic VARCHAR(128),
+                        CONSTRAINT pk_marker PRIMARY KEY (event_id)
+                    );
+                    ALTER TABLE marker ALTER COLUMN consumed_topic SET NOT NULL;
+                    ALTER TABLE marker DROP CONSTRAINT pk_marker;
+                    ALTER TABLE marker ADD CONSTRAINT pk_marker PRIMARY KEY (event_id, consumed_topic);
+                    """, Path.of("probe.sql"));
+
+            DdlTable marker = parsed.tables().get("marker");
+            assertFalse(marker.columns().get("consumed_topic").nullable(),
+                    "a column a later migration made mandatory is read as mandatory");
+            assertEquals("VARCHAR(128)", marker.columns().get("consumed_topic").type(),
+                    "narrowing the nullability leaves the type alone");
+            assertEquals(List.of("event_id", "consumed_topic"), marker.primaryKey(),
+                    "a primary key a later migration replaced is read in its new form");
+            assertTrue(marker.columns().get("event_id").nullable() == false,
+                    "the untouched columns keep what the CREATE TABLE declared");
+        }
+
+        /**
+         * The parser reads a later migration that makes a mandatory column optional again.
+         *
+         * <p>The reverse statement is read for the same reason the forward one is: a model that
+         * applied only the narrowing would describe a schema the service does not run against.
+         */
+        @Test
+        @DisplayName("the parser applies a later DROP NOT NULL")
+        void theParserAppliesALaterWidening() {
+            MigrationSchema parsed = parseMigration("""
+                    CREATE TABLE probe (
+                        a VARCHAR(3) NOT NULL,
+                        b VARCHAR(4) NOT NULL,
+                        CONSTRAINT pk_probe PRIMARY KEY (a)
+                    );
+                    ALTER TABLE probe ALTER COLUMN b DROP NOT NULL;
+                    """, Path.of("probe.sql"));
+
+            assertTrue(parsed.tables().get("probe").columns().get("b").nullable(),
+                    "a column a later migration made optional is read as optional");
+            assertEquals(List.of("a"), parsed.tables().get("probe").primaryKey(),
+                    "the key is untouched");
         }
 
         /** Type comparison equates the spellings the two sides use and separates the rest. */

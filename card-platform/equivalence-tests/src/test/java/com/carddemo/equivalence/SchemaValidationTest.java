@@ -157,6 +157,9 @@ class SchemaValidationTest {
     /** The one module whose {@code aggregate_id} holds an unresolved-decline key. */
     private static final String UNRESOLVED_KEY_MODULE = "authorization-service";
 
+    /** The one service whose marker key names the consumed topic as well as the event. */
+    private static final String MULTI_TOPIC_MARKER_MODULE = "notification-service";
+
     /**
      * The canonical outbox columns as the named module declares them.
      *
@@ -175,8 +178,17 @@ class SchemaValidationTest {
     /**
      * The three canonical {@code processed_event} columns, in declaration order, with their types.
      *
-     * <p>{@code consumed_topic} is nullable because a marker written before the column existed
-     * carries none. Every marker written since names the topic its delivery arrived on.
+     * <p>This is the shape each service's {@code CREATE TABLE} declares. {@code consumed_topic} is
+     * created nullable because a marker written before the column existed carries none; every marker
+     * written since names the topic its delivery arrived on.
+     *
+     * <p>The notification service narrows the column and widens the key afterwards, in
+     * {@code services/notification-service/src/main/resources/db/migration/}
+     * {@code V3__processed_event_topic_key.sql}. It is the one service whose four listener groups
+     * consume four topics whose identifiers three producing services assign independently, so it is
+     * the one service for which the identifier alone does not identify a delivery. That divergence
+     * is asserted below rather than folded into this shared shape, so it stays a stated exception
+     * instead of drift.
      */
     private static final Map<String, String> CANONICAL_MARKER_COLUMNS = canonicalMarkerColumns();
 
@@ -353,6 +365,7 @@ class SchemaValidationTest {
             if (migration.contains("CREATE TABLE processed_event")) {
                 compare(service.module(), "processed_event", CANONICAL_MARKER_COLUMNS,
                         tableColumns(migration, "processed_event"), divergences);
+                divergences.addAll(markerKeyDivergences(service.module(), migration));
             }
 
             // The notification service publishes nothing, so it declares no outbox table. Every
@@ -385,6 +398,45 @@ class SchemaValidationTest {
                 "One outbox and processed-event shape serves every service, so one relay contract "
                         + "covers all of them. Only aggregate_id widens, and only for "
                         + UNRESOLVED_KEY_MODULE + ". These differ: " + divergences);
+    }
+
+    /**
+     * Reports how one service's marker key departs from what its listener set requires.
+     *
+     * <p>The notification service reads four topics under four groups, and three producing services
+     * assign the event identifiers on those topics independently, so two different events may carry
+     * the same one. Its marker is therefore keyed on the identifier and the topic together, and its
+     * topic column holds no null. Every other service reads at most two topics from producers it can
+     * still collide with in principle, and none has been reported doing so; each keeps the narrower
+     * key, and {@code card-platform/docs/suggested-next-tasks.md} records the residual risk.
+     *
+     * @param module    the service directory name
+     * @param migration the concatenated migration text of that service
+     * @return one entry per departure, empty when the service carries the key its listeners need
+     */
+    private static List<String> markerKeyDivergences(String module, String migration) {
+        boolean composite = migration.contains("PRIMARY KEY (event_id, consumed_topic)");
+        boolean mandatoryTopic =
+                migration.contains("ALTER COLUMN consumed_topic SET NOT NULL");
+        List<String> divergences = new ArrayList<>();
+
+        if (MULTI_TOPIC_MARKER_MODULE.equals(module)) {
+            if (!composite) {
+                divergences.add(module + " reads four topics whose identifiers three services "
+                        + "assign independently and keys its marker on the identifier alone, so a "
+                        + "cross-topic collision would suppress a legitimate read-model write");
+            }
+            if (!mandatoryTopic) {
+                divergences.add(module + " keys its marker on consumed_topic and leaves the column "
+                        + "nullable, and a key column holds no null");
+            }
+            return divergences;
+        }
+        if (composite || mandatoryTopic) {
+            divergences.add(module + " widened its marker key without this contract being widened "
+                    + "with it, so the shared shape above no longer describes it");
+        }
+        return divergences;
     }
 
     /**

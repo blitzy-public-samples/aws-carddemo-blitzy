@@ -171,15 +171,21 @@ class ProjectionBootstrapContractTest {
     /**
      * Calls that count as an effect inside a listener's transactional unit.
      *
-     * <p>The first two are repository writes. {@code save} inserts or updates one row, and
-     * {@code applyStateChange} is the upsert a projection refresh performs. The rest are the domain
-     * components a listener delegates its work to; each writes through a repository of its own, and
-     * the write joins the listener's transaction because the call sits in the listener's body.
+     * <p>The first four are repository writes. {@code save} inserts or updates one row, and
+     * {@code applyStateChange} is the upsert a replica refresh performs where the producing service
+     * owns every column of the row. {@code insertMissingProjection} and {@code closeBillingCycle}
+     * are the two narrower writes the ledger projection takes instead, because the posting
+     * arithmetic of {@code app/cbl/CBTRN02C.cbl:L545-L560} owns that row's three value columns and
+     * an account-owned copy of them must not replace what the arithmetic derived. The rest are the
+     * domain components a listener delegates its work to; each writes through a repository of its
+     * own, and the write joins the listener's transaction because the call sits in the listener's
+     * body.
      *
      * <p>A listener that performs none of these is doing nothing, which is what
      * {@code everyConsumerGuardsBeforeItAppliesAndMarksBeforeItAcknowledges} reports.
      */
     private static final List<String> EFFECT_CALLS = List.of(".save(", ".applyStateChange(",
+            ".insertMissingProjection(", ".closeBillingCycle(",
             ".applyContextChange(", "postingService.", "rejectRecorder.", "notificationService.",
             "riskScoringService.");
 
@@ -1316,9 +1322,12 @@ class ProjectionBootstrapContractTest {
          * service reads four topics in all.
          *
          * <p>{@code account.state-changed} therefore carries two independent readers, and the two
-         * hold different sets of its components. The authorization service replicates the credit
-         * limit and the expiry date its decline rules read; the ledger replicates the balance and the
-         * two cycle accumulators its posting path adds to. Neither reads the other's copy.
+         * take different things from it. The authorization service replicates the credit limit and
+         * the expiry date its decline rules read, every column of which the account service owns.
+         * The ledger takes only what the account service owns of its row: an opening balance for an
+         * account it holds no row for, and the two accumulator zeroes a closed billing cycle carries
+         * after {@code app/cbl/CBACT04C.cbl:L353-L354}. It never takes an account-held reading of
+         * the three value columns its own posting arithmetic derives. Neither reads the other's copy.
          */
         private static final Set<String> EXPECTED_LISTENERS = new LinkedHashSet<>(List.of(
                 "authorization-service AccountStateChangedConsumer.java",

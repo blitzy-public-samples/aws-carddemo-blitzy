@@ -1903,7 +1903,7 @@ class PostingEquivalenceTest {
                     TransactionAuthorized event = authorizationEventFor(record, accountId);
                     Acknowledgment acknowledgment = acknowledgments::incrementAndGet;
 
-                    consumer.onTransactionAuthorized(event, acknowledgment);
+                    consumer.onTransactionAuthorized(event, accountId, acknowledgment);
                     approvedIds.add(record.transactionId());
                 } else {
                     declinedOutcomes.add(record.transactionId() + "," + reason.code());
@@ -1942,7 +1942,7 @@ class PostingEquivalenceTest {
                             + result.getString("category_code") + ","
                             + money(result.getBigDecimal("category_balance")));
 
-            assertEquals(List.of("1", "2", "3"), jdbc.queryForList(
+            assertEquals(List.of("1", "2", "3", "4"), jdbc.queryForList(
                             "SELECT version FROM flyway_schema_history "
                                     + "WHERE success AND version IS NOT NULL "
                                     + "ORDER BY installed_rank",
@@ -1951,7 +1951,10 @@ class PostingEquivalenceTest {
                             + "against the schema the service really starts on. V3 adds the two "
                             + "provenance columns that order a replica refresh against the change "
                             + "the row already carries, and it must be present here even though "
-                            + "the posting path this test drives writes neither of them");
+                            + "the posting path this test drives writes neither of them. V4 writes "
+                            + "only comments, recording that the three value columns this "
+                            + "comparison reads are derived by the posting arithmetic and that no "
+                            + "arriving account change replaces them");
             assertEquals(expectedCount("posting", "record_count"), offset,
                     "the real path must inspect the whole feed");
             assertEquals(expectedCount("posting", "approved_count"), approvedIds.size(),
@@ -2810,15 +2813,16 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Applies one account state change, ordered on the producer's clock.
+         * Opens a row for an account this store holds none for, and leaves a held row alone.
          *
-         * <p>This store reproduces the one statement the migration's upsert performs, so a run can
-         * exercise the replica path without a database. The comparison is the point of it: a change
-         * that did not occur after the stored one writes nothing, which is what keeps a redelivery
-         * from moving a cycle balance backwards.
+         * <p>This store reproduces the one statement the migration's insert performs, so a run can
+         * exercise the bootstrap path without a database. Leaving a held row alone is the point of
+         * it: the three value columns of a held row were derived by the posting arithmetic of
+         * {@code app/cbl/CBTRN02C.cbl:L545-L560}, and an account-owned copy of them is a different,
+         * staler reading of the same account.
          *
          * <p>The write is not logged. {@link #ACCOUNT_STAGE} names the posting write of
-         * {@code 2800-UPDATE-ACCOUNT-REC}, and a replica refresh is a different write on a different
+         * {@code 2800-UPDATE-ACCOUNT-REC}, and a bootstrap is a different write on a different
          * path; logging it under that stage would report an order the source never had.
          *
          * @param accountId        the eleven-digit account identifier
@@ -2827,20 +2831,55 @@ class PostingEquivalenceTest {
          * @param cycleDebit       ACCT-CURR-CYC-DEBIT, scale 2
          * @param sourceEventId    the change that carried these values
          * @param sourceOccurredAt when that change occurred
-         * @return 1 when the row was written, and 0 when a later change already stood
+         * @return 1 when a row was opened, and 0 when one was already held
          */
         @Override
-        public int applyStateChange(String accountId, BigDecimal currentBalance,
+        public int insertMissingProjection(String accountId, BigDecimal currentBalance,
                 BigDecimal cycleCredit, BigDecimal cycleDebit, UUID sourceEventId,
                 Instant sourceOccurredAt) {
 
-            AccountBalanceProjectionEntity stored = rows.get(accountId);
-            if (stored != null && stored.getSourceOccurredAt() != null
-                    && !stored.getSourceOccurredAt().isBefore(sourceOccurredAt)) {
+            if (rows.containsKey(accountId)) {
                 return 0;
             }
             rows.put(accountId, new AccountBalanceProjectionEntity(accountId, currentBalance,
                     cycleCredit, cycleDebit, sourceEventId, sourceOccurredAt));
+            return 1;
+        }
+
+        /**
+         * Moves zero into both accumulators of one held row and leaves the balance alone.
+         *
+         * <p>This reproduces {@code app/cbl/CBACT04C.cbl:L353-L354}, which moves zero into
+         * {@code ACCT-CURR-CYC-CREDIT} and {@code ACCT-CURR-CYC-DEBIT} and touches
+         * {@code ACCT-CURR-BAL} nowhere. Ordering on the producer's clock is what keeps a
+         * redelivered cycle close from zeroing accumulators a later posting has already moved.
+         *
+         * <p>The write is not logged, for the reason
+         * {@link #insertMissingProjection(String, BigDecimal, BigDecimal, BigDecimal, UUID, Instant)}
+         * gives.
+         *
+         * @param accountId        the eleven-digit account identifier
+         * @param sourceEventId    the change that closed the cycle
+         * @param sourceOccurredAt when that change occurred
+         * @return 1 when the row was written, and 0 when it was absent or a later change stood
+         */
+        @Override
+        public int closeBillingCycle(String accountId, UUID sourceEventId,
+                Instant sourceOccurredAt) {
+
+            AccountBalanceProjectionEntity stored = rows.get(accountId);
+            if (stored == null) {
+                return 0;
+            }
+            if (stored.getSourceOccurredAt() != null
+                    && !stored.getSourceOccurredAt().isBefore(sourceOccurredAt)) {
+                return 0;
+            }
+            rows.put(accountId, new AccountBalanceProjectionEntity(accountId,
+                    stored.getCurrentBalance(),
+                    BigDecimal.ZERO.setScale(PicClause.ACCT_CURR_CYC_CREDIT_SCALE),
+                    BigDecimal.ZERO.setScale(PicClause.ACCT_CURR_CYC_DEBIT_SCALE),
+                    sourceEventId, sourceOccurredAt));
             return 1;
         }
 

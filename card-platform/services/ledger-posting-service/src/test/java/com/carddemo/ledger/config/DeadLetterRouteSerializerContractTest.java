@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 
 import com.carddemo.events.serde.EventContracts;
 import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
+import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
@@ -390,21 +391,49 @@ class DeadLetterRouteSerializerContractTest {
                     new LedgerProperties.Retention(3_600_000L));
         }
 
-        /** Reads one outcome of the terminal counter, answering zero where it carries no value. */
+        /**
+         * Reads one outcome of the terminal counter across every failure kind, answering zero
+         * where it carries no value.
+         *
+         * <p>The terminal counter carries a second dimension beside the outcome, so one outcome
+         * names a series per failure kind rather than a single series. This helper sums them,
+         * because these tests assert how many records reached a terminal outcome and leave the
+         * attribution of the kind to {@code DeadLetterFailureAttributionTest}.
+         *
+         * @param registry the registry every count lands in
+         * @param outcome  the terminal outcome to total
+         * @return the number of records counted under that outcome
+         */
         private double terminal(SimpleMeterRegistry registry, String outcome) {
-            return registry.find("carddemo.ledger.dead.letters").tag("outcome", outcome)
-                    .counter() == null
-                    ? 0.0D
-                    : registry.find("carddemo.ledger.dead.letters").tag("outcome", outcome)
-                            .counter().count();
+            return sum(registry, "carddemo.ledger.dead.letters", "outcome", outcome);
         }
 
-        /** Reads one stage of the attempt counter, answering zero where it carries no value. */
+        /**
+         * Reads one stage of the attempt counter, answering zero where it carries no value.
+         *
+         * @param registry the registry every count lands in
+         * @param stage    the stage to total
+         * @return the number of failures counted under that stage
+         */
         private double attempts(SimpleMeterRegistry registry, String stage) {
-            return registry.find("carddemo.ledger.failures").tag("stage", stage).counter() == null
-                    ? 0.0D
-                    : registry.find("carddemo.ledger.failures").tag("stage", stage).counter()
-                            .count();
+            return sum(registry, "carddemo.ledger.failures", "stage", stage);
+        }
+
+        /**
+         * Totals every series of one meter name that carries one tag value.
+         *
+         * @param registry the registry every count lands in
+         * @param meter    the meter name
+         * @param tag      the tag key that selects the series
+         * @param value    the tag value that selects the series
+         * @return the sum of the selected series, or zero where none is registered
+         */
+        private double sum(SimpleMeterRegistry registry, String meter, String tag, String value) {
+            double total = 0.0D;
+            for (Counter counter : registry.find(meter).tag(tag, value).counters()) {
+                total += counter.count();
+            }
+            return total;
         }
     }
 }

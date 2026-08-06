@@ -37,13 +37,34 @@ import tools.jackson.databind.JsonNode;
  *       without bound while the account service's own copies were being zeroed each cycle.</li>
  * </ul>
  *
- * <p>The write replaces the three value columns rather than adding to them.
- * {@code app/cbl/COACTUPC.cbl:L3964-L3974} moves a balance and both accumulators from the screen onto
- * the record, overwriting whatever the posting program had accumulated, and the cycle close moves
- * zero into both. Both are rewrites of the one shared record, so replacing is what reproduces them.
- * {@link AccountBalanceProjectionRepository#applyStateChange} is one statement that inserts an absent
- * row and replaces a present one, and it discards a change that did not occur after the change the
- * row already carries.
+ * <h2>What this listener writes, and what it deliberately does not</h2>
+ *
+ * <p>{@link AccountStateChanged#changeKind()} decides, and the two values it holds are two different
+ * things rather than two spellings of one.
+ *
+ * <ul>
+ *   <li>A row this projection does not hold is inserted from the values the change carried, through
+ *       {@link AccountBalanceProjectionRepository#insertMissingProjection}. That is the bootstrap,
+ *       and it is correct precisely because this service has posted nothing for that account yet.</li>
+ *   <li>{@code BILLING_CYCLE_CLOSED} on a row this projection does hold zeroes the two accumulators
+ *       and nothing else, through {@link AccountBalanceProjectionRepository#closeBillingCycle},
+ *       reproducing the two statements at {@code app/cbl/CBACT04C.cbl:L353-L354}.</li>
+ *   <li>{@code ACCOUNT_UPDATED} on a row this projection does hold writes nothing at all.</li>
+ * </ul>
+ *
+ * <p>That last case is the one worth stating plainly, because the obvious alternative is wrong. The
+ * three value columns are produced here by the posting arithmetic at
+ * {@code app/cbl/CBTRN02C.cbl:L545-L560}, and the account service's copy of them carries no posting
+ * at all: it consumes no {@code TransactionPosted}, so its copy is behind by every amount this
+ * service has ever posted. Replacing this row with that copy discarded real balance movement, and it
+ * did so with no exception, no metric and no dead letter — the {@code transaction} rows still summed
+ * to a movement the balance no longer showed. The source had one {@code ACCTDAT} record and two
+ * writers, so a rewrite from either was authoritative; the target has two copies, so only the writer
+ * that derives a value may replace it.
+ *
+ * <p>The credit limit and the expiry date are the account service's to own, and the decline rules
+ * that read them live in the authorization service, which keeps its own snapshot. Neither reaches
+ * this table, which holds three columns and no more.
  *
  * <p>This listener consumes and never publishes. It writes no outbox row, because a replica refresh
  * is not a fact about this service's aggregate: the account service already published the fact, and
@@ -185,14 +206,18 @@ public class AccountStateChangedConsumer {
      * untouched. Both writes join this transaction, so the marker and the row it guards commit
      * together or roll back together.
      *
-     * <p>A write that answers zero is not a failure. It means the row already carries a change that
-     * occurred later, so this delivery is a redelivery arriving behind a newer one and leaving the
-     * row alone is the correct outcome. The marker is still taken, because the delivery has been
-     * dealt with.
+     * <p>The write is chosen from the change kind, and either one may answer zero without that
+     * being a failure. A bootstrap insert answers zero when the projection already holds the
+     * account, which is the ordinary case and the case in which an account update writes nothing at
+     * all. A cycle close answers zero when the row already carries a change that occurred at or
+     * after this one, so this delivery is a redelivery arriving behind a newer one and leaving the
+     * row alone is the correct outcome. The marker is taken either way, because the delivery has
+     * been dealt with.
      *
      * @param event         the validated change this delivery carries
      * @param consumedTopic the topic the delivery arrived on, recorded on the marker
-     * @return {@code true} when the projection moved, and {@code false} when a later change stood
+     * @return {@code true} when the projection moved, and {@code false} when this delivery
+     *         deliberately left it as it stood
      */
     @Transactional
     public boolean applyOneEvent(AccountStateChanged event, String consumedTopic) {
@@ -204,16 +229,31 @@ public class AccountStateChangedConsumer {
             return false;
         }
 
-        int applied = accountBalances.applyStateChange(event.accountId(), event.currentBalance(),
-                event.currentCycleCredit(), event.currentCycleDebit(), event.eventId(),
-                event.occurredAt());
+        String maskedAccountId = "*".repeat(event.accountId().length());
 
-        if (applied == 0) {
-            LOG.info("Change {} for account {} moved nothing, because the projection already carries"
-                            + " a later change.", event.eventId(),
-                    "*".repeat(event.accountId().length()));
+        if (accountBalances.insertMissingProjection(event.accountId(), event.currentBalance(),
+                event.currentCycleCredit(), event.currentCycleDebit(), event.eventId(),
+                event.occurredAt()) == 1) {
+            LOG.info("Change {} opened the balance projection of account {}, which this service had"
+                    + " not posted to before.", event.eventId(), maskedAccountId);
+            return true;
+        }
+
+        if (!event.closesBillingCycle()) {
+            LOG.debug("Change {} for account {} names no cycle close, so the three value columns"
+                    + " this service derives stand unchanged.", event.eventId(), maskedAccountId);
             return false;
         }
+
+        if (accountBalances.closeBillingCycle(event.accountId(), event.eventId(),
+                event.occurredAt()) == 0) {
+            LOG.info("Cycle close {} for account {} zeroed nothing, because the projection already"
+                    + " carries a later change.", event.eventId(), maskedAccountId);
+            return false;
+        }
+
+        LOG.info("Cycle close {} zeroed both billing-cycle accumulators of account {}, and left the"
+                + " balance the posting path derives.", event.eventId(), maskedAccountId);
         return true;
     }
 }

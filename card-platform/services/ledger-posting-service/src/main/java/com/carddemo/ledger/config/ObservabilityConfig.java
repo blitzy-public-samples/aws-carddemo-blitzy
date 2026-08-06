@@ -4,6 +4,9 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryCustomizer;
@@ -13,8 +16,8 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Publishes the one bean the ledger posting service records its measurements through.
  *
- * <p>{@link LedgerMeters} registers eleven meters under five names, covering three families: events
- * consumed, processing latency, and failure count. Spring Boot supplies the {@link MeterRegistry}.
+ * <p>{@link LedgerMeters} registers seventeen meters under five names, covering three families:
+ * events consumed, processing latency, and failure count. Spring Boot supplies the {@link MeterRegistry}.
  * Each meter registers at start-up, so every series reads zero before the first message.
  *
  * <p>Two counters carry {@code WS-TRANSACTION-COUNT} and {@code WS-REJECT-COUNT} forward from the
@@ -34,7 +37,7 @@ public class ObservabilityConfig {
     public static final String TAG_SERVICE = "service";
 
     /**
-     * Registers the eleven ledger meters and publishes them as one injectable bean.
+     * Registers the ledger meters and publishes them as one injectable bean.
      *
      * @param registry the meter registry Spring Boot auto-configuration supplies
      * @return the surface every measured path in this service records through
@@ -70,6 +73,36 @@ public class ObservabilityConfig {
         /** Outcome tag value of a consumed record whose diagnostic the broker refused. */
         public static final String DEAD_LETTER_FAILED = "failed";
 
+        /**
+         * Kind tag value of a record the schema validator refused.
+         *
+         * <p>The four values below name what a delivery this service gave up on failed at. They are
+         * a second dimension of {@code carddemo.ledger.dead.letters}, beside the outcome of the
+         * diagnostic itself, because a count of abandoned records that cannot say what they failed
+         * at names no fault to act on. Every value is a constant, so the series count of that meter
+         * stays fixed under any traffic.
+         */
+        public static final String FAILURE_SCHEMA_VALIDATION = "schema_validation";
+
+        /** Kind tag value of a record the value deserializer could not read at all. */
+        public static final String FAILURE_DESERIALIZATION = "deserialization";
+
+        /** Kind tag value of a record whose listener raised, so a business rule or a write failed. */
+        public static final String FAILURE_PROCESSING = "processing";
+
+        /** Kind tag value of a record whose failure named none of the three kinds above. */
+        public static final String FAILURE_UNKNOWN = "unknown";
+
+        /** Tag name of the kind dimension of {@code carddemo.ledger.dead.letters}. */
+        public static final String TAG_FAILURE_KIND = "failure.kind";
+
+        /** Tag name of the outcome dimension of {@code carddemo.ledger.dead.letters}. */
+        public static final String TAG_OUTCOME = "outcome";
+
+        /** Every value the kind dimension carries, registered at start-up and never extended. */
+        public static final List<String> FAILURE_KINDS = List.of(FAILURE_SCHEMA_VALIDATION,
+                FAILURE_DESERIALIZATION, FAILURE_PROCESSING, FAILURE_UNKNOWN);
+
         /** Events read from the two topics this service subscribes to. */
         private final Counter eventsConsumed;
 
@@ -97,14 +130,18 @@ public class ObservabilityConfig {
         /** Records the broker refused with no retry left, so the row was abandoned. */
         private final Counter abandonedFailures;
 
-        /** Consumed records given up on whose diagnostic the broker acknowledged. */
-        private final Counter deadLettersPublished;
-
-        /** Consumed records given up on whose diagnostic the broker refused. */
-        private final Counter deadLettersFailed;
+        /**
+         * Consumed records given up on, one counter per outcome and failure kind.
+         *
+         * <p>Keyed by outcome then kind. Every combination registers at start-up, so a scrape
+         * carries all eight series before the first dead letter and an alerting rule written
+         * against one of them can fire. Prometheus admits one tag-key set per meter name, so both
+         * tags sit on every series of this name.
+         */
+        private final Map<String, Map<String, Counter>> deadLetters;
 
         /**
-         * Registers all eleven meters against {@code registry}.
+         * Registers every meter against {@code registry}.
          *
          * @param registry the meter registry every series is published through
          * @throws NullPointerException when {@code registry} is {@code null}
@@ -147,16 +184,20 @@ public class ObservabilityConfig {
                     .tag("stage", "abandon")
                     .description("Processing faults, tagged by the stage that failed")
                     .register(registry);
-            this.deadLettersPublished = Counter.builder("carddemo.ledger.dead.letters")
-                    .tag("outcome", DEAD_LETTER_PUBLISHED)
-                    .description("Consumed records given up on, by what became of the diagnostic"
-                            + " naming them")
-                    .register(registry);
-            this.deadLettersFailed = Counter.builder("carddemo.ledger.dead.letters")
-                    .tag("outcome", DEAD_LETTER_FAILED)
-                    .description("Consumed records given up on, by what became of the diagnostic"
-                            + " naming them")
-                    .register(registry);
+            Map<String, Map<String, Counter>> byOutcome = new LinkedHashMap<>();
+            for (String outcome : List.of(DEAD_LETTER_PUBLISHED, DEAD_LETTER_FAILED)) {
+                Map<String, Counter> byKind = new LinkedHashMap<>();
+                for (String kind : FAILURE_KINDS) {
+                    byKind.put(kind, Counter.builder("carddemo.ledger.dead.letters")
+                            .tag(TAG_OUTCOME, outcome)
+                            .tag(TAG_FAILURE_KIND, kind)
+                            .description("Consumed records given up on, by what became of the"
+                                    + " diagnostic naming them and by what they failed at")
+                            .register(registry));
+                }
+                byOutcome.put(outcome, Map.copyOf(byKind));
+            }
+            this.deadLetters = Map.copyOf(byOutcome);
         }
 
         /** Counts one event read from either subscribed topic. */
@@ -241,8 +282,8 @@ public class ObservabilityConfig {
          * backoff is spent, which is when a delivery counts as given up on. This series covers a
          * consumed record, and {@link #ABANDON_STAGE} covers an outbox row.
          */
-        public void recordDeadLetterPublished() {
-            deadLettersPublished.increment();
+        public void recordDeadLetterPublished(String failureKind) {
+            deadLetters.get(DEAD_LETTER_PUBLISHED).get(resolveKind(failureKind)).increment();
         }
 
         /**
@@ -251,8 +292,24 @@ public class ObservabilityConfig {
          *
          * <p>A reading above zero means the record is spent and no topic names it.
          */
-        public void recordDeadLetterFailure() {
-            deadLettersFailed.increment();
+        public void recordDeadLetterFailure(String failureKind) {
+            deadLetters.get(DEAD_LETTER_FAILED).get(resolveKind(failureKind)).increment();
+        }
+
+        /**
+         * Returns a kind this surface registered, and {@link #FAILURE_UNKNOWN} for anything else.
+         *
+         * <p>A caller naming a value no series carries would otherwise create a series at run time
+         * or lose the count. Neither is acceptable of a failure counter, so an unnamed kind is
+         * counted as unknown, which is itself a registered value.
+         *
+         * @param failureKind the kind a caller named, possibly {@code null}
+         * @return one of {@link #FAILURE_KINDS}
+         */
+        private static String resolveKind(String failureKind) {
+            return failureKind != null && FAILURE_KINDS.contains(failureKind)
+                    ? failureKind
+                    : FAILURE_UNKNOWN;
         }
     }
 

@@ -49,8 +49,11 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.config.BeanDefinition;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.core.type.filter.AnnotationTypeFilter;
@@ -984,7 +987,44 @@ final class NotificationHistoryControllerTest {
      * no value read from the request or from the fault.</p>
      */
     @Nested
+    @ExtendWith(OutputCaptureExtension.class)
     class FaultResponses {
+
+        /**
+         * Asserts a fault leaves one {@code ERROR} line naming the route and carrying the fault.
+         *
+         * <p>Every fault answers with one fixed text, so the response tells a caller nothing about
+         * what failed -- deliberately, since the caller supplied a card token and the body must echo
+         * neither it nor anything read from the fault. That makes the log the only place a fault can
+         * be diagnosed from, and while the handler wrote no line a repeatable {@code 500} was
+         * invisible on the server: no record that the request had even been attempted.</p>
+         *
+         * <p>The line names the route by its template, as the body does. The fault travels as a
+         * throwable rather than as text, so its stack trace reaches the line and no value of it is
+         * interpolated into the message.</p>
+         */
+        @Test
+        void aFaultLeavesOneErrorLineNamingTheRouteAndCarryingTheFault(CapturedOutput output)
+                throws Exception {
+            when(statementTransactions
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, PAGE_LIMIT))
+                    .thenThrow(new IllegalStateException("connection refused to host 6 port 4"));
+
+            mockMvc.perform(get(ROUTE, CARD_TOKEN))
+                    .andExpect(status().isInternalServerError());
+
+            String logged = output.getAll();
+            assertTrue(logged.contains("ERROR"), "the fault leaves a line at ERROR");
+            assertTrue(logged.contains(NotificationApiExceptionHandler.class.getName())
+                            || logged.contains(
+                                    NotificationApiExceptionHandler.class.getSimpleName()),
+                    "the line names the handler that answered");
+            assertTrue(logged.contains(ROUTE), "the line names the route by its template");
+            assertTrue(logged.contains(IllegalStateException.class.getName()),
+                    "the fault itself reaches the line, so the stack trace is diagnosable");
+            assertFalse(logged.contains(CARD_TOKEN),
+                    "and the line names no card token, which the response withholds too");
+        }
 
         /** Asserts a fault inside the lookup answers 500 carrying no value from the fault. */
         @Test

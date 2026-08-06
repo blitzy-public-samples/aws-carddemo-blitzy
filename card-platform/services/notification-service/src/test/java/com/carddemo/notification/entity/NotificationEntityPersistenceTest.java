@@ -1,6 +1,7 @@
 package com.carddemo.notification.entity;
 
 import com.carddemo.cobol.PanMasker;
+import com.carddemo.notification.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.notification.entity.StatementTransactionEntity.StatementTransactionId;
 import com.carddemo.notification.repository.CardholderContextRepository;
 import com.carddemo.notification.repository.NotificationLogRepository;
@@ -207,8 +208,16 @@ class NotificationEntityPersistenceTest {
     /** Columns {@code processed_event} declares. */
     private static final int PROCESSED_EVENT_COLUMNS = 3;
 
-    /** The one column in the schema that accepts no value. */
-    private static final String NULLABLE_COLUMN = "processed_event.consumed_topic";
+    /**
+     * Columns in the schema that accept no value.
+     *
+     * <p>None do. {@code processed_event.consumed_topic} was the one, and
+     * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql} made it half of
+     * {@code pk_processed_event}, which a key column cannot be null for. Every column of the four
+     * migrated tables therefore carries a value, which is what a read model built only from events
+     * should look like: a column nothing fills is a column no consumer can bring current.</p>
+     */
+    private static final Set<String> NULLABLE_COLUMNS = Set.of();
 
     /** What {@code information_schema} reports for a {@code CHAR(n)} column. */
     private static final String FIXED_CHARACTER = "character";
@@ -348,6 +357,9 @@ class NotificationEntityPersistenceTest {
 
     /** Topic the claimed delivery arrived on. */
     private static final String CLAIMED_TOPIC = "transaction.posted";
+
+    /** A second topic this service reads, for the cross-topic marker assertions. */
+    private static final String OTHER_CLAIMED_TOPIC = "fraud.assessed";
 
     /** Account the context assertion writes, eleven digit characters. */
     private static final String CONTEXT_ACCOUNT_ID = "00000000011";
@@ -633,6 +645,82 @@ class NotificationEntityPersistenceTest {
     }
 
     /**
+     * Holds that one event identifier is claimable once per topic and refused twice on one topic.
+     *
+     * <p>Four listener groups share this table and three producing services assign identifiers
+     * independently, so the same identifier can reach two topics without either producer being at
+     * fault. While {@code claimEvent} conflicted on the identifier alone, the second of the two lost
+     * its claim and its listener wrote nothing at all: the right outcome for a redelivery, and a
+     * silently dropped read-model row for a different event. Nothing raised, nothing reached a
+     * dead-letter topic, and the marker that caused it stays, so no replay could recover the row.
+     *
+     * <p>Suppression within one topic has to survive the change, because that is what the guard was
+     * built for. Both properties are asserted here together.
+     */
+    @Test
+    @DisplayName("claimEvent takes one claim per topic and refuses a redelivery on the same topic")
+    void claimEventTakesOneClaimPerTopicAndRefusesARedeliveryOnTheSameTopic() {
+        UUID sharedId = UUID.randomUUID();
+        Instant first = Instant.parse("2026-03-01T00:00:00Z");
+        Instant later = Instant.parse("2026-03-02T00:00:00Z");
+
+        int firstClaim = committedTransaction().execute(status ->
+                processedEvents.claimEvent(sharedId, first, CLAIMED_TOPIC));
+        int redelivery = committedTransaction().execute(status ->
+                processedEvents.claimEvent(sharedId, later, CLAIMED_TOPIC));
+        int otherTopic = committedTransaction().execute(status ->
+                processedEvents.claimEvent(sharedId, later, OTHER_CLAIMED_TOPIC));
+
+        assertAll("one identifier across two topics",
+                () -> assertEquals(1, firstClaim, "the first delivery takes the claim"),
+                () -> assertEquals(ProcessedEventRepository.ALREADY_CLAIMED, redelivery,
+                        "a redelivery on the same topic writes nothing"),
+                () -> assertEquals(1, otherTopic,
+                        "the same identifier on another topic is a different delivery"),
+                () -> assertTrue(processedEvents.existsById(
+                        new ProcessedEventId(sharedId, CLAIMED_TOPIC)),
+                        "the first topic holds its marker"),
+                () -> assertTrue(processedEvents.existsById(
+                        new ProcessedEventId(sharedId, OTHER_CLAIMED_TOPIC)),
+                        "and the second topic holds its own"),
+                () -> assertEquals(first, processedEvents
+                        .findById(new ProcessedEventId(sharedId, CLAIMED_TOPIC)).orElseThrow()
+                        .getProcessedAt(),
+                        "the refused redelivery left the first instant standing"));
+    }
+
+    /**
+     * Holds that the retention delete leaves a same-identifier marker whose own instant is newer.
+     *
+     * <p>The statement matches on both key columns. Matching on the identifier alone would remove
+     * the sibling marker on the other topic as well, and that marker guards a delivery the retention
+     * rule was not asked to forget: the next redelivery of it would be applied a second time.
+     */
+    @Test
+    @DisplayName("The retention delete leaves a same-identifier marker on another topic")
+    void theRetentionDeleteLeavesASameIdentifierMarkerOnAnotherTopic() {
+        UUID sharedId = UUID.randomUUID();
+        committedTransaction().executeWithoutResult(status -> {
+            processedEvents.claimEvent(sharedId, Instant.parse("2020-06-01T00:00:00Z"),
+                    CLAIMED_TOPIC);
+            processedEvents.claimEvent(sharedId, Instant.parse("2030-06-01T00:00:00Z"),
+                    OTHER_CLAIMED_TOPIC);
+        });
+
+        int removed = committedTransaction().execute(status -> processedEvents
+                .deleteMarkersProcessedBefore(Instant.parse("2025-01-01T00:00:00Z"), PURGE_BATCH));
+
+        assertAll("the retention pass over one identifier on two topics",
+                () -> assertEquals(1, removed, "one marker sits behind the horizon"),
+                () -> assertFalse(processedEvents.existsById(
+                        new ProcessedEventId(sharedId, CLAIMED_TOPIC)),
+                        "and it is the one that was removed"),
+                () -> assertTrue(processedEvents.existsById(
+                        new ProcessedEventId(sharedId, OTHER_CLAIMED_TOPIC)),
+                        "the sibling still guards its own delivery"));
+    }
+
+    /**
      * Runs the bounded marker retention delete and reads the result back.
      *
      * <p>A marker outliving the broker's retention of its event is what makes a redelivery harmless,
@@ -654,9 +742,11 @@ class NotificationEntityPersistenceTest {
 
         assertAll("the bounded marker delete",
                 () -> assertEquals(1, removed, "one marker precedes the horizon"),
-                () -> assertFalse(processedEvents.existsById(RETENTION_EXPIRED_EVENT_ID),
+                () -> assertFalse(processedEvents.existsById(
+                        new ProcessedEventId(RETENTION_EXPIRED_EVENT_ID, CLAIMED_TOPIC)),
                         "the expired marker is gone"),
-                () -> assertTrue(processedEvents.existsById(RETENTION_RECENT_EVENT_ID),
+                () -> assertTrue(processedEvents.existsById(
+                        new ProcessedEventId(RETENTION_RECENT_EVENT_ID, CLAIMED_TOPIC)),
                         "a marker inside the horizon stays, so its redelivery is still refused"));
     }
 
@@ -872,11 +962,13 @@ class NotificationEntityPersistenceTest {
      * {@code FILLER PIC X(20)} at {@code app/cpy/COSTM01.CPY:L36} is dropped, and the group
      * {@code 05 TRNX-REST.} at {@code app/cpy/COSTM01.CPY:L24} carries no column of its own.
      *
-     * <p>One column across the four tables accepts no value: {@value #NULLABLE_COLUMN}, which
-     * names the topic a marker arrived on.</p>
+     * <p>No column across the four tables accepts a null.
+     * {@code processed_event.consumed_topic} was the one that did, and
+     * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql} made it half of the
+     * primary key.</p>
      */
     @Test
-    void eachTableHoldsItsDeclaredColumnCountAndOneColumnAcceptsNoValue() {
+    void eachTableHoldsItsDeclaredColumnCountAndNoColumnAcceptsANull() {
         Map<String, ColumnFact> facts = columnFacts();
         Set<String> nullable = new TreeSet<>();
         Map<String, Integer> counts = new LinkedHashMap<>();
@@ -898,9 +990,9 @@ class NotificationEntityPersistenceTest {
                         PROCESSED_EVENT + " columns"),
                 () -> assertEquals(CARDHOLDER_CONTEXT_COLUMNS, counts.get(CARDHOLDER_CONTEXT),
                         CARDHOLDER_CONTEXT + " columns"),
-                () -> assertEquals(Set.of(NULLABLE_COLUMN), nullable,
-                        "one column across the four migrated tables accepts no value, and it "
-                                + "names the topic a marker arrived on"));
+                () -> assertEquals(NULLABLE_COLUMNS, nullable,
+                        "every column of the four migrated tables carries a value, so no consumer "
+                                + "leaves one it cannot bring current"));
     }
 
     /**
@@ -1288,9 +1380,9 @@ class NotificationEntityPersistenceTest {
         UUID oldId = UUID.fromString("9267c7fd-b346-4701-b613-1bf89b7f43f1");
         UUID currentId = UUID.fromString("9267c7fd-b346-4701-b613-1bf89b7f43f2");
         processedEvents.save(new ProcessedEventEntity(
-                oldId, Instant.parse("2024-01-01T00:00:00Z")));
+                oldId, Instant.parse("2024-01-01T00:00:00Z"), CLAIMED_TOPIC));
         processedEvents.save(new ProcessedEventEntity(
-                currentId, Instant.parse("2026-01-01T00:00:00Z")));
+                currentId, Instant.parse("2026-01-01T00:00:00Z"), CLAIMED_TOPIC));
 
         int removed = committedTransaction().execute(status -> processedEvents
                 .deleteMarkersProcessedBefore(
@@ -1298,8 +1390,10 @@ class NotificationEntityPersistenceTest {
 
         assertAll("bounded marker retention delete",
                 () -> assertEquals(1, removed, "one old marker removed"),
-                () -> assertFalse(processedEvents.existsById(oldId)),
-                () -> assertTrue(processedEvents.existsById(currentId)));
+                () -> assertFalse(processedEvents.existsById(
+                        new ProcessedEventId(oldId, CLAIMED_TOPIC))),
+                () -> assertTrue(processedEvents.existsById(
+                        new ProcessedEventId(currentId, CLAIMED_TOPIC))));
     }
 
     // ---------------------------------------------------------------------------------------

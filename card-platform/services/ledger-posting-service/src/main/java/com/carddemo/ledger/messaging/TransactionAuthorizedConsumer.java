@@ -14,6 +14,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
+import org.springframework.kafka.support.KafkaHeaders;
+import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -29,7 +31,9 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <p>Apache Kafka 4.2.1 serves {@code transaction.authorized} on three partitions at replication
  * factor 1, and consumer group {@code ledger-posting} reads it. The account identifier is the
- * message key, so one account's events keep their order.
+ * message key, so one account's events keep their order, and
+ * {@link #onTransactionAuthorized} refuses a record whose key does not name the account its payload
+ * names rather than posting an amount whose ordering was never guaranteed.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -124,13 +128,17 @@ public class TransactionAuthorizedConsumer {
      * <p>A failure leaves the offset uncommitted and travels to the container's error handler.
      *
      * @param event          the validated event this delivery carries
+     * @param messageKey     the key the record arrived under, which must name the aggregate the
+     *                       payload names
      * @param acknowledgment the offset commit, invoked after the commit
-     * @throws NullPointerException if either argument is {@code null}
+     * @throws NullPointerException     if {@code event} or {@code acknowledgment} is {@code null}
+     * @throws IllegalArgumentException if the key is absent or names another aggregate
      */
     @KafkaListener(topics = "${carddemo.kafka.topics.transaction-authorized}",
             groupId = "${spring.kafka.consumer.group-id}",
             containerFactory = CONTAINER_FACTORY)
     public void onTransactionAuthorized(TransactionAuthorized event,
+            @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String messageKey,
             Acknowledgment acknowledgment) {
         Objects.requireNonNull(event, "event is required");
         Objects.requireNonNull(acknowledgment, "acknowledgment is required");
@@ -138,7 +146,9 @@ public class TransactionAuthorizedConsumer {
         meters.recordEventConsumed();
         long startedAt = System.nanoTime();
         try {
-            if (Boolean.TRUE.equals(transactionTemplate.execute(status -> applyOneEvent(event)))) {
+            requireKeyNamesAggregate(messageKey, event);
+            if (Boolean.TRUE.equals(
+                    transactionTemplate.execute(status -> applyOneEvent(event, messageKey)))) {
                 meters.recordTransactionPosted();
             } else {
                 meters.recordDuplicateSkipped();
@@ -162,11 +172,13 @@ public class TransactionAuthorizedConsumer {
      * <p>The three updates {@code app/cbl/CBTRN02C.cbl:L440-L442} fixes run in that order inside
      * {@code domain/PostingService}.
      *
-     * @param event the validated event to apply
+     * @param event      the validated event to apply
+     * @param messageKey the key the record arrived under, which
+     *                   {@link #requireKeyNamesAggregate} has already checked against the payload
      * @return {@code true} when this delivery posted, and {@code false} when a marker already
      *         covered the event
      */
-    private boolean applyOneEvent(TransactionAuthorized event) {
+    private boolean applyOneEvent(TransactionAuthorized event, String messageKey) {
         UUID eventId = event.eventId();
         if (processedEvents.existsById(eventId)) {
             LOG.debug("Event {} already carries a marker, so this delivery posted nothing.",
@@ -174,9 +186,49 @@ public class TransactionAuthorizedConsumer {
             return false;
         }
 
-        postingService.postTransaction(event, event.aggregateId());
+        // The key the record arrived under travels on rather than the aggregate identifier read
+        // back out of the payload. PostingService makes the same check, and a check whose two
+        // operands come from one field can never fail.
+        postingService.postTransaction(event, messageKey);
         processedEvents.save(marker(eventId));
         return true;
+    }
+
+    /**
+     * Refuses a record whose key does not name the aggregate its payload names.
+     *
+     * <p>Kafka orders records inside one partition and nowhere else, and the key chooses the
+     * partition. AAP 0.3.1 makes the account identifier the key of every event for exactly that
+     * reason: the balance updates of one account must not be reordered, and one account's events
+     * therefore have to land on one partition. A record whose key names another aggregate arrived on
+     * a partition that does not order it, so posting it would apply an amount to a balance whose
+     * ordering guarantee was never held. A record with no key at all was partitioned at random,
+     * which is the same defect without the evidence.
+     *
+     * <p>This is the check the two notification listeners already make on the same envelope. It
+     * belongs on every consumer of a keyed contract, because the guarantee is the partition's and
+     * not the producer's good behaviour: the only governed producer keys correctly, and a consumer
+     * that trusts that fact cannot detect the day it stops being true.
+     *
+     * <p>The refusal is an {@link IllegalArgumentException}, so the delivery is retried and then
+     * routed to the dead-letter topic with the aggregate it named preserved on the record. Nothing
+     * is written, because the check runs before the transaction opens. Neither message names the key
+     * or the aggregate, so no account identifier reaches a log line through them.
+     *
+     * @param messageKey the key the record arrived under, possibly {@code null}
+     * @param event      the authorized transaction this delivery carries
+     * @throws IllegalArgumentException when the key is absent or names another aggregate
+     */
+    private static void requireKeyNamesAggregate(String messageKey, TransactionAuthorized event) {
+        if (messageKey == null || messageKey.isBlank()) {
+            throw new IllegalArgumentException("this record carries no message key, so the partition"
+                    + " it arrived on is not the one that orders its account");
+        }
+        if (!messageKey.equals(event.aggregateId())) {
+            throw new IllegalArgumentException("the message key does not name the account this"
+                    + " payload names, so the partition this record arrived on is not the one that"
+                    + " orders that account");
+        }
     }
 
     /**

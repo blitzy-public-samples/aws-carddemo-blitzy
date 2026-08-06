@@ -244,6 +244,30 @@ Handling: the `postedAt` pattern on the posted event enforces the source form, a
 retention horizon is rendered the same way. An incidental detail in the same redefinition: the
 separator fields are named in Dutch while every neighbouring field is named in English.
 
+### 14a. A statement total silently loses its tenth integer digit — DECISION OWED
+
+`app/cbl/CBSTM03A.CBL:L65` declares the accumulator `WS-TOTAL-AMT PIC S9(9)V99 VALUE 0`, which holds
+nine integer digits. `app/cbl/CBSTM03A.CBL:L429` adds each detail amount into it with
+`ADD TRNX-AMT TO WS-TOTAL-AMT`, and that statement carries no `ON SIZE ERROR` phrase. A sum needing
+a tenth integer digit therefore loses that digit where it stands, every later addition works from the
+truncated value, and the statement at `app/cbl/CBSTM03A.CBL:L433` renders the truncated total as if
+it were the sum of the rows.
+
+Each detail amount is `TRAN-AMT PIC S9(09)V99` at `app/cpy/CVTRA05Y.cpy:L10`, so one amount reaches
+999999999.99 and the accumulator overflows on the second such row. The reachable total across the
+row limit one rendered statement carries is twelve integer digits, three more than the field holds.
+
+Handling: reproduced, not corrected. `notification-service` `NotificationService.accumulate` performs
+the store the source performs, once per addition, through
+`CobolDecimal.truncateToPictureField(sum, TRAN_AMT_PRECISION, TRAN_AMT_SCALE)`. The rendered
+statement and the `GET /notifications/{cardToken}` total therefore agree digit for digit, and both
+report less than the rows sum to. The one addition that drops a digit writes a `WARN` line naming the
+capacity and withholding the value, so the loss is visible without disclosing a cardholder's total.
+
+Decision owed: widening the accumulator would make the total arithmetically correct and would make
+this platform disagree with the source for the same rows. That is a behaviour change, and only the
+owner of the equivalence contract can authorise it.
+
 <br/>
 
 ## Atomicity and duplicate delivery

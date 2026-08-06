@@ -38,6 +38,7 @@ import org.springframework.kafka.listener.ConsumerRecordRecoverer;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer.HeaderNames.HeadersToAdd;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.ListenerExecutionFailedException;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.serializer.DeserializationException;
 import org.springframework.util.backoff.FixedBackOff;
@@ -358,8 +359,20 @@ public class KafkaConsumerConfig {
      * {@link DeserializationException}, and it counts as a schema validation failure. A database
      * fault is named by
      * {@link ObservabilityConfig.NotificationMetrics#isPersistenceFault(Throwable)}, which is the one
-     * place the platform decides what that tag covers. A chain naming none of them resolves to
-     * {@code unknown}, which is itself a registered tag value.
+     * place the platform decides what that tag covers. A fault the listener itself raised arrives
+     * wrapped in a {@link ListenerExecutionFailedException}, and once it is not a persistence fault
+     * it is a rendering failure. A chain naming none of them resolves to {@code unknown}, which is
+     * itself a registered tag value.
+     *
+     * <p><b>Why the rendering branch has to be here.</b> Each listener classifies its own failures
+     * with the same rule -- a persistence fault, or else a rendering failure -- and counts one per
+     * attempt on {@link ObservabilityConfig.NotificationMetrics#failures(String)}. This method counts
+     * one per record given up on, on
+     * {@link ObservabilityConfig.NotificationMetrics#deadLettered(String)}. Without the branch the
+     * two series disagreed on the same failure: the attempts were filed as {@code rendering} and the
+     * record that exhausted them was filed as {@code unknown}, so the registered
+     * {@code rendering} value of the terminal series was unreachable and an operator reconciling the
+     * two could not tell which rendering failures had actually been given up on.
      *
      * @param failure the exception the container reported; may be {@code null}
      * @return one registered tag value
@@ -373,6 +386,9 @@ public class KafkaConsumerConfig {
         }
         if (ObservabilityConfig.NotificationMetrics.isPersistenceFault(failure)) {
             return ObservabilityConfig.NotificationMetrics.FAILURE_PERSISTENCE;
+        }
+        if (chainCarries(failure, ListenerExecutionFailedException.class)) {
+            return ObservabilityConfig.NotificationMetrics.FAILURE_RENDERING;
         }
         return ObservabilityConfig.NotificationMetrics.UNKNOWN;
     }

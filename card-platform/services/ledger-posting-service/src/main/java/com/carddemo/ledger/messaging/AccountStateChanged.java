@@ -18,16 +18,33 @@ import tools.jackson.databind.JsonNode;
  * program and the account it posts to were never two copies of anything. This record exists because
  * the target posts against a copy, and a copy has to be told when the original moved.
  *
- * <p>Three components matter here, and they are the three columns the projection holds:
- * {@code currentBalance}, {@code currentCycleCredit} and {@code currentCycleDebit}. The message also
- * carries a credit limit and an expiry date, and this record deliberately drops both. Those two are
- * read by the decline rules, the decline rules belong to the authorization service, and a component
- * this service holds but never reads is a component that can go stale without anything noticing.
+ * <p>Four components matter here: {@code changeKind}, and the three values the projection columns
+ * hold — {@code currentBalance}, {@code currentCycleCredit} and {@code currentCycleDebit}. The
+ * message also carries a credit limit and an expiry date, and this record deliberately drops both.
+ * Those two are read by the decline rules, the decline rules belong to the authorization service,
+ * and a component this service holds but never reads is a component that can go stale without
+ * anything noticing.
  *
- * <p>{@code changeKind} is dropped for a different reason. The two values the schema admits are
- * {@code ACCOUNT_UPDATED} and {@code BILLING_CYCLE_CLOSED}, and both mean the same thing to a replica:
- * these are the current numbers. The cycle close at {@code app/cbl/CBACT04C.cbl:L353-L354} zeroes both
- * accumulators, so it arrives as an ordinary change carrying zeroes rather than as a separate command.
+ * <p>{@code changeKind} is bound and it decides what this delivery does, because the two values the
+ * schema admits mean two different things to this replica. Only one of them is a fact about the
+ * numbers this service derives.
+ *
+ * <ul>
+ *   <li>{@code BILLING_CYCLE_CLOSED} is the cycle close at
+ *       {@code app/cbl/CBACT04C.cbl:L353-L354}, which moves zero into both accumulators. That is a
+ *       command this replica has to carry out, because nothing else zeroes the two accumulators the
+ *       posting path adds to at {@code app/cbl/CBTRN02C.cbl:L548-L551}.</li>
+ *   <li>{@code ACCOUNT_UPDATED} is the field update the online path performs at
+ *       {@code app/cbl/COACTUPC.cbl:L4066}. It changes fields the account service owns, and it
+ *       carries that service's copy of the balance and the two accumulators. That copy is not
+ *       authoritative here: the account service consumes no {@code TransactionPosted}, so its copy
+ *       does not carry any movement the posting path applied. Writing it over this projection
+ *       discards the posting arithmetic of {@code app/cbl/CBTRN02C.cbl:L545-L560}, which is the one
+ *       thing this service owns.</li>
+ * </ul>
+ *
+ * <p>The three monetary components are therefore read for the bootstrap insert alone, which is the
+ * only moment this service has no derived value of its own to keep.
  *
  * <p>This is the consuming side of a contract the account service owns. The shared contract is the
  * document at {@code libs/event-contracts/src/main/resources/schemas/account-state-changed-v1.json},
@@ -45,6 +62,10 @@ import tools.jackson.databind.JsonNode;
  * @param eventId            the identifier the processed-event marker records
  * @param occurredAt         the producer's clock, which orders two changes to one account
  * @param accountId          the account this change describes, eleven digits
+ * @param changeKind         which mutation produced the event, one of
+ *                           {@value #CHANGE_KIND_ACCOUNT_UPDATED} or
+ *                           {@value #CHANGE_KIND_BILLING_CYCLE_CLOSED}. ADDITIVE: no source field
+ *                           carries it
  * @param currentBalance     {@code ACCT-CURR-BAL} at {@code app/cpy/CVACT01Y.cpy:L7}, scale 2
  * @param currentCycleCredit {@code ACCT-CURR-CYC-CREDIT} at {@code app/cpy/CVACT01Y.cpy:L12},
  *                           scale 2
@@ -55,6 +76,7 @@ public record AccountStateChanged(
         UUID eventId,
         Instant occurredAt,
         String accountId,
+        String changeKind,
         BigDecimal currentBalance,
         BigDecimal currentCycleCredit,
         BigDecimal currentCycleDebit) {
@@ -62,10 +84,27 @@ public record AccountStateChanged(
     /** The one value the message's {@code eventType} holds. */
     public static final String EVENT_TYPE = "AccountStateChanged";
 
+    /**
+     * The field update the online path performs at {@code app/cbl/COACTUPC.cbl:L4066}.
+     *
+     * <p>It names fields the account service owns. The balance and the two accumulators it carries
+     * are that service's copy, and this replica keeps its own.
+     */
+    public static final String CHANGE_KIND_ACCOUNT_UPDATED = "ACCOUNT_UPDATED";
+
+    /**
+     * The cycle close that moves zero into both accumulators at
+     * {@code app/cbl/CBACT04C.cbl:L353-L354}.
+     *
+     * <p>The one change this replica carries out on a row it already holds.
+     */
+    public static final String CHANGE_KIND_BILLING_CYCLE_CLOSED = "BILLING_CYCLE_CLOSED";
+
     /** Property names this record reads, each one required by the schema document. */
     private static final String EVENT_ID = "eventId";
     private static final String OCCURRED_AT = "occurredAt";
     private static final String ACCOUNT_ID = "accountId";
+    private static final String CHANGE_KIND = "changeKind";
     private static final String CURRENT_BALANCE = "currentBalance";
     private static final String CURRENT_CYCLE_CREDIT = "currentCycleCredit";
     private static final String CURRENT_CYCLE_DEBIT = "currentCycleDebit";
@@ -89,10 +128,12 @@ public record AccountStateChanged(
         Objects.requireNonNull(eventId, "eventId is required");
         Objects.requireNonNull(occurredAt, "occurredAt is required");
         Objects.requireNonNull(accountId, "accountId is required");
+        Objects.requireNonNull(changeKind, "changeKind is required");
         Objects.requireNonNull(currentBalance, "currentBalance is required");
         Objects.requireNonNull(currentCycleCredit, "currentCycleCredit is required");
         Objects.requireNonNull(currentCycleDebit, "currentCycleDebit is required");
 
+        requireKnownChangeKind(changeKind);
         requireDigits(ACCOUNT_ID, accountId, PicClause.ACCT_ID_WIDTH);
         requireScale(CURRENT_BALANCE, currentBalance, PicClause.ACCT_CURR_BAL_SCALE);
         requireScale(CURRENT_CYCLE_CREDIT, currentCycleCredit,
@@ -122,9 +163,40 @@ public record AccountStateChanged(
                 UUID.fromString(requiredText(message, EVENT_ID)),
                 Instant.parse(requiredText(message, OCCURRED_AT)),
                 requiredText(message, ACCOUNT_ID),
+                requiredText(message, CHANGE_KIND),
                 new BigDecimal(requiredText(message, CURRENT_BALANCE)),
                 new BigDecimal(requiredText(message, CURRENT_CYCLE_CREDIT)),
                 new BigDecimal(requiredText(message, CURRENT_CYCLE_DEBIT)));
+    }
+
+    /**
+     * Answers whether this change is the cycle close that zeroes both accumulators.
+     *
+     * @return {@code true} for {@value #CHANGE_KIND_BILLING_CYCLE_CLOSED}
+     */
+    public boolean closesBillingCycle() {
+        return CHANGE_KIND_BILLING_CYCLE_CLOSED.equals(changeKind);
+    }
+
+    /**
+     * Checks {@code changeKind} against the two values the schema document enumerates.
+     *
+     * <p>A third value is refused rather than treated as an ordinary update. This replica decides
+     * what to write from this component, so a value it does not recognise is a producer this
+     * consumer no longer understands, and guessing would either discard the posting arithmetic or
+     * leave a cycle unclosed. The message names the value, which is one of two fixed enumerated
+     * tokens and carries no account data.
+     *
+     * @param changeKind the value the message carried
+     * @throws IllegalArgumentException when the value is neither enumerated token
+     */
+    private static void requireKnownChangeKind(String changeKind) {
+        if (!CHANGE_KIND_ACCOUNT_UPDATED.equals(changeKind)
+                && !CHANGE_KIND_BILLING_CYCLE_CLOSED.equals(changeKind)) {
+            throw new IllegalArgumentException(CHANGE_KIND + " must hold "
+                    + CHANGE_KIND_ACCOUNT_UPDATED + " or " + CHANGE_KIND_BILLING_CYCLE_CLOSED
+                    + ", and this message holds " + changeKind);
+        }
     }
 
     /**

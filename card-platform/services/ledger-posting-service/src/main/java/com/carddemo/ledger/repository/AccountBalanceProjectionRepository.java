@@ -26,6 +26,17 @@ import org.springframework.data.repository.Repository;
  * <p>{@code domain/AccountBalanceUpdater} reads one row by identifier, then saves it.
  * {@code api/BalanceQueryController} only reads.
  *
+ * <h2>Who moves which column</h2>
+ *
+ * <p>This service owns all three value columns, because all three are produced by
+ * {@code 2800-UPDATE-ACCOUNT-REC} at {@code app/cbl/CBTRN02C.cbl:L545-L560}. Two writes reach them
+ * from outside the posting path, and each is narrow on purpose.
+ * {@link #insertMissingProjection} opens a row for an account this projection does not hold, and
+ * changes no row it does hold. {@link #closeBillingCycle} zeroes the two accumulators of a row it
+ * does hold, reproducing {@code app/cbl/CBACT04C.cbl:L353-L354}, and leaves the balance alone.
+ * Nothing replaces a value column of an existing row, which is what keeps the balance the detail
+ * rows of {@code transaction} imply the balance this table reports.
+ *
  * <h2>Where the rows come from</h2>
  *
  * <p>{@code src/main/resources/db/migration/V2__seed.sql} writes one row for each of the fifty
@@ -107,33 +118,38 @@ public interface AccountBalanceProjectionRepository
     long count();
 
     /**
-     * Replaces one account's three value columns with the state a change published, unless the row
-     * already carries a later change.
+     * Inserts the first row for an account this projection does not hold yet, and leaves a row it
+     * already holds exactly as it stands.
      *
-     * <p>One statement rather than read-then-write. It is idempotent, so replaying the topic
-     * converges on the same rows. It is ordered too, so a redelivery arriving behind a newer change
-     * discards itself instead of moving the replica backwards.
+     * <p>This is the bootstrap, and it is the whole of what an account change writes to a row this
+     * service does not yet have. {@code src/main/resources/db/migration/V2__seed.sql} loads the
+     * fifty accounts of {@code app/data/ASCII/acctdata.txt} and nothing added a fifty-first, so an
+     * account opened after deployment had no row at all: every column is {@code NOT NULL}, so
+     * {@code domain/AccountBalanceUpdater} raised for every transaction on that account and no later
+     * delivery could have repaired it. The three values come from the account service because this
+     * service has posted nothing for that account yet, so it has no derived value of its own to
+     * keep.
      *
-     * <p>The write replaces rather than adds, and that is the source semantic.
-     * {@code app/cbl/COACTUPC.cbl:L3964-L3974} moves the balance and both accumulators from the
-     * screen onto the record, overwriting whatever the posting program had accumulated, and
-     * {@code app/cbl/CBACT04C.cbl:L353-L354} moves zero into both accumulators. Both are rewrites of
-     * the one {@code ACCTDAT} record, and this projection is a copy of three of its fields.
+     * <p>{@code ON CONFLICT (account_id) DO NOTHING} is the whole guarantee, and it is why this
+     * statement never discards a posted balance. The three value columns of a row that exists are
+     * produced by {@code 2800-UPDATE-ACCOUNT-REC} at {@code app/cbl/CBTRN02C.cbl:L545-L560}: the
+     * amount is added to the balance at {@code :L547} and to one of the two accumulators at
+     * {@code :L548-L551}. An account change carries the account service's own copy of those three
+     * fields, and that copy carries no posting this service applied, because the account service
+     * consumes no {@code TransactionPosted}. Writing it over this row therefore discarded the
+     * posting arithmetic, and it did so silently: the detail rows still summed to the movement the
+     * balance no longer showed.
      *
-     * <p>An absent row is inserted, which is how an account opened after deployment first gets a
-     * projection. Without that insert the posting path has nothing to add to, and
-     * {@code domain/AccountBalanceUpdater} raises for every transaction on that account forever.
-     *
-     * <p>{@code source_occurred_at IS NULL} on the stored row means the row came from
-     * {@code V2__seed.sql}. Any change supersedes it.
+     * <p>One statement rather than read-then-write, so two deliveries racing on one new account
+     * cannot both insert. Replaying the topic converges on the same rows.
      *
      * @param accountId        the eleven-digit account identifier, the primary key
-     * @param currentBalance   ACCT-CURR-BAL, scale 2
-     * @param cycleCredit      ACCT-CURR-CYC-CREDIT, scale 2
-     * @param cycleDebit       ACCT-CURR-CYC-DEBIT, scale 2, signed
+     * @param currentBalance   ACCT-CURR-BAL, scale 2, the opening value for a new row
+     * @param cycleCredit      ACCT-CURR-CYC-CREDIT, scale 2, the opening value for a new row
+     * @param cycleDebit       ACCT-CURR-CYC-DEBIT, scale 2, signed, the opening value for a new row
      * @param sourceEventId    the event that carried the change
      * @param sourceOccurredAt when that event occurred, from its envelope
-     * @return 1 when the row was written, and 0 when a later change was already recorded
+     * @return 1 when this delivery inserted the row, and 0 when the projection already held one
      */
     @Modifying
     @Query(value = """
@@ -142,19 +158,55 @@ public interface AccountBalanceProjectionRepository
                                                     source_event_id, source_occurred_at)
             VALUES (:accountId, :currentBalance, :cycleCredit, :cycleDebit,
                     :sourceEventId, :sourceOccurredAt)
-            ON CONFLICT (account_id) DO UPDATE SET
-                current_balance    = EXCLUDED.current_balance,
-                cycle_credit       = EXCLUDED.cycle_credit,
-                cycle_debit        = EXCLUDED.cycle_debit,
-                source_event_id    = EXCLUDED.source_event_id,
-                source_occurred_at = EXCLUDED.source_occurred_at
-            WHERE account_balance_projection.source_occurred_at IS NULL
-               OR account_balance_projection.source_occurred_at < EXCLUDED.source_occurred_at
+            ON CONFLICT (account_id) DO NOTHING
             """, nativeQuery = true)
-    int applyStateChange(@Param("accountId") String accountId,
+    int insertMissingProjection(@Param("accountId") String accountId,
             @Param("currentBalance") BigDecimal currentBalance,
             @Param("cycleCredit") BigDecimal cycleCredit,
             @Param("cycleDebit") BigDecimal cycleDebit,
+            @Param("sourceEventId") UUID sourceEventId,
+            @Param("sourceOccurredAt") Instant sourceOccurredAt);
+
+    /**
+     * Moves zero into both billing-cycle accumulators of one account and leaves the balance alone.
+     *
+     * <p>This reproduces {@code app/cbl/CBACT04C.cbl:L353-L354}, which moves zero into
+     * {@code ACCT-CURR-CYC-CREDIT} and {@code ACCT-CURR-CYC-DEBIT} and touches
+     * {@code ACCT-CURR-BAL} nowhere. The two literal zeroes are what the source moves, so the value
+     * the event carried is not read here: a cycle close is a command, not a reading, and this
+     * statement carries it out.
+     *
+     * <p>The balance stays because it is not part of a cycle close.
+     * {@code app/cbl/CBTRN02C.cbl:L547} is the only statement that moves it, and this service owns
+     * that statement.
+     *
+     * <p>Nothing else zeroes these two columns, and the posting path only ever adds to them at
+     * {@code app/cbl/CBTRN02C.cbl:L548-L551}. Without this write they grow without bound while the
+     * account service zeroes its own copies each cycle, which is the drift the credit-limit rule at
+     * {@code app/cbl/CBTRN02C.cbl:L403-L413} reads as an ever-shrinking available credit.
+     *
+     * <p>The write is ordered, so a redelivery arriving behind a newer change discards itself
+     * instead of reopening a cycle the replica has already closed past.
+     * {@code source_occurred_at IS NULL} means the row came from {@code V2__seed.sql}, and any
+     * change supersedes it.
+     *
+     * @param accountId        the eleven-digit account identifier, the primary key
+     * @param sourceEventId    the event that carried the cycle close
+     * @param sourceOccurredAt when that event occurred, from its envelope
+     * @return 1 when both accumulators were zeroed, and 0 when no row carries the account or a
+     *         change not before this one was already recorded
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE account_balance_projection SET
+                cycle_credit       = 0.00,
+                cycle_debit        = 0.00,
+                source_event_id    = :sourceEventId,
+                source_occurred_at = :sourceOccurredAt
+            WHERE account_id = :accountId
+              AND (source_occurred_at IS NULL OR source_occurred_at < :sourceOccurredAt)
+            """, nativeQuery = true)
+    int closeBillingCycle(@Param("accountId") String accountId,
             @Param("sourceEventId") UUID sourceEventId,
             @Param("sourceOccurredAt") Instant sourceOccurredAt);
 }

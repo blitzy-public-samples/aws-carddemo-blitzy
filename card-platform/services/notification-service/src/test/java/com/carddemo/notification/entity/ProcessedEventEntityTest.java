@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import jakarta.persistence.Column;
 import jakarta.persistence.DiscriminatorColumn;
 import jakarta.persistence.DiscriminatorValue;
+import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -30,6 +31,7 @@ import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 import jakarta.persistence.Transient;
 import jakarta.persistence.Version;
+import java.io.Serializable;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -143,9 +145,15 @@ final class ProcessedEventEntityTest {
             JoinColumn.class, JoinTable.class, Index.class);
 
     /**
-     * Returns the instance fields the class declares, with synthetic and static members dropped.
+     * Returns the fields that map a column, with synthetic and static members dropped.
      *
-     * @return the mapped fields, in declaration order
+     * <p>The key of this entity is an {@code @EmbeddedId}, so one declared field stands for two
+     * columns. That field is expanded in place and the key class's own fields take its position,
+     * which keeps the subject of every assertion below what it has always been: the columns this
+     * entity maps, whichever class declares them. The entity's own key field is not itself a mapped
+     * column and does not appear.</p>
+     *
+     * @return the mapped fields, in declaration order with the key expanded
      */
     private static List<Field> instanceFields() {
         List<Field> fields = new ArrayList<>();
@@ -153,9 +161,57 @@ final class ProcessedEventEntityTest {
             if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
                 continue;
             }
+            if (field.getAnnotation(EmbeddedId.class) != null) {
+                fields.addAll(keyFields());
+                continue;
+            }
             fields.add(field);
         }
         return fields;
+    }
+
+    /**
+     * Returns the fields the embedded key declares, with synthetic and static members dropped.
+     *
+     * @return the key's mapped fields, in declaration order
+     */
+    private static List<Field> keyFields() {
+        List<Field> fields = new ArrayList<>();
+        for (Field field : ProcessedEventEntity.ProcessedEventId.class.getDeclaredFields()) {
+            if (field.isSynthetic() || Modifier.isStatic(field.getModifiers())) {
+                continue;
+            }
+            fields.add(field);
+        }
+        return fields;
+    }
+
+    /**
+     * Returns the names of the fields the embedded key declares.
+     *
+     * @return the key's field names, in declaration order
+     */
+    private static List<String> keyFieldNames() {
+        List<String> names = new ArrayList<>();
+        for (Field field : keyFields()) {
+            names.add(field.getName());
+        }
+        return names;
+    }
+
+    /**
+     * Returns the one field of the entity that carries the key.
+     *
+     * @return the declared field carrying {@code @EmbeddedId}
+     */
+    private static Field keyField() {
+        for (Field field : ProcessedEventEntity.class.getDeclaredFields()) {
+            if (field.getAnnotation(EmbeddedId.class) != null) {
+                return field;
+            }
+        }
+        return fail("ProcessedEventEntity declares no @EmbeddedId field, so its key is not the "
+                + "event identifier and the topic together");
     }
 
     /**
@@ -404,10 +460,10 @@ final class ProcessedEventEntityTest {
     class MappedFields {
 
         @Test
-        @DisplayName("three instance fields, no more and no fewer")
+        @DisplayName("three mapped fields, no more and no fewer")
         void declaresExactlyThreeInstanceFields() {
             assertThat(instanceFieldNames())
-                    .as("instance fields ProcessedEventEntity declares, statics dropped")
+                    .as("mapped fields, the embedded key expanded and statics dropped")
                     .hasSize(FIELD_COUNT);
         }
 
@@ -458,25 +514,31 @@ final class ProcessedEventEntityTest {
         }
 
         @Test
-        @DisplayName("event_id and processed_at refuse null, consumed_topic accepts it")
+        @DisplayName("all three columns refuse null, the two key columns included")
         void nullabilityMatchesTheMigration() {
-            assertAll("declared nullability against V1__schema.sql",
+            assertAll("declared nullability against the migrations",
                     () -> assertFalse(columnOf(instanceField(EVENT_ID_FIELD)).nullable(),
-                            EVENT_ID_COLUMN + " is declared NOT NULL and carries the primary key"),
+                            EVENT_ID_COLUMN + " is declared NOT NULL and carries half the "
+                                    + "primary key"),
                     () -> assertFalse(columnOf(instanceField(PROCESSED_AT_FIELD)).nullable(),
                             PROCESSED_AT_COLUMN + " is declared NOT NULL"),
-                    () -> assertTrue(columnOf(instanceField(TOPIC_FIELD)).nullable(),
-                            TOPIC_COLUMN + " is declared without NOT NULL, and a mapping that "
-                                    + "refuses null stops start-up under ddl-auto validate"));
+                    () -> assertFalse(columnOf(instanceField(TOPIC_FIELD)).nullable(),
+                            TOPIC_COLUMN + " carries the other half of the primary key after "
+                                    + "V3__processed_event_topic_key.sql, and a key column holds "
+                                    + "no null. A mapping that accepted one would stop start-up "
+                                    + "under ddl-auto validate"));
         }
 
         @Test
-        @DisplayName("the key column never changes and no column is a key of its own")
+        @DisplayName("neither key column ever changes and no column is a key of its own")
         void theKeyColumnIsFixedAndNoColumnIsUnique() {
             List<Executable> checks = new ArrayList<>();
             checks.add(() -> assertFalse(columnOf(instanceField(EVENT_ID_FIELD)).updatable(),
                     EVENT_ID_COLUMN + " must be declared not updatable: an update to the primary "
                             + "key would move the marker to another event"));
+            checks.add(() -> assertFalse(columnOf(instanceField(TOPIC_FIELD)).updatable(),
+                    TOPIC_COLUMN + " must be declared not updatable: an update to it would move "
+                            + "the marker to another topic, unguarding the one it was taken for"));
 
             for (Field field : instanceFields()) {
                 checks.add(() -> assertFalse(columnOf(field).unique(),
@@ -499,36 +561,67 @@ final class ProcessedEventEntityTest {
         }
     }
 
-    /** The identifier: one column, supplied by the consumed event and generated by nothing. */
+    /**
+     * The key: two columns, supplied by the consumed event and its delivery, generated by nothing.
+     *
+     * <p>The event identifier alone does not identify a delivery. Four listener groups share this
+     * table and three producing services assign identifiers independently, so the same identifier
+     * can reach two topics without either producer being at fault. While the key was the identifier
+     * alone, the second of two such events lost its claim to the first and its listener wrote
+     * nothing: the right outcome for a redelivery, and a silently dropped read-model row for a
+     * different event.
+     * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql} carries the
+     * reasoning at length.</p>
+     */
     @Nested
-    @DisplayName("The identifier is the event identifier")
+    @DisplayName("The key is the event identifier and the topic it arrived on")
     class Identifier {
 
         @Test
-        @DisplayName("exactly one field carries @Id, and it is eventId")
+        @DisplayName("exactly one field carries @EmbeddedId, and no field carries @Id")
         void exactlyOneFieldCarriesIdAndItIsTheEventIdentifier() {
-            List<String> identifierFields = new ArrayList<>();
-            for (Field field : instanceFields()) {
+            List<String> embedded = new ArrayList<>();
+            List<String> plainIdentifiers = new ArrayList<>();
+            for (Field field : ProcessedEventEntity.class.getDeclaredFields()) {
+                if (field.getAnnotation(EmbeddedId.class) != null) {
+                    embedded.add(field.getName());
+                }
                 if (field.getAnnotation(Id.class) != null) {
-                    identifierFields.add(field.getName());
+                    plainIdentifiers.add(field.getName());
                 }
             }
 
-            assertThat(identifierFields).as("fields carrying @Id")
-                    .containsExactly(EVENT_ID_FIELD);
+            assertAll("the declared key",
+                    () -> assertThat(embedded).as("fields carrying @EmbeddedId")
+                            .containsExactly(keyField().getName()),
+                    () -> assertThat(plainIdentifiers).as("fields carrying @Id")
+                            .isEmpty(),
+                    () -> assertNotNull(ProcessedEventEntity.ProcessedEventId.class
+                                    .getAnnotation(Embeddable.class),
+                            "the key class must carry @Embeddable, or the provider cannot map it"),
+                    () -> assertThat(Serializable.class)
+                            .as("a key class has to be serializable")
+                            .isAssignableFrom(ProcessedEventEntity.ProcessedEventId.class));
         }
 
         @Test
-        @DisplayName("the identifier is a java.util.UUID mapping event_id")
+        @DisplayName("the key holds a UUID mapping event_id and a String mapping consumed_topic")
         void theIdentifierIsAUuidMappingTheEventIdColumn() {
             Field identifier = instanceField(EVENT_ID_FIELD);
+            Field topic = instanceField(TOPIC_FIELD);
 
-            assertAll("identifier field",
+            assertAll("key fields",
                     () -> assertSame(UUID.class, identifier.getType(),
                             EVENT_ID_FIELD + " must be a java.util.UUID. A String identifier "
                                     + "accepts a value the UUID column then refuses on insert"),
                     () -> assertEquals(EVENT_ID_COLUMN, columnOf(identifier).name(),
-                            "column the identifier maps"));
+                            "column the identifier maps"),
+                    () -> assertSame(String.class, topic.getType(),
+                            TOPIC_FIELD + " must be a java.lang.String, which maps to VARCHAR"),
+                    () -> assertEquals(TOPIC_COLUMN, columnOf(topic).name(),
+                            "column the topic maps"),
+                    () -> assertThat(keyFields()).as("the key declares both columns and no other")
+                            .hasSize(2));
         }
 
         @Test
@@ -554,18 +647,28 @@ final class ProcessedEventEntityTest {
         }
 
         @Test
-        @DisplayName("no composite key: one column carries the whole key")
-        void declaresNoCompositeKey() {
+        @DisplayName("the composite key is embedded, not an @IdClass, and it holds no third part")
+        void declaresACompositeKeyOfTheEventAndTheTopic() {
             List<Executable> checks = new ArrayList<>();
             checks.add(() -> assertNull(ProcessedEventEntity.class.getAnnotation(IdClass.class),
-                    "the class must carry no @IdClass: one column carries the whole key"));
+                    "the class must carry no @IdClass: the key is embedded, which is how "
+                            + "StatementTransactionEntity declares its own key in this service"));
+            checks.add(() -> assertThat(keyFieldNames())
+                    .as("the parts of the key")
+                    .containsExactly(EVENT_ID_FIELD, TOPIC_FIELD));
+            checks.add(() -> assertThat(keyFieldNames())
+                    .as("no consumer group, event type or aggregate reaches the key")
+                    .noneMatch(name -> fold(name).contains("group")
+                            || fold(name).contains("type")
+                            || fold(name).contains("aggregate")));
 
-            for (Field field : instanceFields()) {
-                checks.add(() -> assertNull(field.getAnnotation(EmbeddedId.class),
-                        field.getName() + " must carry no @EmbeddedId"));
+            for (Field field : keyFields()) {
+                checks.add(() -> assertNull(field.getAnnotation(Id.class),
+                        field.getName() + " must carry no @Id: the embedded key carries the "
+                                + "identity and its parts carry columns"));
             }
 
-            assertAll("absent composite key", checks);
+            assertAll("the composite key", checks);
         }
     }
 

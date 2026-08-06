@@ -132,11 +132,15 @@ public class TransactionAuthorizedConsumerIT {
     private static final String DEAD_LETTER_METER = "carddemo.ledger.dead.letters";
     private static final String OUTCOME_TAG = "outcome";
     private static final String FAILURE_STAGE_TAG = "stage";
+    private static final String FAILURE_KIND_TAG = "failure.kind";
     private static final String REJECTED_OUTCOME = "rejected";
     private static final String DUPLICATE_OUTCOME = "duplicate";
     private static final String PROCESS_STAGE = "process";
+    private static final String DESERIALIZE_STAGE = "deserialize";
     private static final String PUBLISHED_OUTCOME = "published";
     private static final String FAILED_OUTCOME = "failed";
+    private static final String PROCESSING_KIND = "processing";
+    private static final String SCHEMA_VALIDATION_KIND = "schema_validation";
 
     private static final String ACCOUNT_ID = "00000000007";
     private static final String MISSING_ACCOUNT_ID = "00000000099";
@@ -408,10 +412,9 @@ public class TransactionAuthorizedConsumerIT {
             long consumedBefore = counterValue(counter(EVENTS_CONSUMED_METER));
             long failuresBefore =
                     counterValue(counter(FAILURE_METER, FAILURE_STAGE_TAG, PROCESS_STAGE));
-            long publishedBefore =
-                    counterValue(counter(DEAD_LETTER_METER, OUTCOME_TAG, PUBLISHED_OUTCOME));
-            long refusedBefore =
-                    counterValue(counter(DEAD_LETTER_METER, OUTCOME_TAG, FAILED_OUTCOME));
+            long publishedBefore = deadLetters(PUBLISHED_OUTCOME);
+            long refusedBefore = deadLetters(FAILED_OUTCOME);
+            long attributedBefore = deadLetters(PUBLISHED_OUTCOME, PROCESSING_KIND);
 
             try (KafkaConsumer<String, String> deadLetters = assignedToEndOf(deadLetterTopic());
                     KafkaProducer<String, String> producer = newProducer()) {
@@ -422,8 +425,7 @@ public class TransactionAuthorizedConsumerIT {
                         deadLetters, record -> true, "retryable failure reaches dead-letter topic");
                 Duration elapsed = Duration.between(startedAt, Instant.now());
 
-                awaitCounter(DEAD_LETTER_METER, OUTCOME_TAG, PUBLISHED_OUTCOME,
-                        publishedBefore + 1L);
+                awaitDeadLetters(PUBLISHED_OUTCOME, publishedBefore + 1L);
                 Awaitility.await("configured attempts finish")
                         .atMost(ARRIVAL_TIMEOUT)
                         .pollInterval(POLL_INTERVAL)
@@ -442,12 +444,15 @@ public class TransactionAuthorizedConsumerIT {
                                         - failuresBefore,
                                 "each failed attempt reached the process failure counter"),
                         () -> assertEquals(publishedBefore + 1L,
-                                counterValue(counter(
-                                        DEAD_LETTER_METER, OUTCOME_TAG, PUBLISHED_OUTCOME)),
+                                deadLetters(PUBLISHED_OUTCOME),
                                 "one terminal diagnostic reached the broker"),
+                        () -> assertEquals(attributedBefore + 1L,
+                                deadLetters(PUBLISHED_OUTCOME, PROCESSING_KIND),
+                                "and it is filed under what it failed at, so the terminal series"
+                                        + " separates a listener that raised from a payload no"
+                                        + " deserializer would read"),
                         () -> assertEquals(refusedBefore,
-                                counterValue(counter(
-                                        DEAD_LETTER_METER, OUTCOME_TAG, FAILED_OUTCOME)),
+                                deadLetters(FAILED_OUTCOME),
                                 "the dead-letter publication failure counter stays fixed"),
                         () -> assertTrue(elapsed.compareTo(minimumElapsed) >= 0,
                                 "elapsed time covers each configured retry interval"));
@@ -462,8 +467,7 @@ public class TransactionAuthorizedConsumerIT {
         @DisplayName("a failed posting leaves no partial transaction state")
         void failedPostingLeavesNoPartialTransactionState() {
             UUID eventId = UUID.randomUUID();
-            long publishedBefore =
-                    counterValue(counter(DEAD_LETTER_METER, OUTCOME_TAG, PUBLISHED_OUTCOME));
+            long publishedBefore = deadLetters(PUBLISHED_OUTCOME);
 
             try (KafkaConsumer<String, String> deadLetters = assignedToEndOf(deadLetterTopic());
                     KafkaProducer<String, String> producer = newProducer()) {
@@ -471,8 +475,7 @@ public class TransactionAuthorizedConsumerIT {
                         authorizedEvent(eventId, MISSING_ACCOUNT_ID));
                 ConsumerRecord<String, String> deadLetter = awaitRecord(
                         deadLetters, record -> true, "failed posting reaches dead-letter topic");
-                awaitCounter(DEAD_LETTER_METER, OUTCOME_TAG, PUBLISHED_OUTCOME,
-                        publishedBefore + 1L);
+                awaitDeadLetters(PUBLISHED_OUTCOME, publishedBefore + 1L);
 
                 assertAll("rolled-back posting",
                         () -> assertEquals(0L, transactionCount(FIXTURE.transactionId()),
@@ -510,8 +513,10 @@ public class TransactionAuthorizedConsumerIT {
             long consumedBefore = counterValue(counter(EVENTS_CONSUMED_METER));
             long failuresBefore =
                     counterValue(counter(FAILURE_METER, FAILURE_STAGE_TAG, PROCESS_STAGE));
-            long publishedBefore =
-                    counterValue(counter(DEAD_LETTER_METER, OUTCOME_TAG, PUBLISHED_OUTCOME));
+            long refusalsBefore =
+                    counterValue(counter(FAILURE_METER, FAILURE_STAGE_TAG, DESERIALIZE_STAGE));
+            long publishedBefore = deadLetters(PUBLISHED_OUTCOME);
+            long attributedBefore = deadLetters(PUBLISHED_OUTCOME, SCHEMA_VALIDATION_KIND);
 
             try (KafkaConsumer<String, String> deadLetters = assignedToEndOf(deadLetterTopic());
                     KafkaProducer<String, String> producer = newProducer()) {
@@ -519,8 +524,7 @@ public class TransactionAuthorizedConsumerIT {
                         schemaViolatingEvent(eventId, ACCOUNT_ID));
                 ConsumerRecord<String, String> deadLetter = awaitRecord(
                         deadLetters, record -> true, "schema refusal reaches dead-letter topic");
-                awaitCounter(DEAD_LETTER_METER, OUTCOME_TAG, PUBLISHED_OUTCOME,
-                        publishedBefore + 1L);
+                awaitDeadLetters(PUBLISHED_OUTCOME, publishedBefore + 1L);
 
                 assertAll("schema refusal",
                         () -> assertEquals(consumedBefore,
@@ -530,6 +534,14 @@ public class TransactionAuthorizedConsumerIT {
                                 counterValue(counter(
                                         FAILURE_METER, FAILURE_STAGE_TAG, PROCESS_STAGE)),
                                 "the process failure counter stays fixed"),
+                        () -> assertEquals(refusalsBefore + 1L,
+                                counterValue(counter(
+                                        FAILURE_METER, FAILURE_STAGE_TAG, DESERIALIZE_STAGE)),
+                                "and the refusal is counted at the stage it happened at, which is"
+                                        + " the only stage a refused payload ever reaches"),
+                        () -> assertEquals(attributedBefore + 1L,
+                                deadLetters(PUBLISHED_OUTCOME, SCHEMA_VALIDATION_KIND),
+                                "the terminal record names the schema control that refused it"),
                         () -> assertEquals(0L, transactionCount(FIXTURE.transactionId()),
                                 "no transaction row is written"),
                         () -> assertEquals(0L, markerCount(eventId),
@@ -746,6 +758,47 @@ public class TransactionAuthorizedConsumerIT {
                 .atMost(ARRIVAL_TIMEOUT)
                 .pollInterval(POLL_INTERVAL)
                 .until(() -> counterValue(counter(name, tag, value)) == expected);
+    }
+
+    /**
+     * Totals one outcome of the terminal dead-letter counter across every failure kind.
+     *
+     * <p>That counter carries a failure kind beside the outcome, so one outcome names a series per
+     * kind rather than a single series. A reader that asked for one series would read whichever
+     * kind it happened to match, which is why every total here is a sum.
+     *
+     * @param outcome the terminal outcome to total
+     * @return the number of records counted under that outcome, whatever they failed at
+     */
+    private long deadLetters(String outcome) {
+        double total = 0.0D;
+        for (Counter series : meters.find(DEAD_LETTER_METER).tag(OUTCOME_TAG, outcome).counters()) {
+            total += series.count();
+        }
+        return Math.round(total);
+    }
+
+    /**
+     * Reads one outcome of the terminal dead-letter counter for one failure kind.
+     *
+     * @param outcome the terminal outcome
+     * @param kind    the value of the failure kind tag
+     * @return the count that series carries, or zero where it is absent
+     */
+    private long deadLetters(String outcome, String kind) {
+        Counter series = meters.find(DEAD_LETTER_METER)
+                .tag(OUTCOME_TAG, outcome)
+                .tag(FAILURE_KIND_TAG, kind)
+                .counter();
+        return series == null ? 0L : Math.round(series.count());
+    }
+
+    /** Waits until one outcome of the terminal counter, summed over every kind, reads a value. */
+    private void awaitDeadLetters(String outcome, long expected) {
+        Awaitility.await(DEAD_LETTER_METER + " " + outcome + " reaches " + expected)
+                .atMost(ARRIVAL_TIMEOUT)
+                .pollInterval(POLL_INTERVAL)
+                .until(() -> deadLetters(outcome) == expected);
     }
 
     private static String authorizedEvent(UUID eventId, String accountId) {

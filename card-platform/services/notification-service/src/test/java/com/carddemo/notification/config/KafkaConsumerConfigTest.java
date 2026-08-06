@@ -9,6 +9,8 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.events.serde.JsonSchemaValidatingDeserializer;
+import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
+import com.carddemo.notification.domain.CardholderContextReader;
 import com.carddemo.notification.messaging.DeadLetterMetadata;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Constructor;
@@ -375,6 +377,51 @@ final class KafkaConsumerConfigTest {
         assertThat(persistence).isNotEqualTo(fallback);
         assertThat(wrappedSchema).isEqualTo(schema);
         assertThat(wrappedSchema).isNotEqualTo(deserialization);
+    }
+
+    /**
+     * Holds that a fault the listener raised is filed as a rendering failure, not as unknown.
+     *
+     * <p>Each listener classifies its own failures with one rule -- a persistence fault, or else a
+     * rendering failure -- and counts one per attempt on {@code carddemo.notification.failures}.
+     * This method counts one per record given up on, on
+     * {@code carddemo.notification.records.dead.lettered}. Without the rendering branch the two
+     * series disagreed about the same failure: the attempts were filed as {@code rendering} and the
+     * record that exhausted them as {@code unknown}, so the registered {@code rendering} value of
+     * the terminal series was unreachable and an operator reconciling the two could not tell which
+     * rendering failures had actually been given up on.
+     *
+     * <p>The container wraps whatever a listener raises, so the wrapper is what names the stage. A
+     * persistence fault raised inside the listener still files as persistence, because that check
+     * runs first and is the one place the platform decides what that tag covers.
+     */
+    @Test
+    void aFailureTheListenerRaisedIsFiledAsRenderingRatherThanUnknown() {
+        String rendering = KafkaConsumerConfig.failureKindOf(new ListenerExecutionFailedException(
+                "listener failed",
+                new CardholderContextReader.CardholderContextMissingException("00000000007")));
+        String persistenceInsideTheListener = KafkaConsumerConfig.failureKindOf(
+                new ListenerExecutionFailedException("listener failed",
+                        new CannotCreateTransactionException("connection unavailable")));
+        String schemaBeforeTheListener = KafkaConsumerConfig.failureKindOf(
+                new DeserializationException("rejected input", REFUSED_VALUE, false,
+                        new SerializationException("schema violation")));
+        String unreachedListener = KafkaConsumerConfig.failureKindOf(
+                new IllegalArgumentException("nothing names a stage"));
+
+        assertThat(rendering)
+                .as("a fault the listener raised is a rendering failure")
+                .isEqualTo(NotificationMetrics.FAILURE_RENDERING)
+                .isNotEqualTo(NotificationMetrics.UNKNOWN);
+        assertThat(persistenceInsideTheListener)
+                .as("a database fault inside the listener stays a persistence failure")
+                .isEqualTo(NotificationMetrics.FAILURE_PERSISTENCE);
+        assertThat(schemaBeforeTheListener)
+                .as("a refusal before the listener ran is not a rendering failure")
+                .isEqualTo(NotificationMetrics.FAILURE_SCHEMA_VALIDATION);
+        assertThat(unreachedListener)
+                .as("a chain naming no stage at all is still the registered unknown value")
+                .isEqualTo(NotificationMetrics.UNKNOWN);
     }
 
     @Test

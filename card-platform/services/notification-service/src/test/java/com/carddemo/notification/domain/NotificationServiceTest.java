@@ -1580,6 +1580,16 @@ class NotificationServiceTest {
      * {@code app/cbl/CBSTM03A.CBL:L68}. Both hold nine integer digits, so the move at
      * {@code app/cbl/CBSTM03A.CBL:L433} drops any digit above the ninth and reports nothing.</p>
      *
+     * <p><b>The accumulator meets the ceiling before the print field does.</b>
+     * {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429} names
+     * {@code WS-TOTAL-AMT} as its receiving field and carries no {@code ON SIZE ERROR} phrase, so a
+     * sum needing a tenth integer digit loses that digit at the addition and every later addition
+     * works from the truncated value. The total this service reports through
+     * {@code GET /notifications/{cardToken}} is therefore the same truncated value the statement
+     * renders, which is the whole point: an endpoint that answered with an untruncated total would
+     * disagree with the statement for the same rows, and one that tried to serialize ten integer
+     * digits into the nine-digit contract would fail the request outright.</p>
+     *
      * <p>The finding is carried with its citations in
      * {@code card-platform/docs/business-rule-flags.md}.</p>
      */
@@ -1600,25 +1610,27 @@ class NotificationServiceTest {
         private static final String SURVIVING_TOTAL = "200000000.00";
 
         /**
-         * The exact total of the two rows, at ten integer digits.
+         * The arithmetic sum of the two rows, at ten integer digits.
          *
-         * <p>The accumulation at {@code app/cbl/CBSTM03A.CBL:L429} reaches this value, and the
-         * nine-digit print field at {@code app/cbl/CBSTM03A.CBL:L142} carries
-         * {@link #SURVIVING_TOTAL} of it.</p>
+         * <p>No field in {@code app/cbl/CBSTM03A.CBL} holds this value. The addition at
+         * {@code app/cbl/CBSTM03A.CBL:L429} computes it and stores {@link #SURVIVING_TOTAL} of it,
+         * because its receiving field holds nine integer digits. It is the value a widened
+         * accumulator would carry, and it appears here only as that comparison.</p>
          */
         private static final String ACCUMULATED_TOTAL = "1200000000.00";
 
         /**
-         * Holds that a total at or above one billion loses its high-order digit silently.
+         * Holds that a total past nine integer digits loses its high-order digit at the addition.
          *
-         * <p>The accumulation at {@code app/cbl/CBSTM03A.CBL:L429} reaches ten integer digits, and
-         * the move at {@code app/cbl/CBSTM03A.CBL:L433} carries only nine into
-         * {@code WS-TRN-AMT PIC S9(9)V99} at {@code app/cbl/CBSTM03A.CBL:L68}. The edited value
-         * that {@code app/cbl/CBSTM03A.CBL:L434} places in the trailer therefore reads the same as
-         * the edited value of the nine surviving digits.</p>
+         * <p>{@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429} stores into
+         * a field of nine integer digits and carries no {@code ON SIZE ERROR} phrase, so the total
+         * the renderer receives already holds {@link #SURVIVING_TOTAL}. The move at
+         * {@code app/cbl/CBSTM03A.CBL:L433} into {@code WS-TRN-AMT PIC S9(9)V99} at
+         * {@code app/cbl/CBSTM03A.CBL:L68} then has nothing left to drop, and the edited value that
+         * {@code app/cbl/CBSTM03A.CBL:L434} places in the trailer reads the same either way.</p>
          */
         @Test
-        @DisplayName("A total past nine integer digits loses its high-order digit silently")
+        @DisplayName("A total past nine integer digits loses its high-order digit at the addition")
         void aTotalPastNineIntegerDigitsLosesItsHighOrderDigit() {
             holdRows(CARD_TOKEN, List.of(
                     row("0000000000000001", storedDescription('A', 'B'), LARGE_AMOUNT),
@@ -1630,7 +1642,12 @@ class NotificationServiceTest {
                     RenderedFormat.PLAIN_TEXT)).doesNotThrowAnyException();
 
             BigDecimal total = textRenderer.onlyStatementCall().total();
-            assertThat(total).isEqualByComparingTo("1200000000.00");
+            assertThat(total)
+                    .as("the receiving field of the ADD holds nine integer digits")
+                    .isEqualByComparingTo(SURVIVING_TOTAL);
+            assertThat(total.precision() - total.scale())
+                    .as("so the stored total never exceeds the field, however many rows are summed")
+                    .isLessThanOrEqualTo(TOTAL_INTEGER_DIGITS);
 
             String editedTotal = NotificationRenderer.editTrailingSignZ(total);
             assertThat(editedTotal).isEqualTo(NotificationRenderer
@@ -1639,44 +1656,102 @@ class NotificationServiceTest {
         }
 
         /**
-         * States what a corrected print field would report for the same two rows.
+         * Holds that the total an API response reports equals the total a statement renders.
          *
-         * <p>The accumulated total is exact and reaches this service as
-         * {@link #ACCUMULATED_TOTAL}. A print field of ten integer digits would carry every
-         * digit of it, and the shipped nine-digit field of
-         * {@code app/cbl/CBSTM03A.CBL:L142} carries nine.
-         * The two therefore differ, and that difference is the divergence the test above pins.</p>
+         * <p>Both come from the one accumulation, so a caller reading
+         * {@code GET /notifications/{cardToken}} and a cardholder reading the statement see the same
+         * digits. This is the property that failed before the store was performed where the source
+         * performs it: the endpoint assembled an untruncated ten-digit total, the response contract
+         * of nine integer digits refused it, and the request answered {@code 500} for as long as
+         * those rows stood.</p>
+         */
+        @Test
+        @DisplayName("The API total and the rendered total agree past the ceiling")
+        void theApiTotalAgreesWithTheRenderedTotal() {
+            List<StatementTransactionEntity> rows = List.of(
+                    row("0000000000000001", storedDescription('A', 'B'), LARGE_AMOUNT),
+                    row("0000000000000002", storedDescription('C', 'D'), LARGE_AMOUNT));
+            holdRows(CARD_TOKEN, rows);
+            NotificationService service = serviceWith(textRenderer);
+
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID,
+                    ACCOUNT_ID, CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
+
+            assertThat(service.totalOf(rows))
+                    .as("one accumulation serves the endpoint and the statement")
+                    .isEqualByComparingTo(textRenderer.onlyStatementCall().total());
+        }
+
+        /**
+         * Holds that the truncation happens once per addition rather than once at the end.
+         *
+         * <p>A COBOL {@code ADD} stores its result before the next statement runs, so the third row
+         * here is added to {@link #SURVIVING_TOTAL} and not to the arithmetic sum of the first two.
+         * Summing every row first and truncating once would report a different value, which is why
+         * the order matters and is asserted rather than assumed.</p>
+         */
+        @Test
+        @DisplayName("Each addition stores before the next one reads")
+        void eachAdditionStoresBeforeTheNextOneReads() {
+            NotificationService service = serviceWith(textRenderer);
+            List<StatementTransactionEntity> rows = List.of(
+                    row("0000000000000001", storedDescription('A', 'B'), LARGE_AMOUNT),
+                    row("0000000000000002", storedDescription('C', 'D'), LARGE_AMOUNT),
+                    row("0000000000000003", storedDescription('E', 'F'), LARGE_AMOUNT));
+
+            assertThat(service.totalOf(rows))
+                    .as("200000000.00 + 600000000.00 stays inside the field, and 1800000000.00"
+                            + " truncated once would not")
+                    .isEqualByComparingTo("800000000.00");
+        }
+
+        /**
+         * States what a widened accumulator and print field would report for the same two rows.
+         *
+         * <p>The arithmetic sum of the two rows is {@link #ACCUMULATED_TOTAL}. A field of ten
+         * integer digits would hold every digit of it, and the shipped nine-digit pair of
+         * {@code app/cbl/CBSTM03A.CBL:L65} and {@code app/cbl/CBSTM03A.CBL:L142} holds nine. The
+         * two therefore differ, and that difference is the divergence the tests above pin.</p>
          *
          * <p>The expected value here is the intended target behaviour and not the shipped one, so
-         * this test fails if the field is widened without the sibling above being retired
-         * together.</p>
+         * this test fails if the field is widened without the siblings above being retired
+         * together. Widening it is a decision only the owner of the equivalence contract can take,
+         * and {@code card-platform/docs/business-rule-flags.md} records it as owed.</p>
          */
         @Test
         @Tag(HUMAN_REVIEW_TAG)
-        @DisplayName("INTENDED TARGET: a print field of ten integer digits keeps the high-order "
-                + "digit, and the shipped nine-digit edit drops it")
+        @DisplayName("INTENDED TARGET: ten integer digits keep the high-order digit, and the "
+                + "shipped nine-digit field drops it")
         void theIntendedPrintWidthKeepsTheHighOrderDigit() {
-            BigDecimal accumulated = new BigDecimal(ACCUMULATED_TOTAL);
+            BigDecimal summed = new BigDecimal(LARGE_AMOUNT).add(new BigDecimal(LARGE_AMOUNT));
 
-            String intended = accumulated.toPlainString();
-            String shipped = NotificationRenderer.editTrailingSignZ(accumulated).trim();
+            String intended = summed.toPlainString();
+            String shipped = serviceWith(textRenderer).totalOf(List.of(
+                    row("0000000000000001", storedDescription('A', 'B'), LARGE_AMOUNT),
+                    row("0000000000000002", storedDescription('C', 'D'), LARGE_AMOUNT)))
+                    .toPlainString();
 
             assertThat(intended)
-                    .as("a ten-digit print field carries every digit the accumulation produced")
+                    .as("a ten-digit field carries every digit the arithmetic produced")
                     .isEqualTo(ACCUMULATED_TOTAL)
                     .startsWith("1");
             assertThat(shipped)
-                    .as("the shipped nine-digit edit reports the nine low-order digits")
+                    .as("the shipped nine-digit field holds the nine low-order digits")
                     .isNotEqualTo(intended)
                     .startsWith("2");
         }
 
         /**
-         * Holds that the edited total keeps its width when the ceiling is crossed.
+         * Holds that the edited total keeps its width whether or not the ceiling was crossed.
          *
          * <p>{@code ST-TOTAL-TRAMT PIC Z(9).99-} at {@code app/cbl/CBSTM03A.CBL:L142} holds nine
          * digit positions, the decimal point, two decimal digits and one trailing sign
          * position.</p>
+         *
+         * <p>Two values are edited. The first is the total these rows accumulate to, which crossed
+         * the ceiling and was stored truncated. The second is the arithmetic sum, built by hand
+         * because no field in the source holds it, and it proves the edit holds its width for a
+         * value wider than the field as well.</p>
          */
         @Test
         @DisplayName("The edited total holds 13 characters whether or not the ceiling is crossed")
@@ -1690,8 +1765,12 @@ class NotificationServiceTest {
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             BigDecimal total = textRenderer.onlyStatementCall().total();
-            assertThat(total.precision() - total.scale()).isGreaterThan(TOTAL_INTEGER_DIGITS);
+            BigDecimal wider = new BigDecimal(ACCUMULATED_TOTAL);
+            assertThat(total.precision() - total.scale()).isLessThanOrEqualTo(TOTAL_INTEGER_DIGITS);
+            assertThat(wider.precision() - wider.scale()).isGreaterThan(TOTAL_INTEGER_DIGITS);
             assertThat(NotificationRenderer.editTrailingSignZ(total))
+                    .hasSize(EDITED_TOTAL_WIDTH);
+            assertThat(NotificationRenderer.editTrailingSignZ(wider))
                     .hasSize(EDITED_TOTAL_WIDTH);
         }
     }

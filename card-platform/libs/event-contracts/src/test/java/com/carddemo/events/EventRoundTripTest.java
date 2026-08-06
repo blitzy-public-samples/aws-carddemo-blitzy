@@ -346,6 +346,48 @@ class EventRoundTripTest {
     }
 
     /**
+     * Asserts the posted event that follows a version-one authorization is itself a version-one
+     * event that survives both ends of the publish path.
+     *
+     * <p>Version one of the authorized contract declares no card token, and it stays governed, so a
+     * producer still on it publishes an event a consumer has to be able to apply. The posted event
+     * therefore takes the version the authorization supports rather than being refused: the card
+     * token is the one component of a posted event that no other component can supply, so its
+     * absence names the version. Every value the two contracts share still travels, and the ten
+     * components version two adds stay off the wire, which is what the version-one document
+     * requires of a closed property set.
+     */
+    @Test
+    void thePostedEventFollowingAVersionOneAuthorizationIsItselfVersionOne() {
+        TransactionAuthorized versionOne = anAuthorizedTransactionAtVersionOne();
+
+        TransactionPosted posted = TransactionPosted.forAuthorized(versionOne,
+                new BigDecimal(TEN_INTEGER_DIGIT_BALANCE), POSTED_AT);
+        JsonNode wire = wireFormOf(posted);
+        TransactionPosted arrived = roundTrip(TransactionPosted.class, posted);
+
+        assertAll(
+                () -> assertEquals(EventEnvelope.SCHEMA_VERSION, posted.schemaVersion(),
+                        "an authorization with no card token must produce a version 1 event"),
+                () -> assertNull(posted.cardToken(),
+                        "no card token may be invented for an authorization that carried none"),
+                () -> assertFalse(wire.has("cardToken"),
+                        "a version 1 wire form declared a card token"),
+                () -> assertFalse(wire.has("merchantName"),
+                        "a version 1 wire form declared a descriptive component"),
+                () -> assertEquals(versionOne.accountId(), arrived.accountId(),
+                        "the two events named different accounts"),
+                () -> assertEquals(versionOne.transactionId(), arrived.transactionId(),
+                        "the two events named different transactions"),
+                () -> assertEquals(versionOne.amount(), arrived.amount(),
+                        "the amount did not survive both ends"),
+                () -> assertEquals(versionOne.maskedCardNumber(), arrived.maskedCardNumber(),
+                        "the masked card number did not survive both ends"),
+                () -> assertEquals(POSTED_AT, arrived.postedAt(),
+                        "the posting timestamp did not survive both ends"));
+    }
+
+    /**
      * Asserts the posted event that follows one authorized event copies every value it shares with
      * it, so the two describe one transaction.
      */
@@ -1165,6 +1207,25 @@ class EventRoundTripTest {
                 "Purchase at Abshire-Lowe", new BigDecimal(AMOUNT), "800000000", "Abshire-Lowe",
                 "North Enoshaven", PADDED_MERCHANT_ZIP, MASKED_CARD_NUMBER, CARD_TOKEN,
                 AUTHORIZED_AT);
+    }
+
+    /**
+     * An authorized transaction at the version that declares no card token.
+     *
+     * <p>{@code schemas/transaction-authorized-v1.json} stays governed, so an event that satisfies
+     * it stays constructible and a consumer stays obliged to apply it. The canonical constructor is
+     * what builds one, because {@link TransactionAuthorized#of} stamps the version that carries the
+     * token.
+     *
+     * @return an event the version-one document accepts
+     */
+    private static TransactionAuthorized anAuthorizedTransactionAtVersionOne() {
+        return new TransactionAuthorized(java.util.UUID.randomUUID(),
+                TransactionAuthorized.EVENT_TYPE, EventEnvelope.SCHEMA_VERSION,
+                Instant.parse("2022-06-10T19:27:53.412Z"), ACCOUNT_ID, TRANSACTION_ID, "01", "0001",
+                PADDED_SOURCE, "Purchase at Abshire-Lowe", new BigDecimal(AMOUNT), "800000000",
+                "Abshire-Lowe", "North Enoshaven", PADDED_MERCHANT_ZIP, MASKED_CARD_NUMBER, null,
+                AUTHORIZED_AT, ACCOUNT_ID, TransactionAuthorized.CURRENCY);
     }
 
     /**

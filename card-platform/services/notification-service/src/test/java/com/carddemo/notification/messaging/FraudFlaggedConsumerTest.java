@@ -18,6 +18,7 @@ import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.domain.NotificationService.CardholderDetails;
 import com.carddemo.notification.entity.CardholderContextEntity;
 import com.carddemo.notification.entity.ProcessedEventEntity;
+import com.carddemo.notification.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.notification.repository.CardholderContextRepository;
 import com.carddemo.notification.repository.NotificationLogRepository;
 import com.carddemo.notification.repository.ProcessedEventRepository;
@@ -319,14 +320,16 @@ class FraudFlaggedConsumerTest {
     }
 
     /**
-     * One marker table serves every listener of this service, keyed on the event identifier alone.
-     * A marker already held for that identifier stops the alert here.
+     * One marker table serves every listener of this service, keyed on the event identifier and the
+     * topic it arrived on. A marker already held for that pair stops the alert here, and no consumer
+     * group is read: the topic already separates two listeners, and a group name is configuration
+     * that would change identity whenever it was renamed.
      */
     @Test
     @DisplayName("A marker already held for one event identifier is honoured, and no group is read")
     void aMarkerAlreadyHeldForOneEventIdentifierIsHonoured() {
         UUID sharedIdentifier = UUID.randomUUID();
-        this.processedEvents.holdMarkerFor(sharedIdentifier);
+        this.processedEvents.holdMarkerFor(sharedIdentifier, TOPIC);
 
         deliver(flaggedEvent(sharedIdentifier, RISK_SCORE, RULES));
 
@@ -636,11 +639,19 @@ class FraudFlaggedConsumerTest {
     private record UnknownAssessment(String description) {
     }
 
-    /** Store of duplicate-delivery markers, claiming one event identifier once. */
+    /**
+     * Store of duplicate-delivery markers, claiming one event identifier once per topic.
+     *
+     * <p>The claim is keyed on the identifier AND the topic, as {@code pk_processed_event} is after
+     * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql}. A fake keyed on the
+     * identifier alone would suppress a different event that happened to share one, which is the
+     * defect the migration removed, and a test running against it would pass while the shipped
+     * schema behaved differently.
+     */
     private static final class FakeProcessedEvents implements ProcessedEventRepository {
 
         private final List<String> sequence;
-        private final Set<UUID> claimed = new LinkedHashSet<>();
+        private final Set<ProcessedEventId> claimed = new LinkedHashSet<>();
         private final List<UUID> claimedEvents = new ArrayList<>();
         private final List<String> recordedTopics = new ArrayList<>();
         private final List<List<Object>> claimArguments = new ArrayList<>();
@@ -653,8 +664,8 @@ class FraudFlaggedConsumerTest {
             this.sequence = sequence;
         }
 
-        void holdMarkerFor(UUID eventId) {
-            this.claimed.add(eventId);
+        void holdMarkerFor(UUID eventId, String consumedTopic) {
+            this.claimed.add(new ProcessedEventId(eventId, consumedTopic));
         }
 
         void refuseClaimWith(RuntimeException fault) {
@@ -682,7 +693,7 @@ class FraudFlaggedConsumerTest {
             if (this.claimFault != null) {
                 throw this.claimFault;
             }
-            if (!this.claimed.add(eventId)) {
+            if (!this.claimed.add(new ProcessedEventId(eventId, consumedTopic))) {
                 return ProcessedEventRepository.ALREADY_CLAIMED;
             }
             this.claimedEvents.add(eventId);
@@ -690,9 +701,9 @@ class FraudFlaggedConsumerTest {
         }
 
         @Override
-        public boolean existsById(UUID eventId) {
+        public boolean existsById(ProcessedEventId key) {
             this.existenceReads++;
-            return this.claimed.contains(eventId);
+            return this.claimed.contains(key);
         }
 
         @Override
@@ -702,10 +713,11 @@ class FraudFlaggedConsumerTest {
         }
 
         // Operations the listener leaves alone.
-        @Override public Optional<ProcessedEventEntity> findById(UUID eventId) { throw unused(); }
+        @Override
+        public Optional<ProcessedEventEntity> findById(ProcessedEventId key) { throw unused(); }
         @Override public List<ProcessedEventEntity> findAll() { throw unused(); }
         @Override public long count() { throw unused(); }
-        @Override public void deleteById(UUID eventId) { throw unused(); }
+        @Override public void deleteById(ProcessedEventId key) { throw unused(); }
         @Override public void delete(ProcessedEventEntity marker) { throw unused(); }
         @Override public void deleteAll() { throw unused(); }
 
@@ -718,10 +730,12 @@ class FraudFlaggedConsumerTest {
         }
 
         @Override
-        public List<ProcessedEventEntity> findAllById(Iterable<UUID> eventIds) { throw unused(); }
+        public List<ProcessedEventEntity> findAllById(Iterable<ProcessedEventId> keys) {
+            throw unused();
+        }
 
         @Override
-        public void deleteAllById(Iterable<? extends UUID> eventIds) { throw unused(); }
+        public void deleteAllById(Iterable<? extends ProcessedEventId> keys) { throw unused(); }
 
         @Override
         public void deleteAll(Iterable<? extends ProcessedEventEntity> batch) { throw unused(); }

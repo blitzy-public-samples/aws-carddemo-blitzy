@@ -497,7 +497,7 @@ public class NotificationService {
     }
 
     /**
-     * Adds one amount to the running total.
+     * Adds one amount to the running total and stores the sum in the field the source stores it in.
      *
      * <p>Reproduces {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429}. The
      * {@code ROUNDED} phrase appears zero times across the twenty-eight programs in
@@ -505,12 +505,48 @@ public class NotificationService {
      * {@link CobolDecimal#add(BigDecimal, BigDecimal, int)} truncates the same way for a negative
      * total as for a positive one.</p>
      *
-     * @param total the running total
+     * <p><b>The store is part of the arithmetic, not a rendering step.</b> A COBOL {@code ADD}
+     * names its receiving field, and that field is
+     * {@code WS-TOTAL-AMT PIC S9(9)V99 VALUE 0} at {@code app/cbl/CBSTM03A.CBL:L65}: nine integer
+     * digits and two fractional ones. The statement carries no {@code ON SIZE ERROR} phrase, so a
+     * sum needing a tenth integer digit loses that digit where it stands and the program continues.
+     * Every subsequent {@code ADD} then works from the truncated value, which is why the truncation
+     * happens once per addition here and not once at the end.
+     * {@link CobolDecimal#truncateToPictureField(BigDecimal, int, int)} performs that store,
+     * dropping any digit above the ninth and holding the sign.</p>
+     *
+     * <p>The precision constant is {@link PicClause#TRAN_AMT_PRECISION}, which
+     * {@code NotificationRenderer} already documents as matching {@code WS-TOTAL-AMT} at
+     * {@code app/cbl/CBSTM03A.CBL:L65}; the two fields carry the same Picture clause and the
+     * renderer edits this total through the same pair of constants at
+     * {@code app/cbl/CBSTM03A.CBL:L433}. Sharing them is what makes the total this method returns
+     * equal, digit for digit, the total a rendered statement reports.</p>
+     *
+     * <p><b>A dropped digit is reported rather than hidden.</b> Transformation rule T7 of the
+     * Agent Action Plan requires a reproduced source defect to be visible, so the one addition that
+     * loses a high-order digit writes a warning. The warning names the capacity and the row count
+     * and withholds the value, because a statement total belongs to one cardholder.
+     * {@code card-platform/docs/business-rule-flags.md} carries the flag.</p>
+     *
+     * @param total the running total, as {@code WS-TOTAL-AMT} holds it
      * @param amount the amount to add
-     * @return the new total at the scale {@link PicClause#TRAN_AMT_SCALE} declares
+     * @return the new total, stored in the {@code WS-TOTAL-AMT} field shape
      */
     private static BigDecimal accumulate(BigDecimal total, BigDecimal amount) {
-        return CobolDecimal.add(total, amount, PicClause.TRAN_AMT_SCALE);
+        BigDecimal sum = CobolDecimal.add(total, amount, PicClause.TRAN_AMT_SCALE);
+        BigDecimal stored = CobolDecimal.truncateToPictureField(
+                sum, PicClause.TRAN_AMT_PRECISION, PicClause.TRAN_AMT_SCALE);
+
+        if (stored.compareTo(sum) != 0) {
+            LOGGER.warn("A statement total needed more than the {} integer digits WS-TOTAL-AMT holds"
+                            + " at app/cbl/CBSTM03A.CBL:L65, so the high-order digits were dropped"
+                            + " where the source ADD at :L429 drops them. The rendered statement and"
+                            + " this total agree, and both report less than the rows sum to. See"
+                            + " docs/business-rule-flags.md.",
+                    PicClause.TRAN_AMT_PRECISION - PicClause.TRAN_AMT_SCALE);
+        }
+
+        return stored;
     }
 
     /**

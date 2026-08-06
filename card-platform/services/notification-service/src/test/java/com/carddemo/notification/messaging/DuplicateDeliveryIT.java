@@ -570,8 +570,11 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts a marker written outside either listener suppresses a delivery on both topics, which
-     * holds only where the guard reads the event identifier alone.
+     * Asserts a marker written outside either listener suppresses that topic's delivery.
+     *
+     * <p>One table serves all four listener groups, and a marker seeded for a topic is read by the
+     * listener of that topic. Each seeded marker below names the topic its delivery will arrive on,
+     * because the topic is half of {@code pk_processed_event}.
      */
     @Test
     @DisplayName("one marker table suppresses a delivery on either consumer group")
@@ -580,8 +583,8 @@ class DuplicateDeliveryIT {
         awaitAssignment(ASSESSED_GROUP);
         UUID postedId = UUID.randomUUID();
         UUID assessedId = UUID.randomUUID();
-        markers.save(new ProcessedEventEntity(postedId, Instant.now()));
-        markers.save(new ProcessedEventEntity(assessedId, Instant.now()));
+        markers.save(new ProcessedEventEntity(postedId, Instant.now(), POSTED_TOPIC));
+        markers.save(new ProcessedEventEntity(assessedId, Instant.now(), ASSESSED_TOPIC));
 
         long suppressed = counterValue(DUPLICATES_SKIPPED_METER, null, null);
         publish(POSTED_TOPIC, ACCOUNT_ID, postedEvent(postedId, CARD_TOKEN, TRANSACTION_ID));
@@ -594,14 +597,56 @@ class DuplicateDeliveryIT {
                         && count(MARKER_COUNT_SQL, postedId) == 1L
                         && count(MARKER_COUNT_SQL, assessedId) == 1L);
         assertAll("the marker each seeded identifier still holds",
-                () -> assertNull(markerTopic(postedId), "the seeded posted marker names a topic"),
-                () -> assertNull(markerTopic(assessedId),
-                        "the seeded assessment marker names a topic"));
+                () -> assertEquals(POSTED_TOPIC, markerTopic(postedId),
+                        "the seeded posted marker names its own topic"),
+                () -> assertEquals(ASSESSED_TOPIC, markerTopic(assessedId),
+                        "the seeded assessment marker names its own topic"));
     }
 
     /**
-     * Asserts {@code processed_event} declares the three columns its migration creates, and no
+     * Asserts a marker held for one topic does not suppress a different event on another topic.
+     *
+     * <p>Three producing services assign event identifiers independently, so a fraud assessment and
+     * a posted transaction may carry the same identifier without either producer being at fault.
+     * While the guard read the identifier alone, the second of the two lost its claim to the first
+     * and its listener wrote nothing: no read-model row, no exception, no dead letter, and one
+     * increment of the duplicates counter that reads identically for a real duplicate. The row was
+     * unrecoverable, because the marker that suppressed it stays.
+     *
+     * <p>The seeded marker here names the assessment topic, and the delivery arrives on the posted
+     * topic under the same identifier. The read-model row has to be written, the duplicates counter
+     * has to stand still, and the marker of the posted topic has to appear beside the seeded one.
+     */
+    @Test
+    @DisplayName("a marker held for one topic does not suppress another topic's delivery")
+    void aMarkerOnOneTopicDoesNotSuppressAnotherTopicsDelivery() {
+        awaitAssignment(POSTED_GROUP);
+        UUID sharedId = UUID.randomUUID();
+        markers.save(new ProcessedEventEntity(sharedId, Instant.now(), ASSESSED_TOPIC));
+
+        long suppressed = counterValue(DUPLICATES_SKIPPED_METER, null, null);
+        publish(POSTED_TOPIC, ACCOUNT_ID, postedEvent(sharedId, CARD_TOKEN, TRANSACTION_ID));
+
+        awaitCount(ROW_COUNT_SQL, 1L, "the read-model row the collision used to drop", CARD_TOKEN);
+        awaitCount(MARKER_COUNT_SQL, 2L,
+                "one marker per topic for identifier " + sharedId, sharedId);
+
+        assertAll("the state a cross-topic collision leaves",
+                () -> assertEquals(1L, count(ATTEMPT_COUNT_SQL),
+                        "the delivery rendered an alert and recorded the attempt"),
+                () -> assertEquals(suppressed,
+                        counterValue(DUPLICATES_SKIPPED_METER, null, null),
+                        "nothing was suppressed, so the duplicates counter stands still"));
+    }
+
+    /**
+     * Asserts {@code processed_event} declares the three columns its migrations create, and no
      * column naming a consumer group, an event type or a payload.
+     *
+     * <p>Two of the three are the primary key after
+     * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql}. The topic is what
+     * separates two listeners, so no consumer-group column is needed and none is declared: a group
+     * name is configuration and would change identity whenever a group was renamed.
      */
     @Test
     @DisplayName("the marker table declares three columns and no consumer-group discriminator")
@@ -652,6 +697,14 @@ class DuplicateDeliveryIT {
     /**
      * Asserts one record takes three deliveries, spaced by the configured wait, then reaches the
      * dead-letter topic of its own source topic carrying the four metadata components.
+     *
+     * <p>The two failure series have to agree about what failed. Every attempt is counted on
+     * {@code carddemo.notification.failures} by the listener, and the record that exhausted them is
+     * counted once on {@code carddemo.notification.records.dead.lettered} by the error handler. This
+     * record fails to render, so both series name {@code rendering}; the terminal series filed it as
+     * {@code unknown} while the handler had no rendering branch, which left the registered
+     * {@code rendering} value of that series unreachable and made the two series impossible to
+     * reconcile.</p>
      */
     @Test
     @DisplayName("three deliveries of one record reach the dead-letter topic of its source topic")
@@ -663,6 +716,8 @@ class DuplicateDeliveryIT {
         long failed = counterValue(FAILURES_METER, FAILURE_KIND_TAG,
                 NotificationMetrics.FAILURE_RENDERING);
         long lettered = counterValue(DEAD_LETTERED_METER, FAILURE_KIND_TAG,
+                NotificationMetrics.FAILURE_RENDERING);
+        long unclassified = counterValue(DEAD_LETTERED_METER, FAILURE_KIND_TAG,
                 NotificationMetrics.UNKNOWN);
 
         try (KafkaConsumer<String, byte[]> deadLetters = deadLetterReader()) {
@@ -698,8 +753,13 @@ class DuplicateDeliveryIT {
                             () -> "it carries the headers " + headersOf(deadLetter).keySet()),
                     () -> assertCarriesNoDigitRun(deadLetter),
                     () -> assertEquals(lettered + 1L, counterValue(DEAD_LETTERED_METER,
+                            FAILURE_KIND_TAG, NotificationMetrics.FAILURE_RENDERING),
+                            "the spent record is counted under what it failed at, so this series "
+                                    + "reconciles with the per-attempt one"),
+                    () -> assertEquals(unclassified, counterValue(DEAD_LETTERED_METER,
                             FAILURE_KIND_TAG, NotificationMetrics.UNKNOWN),
-                            "records counted as dead-lettered"),
+                            "and nothing lands in the unclassified series, which a fault naming a "
+                                    + "stage never should"),
                     () -> assertTrue(observed.compareTo(RETRY_WAIT_TOTAL) >= 0,
                             () -> "three deliveries took " + observed.toMillis() + " milliseconds"),
                     () -> assertEquals(FALLBACK_DEAD_LETTER_TOPIC,

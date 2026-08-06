@@ -5,6 +5,7 @@ import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.carddemo.notification.domain.CardholderContextReader;
 import com.carddemo.notification.domain.NotificationRenderer.RenderedFormat;
 import com.carddemo.notification.domain.NotificationService;
+import com.carddemo.notification.entity.ProcessedEventEntity;
 import com.carddemo.notification.repository.ProcessedEventRepository;
 import java.time.Duration;
 import java.time.Instant;
@@ -173,7 +174,7 @@ public class TransactionAuthorizedConsumer {
      *         already held
      */
     private boolean claimed(UUID eventId, String consumedTopic) {
-        if (processedEvents.claimEvent(eventId, Instant.now(), topicOrNull(consumedTopic))
+        if (processedEvents.claimEvent(eventId, Instant.now(), consumedTopicOrSentinel(consumedTopic))
                 == ProcessedEventRepository.ALREADY_CLAIMED) {
             metrics.duplicatesSkipped().increment();
             LOG.debug("Event {} carries a marker already, so this delivery renders nothing.",
@@ -229,13 +230,19 @@ public class TransactionAuthorizedConsumer {
     }
 
     /**
-     * Normalises the consumed topic for the marker column, which holds null for none.
+     * Names the topic this delivery arrived on, for the half of the marker key that holds it.
+     *
+     * <p>The topic is half of {@code pk_processed_event}, so it holds no null. A delivery that
+     * carried no topic header records {@link ProcessedEventEntity#NO_CONSUMED_TOPIC}, which states
+     * that absence in a value no real topic name can equal.</p>
      *
      * @param consumedTopic the topic the delivery arrived on, possibly null or blank
-     * @return the topic, or null when the delivery named none
+     * @return the topic, or {@link ProcessedEventEntity#NO_CONSUMED_TOPIC} when it named none
      */
-    private static String topicOrNull(String consumedTopic) {
-        return consumedTopic == null || consumedTopic.isBlank() ? null : consumedTopic;
+    private static String consumedTopicOrSentinel(String consumedTopic) {
+        return consumedTopic == null || consumedTopic.isBlank()
+                ? ProcessedEventEntity.NO_CONSUMED_TOPIC
+                : consumedTopic;
     }
 
     /**

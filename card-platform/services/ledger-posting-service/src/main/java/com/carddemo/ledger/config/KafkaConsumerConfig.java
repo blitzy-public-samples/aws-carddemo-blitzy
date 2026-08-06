@@ -37,6 +37,7 @@ import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer.HeaderNames.HeadersToAdd;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.ListenerExecutionFailedException;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.kafka.support.serializer.DeserializationException;
 import org.springframework.kafka.support.serializer.ErrorHandlingDeserializer;
@@ -118,6 +119,9 @@ public class KafkaConsumerConfig {
      * cannot reach a diagnostic or an envelope that bounds it.
      */
     private static final int MAX_REPORTED_ATTEMPTS = 1_000;
+
+    /** Depth cap on a cause-chain walk, which also ends the walk on a self-referencing cause. */
+    private static final int MAX_CAUSE_DEPTH = 16;
 
     /** Bean name of the byte-serializing template the dead-letter route publishes through. */
     private static final String DEAD_LETTER_TEMPLATE_BEAN = "deadLetterKafkaTemplate";
@@ -584,13 +588,69 @@ public class KafkaConsumerConfig {
 
         @Override
         public void accept(ConsumerRecord<?, ?> failedRecord, Exception failure) {
+            String failureKind = failureKindOf(failure);
+
+            // A record the value deserializer or the schema validator refused never reaches a
+            // listener, so no listener can count it. Both exceptions are registered as not
+            // retryable, so a refused record reaches this recoverer exactly once and this is the one
+            // place its refusal can be counted. Without this line
+            // carddemo.ledger.failures{stage=deserialize} was registered and structurally
+            // unreachable: it read zero however many payloads a schema control rejected, and an
+            // alerting rule written against the documented metric contract could never fire.
+            if (ObservabilityConfig.LedgerMeters.FAILURE_DESERIALIZATION.equals(failureKind)
+                    || ObservabilityConfig.LedgerMeters.FAILURE_SCHEMA_VALIDATION
+                            .equals(failureKind)) {
+                meters.recordDeserializeFailure();
+            }
+
             try {
                 route.accept(failedRecord, failure);
             } catch (RuntimeException undelivered) {
-                meters.recordDeadLetterFailure();
+                meters.recordDeadLetterFailure(failureKind);
                 throw undelivered;
             }
-            meters.recordDeadLetterPublished();
+            meters.recordDeadLetterPublished(failureKind);
         }
+    }
+
+    /**
+     * Names what one delivery this service gave up on failed at, from the bounded set
+     * {@code config/ObservabilityConfig} registers.
+     *
+     * <p>The whole cause chain is searched, most specific first. A payload the schema validator
+     * rejected arrives as a {@link SerializationException} wrapped in a
+     * {@link DeserializationException}, and it counts as a schema validation failure; a payload the
+     * deserializer could not read at all carries the second alone. A listener that raised is wrapped
+     * by the container in a {@link ListenerExecutionFailedException}, and that is a processing
+     * failure whatever the business exception underneath it was. A chain naming none of the three
+     * resolves to the unknown value, which is registered as well.
+     *
+     * @param failure the exception the container reported; may be {@code null}
+     * @return one registered tag value
+     */
+    static String failureKindOf(Exception failure) {
+        if (chainCarries(failure, SerializationException.class)) {
+            return ObservabilityConfig.LedgerMeters.FAILURE_SCHEMA_VALIDATION;
+        }
+        if (chainCarries(failure, DeserializationException.class)) {
+            return ObservabilityConfig.LedgerMeters.FAILURE_DESERIALIZATION;
+        }
+        if (chainCarries(failure, ListenerExecutionFailedException.class)) {
+            return ObservabilityConfig.LedgerMeters.FAILURE_PROCESSING;
+        }
+        return ObservabilityConfig.LedgerMeters.FAILURE_UNKNOWN;
+    }
+
+    /** Whether the cause chain of {@code failure} carries an instance of {@code type}. */
+    private static boolean chainCarries(Throwable failure, Class<? extends Throwable> type) {
+        Throwable cause = failure;
+
+        for (int depth = 0; cause != null && depth < MAX_CAUSE_DEPTH; depth++) {
+            if (type.isInstance(cause)) {
+                return true;
+            }
+            cause = cause.getCause() == cause ? null : cause.getCause();
+        }
+        return false;
     }
 }
