@@ -176,6 +176,17 @@
           </execution>
         </executions>
       </plugin>
+      <!-- Runs the container-backed checks in src/test/java named *IT. Surefire selects *Test and
+           leaves those alone, so without this declaration TransactionAuthorizedConsumerIT is
+           compiled and never executed. The parent supplies the version, the execution and the
+           classesDirectory in pluginManagement; a module activates it by naming it here, which is
+           how services/authorization-service, services/card-service,
+           services/fraud-detection-service, services/notification-service and equivalence-tests
+           activate the same plugin. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+      </plugin>
     </plugins>
   </build>
 

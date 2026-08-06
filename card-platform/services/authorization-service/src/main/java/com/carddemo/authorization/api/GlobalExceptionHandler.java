@@ -40,10 +40,8 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
  * {@link AuthorizationController} answers a decline as a value carrying {@code 422} and an
  * {@link AuthorizationResponse} body, so no handler here ever sees a decline.
  *
- * <p>A decline is none of these. {@link AuthorizationController} answers {@code 422} for one, from a
- * value the decision service returned, so no handler below ever sees a decline. Two bodies
- * therefore share {@code 422}, and a caller tells them apart by shape: a decline carries
- * {@code approved} and one reject code, while a refused request carries {@link ApiErrorResponse}.
+ * <p>Two bodies share {@code 422}, and a caller tells them apart by shape. A decline carries
+ * {@code approved} and one reject code. A refused request carries {@link ApiErrorResponse}.
  *
  * <p>No handler here copies a request value into a response. Each body carries a status code, one
  * fixed phrase, the verbatim texts {@code app/cbl/COTRN02C.cbl} moves into {@code WS-MESSAGE} and
