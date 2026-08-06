@@ -1,7 +1,8 @@
 openapi: 3.1.0
 
 # Written by hand. No documentation generator joins the classpath, so what this file states and what
-# the code accepts are kept in step by the tests under src/test/java, not by an annotation processor.
+# the code accepts are kept in step by the tests under src/test/java, not by an annotation
+# processor.
 #
 # Every field width, every rejection text and every status code below is read from the source. The
 # locator beside each one names the file and the line it came from.
@@ -12,22 +13,28 @@ info:
   description: >-
     The account and customer surface of the modernized CardDemo platform, plus the one operational
     endpoint that closes a billing cycle. The read path comes from app/cbl/COACTVWC.cbl, transaction
-    CAVW. The update path comes from app/cbl/COACTUPC.cbl, transaction CAUP, including its
-    twenty-four field edits at app/cbl/COACTUPC.cbl:L1470-L1676 and its field-by-field concurrency
-    check at app/cbl/COACTUPC.cbl:L4109-L4193. The cycle-close endpoint reproduces two statements and
-    no more, app/cbl/CBACT04C.cbl:L353-L354, because the credit-limit rule of the authorization
-    service reads the two accumulators those statements return to zero.
+    CAVW, and the update path from app/cbl/COACTUPC.cbl, transaction CAUP. That program carries
+    twenty-four field edits at app/cbl/COACTUPC.cbl:L1470-L1676 and a field-by-field concurrency
+    check at app/cbl/COACTUPC.cbl:L4109-L4193. The cycle-close endpoint reproduces two statements
+    and
+    no more, app/cbl/CBACT04C.cbl:L353-L354. The credit-limit rule of the authorization service
+    reads
+    the two accumulators those statements return to zero.
 
 
-    This service is queried and it does not query. It calls no other service, and it publishes one
-    AccountStateChanged event per mutation, which is what keeps the authorization service's copy of
-    the credit limit, both cycle accumulators and the expiry date current.
+    This service is queried and it does not query. It calls no other service. It publishes one
+    AccountStateChanged event per mutation, which keeps the authorization service's copy of the
+    credit
+    limit, both cycle accumulators and the expiry date current.
   license:
     name: Apache-2.0
 
 servers:
   - url: http://localhost:8085
-    description: The port docker-compose.yml maps for this service.
+    description: >-
+      The address to call from the host. The container listens on 8080, which
+      src/main/resources/application.yml sets, and card-platform/docker-compose.yml publishes that
+      port on 8085 through ACCOUNT_PORT. A caller inside the compose network uses 8080.
 
 tags:
   - name: account
@@ -38,7 +45,7 @@ tags:
     description: Returning both cycle accumulators to zero.
 
 # Every route below requires a credential. config/SecurityConfig installs HTTP Basic authentication
-# and refuses any route it does not name, so an endpoint added without a rule is denied rather than
+# and refuses any route it does not name, so an endpoint added without a rule is denied and not
 # opened. The two read routes are ownership-scoped on their path variable; the two write routes
 # require the administrator role.
 security:
@@ -55,7 +62,8 @@ paths:
 
 
         The response carries the account and no customer. ACCOUNT-RECORD at
-        app/cpy/CVACT01Y.cpy:L4-L17 declares no customer identifier, so the source reaches a customer
+        app/cpy/CVACT01Y.cpy:L4-L17 declares no customer identifier, so the source reaches a
+        customer
         only through the cross-reference record at app/cbl/COACTVWC.cbl:L828-L829. The card service
         owns that record, so a caller that wants the customer reads GET /customers/{customerId} with
         an identifier it already holds.
@@ -67,7 +75,10 @@ paths:
         - $ref: '#/components/parameters/AccountId'
       responses:
         '200':
-          description: The account.
+          description: >-
+            The account. The example is the row db/migration/V2__seed.sql loads for this identifier
+            from app/data/ASCII/acctdata.txt, so a call against the demo stack answers these values.
+            groupId is empty in all fifty seeded rows.
           content:
             application/json:
               schema:
@@ -75,15 +86,15 @@ paths:
               example:
                 accountId: '00000000050'
                 activeStatus: 'Y'
-                currentBalance: '1010.00'
-                creditLimit: '10000.00'
-                cashCreditLimit: '5000.00'
+                currentBalance: '492.00'
+                creditLimit: '6169.00'
+                cashCreditLimit: '4587.00'
                 currentCycleCredit: '0.00'
-                currentCycleDebit: '1010.00'
-                openDate: '2015-03-01'
-                expirationDate: '2025-02-28'
-                reissueDate: '2020-03-01'
-                groupId: 'ZEROAPR'
+                currentCycleDebit: '0.00'
+                openDate: '2011-04-22'
+                expirationDate: '2023-03-09'
+                reissueDate: '2023-03-09'
+                groupId: ''
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -91,8 +102,10 @@ paths:
         '404':
           description: >-
             This service holds no such account row. The detail reproduces the text
-            9300-GETACCTDATA-BYACCT builds at app/cbl/COACTVWC.cbl:L796-L806, which concatenates four
-            literals around the account identifier, a response code and a reason code. The identifier
+            9300-GETACCTDATA-BYACCT builds at app/cbl/COACTVWC.cbl:L796-L806, which concatenates
+            four
+            literals around the account identifier, a response code and a reason code. The
+            identifier
             is the one the caller put in the path, and the two codes are the status of this response
             and its reason phrase. The source carries no space after 'file.' and none after either
             colon, and the detail keeps that spacing.
@@ -115,38 +128,55 @@ paths:
       operationId: updateAccount
       summary: Update one account and its customer.
       description: >-
-        Reproduces app/cbl/COACTUPC.cbl. The submitted pair is edited field by field, the stored pair
-        is re-read under a write lock, the two are compared field by field at
-        app/cbl/COACTUPC.cbl:L4109-L4193, and both rows plus one event row are written in one local
+        Reproduces app/cbl/COACTUPC.cbl. The submitted pair is edited field by field and the stored
+        pair is re-read under a write lock. The two are compared field by field at
+        app/cbl/COACTUPC.cbl:L4109-L4193. Both rows plus one event row are written in one local
         transaction at app/cbl/COACTUPC.cbl:L4066 and :L4086.
 
 
         A block that is present has to be complete. Ten components of customerData and nine of
-        accountData carry a mandatory-field edit, each reproducing one of the edits
-        app/cbl/COACTUPC.cbl:L1470-L1676 performs, and those edits refuse an absent value exactly as
-        they refuse a blank one. That is the 3270 screen's own contract: the screen was filled from the
-        fetched record and submitted every field, so a field the operator did not touch still arrived.
+        accountData carry a mandatory-field edit, each reproducing one edit of
+        app/cbl/COACTUPC.cbl:L1470-L1676. Those edits refuse an absent value exactly as they refuse
+        a
+        blank one. That is the 3270 screen's own contract: the screen was filled from the fetched
+        record and submitted every field, so a field the operator did not touch still arrived.
 
 
         What a caller may omit is a whole block. A body carrying customerData alone leaves every
-        account column as stored, and one carrying both replaces both records. Within a block, the
-        components carrying no mandatory edit may be omitted and keep their stored value: the middle
-        name, the second address line, the second telephone number, the government-issued identifier,
-        the date of birth and the disclosure group.
+        account column as stored, and one carrying both replaces both records. Within a block, a
+        component carrying no mandatory edit may be omitted and keeps its stored value. Those are
+        the
+        middle name, the second address line, the second telephone number, the government-issued
+        identifier, the date of birth and the disclosure group.
 
 
-        The three Social Security parts are one column and are recombined only when all three arrive,
-        which the cross-field check on the block also requires.
+        The three Social Security parts are one column. They are recombined only when all three
+        arrive, which the cross-field check on the block also requires.
 
 
-        customerData is required and carries a required customerId, because an account record names no
-        customer and this service owns no cross-reference table. The account identifier comes from the
-        path and any identifier in the body is ignored, so a caller entitled to one account cannot
-        write another.
+        customerData is required and carries a required customerId. An account record names no
+        customer and this service owns no cross-reference table. The account identifier comes from
+        the
+        path alone, and the body carries none.
 
 
-        Restricted to the administrator role, because one call writes two records and produces one
-        event that changes what the authorization service authorizes against.
+        A seeded customer cannot be resubmitted unchanged. Every one of the fifty rows
+        db/migration/V2__seed.sql loads fails at least one edit of app/cbl/COACTUPC.cbl:L1470-L1676.
+        That reproduces the source: those edits ran on 3270 screen input and never on stored
+        records.
+        The example below names the two values it had to change and why each one failed.
+
+
+        A write produces one AccountStateChanged event carrying changeKind ACCOUNT_UPDATED, against
+        the contract in src/main/resources/schemas/account-state-changed-v1.json. Request handling
+        publishes nothing. outbox/OutboxWriter writes an outbox_event row in the same transaction as
+        the two record writes, and outbox/OutboxRelay publishes it afterwards on a fixed delay.
+        card-platform/docs/event-flow.md carries the path an event takes from here.
+
+
+        Restricted to the administrator role. One call writes two records and produces one event
+        that
+        changes what the authorization service authorizes against.
       parameters:
         - $ref: '#/components/parameters/AccountId'
       requestBody:
@@ -158,62 +188,66 @@ paths:
             examples:
               customerOnly:
                 summary: >-
-                  Correct the city, leaving every account column as stored. The account block is
-                  omitted, which is how a caller updates the customer alone; the customer block is
-                  complete, because a block that is present has to be.
+                  Update the customer alone, leaving every account column as stored. The account
+                  block
+                  is omitted; the customer block is complete, as a present block has to be.
                 value:
-                  accountId: '00000000050'
                   customerData:
                     customerId: '000000050'
-                    firstName: Arlene
-                    lastName: Abshire
-                    addressLine1: 8829 Ondricka Trail
-                    addressCity: North Enoshaven
-                    addressStateCode: 'AR'
+                    firstName: Aniya
+                    lastName: Von
+                    addressLine1: 1588 Nienow Cape
+                    addressCity: New Aricchester
+                    addressStateCode: 'OR'
                     addressCountryCode: 'USA'
-                    addressZip: '72112'
-                    socialSecurityPart1: '429'
-                    socialSecurityPart2: '54'
-                    socialSecurityPart3: '1163'
-                    eftAccountId: '4829571130'
+                    addressZip: '97201'
+                    socialSecurityPart1: '111'
+                    socialSecurityPart2: '11'
+                    socialSecurityPart3: '1111'
+                    eftAccountId: '0074883577'
                     primaryCardHolderIndicator: 'Y'
-                    ficoCreditScore: '688'
+                    ficoCreditScore: '623'
               wholeScreenSubmit:
-                summary: The whole pair, as the 3270 screen submitted it.
+                summary: >-
+                  The whole pair, as the 3270 screen submitted it. Every value is the seeded row for
+                  account 00000000050 and customer 000000050, with the dates in the eight-character
+                  request form. Two values changed. addressZip 04257 becomes 97201, since OR97 is
+                  the
+                  only Oregon prefix among the 240 combinations app/cpy/CSLKPCDY.cpy lists.
+                  phoneNumber2 area code 493 becomes 503, which the general-purpose band holds.
                 value:
-                  accountId: '00000000050'
                   accountData:
                     activeStatus: 'Y'
-                    currentBalance: '1010.00'
-                    creditLimit: '10000.00'
-                    cashCreditLimit: '5000.00'
-                    openDate: '2015-03-01'
-                    expirationDate: '2025-02-28'
-                    reissueDate: '2020-03-01'
+                    currentBalance: '492.00'
+                    creditLimit: '6169.00'
+                    cashCreditLimit: '4587.00'
+                    openDate: '20110422'
+                    expirationDate: '20230309'
+                    reissueDate: '20230309'
                     currentCycleCredit: '0.00'
-                    currentCycleDebit: '1010.00'
-                    groupId: 'ZEROAPR'
+                    currentCycleDebit: '0.00'
+                    groupId: ''
                   customerData:
                     customerId: '000000050'
-                    firstName: Arlene
-                    middleName: Fay
-                    lastName: Abshire
-                    addressLine1: 8829 Ondricka Trail
-                    addressLine2: Suite 407
-                    addressCity: North Enoshaven
-                    addressStateCode: 'AR'
+                    firstName: Aniya
+                    middleName: Alba
+                    lastName: Von
+                    addressLine1: 1588 Nienow Cape
+                    addressLine2: Suite 187
+                    addressCity: New Aricchester
+                    addressStateCode: 'OR'
                     addressCountryCode: 'USA'
-                    addressZip: '72112'
-                    phoneNumber1: '(501)5551234'
-                    phoneNumber2: '(501)5555678'
-                    socialSecurityPart1: '429'
-                    socialSecurityPart2: '54'
-                    socialSecurityPart3: '1163'
-                    governmentIssuedId: 'AR8829114'
-                    dateOfBirth: '1971-08-14'
-                    eftAccountId: '4829571130'
+                    addressZip: '97201'
+                    phoneNumber1: '(325)301-0827'
+                    phoneNumber2: '(503)985-9283'
+                    socialSecurityPart1: '111'
+                    socialSecurityPart2: '11'
+                    socialSecurityPart3: '1111'
+                    governmentIssuedId: 'SPECIMEN-0000000001'
+                    dateOfBirth: '19601201'
+                    eftAccountId: '0074883577'
                     primaryCardHolderIndicator: 'Y'
-                    ficoCreditScore: '688'
+                    ficoCreditScore: '623'
       responses:
         '200':
           description: >-
@@ -225,21 +259,24 @@ paths:
                 $ref: '#/components/schemas/AccountUpdateResponse'
               examples:
                 applied:
-                  summary: Both rows and one event row were written.
+                  summary: >-
+                    Both rows and one event row were written. The account carries the stored row as
+                    it
+                    now stands, so a raised credit limit shows here.
                   value:
                     message: Changes committed to database
                     account:
                       accountId: '00000000050'
                       activeStatus: 'Y'
-                      currentBalance: '1010.00'
-                      creditLimit: '12000.00'
-                      cashCreditLimit: '5000.00'
+                      currentBalance: '492.00'
+                      creditLimit: '7000.00'
+                      cashCreditLimit: '4587.00'
                       currentCycleCredit: '0.00'
-                      currentCycleDebit: '1010.00'
-                      openDate: '2015-03-01'
-                      expirationDate: '2025-02-28'
-                      reissueDate: '2020-03-01'
-                      groupId: 'ZEROAPR'
+                      currentCycleDebit: '0.00'
+                      openDate: '2011-04-22'
+                      expirationDate: '2023-03-09'
+                      reissueDate: '2023-03-09'
+                      groupId: ''
                 noChange:
                   summary: >-
                     The submitted pair equalled the fetched pair, from
@@ -249,15 +286,15 @@ paths:
                     account:
                       accountId: '00000000050'
                       activeStatus: 'Y'
-                      currentBalance: '1010.00'
-                      creditLimit: '10000.00'
-                      cashCreditLimit: '5000.00'
+                      currentBalance: '492.00'
+                      creditLimit: '6169.00'
+                      cashCreditLimit: '4587.00'
                       currentCycleCredit: '0.00'
-                      currentCycleDebit: '1010.00'
-                      openDate: '2015-03-01'
-                      expirationDate: '2025-02-28'
-                      reissueDate: '2020-03-01'
-                      groupId: 'ZEROAPR'
+                      currentCycleDebit: '0.00'
+                      openDate: '2011-04-22'
+                      expirationDate: '2023-03-09'
+                      reissueDate: '2023-03-09'
+                      groupId: ''
         '400':
           $ref: '#/components/responses/MalformedRequest'
         '401':
@@ -268,7 +305,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: >-
-            Another writer changed a row first, from app/cbl/COACTUPC.cbl:L3947-L3952, or a row could
+            Another writer changed a row first, from app/cbl/COACTUPC.cbl:L3947-L3952, or a row
+            could
             not be locked, from :L3907-L3915 and :L3934-L3942. Nothing was written. A caller retries
             this request unchanged after reading the row again.
           content:
@@ -279,7 +317,7 @@ paths:
                 type: about:blank
                 title: Conflict
                 status: 409
-                detail: Record changed by some one else. Please review current values
+                detail: Record changed by some one else. Please review
         '422':
           $ref: '#/components/responses/ValidationFailed'
         '500':
@@ -295,27 +333,34 @@ paths:
         disclosure group is read, and no transaction is written.
 
 
-        This endpoint exists because the credit-limit rule at app/cbl/CBTRN02C.cbl:L403-L413
-        authorizes against cycle credit minus cycle debit, and the only code in the repository that
-        returns those two accumulators to zero lives inside the interest program, which stays batch.
-        Without a substitute, every posted transaction raises the tested balance and nothing lowers
-        it, so available credit shrinks until every transaction declines with reject code 0102.
+        The credit-limit rule at app/cbl/CBTRN02C.cbl:L403-L413 authorizes against cycle credit
+        minus
+        cycle debit. The only code in the repository that returns those two accumulators to zero
+        lives
+        inside the interest program, which stays batch. Without a substitute, every posted
+        transaction
+        raises the tested balance and nothing lowers it, so available credit shrinks until every
+        transaction declines with reject code 0102.
 
 
-        The effect on the two accumulators is idempotent: they are zero after one call and after ten.
-        The events are not, because each call produces one. A caller that means to close a cycle once
-        calls this once.
+        The effect on the two accumulators is idempotent: they are zero after one call and after
+        ten.
+        The events are not, since each call produces one AccountStateChanged event carrying
+        changeKind
+        BILLING_CYCLE_CLOSED. A caller that means to close a cycle once calls this once. The event
+        leaves through the same outbox row and relay the update uses.
 
 
-        Restricted to the administrator role. Clearing the accumulators is a decision about the whole
-        account rather than about one cardholder's own data.
+        Restricted to the administrator role. Clearing the accumulators is a decision about the
+        whole
+        account, not about one cardholder's own data.
       parameters:
         - $ref: '#/components/parameters/AccountId'
       responses:
         '200':
           description: >-
-            The cycle was closed. Both accumulators are carried back so a caller can see that they
-            are zero rather than take it on trust.
+            The cycle was closed. Both accumulators are carried back, so a caller can see that they
+            are zero without reading the account again.
           content:
             application/json:
               schema:
@@ -356,36 +401,40 @@ paths:
         The view carries sixteen of the eighteen fields CUSTOMER-RECORD declares at
         app/cpy/CVCUS01Y.cpy:L5-L22. The two it omits are CUST-SSN at app/cpy/CVCUS01Y.cpy:L17 and
         CUST-GOVT-ISSUED-ID at app/cpy/CVCUS01Y.cpy:L18, which the source displays at
-        app/cbl/COACTVWC.cbl:L496-L504 and app/cbl/COACTVWC.cbl:L519. Deviation D10 in
-        card-platform/docs/decision-log.md records that divergence.
+        app/cbl/COACTVWC.cbl:L496-L504 and app/cbl/COACTVWC.cbl:L519. Deviation D10 records that
+        divergence.
 
 
-        An ordinary identity reads the customers its authorities name and receives 403 for any other.
+        An ordinary identity reads the customers its authorities name and receives 403 for any
+        other.
       parameters:
         - $ref: '#/components/parameters/CustomerId'
       responses:
         '200':
-          description: The customer.
+          description: >-
+            The customer. The example is the row db/migration/V2__seed.sql loads for this identifier
+            from app/data/ASCII/custdata.txt. A read applies no edit, so the values arrive as
+            stored.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CustomerView'
               example:
                 customerId: '000000050'
-                ficoCreditScore: 688
-                dateOfBirth: '1971-08-14'
-                firstName: Arlene
-                middleName: Fay
-                lastName: Abshire
-                addressLine1: 8829 Ondricka Trail
-                addressLine2: Suite 407
-                addressCity: North Enoshaven
-                addressStateCode: 'AR'
-                addressZip: '72112'
+                ficoCreditScore: 623
+                dateOfBirth: '1960-12-01'
+                firstName: Aniya
+                middleName: Alba
+                lastName: Von
+                addressLine1: 1588 Nienow Cape
+                addressLine2: Suite 187
+                addressCity: New Aricchester
+                addressStateCode: 'OR'
+                addressZip: '04257'
                 addressCountryCode: 'USA'
-                phoneNumber1: '(501)5551234'
-                phoneNumber2: '(501)5555678'
-                eftAccountId: '4829571130'
+                phoneNumber1: '(325)301-0827'
+                phoneNumber2: '(493)985-9283'
+                eftAccountId: '0074883577'
                 primaryCardHolderIndicator: 'Y'
         '401':
           $ref: '#/components/responses/Unauthorized'
@@ -422,10 +471,13 @@ components:
       scheme: basic
       description: >-
         HTTP Basic authentication over the identities carddemo.security.users configures.
-        app/csd/CARDDEMO.CSD defines one USRSEC dataset the whole CICS region reads, so a
-        platform-wide identity store is the faithful shape. app/cbl/COSGN00C.cbl:L223 compares a
-        stored password against a supplied one in the clear; this service stores an encoded password
-        instead, and card-platform/docs/business-rule-flags.md records the source comparison.
+        app/csd/CARDDEMO.CSD defines one USRSEC dataset the whole Customer Information Control
+        System
+        (CICS) region reads, so a platform-wide identity store is the faithful shape.
+        app/cbl/COSGN00C.cbl:L223 compares a
+        stored password against a supplied one in the clear. This service stores an encoded
+        password,
+        and the register entry for that source comparison records the difference.
 
   parameters:
     AccountId:
@@ -433,8 +485,10 @@ components:
       in: path
       required: true
       description: >-
-        ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5. Eleven decimal digits, zero padded on the left,
-        because the source compares the identifier as text and the leading zeros belong to the value.
+        ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5. Eleven decimal digits, zero padded on the
+        left.
+        The source compares the identifier as text, so the leading zeros belong to the value and
+        account fifty is 00000000050.
       schema:
         type: string
         pattern: '^[0-9]{11}$'
@@ -481,7 +535,8 @@ components:
 
     Forbidden:
       description: >-
-        The caller is authenticated and does not own the identifier the path carries. The detail names
+        The caller is authenticated and does not own the identifier the path carries. The detail
+        names
         neither the operation nor the identifier, so a caller probing for another subject's rows
         learns only that it may not have them.
       content:
@@ -496,7 +551,8 @@ components:
 
     NotFound:
       description: >-
-        This service holds no record for that request. The detail names no identifier, for the reason
+        This service holds no record for that request. The detail names no identifier, for the
+        reason
         the 403 detail names none.
       content:
         application/problem+json:
@@ -512,10 +568,12 @@ components:
       description: >-
         A submitted field failed an edit, from app/cbl/COACTUPC.cbl:L1470-L1676, or a path variable
         carried the wrong width. An edit of the submitted pair produces one text, which travels in
-        the detail: WS-RETURN-MSG PIC X(75) at app/cbl/COACTUPC.cbl:L479 holds one text under the
-        guard at app/cbl/COACTUPC.cbl:L480. A request refused before it reaches the pair can fail
-        more than one parameter, and the messages member then carries one verbatim text per failing
-        parameter.
+        the
+        detail. WS-RETURN-MSG PIC X(75) at app/cbl/COACTUPC.cbl:L479 holds one text under the guard
+        at
+        app/cbl/COACTUPC.cbl:L480. A request refused before it reaches the pair can fail more than
+        one
+        parameter. The messages member then carries one verbatim text per failing parameter.
       content:
         application/problem+json:
           schema:
@@ -550,10 +608,12 @@ components:
 
     AccountView:
       type: object
+      additionalProperties: false
       description: >-
         Eleven of the twelve modelled fields of ACCOUNT-RECORD at app/cpy/CVACT01Y.cpy:L4-L17. The
         one it omits is the address postcode, which the customer record also carries and which the
-        customer view returns. The 178 trailing filler bytes at app/cpy/CVACT01Y.cpy:L17 are modelled
+        customer view returns. The 178 trailing filler bytes at app/cpy/CVACT01Y.cpy:L17 are
+        modelled
         by nothing, and card-platform/docs/traceability-matrix.md records the omission.
 
 
@@ -602,12 +662,12 @@ components:
           type: string
           pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
           description: >-
-            ACCT-CURR-CYC-CREDIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L12. POST
+            ACCT-CURR-CYC-CREDIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L13. POST
             /accounts/{accountId}/cycle-close returns this to zero.
         currentCycleDebit:
           type: string
           pattern: '^-?[0-9]{1,10}\.[0-9]{2}$'
-          description: ACCT-CURR-CYC-DEBIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L13.
+          description: ACCT-CURR-CYC-DEBIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L14.
         openDate:
           type: string
           maxLength: 10
@@ -618,32 +678,35 @@ components:
           description: >-
             ACCT-EXPIRAION-DATE PIC X(10) at app/cpy/CVACT01Y.cpy:L11, whose source name transposes
             two letters. The name is corrected here and the rename is recorded in
-            card-platform/docs/traceability-matrix.md, because no behaviour depends on the
-            identifier text. The value stays ten characters of text rather than becoming a date,
-            because app/cbl/CBTRN02C.cbl:L414-L420 compares it as text against the first ten
-            characters of a timestamp.
+            the mapping document this schema names. No behaviour depends on the identifier text.
+            The value is ten characters of text and carries no date format:
+            app/cbl/CBTRN02C.cbl:L414-L420 compares it as text against the first ten characters of a
+            twenty-six character timestamp.
         reissueDate:
           type: string
           maxLength: 10
-          description: ACCT-REISSUE-DATE PIC X(10) at app/cpy/CVACT01Y.cpy:L14.
+          description: ACCT-REISSUE-DATE PIC X(10) at app/cpy/CVACT01Y.cpy:L12.
         groupId:
           type: string
           maxLength: 10
           description: >-
-            ACCT-GROUP-ID PIC X(10) at app/cpy/CVACT01Y.cpy:L16, which names the disclosure group the
+            ACCT-GROUP-ID PIC X(10) at app/cpy/CVACT01Y.cpy:L16, which names the disclosure group
+            the
             interest program reads.
 
     CustomerView:
       type: object
+      additionalProperties: false
       description: >-
-        Sixteen of the nineteen modelled fields of CUSTOMER-RECORD at app/cpy/CVCUS01Y.cpy:L4-L23.
-        The three it omits are the Social Security column and the government-issued identifier. The
-        168 trailing filler bytes at app/cpy/CVCUS01Y.cpy:L23 are modelled by nothing.
+        Sixteen of the eighteen modelled fields of CUSTOMER-RECORD at app/cpy/CVCUS01Y.cpy:L5-L22.
+        The two it omits are CUST-SSN at app/cpy/CVCUS01Y.cpy:L17 and CUST-GOVT-ISSUED-ID at
+        app/cpy/CVCUS01Y.cpy:L18. The 168 trailing filler bytes at app/cpy/CVCUS01Y.cpy:L23 are
+        modelled by nothing.
 
 
         app/cpy/CUSTREC.cpy declares a second, divergent copy of this record, differing in one date
-        field name and stamped one second apart. CVCUS01Y is adopted because four programs bind to
-        it, and card-platform/docs/business-rule-flags.md records the fork.
+        field name and stamped one second apart. CVCUS01Y is the adopted layout, bound by six
+        programs, and the register entry for that fork records it.
       required:
         - customerId
         - ficoCreditScore
@@ -667,10 +730,11 @@ components:
           minimum: 300
           maximum: 850
           description: >-
-            CUST-FICO-CREDIT-SCORE PIC 9(03) at app/cpy/CVCUS01Y.cpy:L21. A whole number, because the
-            column holds three digits and no fraction. The bounds are the ones
-            app/cbl/COACTUPC.cbl enforces, and the message a value outside them earns is reproduced
-            character for character.
+            CUST-FICO-CREDIT-SCORE PIC 9(03) at app/cpy/CVCUS01Y.cpy:L22, and column
+            fico_credit_score is NUMERIC(3,0). A whole number of three digits with no fraction. The
+            inclusive bounds are the values of 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850 at
+            app/cbl/COACTUPC.cbl:L848-L849. Twenty-one of the fifty seeded rows hold a score outside
+            those bounds, which a read returns as stored.
         dateOfBirth:
           type: string
           maxLength: 10
@@ -682,7 +746,8 @@ components:
         middleName:
           type: string
           maxLength: 25
-          description: CUST-MIDDLE-NAME PIC X(25) at app/cpy/CVCUS01Y.cpy:L7. Optional in the source edit.
+          description: >-
+            CUST-MIDDLE-NAME PIC X(25) at app/cpy/CVCUS01Y.cpy:L7. Optional in the source edit.
         lastName:
           type: string
           maxLength: 25
@@ -707,10 +772,11 @@ components:
             codes app/cpy/CSLKPCDY.cpy:L1012 lists.
         addressZip:
           type: string
-          maxLength: 5
+          maxLength: 10
           description: >-
-            CUST-ADDR-ZIP PIC X(05) at app/cpy/CVCUS01Y.cpy:L14, checked with the state code against
-            the 240 combinations app/cpy/CSLKPCDY.cpy:L1071-L1073 lists.
+            CUST-ADDR-ZIP PIC X(10) at app/cpy/CVCUS01Y.cpy:L14, and column address_zip is
+            VARCHAR(10). The edit on the update path inspects the first five characters only, so a
+            stored value can be wider than a submitted one.
         addressCountryCode:
           type: string
           maxLength: 3
@@ -719,8 +785,10 @@ components:
           type: string
           maxLength: 15
           description: >-
-            CUST-PHONE-NUM-1 PIC X(15) at app/cpy/CVCUS01Y.cpy:L15, whose area code is checked
-            against the 980 codes app/cpy/CSLKPCDY.cpy:L24-L1011 lists.
+            CUST-PHONE-NUM-1 PIC X(15) at app/cpy/CVCUS01Y.cpy:L15. On the update path its area code
+            is checked against the 410-code general-purpose band at app/cpy/CSLKPCDY.cpy:L521
+            onward,
+            the one band app/cbl/COACTUPC.cbl:L2298 consults.
         phoneNumber2:
           type: string
           maxLength: 15
@@ -736,12 +804,17 @@ components:
 
     AccountUpdateRequest:
       type: object
+      additionalProperties: false
       description: >-
         The submitted pair, which app/cbl/COACTUPC.cbl calls ACUP-NEW-ACCT-DATA and
-        ACUP-NEW-CUST-DATA. Every value is a string, because the source reads its screen fields as
-        text and its numeric edits accept the tolerant grammar FUNCTION NUMVAL-C accepts, gated at
-        app/cbl/COACTUPC.cbl:L2201. A credit limit of $12,000.00 is therefore accepted and so is
-        12000.00.
+        ACUP-NEW-CUST-DATA. Every value is a string. The source reads its screen fields as text and
+        its numeric edits accept the tolerant grammar of FUNCTION NUMVAL-C, gated at
+        app/cbl/COACTUPC.cbl:L2201, which admits a currency symbol and thousands separators. A
+        credit
+        limit of $12,000.00 is accepted and so is 12000.00.
+
+
+        The account identifier is not a member of this body. It comes from the path.
       required: [customerData]
       properties:
         accountData:
@@ -751,9 +824,11 @@ components:
 
     AccountDataRequest:
       type: object
+      additionalProperties: false
       description: >-
         The submitted account values. The block itself is optional and, when present, has to be
-        complete: nine of its ten components carry a mandatory-field edit that refuses an absent value.
+        complete: nine of its ten components carry a mandatory-field edit that refuses an absent
+        value.
         groupId is the one component that may be omitted, and it then keeps its stored value.
 
 
@@ -778,11 +853,15 @@ components:
         currentBalance:
           type: string
           maxLength: 15
-          description: A signed decimal under the tolerant grammar. The rejection reads 'Current Balance is not valid'.
+          description: >-
+            A signed decimal under the tolerant grammar. The rejection reads 'Current Balance is not
+            valid'.
         creditLimit:
           type: string
           maxLength: 15
-          description: A signed decimal under the tolerant grammar. The rejection reads 'Credit Limit is not valid'.
+          description: >-
+            A signed decimal under the tolerant grammar. The rejection reads 'Credit Limit is not
+            valid'.
         cashCreditLimit:
           type: string
           maxLength: 15
@@ -814,19 +893,25 @@ components:
 
     CustomerDataRequest:
       type: object
+      additionalProperties: false
       description: >-
-        The submitted customer values. The block is required, because an account record names no
-        customer and this service owns no cross-reference table to resolve one from, and it has to be
-        complete: ten of its components carry a mandatory-field edit that refuses an absent value.
+        The submitted customer values. The block is required: an account record names no customer
+        and
+        this service owns no cross-reference table to resolve one from. A present block has to be
+        complete, and ten of its components carry a mandatory-field edit that refuses an absent
+        value.
 
 
-        The three Social Security parts are one column, and a cross-field check on this block requires
-        all three together. A body carrying one part alone is refused rather than merged.
+        The three Social Security parts are one column, and a cross-field check on this block
+        requires
+        all three together. A body carrying one part alone is refused and not merged. Each part is
+        numeric and non-zero; app/cbl/COACTUPC.cbl:L121-L123 also excludes 000, 666 and 900 through
+        999 from the first part.
 
 
-        Six components carry no mandatory edit and may be omitted, keeping their stored value: the
-        middle name, the second address line, both telephone numbers, the government-issued identifier
-        and the date of birth.
+        Six components carry no mandatory edit and may be omitted, keeping their stored value. Those
+        are the middle name, the second address line, both telephone numbers, the government-issued
+        identifier and the date of birth.
       required:
         - customerId
         - firstName
@@ -882,11 +967,17 @@ components:
         addressZip:
           type: string
           maxLength: 5
-          description: Checked with the state code against the 240 combinations app/cpy/CSLKPCDY.cpy lists.
+          description: >-
+            Checked with the state code against the 240 combinations app/cpy/CSLKPCDY.cpy lists.
         phoneNumber1:
           type: string
           maxLength: 15
-          description: Area code checked against the 980 codes app/cpy/CSLKPCDY.cpy lists.
+          description: >-
+            (NNN)NNN-NNNN, left-justified in fifteen characters, as the ruler at
+            app/cbl/COACTUPC.cbl:L2227-L2228 draws it. The area code is checked against the 410-code
+            general-purpose band at app/cpy/CSLKPCDY.cpy:L521 onward, the one band
+            app/cbl/COACTUPC.cbl:L2298 consults. The prefix and the line number are each numeric and
+            non-zero. A value shorter than thirteen characters is refused.
         phoneNumber2:
           type: string
           maxLength: 15
@@ -928,9 +1019,16 @@ components:
 
     AccountUpdateResponse:
       type: object
+      additionalProperties: false
       description: >-
         What an update answered. Two outcomes share status 200 and the message separates them: the
-        pair was written, or nothing changed because the submitted pair equalled the fetched pair.
+        pair was written, or the submitted pair equalled the fetched pair and nothing changed.
+
+
+        One message travels, never a list. Every edit of app/cbl/COACTUPC.cbl writes its text only
+        while the slot at app/cbl/COACTUPC.cbl:L480 holds spaces and then leaves for its own exit,
+        so
+        one text survives a pass. A failed edit answers 422 with a problem document instead.
       required: [message]
       properties:
         message:
@@ -944,6 +1042,7 @@ components:
 
     CycleCloseResponse:
       type: object
+      additionalProperties: false
       description: Both accumulators after the close, which are zero.
       required: [accountId, currentCycleCredit, currentCycleDebit]
       properties:
@@ -962,15 +1061,17 @@ components:
 
     ApiProblem:
       type: object
+      additionalProperties: false
       description: >-
-        The error body of every failed call, as RFC 9457 describes it. One shape covers every failure
+        The error body of every failed call, as RFC 9457 describes it. One shape covers every
+        failure
         of this service, including the 401 and 403 that config/SecurityConfig writes, so a client
         parses one document and not two.
 
 
         No member echoes a request value. Nothing carries the rejected value, the path, the query
-        string or a header, so a Social Security number sent in the wrong position cannot be reflected
-        back to the caller or written to an access log through this body.
+        string or a header. A Social Security Number sent in the wrong position therefore reaches
+        neither the caller nor an access log through this body.
       required: [type, title, status, detail]
       properties:
         type:
@@ -1005,5 +1106,5 @@ components:
             type: string
           description: >-
             One text per failing field, each reproduced character for character from the source
-            paragraph that emits it. Omitted when a failure produced no field text, rather than sent
-            empty.
+            paragraph that emits it. Omitted when a failure produced no field text, never sent as an
+            empty array.

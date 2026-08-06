@@ -10,6 +10,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -43,6 +44,16 @@ class EventRedactionTest {
 
     /** Masked card number every fixture carries. Twelve mask characters then four digits. */
     private static final String MASKED_CARD_NUMBER = "************4321";
+
+    /** The four digits {@link #MASKED_CARD_NUMBER} ends with, which no card component may render. */
+    private static final String CARD_LAST_FOUR = "4321";
+
+    /**
+     * Shape of the identifier a factory of this module stamps: eight, four, four, four then twelve
+     * hexadecimal digits.
+     */
+    private static final Pattern GENERATED_IDENTIFIER = Pattern.compile(
+            "\\p{XDigit}{8}-\\p{XDigit}{4}-\\p{XDigit}{4}-\\p{XDigit}{4}-\\p{XDigit}{12}");
 
     /**
      * Card token every fixture carries. Sixty-four hexadecimal characters, and a value no rendering
@@ -127,12 +138,31 @@ class EventRedactionTest {
         assertThat(rendered)
                 .as("rendering of %s must not disclose a card number in any form",
                         event.getClass().getSimpleName())
-                .doesNotContain(MASKED_CARD_NUMBER)
-                .doesNotContain("4321");
+                .doesNotContain(MASKED_CARD_NUMBER);
+        assertThat(withoutGeneratedIdentifiers(rendered))
+                .as("rendering of %s must not disclose the last four digits of a card number",
+                        event.getClass().getSimpleName())
+                .doesNotContain(CARD_LAST_FOUR);
         assertThat(rendered)
                 .as("rendering of %s must not disclose the card token",
                         event.getClass().getSimpleName())
                 .doesNotContain(CARD_TOKEN);
+    }
+
+    /**
+     * Removes every generated identifier from one rendering.
+     *
+     * <p>{@link #CARD_LAST_FOUR} is four digits, and all four are hexadecimal, so the thirty-two
+     * hexadecimal digits of a generated identifier can spell them by chance. That happened: a run
+     * stamped {@code 17610c38-b108-4321-89bf-147d465e42fa} and the card-number assertion failed on
+     * an identifier derived from no card. Only the assertion on those four digits reads the
+     * shortened text; every other marker here holds a character no identifier can carry.
+     *
+     * @param rendered text one record rendered
+     * @return the same text with every identifier of that shape removed
+     */
+    private static String withoutGeneratedIdentifiers(String rendered) {
+        return GENERATED_IDENTIFIER.matcher(rendered).replaceAll("");
     }
 
     @ParameterizedTest

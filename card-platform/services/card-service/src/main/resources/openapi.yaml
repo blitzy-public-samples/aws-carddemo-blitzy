@@ -277,11 +277,9 @@ paths:
 
         '200':
           description: >-
-            The card was rewritten, or the submitted values matched the stored
-            ones and nothing was written. The outcome property separates the two:
-            UPDATED carries no message and NO_CHANGE_DETECTED carries
-            "No change detected with respect to values fetched.", the text
-            app/cbl/COCRDUPC.cbl:L682 sets.
+            The card was rewritten. The outcome property is UPDATED and it
+            carries no message. A submission whose values matched the stored ones
+            writes nothing and answers 422, not this code.
           content:
             application/json:
               schema:
@@ -340,8 +338,17 @@ paths:
 
         '422':
           description: >-
-            One field edit refused its value. The message is that edit's text,
-            reproduced character for character from the source line
+            Either one field edit refused its value, or the submitted values
+            matched the stored ones. The second case is outcome
+            NO_CHANGE_DETECTED, carrying
+            "No change detected with respect to values fetched.", the text
+            app/cbl/COCRDUPC.cbl:L188 declares and the gate at
+            app/cbl/COCRDUPC.cbl:L680-L682 sets before it reaches the edit exit
+            at app/cbl/COCRDUPC.cbl:L693 having written nothing.
+
+
+            For a refused field the message is that edit's text, reproduced
+            character for character from the source line
             api/dto/CardValidationMessages cites for it. The five texts are
             "Card name not provided" and
             "Card name can only contain alphabets and spaces" for the name,

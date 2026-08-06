@@ -270,6 +270,17 @@ log](decision-log.md) carries the reasoning for every choice named here.
 - **Check:** Freeze the broker mid-send, restore it, and confirm that every extra copy carries an `eventId` already on the topic and that the consuming service holds one `processed_event` marker for it.
 - **Behavior change:** Transactional publication would add a transactional producer to every relay and `read_committed` to every consumer, and it still would not make a database write atomic with a broker write, so both the outbox and the marker transaction would stay.
 
+## Work the notification endpoint pass surfaced
+
+One text was measured while proving the notification history endpoint and left as it stands.
+
+### Name the notification route's own constraints in its bad-request text
+
+- **Change:** Rewrite `INVALID_REQUEST_MESSAGE` so it names the two constraints this route declares: a sixty-four character card token, and a page size of at least one.
+- **Where:** `INVALID_REQUEST_MESSAGE` in `services/notification-service/src/main/java/com/carddemo/notification/api/NotificationApiExceptionHandler.java` reads `Account identifier must be eleven digits, and limit must be at least one.` The path variable of `GET /notifications/{cardToken}` is a card token matching `PanMasker.CARD_TOKEN_PATTERN`, and the one query parameter is `pageSize`. Both texts name no value read from a request, so the shipped one discloses nothing; it describes another service's route.
+- **Check:** Send a path value outside the token shape, then a page size of zero, and confirm each message names the constraint it broke. `ApiErrorResponseTest` holds both texts to letters and punctuation, so a rewrite stays inside that character set. `NotificationHistoryControllerTest` asserts the status, the route template and the withheld request value, and asserts nothing about the text.
+- **Behavior change:** A changed message string. No status, no route and no body shape moves.
+
 ## Informational register items
 
 Some register entries explain the source without suggesting a change. Items 18 through 22 document specification conflicts, abandoned menu intent, unreachable role logic, stale identity moves, and over-allocated presentation arrays.

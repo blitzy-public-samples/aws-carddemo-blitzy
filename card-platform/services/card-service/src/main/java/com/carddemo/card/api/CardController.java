@@ -43,38 +43,35 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>Transformed from three Customer Information Control System (CICS) transactions.
  * {@code app/cbl/COCRDLIC.cbl} lists cards a page at a time, {@code app/cbl/COCRDSLC.cbl} reads one
  * card, and {@code app/cbl/COCRDUPC.cbl} updates one. Each screen turn becomes one request and one
- * response, and no conversation state survives a response: the paging position travels in the
- * response and comes back on the next request, which is what
- * {@code WS-CA-LAST-CARD-NUM} at {@code app/cbl/COCRDLIC.cbl:L231} carries between screen turns.
+ * response. No conversation state survives a response. The paging position travels in the response
+ * and returns on the next request, which is the role {@code WS-CA-LAST-CARD-NUM} at
+ * {@code app/cbl/COCRDLIC.cbl:L231} fills between screen turns.
  *
  * <h2>Where an identifier may appear</h2>
  *
- * <p>No route of this controller carries a card number in its path or in its query string. A path
- * and a query string reach an access log, a reverse proxy log, a distributed trace and a browser
- * history, and a full Primary Account Number belongs in none of them. The two routes that name one
- * card take it in the request body, which is why the read is a {@code POST} that changes nothing,
- * and the paging cursor of the list route travels in the {@value #CURSOR_HEADER} request header.
- * That cursor is the irreversible card token of a row, which {@link CardQueryService} resolves
- * internally to the browse key that {@code app/cbl/COCRDLIC.cbl:L488-L489} reads back.
+ * <p>No route here carries a card number in its path or in its query string. The two routes that
+ * name one card take it in the request body, so the read is a {@code POST} that changes nothing.
+ * The paging cursor of the list route travels in the {@value #CURSOR_HEADER} request header. That
+ * cursor is the irreversible card token of a row. {@link CardQueryService} resolves the token to
+ * the browse key that {@code app/cbl/COCRDLIC.cbl:L488-L489} reads back.
  *
- * <p>The account identifier is not a card number and travels as the {@value #ACCOUNT_ID_PARAMETER}
- * query parameter, which is the parameter the filter chain of {@code config/SecurityConfig} reads to
- * decide ownership of the list route.
+ * <p>The account identifier is not a card number. It travels as the
+ * {@value #ACCOUNT_ID_PARAMETER} query parameter. The filter chain of
+ * {@code config/SecurityConfig} reads that parameter to decide ownership of the list route.
  *
- * <p>Every card number that leaves this controller is masked. {@link CardSummary} and
+ * <p>Every card number leaving this controller is masked. {@link CardSummary} and
  * {@link CardDetailResponse} both refuse an unmasked value in their own constructors, and
  * {@link PanMasker#maskCardNumber} produces what they accept. Lookups and filters run on the full
- * sixteen characters, before a response is built, which section 0.6.4 of the plan requires.
+ * sixteen characters, before a response is built, as section 0.6.4 of the plan requires.
  *
  * <h2>What each route answers</h2>
  *
- * <p>The list route answers {@code 200} with an empty page when nothing matches, because a browse
- * that reaches end of file is not an error: {@code app/cbl/COCRDLIC.cbl:L1235} clears the next-page
- * flag and the screen shows no row.
+ * <p>The list route answers {@code 200} with an empty page when nothing matches.
+ * {@code app/cbl/COCRDLIC.cbl:L1235} clears the next-page flag and the screen shows no row.
  *
  * <p>The read route answers {@code 200} with the card, {@code 404} when the table holds no such
  * row, and {@code 422} when an edit refuses a submitted value. The update route answers one of
- * seven outcomes, which {@link #statusOf(CardUpdateResponse)} maps onto a status code.
+ * seven outcomes. {@link #statusOf(CardUpdateResponse)} maps each onto a status code.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -102,8 +99,7 @@ public class CardController {
      * Query parameter carrying the account whose cards a caller lists.
      *
      * <p>The filter chain of {@code config/SecurityConfig} reads this exact name to decide whether
-     * the caller owns the account, so the name is part of the access-control contract and not a
-     * detail of this file.
+     * the caller owns the account. The name is part of the access-control contract.
      */
     public static final String ACCOUNT_ID_PARAMETER = "accountId";
 
@@ -111,8 +107,9 @@ public class CardController {
      * Request header carrying the paging position, which is the card token of a row.
      *
      * <p>{@link CardListResponse#nextCursor()} returns the token in the response body and the next
-     * request sends it back here. The token identifies one browse position without publishing the
-     * full card number the source kept in working storage.
+     * request sends it back here. The token names one browse position and carries no card-number
+     * digit. The source kept the full card number in working storage at
+     * {@code app/cbl/COCRDLIC.cbl:L231}.
      */
     public static final String CURSOR_HEADER = "X-Card-Cursor";
 
@@ -130,8 +127,8 @@ public class CardController {
      * {@code app/cpy/CVACT02Y.cpy:L6}.
      *
      * <p>All eleven digits are required. Column {@code account_id} is {@code CHAR(11)} and matches
-     * on text, so a shorter value matches no row, and answering {@code 200} with an empty page for a
-     * malformed identifier would report absence where the request was malformed.
+     * on text, so a shorter value matches no row. A malformed identifier answers {@code 422} and
+     * not an empty page.
      */
     public static final String ACCOUNT_ID_PATTERN = "^[0-9]{11}$";
 
@@ -144,10 +141,10 @@ public class CardController {
     /**
      * Text a caller reads when it supplies no account to list by.
      *
-     * <p>{@code app/cbl/COCRDLIC.cbl} treats a blank account filter as no filter, so it emits no
-     * text for this case. This route requires the account, because the rule that admits it reads
-     * that parameter to decide ownership, and the text is the one the two card programs use for a
-     * missing account: {@link CardValidationMessages#PROMPT_FOR_ACCT}.
+     * <p>{@code app/cbl/COCRDLIC.cbl} treats a blank account filter as no filter and emits no text
+     * for this case. This route requires the account, and the rule that admits it reads that
+     * parameter to decide ownership. The text is the one the two card programs use for a missing
+     * account: {@link CardValidationMessages#PROMPT_FOR_ACCT}.
      */
     public static final String ACCOUNT_ID_ABSENT_MESSAGE = CardValidationMessages.PROMPT_FOR_ACCT;
 
@@ -155,9 +152,8 @@ public class CardController {
      * Text a caller reads when the account it lists by is not eleven digits.
      *
      * <p>{@code app/cbl/COCRDLIC.cbl:L1298-L1301} refuses a non-numeric account filter with the
-     * wording {@link CardValidationMessages#ACCOUNT_FILTER_NOT_NUMERIC} carries, and the source
-     * tests the blank condition before the character class, which is the order these two constants
-     * keep.
+     * wording {@link CardValidationMessages#ACCOUNT_FILTER_NOT_NUMERIC} carries. The source tests
+     * the blank condition before the character class, which is the order these two constants keep.
      */
     public static final String ACCOUNT_ID_MALFORMED_MESSAGE =
             CardValidationMessages.ACCOUNT_FILTER_NOT_NUMERIC;
@@ -209,16 +205,14 @@ public class CardController {
      * {@code app/cbl/COCRDLIC.cbl:L1197-L1205} reads.
      *
      * <p>A forward request walks from the token's resolved browse position towards higher card
-     * numbers and a backward request walks towards lower ones, reproducing
-     * {@code 9000-READ-FORWARD} at
-     * {@code app/cbl/COCRDLIC.cbl:L1123} and {@code 9100-READ-BACKWARDS} at
-     * {@code app/cbl/COCRDLIC.cbl:L1264}. Both cursors are exclusive, so no row is returned twice,
-     * and a request with no cursor asks for the first page going forward or the last page going
-     * back.
+     * numbers, reproducing {@code 9000-READ-FORWARD} at {@code app/cbl/COCRDLIC.cbl:L1123}. A
+     * backward request walks towards lower ones, reproducing {@code 9100-READ-BACKWARDS} at
+     * {@code app/cbl/COCRDLIC.cbl:L1264}. Both cursors are exclusive, so no row is returned twice.
+     * A request with no cursor asks for the first page going forward or the last page going back.
      *
-     * <p>The account filter is required, because the rule that admits this route reads it. The card
-     * filter of the source screen is deliberately absent: it would be a card number in a query
-     * string.
+     * <p>The account filter is required, and the rule that admits this route reads it. The card
+     * filter of the source screen is absent here. A card filter in a query string would carry a
+     * Primary Account Number.
      *
      * @param accountId the eleven-digit account whose cards to list
      * @param cursor    the paging position from a previous response, or {@code null} for the first
@@ -267,42 +261,36 @@ public class CardController {
      * the two rules that span fields.
      *
      * <p>The read keys on the card number alone.
-     * {@code app/cbl/COCRDSLC.cbl:L740} moves the card number into the read key and the account move
-     * above it at {@code app/cbl/COCRDSLC.cbl:L739} is commented out, so the source edits the account
-     * and then keys on the card. This method keeps that key and compares the account afterwards:
-     * a row whose stored account differs from the account the caller supplied is answered as an
-     * absent row, with the same status and the same text.
+     * {@code app/cbl/COCRDSLC.cbl:L740} moves the card number into the read key. The account move
+     * above it at {@code app/cbl/COCRDSLC.cbl:L739} is commented out, so the source edits the
+     * account and then keys on the card. This method keeps that key and compares the account after
+     * the read. A row whose stored account differs from the supplied account answers as an absent
+     * row, with the same status and the same text.
      *
-     * <p>That comparison is a deliberate departure from the disabled line, and its reason is the
-     * authorization layer the target adds and the source has none of. The source reached this
-     * program only through a 3270 signon that granted every signed-on user every card, so an
-     * unchecked account changed nothing there. Here the account is a caller-supplied key, and
-     * leaving it unchecked lets a caller entitled to one card read it under any account identifier
-     * it likes. The paragraph the source names {@code 9100-GETCARD-BYACCTCARD} and the message it
-     * sets, {@code Did not find cards for this search condition}, both describe the combination read
-     * the commented-out line was meant to perform. The register of flagged rules carries the
-     * departure with these citations.
+     * <p>That account comparison departs from the commented-out line at
+     * {@code app/cbl/COCRDSLC.cbl:L739}. The source paragraph {@code 9100-GETCARD-BYACCTCARD} and
+     * the text {@code app/cbl/COCRDUPC.cbl:L204} declares both name a combination read. The
+     * register of flagged rules carries the departure with these citations.
      *
-     * <p>Ownership is decided here rather than in the filter chain, because the identifier sits in
-     * the body and a chain that read the body would consume the stream this method needs. The
-     * predicate is {@link SecurityConfig#cardOwnership()}, which names the authority by the card
-     * token derived from the full number, so an entitlement admits one card and not every card
-     * ending in the same four digits. A caller that holds no matching scope reads {@code 403}
-     * whether or not the row exists, so a refusal discloses nothing about which cards are stored.
-     * The refusal carries the same text as an absent row, so the two answers differ in status alone:
-     * a client learns whether asking for an entitlement could help and learns nothing about which
-     * cards this service holds.
+     * <p>This method decides ownership, and the filter chain of {@code config/SecurityConfig} does
+     * not. The identifier sits in the body, and a chain reading the body consumes the stream this
+     * method needs. The predicate is {@link SecurityConfig#cardOwnership()}, which names the
+     * authority by the card token derived from the full number. An entitlement admits one card and
+     * not every card ending in the same four digits.
      *
-     * <p>No {@code @Valid} sits on this body, for the reason the update route gives. The source tests
-     * each field for absence before it tests its character class, and it applies one rule across both
-     * fields afterwards, so an unordered violation set would answer the wrong one of four texts.
-     * {@link #firstSearchFailure(CardDetailRequest)} applies all four in source order and
-     * {@link CardDetailRequest} declares the same constraints, which a test holds to agreement.
+     * <p>A caller holding no matching scope reads {@code 403} whether or not the row exists. The
+     * refusal carries the same text as an absent row, so the two answers differ in status alone.
+     *
+     * <p>No {@code @Valid} sits on this body. The source tests each field for absence before it
+     * tests its character class, then applies one rule across both fields. An unordered violation
+     * set answers the wrong one of four texts.
+     * {@link #firstSearchFailure(CardDetailRequest)} applies all four in source order, and
+     * {@link CardDetailRequest} declares the same constraints. A test holds the two to agreement.
      *
      * @param request the account identifier and the full card number
-     * @return {@code 200} with the card, {@code 422} when an edit refuses a value, {@code 403} when
-     *         the caller does not own the card, and {@code 404} when the table holds no such row or
-     *         holds one belonging to another account
+     * @return {@code 200} with the card. An edit that refuses a value answers {@code 422}. A caller
+     *         that does not own the card reads {@code 403}. An absent row, or one belonging to
+     *         another account, answers {@code 404}
      */
     @PostMapping(path = DETAIL_PATH, consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
@@ -335,12 +323,12 @@ public class CardController {
      * Updates one card, named by the full card number in the request body.
      *
      * <p>Reproduces {@code app/cbl/COCRDUPC.cbl}. {@link CardUpdateService} owns the order of the
-     * checks, because the order decides which of seven answers a caller receives, and this method
-     * owns only the status code each answer carries.
+     * checks, and the order decides which of seven answers a caller receives. This method owns only
+     * the status code each answer carries.
      *
-     * <p>No {@code @Valid} sits on this body, deliberately. The source runs its read and its
-     * no-change comparison before its field edits, so a boundary validation would answer a field
-     * message where the source answers {@code Did not find cards for this search condition}.
+     * <p>No {@code @Valid} sits on this body. The source runs its read and its no-change comparison
+     * before its field edits. A boundary validation answers a field message where the source
+     * answers the text {@code app/cbl/COCRDUPC.cbl:L204} declares.
      * {@link CardUpdateService} applies the same constraints one property at a time, in source edit
      * order.
      *
@@ -359,23 +347,22 @@ public class CardController {
     /**
      * Names the status code one update outcome carries.
      *
-     * <p>Two outcomes are answers rather than failures and carry {@code 200}: a card that was
-     * rewritten, and a submission that matched what was stored. The source displays both on the same
-     * screen with a message, and neither leaves the caller anything to correct.
+     * <p>A rewritten row carries {@code 200}. Two outcomes carry {@code 422}: a failing edit, and
+     * the no-change comparison at {@code app/cbl/COCRDUPC.cbl:L680-L682}. That comparison writes
+     * nothing and reaches the edit exit at {@code app/cbl/COCRDUPC.cbl:L693}, and it carries the
+     * text {@code app/cbl/COCRDUPC.cbl:L188} declares.
      *
-     * <p>Two outcomes are races and carry {@code 409}: a row another writer changed first, and a row
-     * this service could not lock. Both invite the same retry.
-     *
-     * <p>One outcome is a request to correct and carries {@code 422}. One is an absent row and
-     * carries {@code 404}. One is a fault inside this service and carries {@code 500}.
+     * <p>Two races carry {@code 409}: a row another writer changed first, and a row this service
+     * could not lock. An absent row carries {@code 404}. A fault inside this service carries
+     * {@code 500}, which a caller may retry.
      *
      * @param outcome the outcome the update produced
      * @return the status code to send
      */
     static HttpStatus statusOf(CardUpdateResponse outcome) {
         return switch (outcome.outcome()) {
-            case UPDATED, NO_CHANGE_DETECTED -> HttpStatus.OK;
-            case VALIDATION_REJECTED -> HttpStatus.UNPROCESSABLE_CONTENT;
+            case UPDATED -> HttpStatus.OK;
+            case NO_CHANGE_DETECTED, VALIDATION_REJECTED -> HttpStatus.UNPROCESSABLE_CONTENT;
             case CARD_NOT_FOUND -> HttpStatus.NOT_FOUND;
             case CHANGED_BEFORE_UPDATE, LOCK_NOT_ACQUIRED -> HttpStatus.CONFLICT;
             case UPDATE_FAILED_AFTER_LOCK -> HttpStatus.INTERNAL_SERVER_ERROR;
@@ -387,25 +374,25 @@ public class CardController {
      *
      * <p>{@code 2200-EDIT-MAP-INPUTS} performs {@code 2210-EDIT-ACCOUNT} at
      * {@code app/cbl/COCRDSLC.cbl:L630-L631} and {@code 2220-EDIT-CARD} at
-     * {@code app/cbl/COCRDSLC.cbl:L633-L634}, and each of those two tests absence before it tests
-     * the character class: {@code app/cbl/COCRDSLC.cbl:L651} then {@code L665} for the account, and
+     * {@code app/cbl/COCRDSLC.cbl:L633-L634}. Each of those two tests absence before it tests the
+     * character class: {@code app/cbl/COCRDSLC.cbl:L651} then {@code L665} for the account, and
      * {@code app/cbl/COCRDSLC.cbl:L691} then {@code L706} for the card. Every write to
      * {@code WS-RETURN-MSG} after the first sits behind the {@code WS-RETURN-MSG-OFF} guard, so the
      * first failing edit owns the answer.
      *
-     * <p>One rule spans both fields and runs last.
-     * {@code app/cbl/COCRDSLC.cbl:L637-L640} tests both blank flags after both edits have run and
-     * under no guard, so it overwrites whichever text an edit had written. It is applied first here,
-     * which reaches the same answer with one comparison instead of two.
+     * <p>One rule spans both fields. {@code app/cbl/COCRDSLC.cbl:L637-L640} tests both blank flags
+     * after both edits have run and under no guard, so it overwrites whichever text an edit had
+     * written. This method applies that rule first, which reaches the same answer with one
+     * comparison.
      *
      * <p>An all-zero value counts as no value, from the third condition of each absence test:
      * {@code CC-ACCT-ID-N EQUAL ZEROS} at {@code app/cbl/COCRDSLC.cbl:L653} and
      * {@code CC-CARD-NUM-N EQUAL ZEROS} at {@code app/cbl/COCRDSLC.cbl:L693}.
      *
      * <p>Visible beyond this class so that {@code api/dto/CardDetailRequestTest} can hold this chain
-     * and the constraints {@link CardDetailRequest} declares to the same four texts. The two state
-     * the same rules in two places, because a validator reports an unordered set and one of the rules
-     * spans both fields, so a test has to say they agree.
+     * and the constraints {@link CardDetailRequest} declares to the same four texts. A validator
+     * reports an unordered set, and one of the rules spans both fields, so a test states that the
+     * two agree.
      *
      * @param request the submitted search condition
      * @return the text of the first edit that refused the request, or {@code null} when all four
@@ -437,13 +424,13 @@ public class CardController {
      * Reports whether one stored card belongs to the account the caller named.
      *
      * <p>Both values are the eleven digits {@code CARD-ACCT-ID PIC 9(11)} at
-     * {@code app/cpy/CVACT02Y.cpy:L6} declares, and the stored one arrives from a
-     * {@code CHAR(11)} column, so it can carry padding a caller's value does not. Both are stripped
-     * before the comparison and neither is widened: a caller's value of another width has already
-     * been refused by {@link #firstSearchFailure(CardDetailRequest)}.
+     * {@code app/cpy/CVACT02Y.cpy:L6} declares. The stored one arrives from a {@code CHAR(11)}
+     * column and can carry padding a caller's value does not. Both are stripped before the
+     * comparison and neither is widened. {@link #firstSearchFailure(CardDetailRequest)} has already
+     * refused a caller's value of another width.
      *
-     * <p>The stored account is the authoritative one. The caller's is a request field, and the whole
-     * point of the comparison is that a request field cannot decide which row a caller reaches.
+     * <p>The stored account is the authoritative one. The comparison keeps a request field from
+     * deciding which row a caller reaches.
      *
      * @param card             the row the read found
      * @param suppliedAccountId the account identifier the caller sent
@@ -474,9 +461,9 @@ public class CardController {
     /**
      * Reports whether a value carries exactly the declared width in digits.
      *
-     * <p>{@code IS NOT NUMERIC} on a fixed-width alphanumeric field fails for a shorter value,
-     * because the field arrives space-padded, so the width and the character class are one test in
-     * the source and one test here.
+     * <p>{@code IS NOT NUMERIC} on a fixed-width alphanumeric field fails for a shorter value, as
+     * the field arrives space-padded. The width and the character class are one test in the source
+     * and one test here.
      *
      * @param value the submitted value, already known to carry a character
      * @param width the width the Picture clause declares
@@ -503,17 +490,15 @@ public class CardController {
      * cursor of a last page is dropped.
      *
      * <p>The cursor continues the browse in the direction it was walking. A forward page hands back
-     * the token of its last card number, whose source value
-     * {@code app/cbl/COCRDLIC.cbl:L1194-L1195} writes into
-     * {@code WS-CA-LAST-CARDKEY} and {@code app/cbl/COCRDLIC.cbl:L488-L489} reads back as the browse
-     * key. A backward page hands back the token of its first card number, whose source value
-     * {@code app/cbl/COCRDLIC.cbl:L1350-L1353} writes into {@code WS-CA-FIRST-CARDKEY} for the same
-     * purpose. The source keeps both cursors for that reason and this response carries whichever one
-     * the next request needs.
+     * the token of its last card number. {@code app/cbl/COCRDLIC.cbl:L1194-L1195} writes that source
+     * value into {@code WS-CA-LAST-CARDKEY}, and {@code app/cbl/COCRDLIC.cbl:L488-L489} reads it
+     * back as the browse key. A backward page hands back the token of its first card number, which
+     * {@code app/cbl/COCRDLIC.cbl:L1350-L1353} writes into {@code WS-CA-FIRST-CARDKEY}. The source
+     * keeps both cursors, and this response carries whichever one the next request needs.
      *
-     * <p>A masked card number names no row, and publishing the full browse key would expose the
-     * Primary Account Number. The card token names exactly one row without carrying any card-number
-     * digit; {@link CardQueryService} resolves it before issuing the database browse.
+     * <p>A masked card number names no row. The card token names exactly one row and carries no
+     * card-number digit. {@link CardQueryService} resolves the token before issuing the database
+     * browse.
      *
      * @param page     the page the read side returned
      * @param backward {@code true} when the browse was walking towards lower card numbers
@@ -535,9 +520,9 @@ public class CardController {
      *
      * <p>The embossed name and the active status are carried as stored. Column
      * {@code embossed_name} is {@code bpchar(50)}, so the value arrives padded to the width
-     * {@code CARD-EMBOSSED-NAME PIC X(50)} declares at {@code app/cpy/CVACT02Y.cpy:L8}, and the
-     * published event carries the same padded value. Trimming here would make one card read two ways
-     * depending on which surface a reader used.
+     * {@code CARD-EMBOSSED-NAME PIC X(50)} declares at {@code app/cpy/CVACT02Y.cpy:L8}. The
+     * published event carries the same padded value. This method trims neither field, so every
+     * surface reads one card the same way.
      *
      * @param card   the stored card
      * @param masked the masked card number, already produced from the full value

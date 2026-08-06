@@ -462,8 +462,10 @@ class CardControllerTest {
         void eachOutcomeCarriesItsStatus() {
             assertEquals(HttpStatus.OK, statusOf(CardUpdateResponse.updated()),
                     "a rewritten row is an answer and not a failure");
-            assertEquals(HttpStatus.OK, statusOf(CardUpdateResponse.noChangeDetected()),
-                    "a submission that matched leaves nothing to correct");
+            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT,
+                    statusOf(CardUpdateResponse.noChangeDetected()),
+                    "the gate at app/cbl/COCRDUPC.cbl:L680-L682 writes nothing and asks the caller"
+                            + " to change a value");
             assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, statusOf(CardUpdateResponse
                             .validationRejected(CardValidationMessages.NAME_MUST_BE_ALPHA)),
                     "a failing edit asks the caller to correct one value");

@@ -11,52 +11,21 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Supplies the one bean the ledger posting service records its measurements through.
+ * Publishes the one bean the ledger posting service records its measurements through.
  *
- * <p>{@link LedgerMeters} holds eleven meters under six names, covering the three families a
- * demonstration shows: events consumed, processing latency, and failure count. Spring Boot supplies
- * the {@link MeterRegistry}, and every meter registers at start-up, so a scrape taken before the
- * first message lists each series at zero.
+ * <p>{@link LedgerMeters} registers eleven meters under five names, covering three families: events
+ * consumed, processing latency, and failure count. Spring Boot supplies the {@link MeterRegistry}.
+ * Each meter registers at start-up, so every series reads zero before the first message.
  *
- * <p>Two names measure failure and they count different things on purpose.
- * {@code carddemo.ledger.failures} counts one ATTEMPT, tagged by the stage that failed, which is what
- * makes a retry storm visible. {@code carddemo.ledger.dead.letters} counts one consumed RECORD whose
- * deliveries are spent, tagged by what became of the diagnostic naming it. Without the second name a
- * message retried to exhaustion and one still in flight read the same, which is the distinction an
- * operator needs first. The two have different denominators, so neither double counts the other.
+ * <p>Two counters carry {@code WS-TRANSACTION-COUNT} and {@code WS-REJECT-COUNT} forward from the
+ * job log at {@code app/cbl/CBTRN02C.cbl:L227-L230}. A reject raises
+ * {@code carddemo.ledger.transactions.processed} with {@code outcome=rejected}; an infrastructure
+ * fault raises {@code carddemo.ledger.failures}. The two are separate meters.
  *
- * <p>Two counter names follow the source's own counters. {@code WS-TRANSACTION-COUNT} and
- * {@code WS-REJECT-COUNT} at {@code app/cbl/CBTRN02C.cbl:L185-L186} are printed to the job log at
- * {@code app/cbl/CBTRN02C.cbl:L227-L230}, and the reject count decides the return code:
- * {@code app/cbl/CBTRN02C.cbl:L229-L230} moves 4 into {@code RETURN-CODE} when it is positive. A
- * demonstration can therefore read the same two numbers the nightly job would have reported.
+ * <p>ADDITIVE: processing latency, and the duplicate counter. The source times nothing and detects
+ * no duplicate. No tag holds an identifier, so the series count stays fixed under any traffic.
  *
- * <p>A reject is expected traffic and never a fault. It is counted under
- * {@code carddemo.ledger.transactions.processed} with {@code outcome=rejected} and never on
- * {@code carddemo.ledger.failures}, because the source answered a rejected record with return code
- * 4 and no abend. {@code domain/RejectRecorder} is what raises it, because that class is what writes
- * a reject. An authorized event reaching this service carries a decision the authorization service
- * already published, so this service refuses nothing and a transaction it cannot post raises
- * {@code carddemo.ledger.failures} under {@link LedgerMeters#POST_STAGE} instead.
- *
- * <p>These meters replace three source mechanisms, shape only and no logic: the job-log
- * {@code DISPLAY} statements above, the file-status formatter at
- * {@code app/cbl/CBTRN02C.cbl:L714-L727}, and the four-statement abend at
- * {@code app/cbl/CBTRN02C.cbl:L707-L711} that ends in {@code CALL 'CEE3ABD'}. The abend performed no
- * cleanup and drew no distinction between a rejected record and a broken file, which is the
- * distinction the {@code stage} tag now carries.
- *
- * <p>ADDITIVE: the duplicate counter. The source has no duplicate detection of any kind, so a
- * replayed feed reaches the transaction write at {@code app/cbl/CBTRN02C.cbl:L562-L579}, hits a
- * duplicate key and abends. This service records the marker instead, and the counter says how often
- * that guard did its work.
- *
- * <p>No meter name and no tag value holds a transaction identifier, an account identifier, a card
- * number or an event identifier. Every tag value is one literal from a closed set, so the number of
- * series stays fixed however much traffic arrives.
- *
- * <p>This module compiles at release 25 while the Spring Boot parent defaults to 17, and class-file
- * major version 69 is the proof.
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
 public class ObservabilityConfig {
@@ -65,10 +34,10 @@ public class ObservabilityConfig {
     public static final String TAG_SERVICE = "service";
 
     /**
-     * Registers the nine ledger meters and publishes them as one injectable bean.
+     * Registers the eleven ledger meters and publishes them as one injectable bean.
      *
      * @param registry the meter registry Spring Boot auto-configuration supplies
-     * @return the facade every measured path in this service records through
+     * @return the surface every measured path in this service records through
      * @throws NullPointerException when {@code registry} is {@code null}
      */
     @Bean
@@ -79,14 +48,7 @@ public class ObservabilityConfig {
     /**
      * The recording surface of this service. One method names one measured path.
      *
-     * <p>The path that calls each method: {@code messaging/TransactionAuthorizedConsumer.java}
-     * calls {@link #recordEventConsumed()}, {@link #recordProcessingLatency(Duration)},
-     * {@link #recordDuplicateSkipped()}, {@link #recordTransactionPosted()},
-     * {@link #recordTransactionRejected()}, {@link #recordDeserializeFailure()} and
-     * {@link #recordProcessFailure()}; {@code config/KafkaConsumerConfig.java} calls
-     * {@link #recordDeadLetterPublished()} or {@link #recordDeadLetterFailure()} once a delivery has
-     * been given up on; and {@code outbox/OutboxRelay.java} calls {@link #recordPublishFailure()} and
-     * {@link #recordAbandonedRow()}.
+     * <p>Each meter registers in the constructor, so every series exists from start-up.
      */
     public static final class LedgerMeters {
 
@@ -150,8 +112,7 @@ public class ObservabilityConfig {
         LedgerMeters(MeterRegistry registry) {
             Objects.requireNonNull(registry, "registry");
             this.eventsConsumed = Counter.builder("carddemo.ledger.events.consumed")
-                    .description("Events read from topics transaction.authorized and"
-                            + " account.state-changed")
+                    .description("Events read from the topics this service subscribes to")
                     .register(registry);
             this.transactionsPosted = Counter.builder("carddemo.ledger.transactions.processed")
                     .tag("outcome", "posted")
@@ -244,11 +205,8 @@ public class ObservabilityConfig {
         }
 
         /**
-         * Counts one failure under the named stage.
-         *
-         * <p>The four stage names are the constants on this class. A caller that has the stage as a
-         * value uses this method; a caller that knows the stage at the call site uses the named
-         * recorder instead. Both reach the same series.
+         * Counts one failure under the named stage, reaching the same series as the named recorder
+         * for that stage.
          *
          * @param stage one of {@link #DESERIALIZE_STAGE}, {@link #POST_STAGE},
          *              {@link #PUBLISH_STAGE} or {@link #ABANDON_STAGE}
@@ -268,45 +226,30 @@ public class ObservabilityConfig {
         /**
          * Counts one outbox row this service will not attempt again.
          *
-         * <p>The unit is one row and not one attempt. {@code outbox/OutboxRelay} counts every failed
-         * attempt under {@link #PUBLISH_STAGE} and reaches this method only when the row crosses
-         * {@code OutboxEventEntity.MAX_DELIVERY_ATTEMPTS}, so a row at the ceiling raises both series
-         * once and neither series double counts the other.
-         *
-         * <p>{@link #recordFailure(String)} reaches the same series for a caller holding the stage as
-         * a value. This is the named form, for a caller that knows the stage at the call site.
-         *
-         * <p>The source answer to a write it cannot complete is {@code 9999-ABEND-PROGRAM} at
-         * {@code app/cbl/CBTRN02C.cbl:L707-L711}, which terminates the address space. A non-zero value
-         * on this series is the target signal for the same condition, and the service keeps running.
+         * <p>The unit is one row, not one attempt. A row reaches this method once it crosses
+         * {@code OutboxEventEntity.MAX_DELIVERY_ATTEMPTS}.
          */
         public void recordAbandonedRow() {
             abandonedFailures.increment();
         }
 
         /**
-         * Counts one consumed record this service will not deliver again, whose diagnostic the broker
-         * acknowledged.
+         * Counts one consumed record this service will not deliver again, whose diagnostic the
+         * broker acknowledged.
          *
-         * <p>The unit is one record and not one attempt, which is the difference from every stage of
-         * {@code carddemo.ledger.failures}. The container calls a recoverer only once the backoff is
-         * spent, so this is the one moment a delivery can be counted as permanently given up on. A
-         * poison message previously appeared only as a rising per-attempt count with nothing marking
-         * the point at which it was abandoned.
-         *
-         * <p>This series concerns a CONSUMED record and {@link #ABANDON_STAGE} concerns an OUTBOX row.
-         * The two never describe the same thing, so neither double counts the other.
+         * <p>The unit is one record, not one attempt. The container calls a recoverer once the
+         * backoff is spent, which is when a delivery counts as given up on. This series covers a
+         * consumed record, and {@link #ABANDON_STAGE} covers an outbox row.
          */
         public void recordDeadLetterPublished() {
             deadLettersPublished.increment();
         }
 
         /**
-         * Counts one consumed record this service will not deliver again, whose diagnostic the broker
-         * refused.
+         * Counts one consumed record this service will not deliver again, whose diagnostic the
+         * broker refused.
          *
-         * <p>Expected to stay at zero. A reading here means the record is spent and nothing names it
-         * on any topic, which no per-attempt series reports.
+         * <p>A reading above zero means the record is spent and no topic names it.
          */
         public void recordDeadLetterFailure() {
             deadLettersFailed.increment();
@@ -316,18 +259,20 @@ public class ObservabilityConfig {
     /**
      * Adds the one common tag every meter of this service carries, including the meters Spring Boot
      * registers for the Java Virtual Machine and for the web surface. Spring Boot applies this
-     * customizer while it post-processes the registry, so every meter above inherits the tag. The
-     * fallback value matches {@code spring.application.name} in {@code application.yml}, so a
-     * context that omits the property still tags its meters.
+     * customizer while it post-processes the registry, so every meter above inherits the tag.
      *
-     * @param applicationName the bound {@code spring.application.name}
+     * @param applicationName the bound {@code spring.application.name}, which
+     *                        {@code application.yml} sets
      * @return the customizer that installs the {@link #TAG_SERVICE} tag
+     * @throws IllegalStateException when {@code spring.application.name} holds no value
      */
     @Bean
     public MeterRegistryCustomizer<MeterRegistry> ledgerCommonTags(
-            @Value("${spring.application.name:ledger-posting-service}") String applicationName) {
+            @Value("${spring.application.name:}") String applicationName) {
         if (applicationName == null || applicationName.isBlank()) {
-            throw new IllegalStateException("spring.application.name must hold a value");
+            throw new IllegalStateException(
+                    "spring.application.name must hold a value to tag every meter with "
+                            + TAG_SERVICE);
         }
         return registry -> registry.config().commonTags(TAG_SERVICE, applicationName);
     }

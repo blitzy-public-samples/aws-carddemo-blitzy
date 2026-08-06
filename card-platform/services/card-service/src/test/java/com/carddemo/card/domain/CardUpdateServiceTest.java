@@ -1,804 +1,302 @@
 package com.carddemo.card.domain;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
+import com.carddemo.card.CardApplication;
 import com.carddemo.card.api.dto.CardUpdateRequest;
 import com.carddemo.card.api.dto.CardUpdateResponse;
-import com.carddemo.card.api.dto.CardUpdateResponse.RefreshedCard;
 import com.carddemo.card.api.dto.CardUpdateResponse.UpdateOutcome;
 import com.carddemo.card.api.dto.CardValidationMessages;
-import com.carddemo.card.config.ObservabilityConfig;
-import com.carddemo.card.config.ObservabilityConfig.CardLatencyTimers;
 import com.carddemo.card.entity.CardEntity;
+import com.carddemo.card.messaging.CardUpdated;
 import com.carddemo.card.outbox.OutboxWriter;
-import com.carddemo.card.repository.CardRepository;
 import com.carddemo.cobol.PanMasker;
-import com.carddemo.cobol.PicClause;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import jakarta.validation.Validation;
-import jakarta.validation.Validator;
-import jakarta.validation.ValidatorFactory;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.ObjectProvider;
+import org.mockito.ArgumentCaptor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.postgresql.PostgreSQLContainer;
+import tools.jackson.databind.ObjectMapper;
 
 /**
- * Behaviour tests for {@link CardUpdateService}, driving the orchestration directly.
+ * Field edits, edit order, expiry handling and the write path of {@link CardUpdateService}.
  *
- * <p>The subject is the card update program {@code app/cbl/COCRDUPC.cbl}. Seven answers leave that
- * program and the order of its checks is what decides which one, so these tests drive each of the
- * seven and also drive the two orderings that a differently arranged implementation would get wrong:
- * the read ahead of the field edits, and the no-change comparison ahead of them too.
+ * <p>The behaviour comes from the card update program {@code app/cbl/COCRDUPC.cbl}, which runs as a
+ * Customer Information Control System (CICS) transaction over a Virtual Storage Access Method
+ * (VSAM) dataset. Every locator below was read in that member.
  *
- * <p>The repository, the read side and the outbox writer are stubbed. The validator is real, because
- * the constraints under test are the ones {@link CardUpdateRequest} declares and a stubbed validator
- * would test nothing. The meter registry is real for the same reason: the counters are part of the
- * observability contract and a stub would not show them moving.
+ * <p>What this class asserts: the three ranges the edits admit and the order those edits run in.
+ * Then the embossed-name character class, the expiry date in both directions, and the row the write
+ * leaves behind. Then the card-not-found answer, the handoff to the outbox, and the checks the
+ * source does not perform.
  *
- * <p>No application context, no database and no broker takes part.
+ * <p>Five subjects belong to {@code CardChangeDetectionTest} instead. The six-field comparison at
+ * {@code app/cbl/COCRDUPC.cbl:L1503-L1508} and the refreshed snapshot at
+ * {@code app/cbl/COCRDUPC.cbl:L1512-L1517}. The fold of the stored name at
+ * {@code app/cbl/COCRDUPC.cbl:L1499-L1501}, the absent version column, and the lock the read for
+ * update could not take at {@code app/cbl/COCRDUPC.cbl:L1441}.
+ *
+ * <p>Every expected value is written out, not computed, and each was measured in
+ * {@code app/data/ASCII/carddata.txt}: fifty records, every record exactly 150 characters, field
+ * offsets from {@code app/cpy/CVACT02Y.cpy:L5-L11}. Flyway loads those records from
+ * {@code src/main/resources/db/migration/V2__seed.sql}, and no test here opens a file under
+ * {@code app/}.
+ *
+ * <p>Every test that writes owns one seeded card number, so no test depends on another and none
+ * needs a rollback. No method carries {@code Transactional}: {@link CardUpdateService} owns the
+ * transaction boundary, {@link OutboxWriter} joins it, and a test-managed transaction would hide
+ * the committed row. Committed state is read back through {@link JdbcTemplate}.
+ *
+ * <p><b>How this class runs.</b> {@link CardApplication} supplies the context and one PostgreSQL
+ * 18.4 container serves the whole class, on the image tag
+ * {@code card-platform/docker-compose.yml} also names. Flyway creates schema
+ * {@value #MIGRATED_SCHEMA}, applies {@code V1__schema.sql} and loads the fifty rows of
+ * {@code V2__seed.sql}. {@code spring.jpa.hibernate.ddl-auto} is {@code validate}, so every test
+ * here carries the mapping check by starting.
+ *
+ * <p>{@link DynamicPropertySource} points three datasource properties at the container. No
+ * {@code ServiceConnection} annotation appears here:
+ * {@code card-platform/services/card-service/pom.xml} declares no
+ * {@code spring-boot-testcontainers} artifact.
+ *
+ * <p>Four class properties supply one inert value for each variable
+ * {@code src/main/resources/application.yml} leaves without a default. Two more push the outbox
+ * relay and the retention sweep one hour out. The one sweep at start-up therefore meets an empty
+ * table, and no later sweep reaches a row asserted below.
+ *
+ * <p>{@link MockitoSpyBean} wraps {@link OutboxWriter} so that one test reads the card handed to
+ * it. The spy delegates every call to the real bean, so each stored row below is a real row.
+ *
+ * <p>Run this class from {@code card-platform/} with
+ * {@code mvn -o -B -pl services/card-service -am test}.
+ *
+ * <p>Design decisions, including the year range at {@code app/cbl/COCRDUPC.cbl:L99} and the
+ * {@code DATE} column: {@code card-platform/docs/decision-log.md}.
  */
-@DisplayName("the card update orchestration")
+@SpringBootTest(
+        classes = CardApplication.class,
+        webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = {
+                "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
+                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
+                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
+                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+                "carddemo.outbox.relay.fixed-delay-ms=3600000",
+                "carddemo.retention.sweep-interval-ms=3600000"
+        })
+@Testcontainers
+@DisplayName("CardUpdateService over the fifty seeded cards: the edits, the expiry and the write")
 class CardUpdateServiceTest {
 
-    /** Card number of the row under test, sixteen digits. */
-    private static final String CARD_NUMBER = "4111111111111150";
+    /** The image tag {@code card-platform/docker-compose.yml} also names. */
+    private static final String POSTGRES_IMAGE = "postgres:18.4";
 
-    /** The account the card belongs to, eleven digits. */
-    private static final String ACCOUNT_ID = "00000000050";
+    /** The database name, the login name and the password of the container, one value for all. */
+    private static final String POSTGRES_CREDENTIAL = "carddemo";
 
-    /** The card verification value the row stores and no response returns. */
-    private static final String CARD_VERIFICATION_VALUE = "123";
+    /**
+     * The schema Flyway creates, from {@code spring.flyway.schemas} and
+     * {@code spring.jpa.properties.hibernate.default_schema} in
+     * {@code src/main/resources/application.yml}.
+     */
+    private static final String MIGRATED_SCHEMA = "card_service";
 
-    /** Embossed name the stored row carries, before padding. */
-    private static final String STORED_NAME = "ALEXANDER J MORGAN";
+    /**
+     * The one container every test in this class shares.
+     *
+     * <p>The class name comes from {@code org.testcontainers.postgresql}, the package
+     * Testcontainers 2.0.5 ships it in. {@link Container} on a static field gives one container per
+     * class, and {@link Testcontainers} starts it before the Spring context reads a property below.
+     */
+    @Container
+    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
+            .withDatabaseName(POSTGRES_CREDENTIAL)
+            .withUsername(POSTGRES_CREDENTIAL)
+            .withPassword(POSTGRES_CREDENTIAL);
 
-    /** Expiry date the stored row carries. Its day is the one every update carries through. */
-    private static final LocalDate STORED_EXPIRY = LocalDate.of(2028, 11, 30);
+    /**
+     * Points the Spring datasource at the running container.
+     *
+     * <p>Three properties leave here, each as a supplier the context resolves at refresh.
+     * {@code src/main/resources/application.yml} sits on the test classpath and carries every other
+     * datasource, Flyway and persistence setting. No line below repeats one, and no line creates
+     * the schema: {@code spring.flyway.create-schemas} does that.
+     *
+     * @param registry the registry the Spring test context supplies
+     */
+    @DynamicPropertySource
+    static void datasourceProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url", CardUpdateServiceTest::migratedSchemaUrl);
+        registry.add("spring.datasource.username", POSTGRES::getUsername);
+        registry.add("spring.datasource.password", POSTGRES::getPassword);
+    }
 
-    /** The two-character day slice of {@link #STORED_EXPIRY}. */
-    private static final String STORED_DAY = "30";
+    /**
+     * Returns the container uniform resource locator with {@code currentSchema} appended.
+     *
+     * <p>Testcontainers appends one query parameter of its own, so the separator is {@code &}
+     * whenever a {@code ?} is present and {@code ?} otherwise.
+     *
+     * @return the connection uniform resource locator whose search path holds
+     *         {@value #MIGRATED_SCHEMA}
+     */
+    private static String migratedSchemaUrl() {
+        String url = POSTGRES.getJdbcUrl();
+        String separator = url.contains("?") ? "&" : "?";
+        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+    }
 
-    private static ValidatorFactory validatorFactory;
+    // Seeded rows. Each value below was measured in app/data/ASCII/carddata.txt at the offsets
+    // app/cpy/CVACT02Y.cpy:L5-L10 declares, and V2__seed.sql loads all fifty records.
 
-    private CardRepository cards;
-    private CardQueryService cardQueries;
+    /** Card number of seeded record one, read by the tests that assert a refusal. */
+    private static final String WITNESS_CARD = "0500024453765740";
+
+    /** Account identifier of {@link #WITNESS_CARD}, eleven characters. */
+    private static final String WITNESS_ACCOUNT = "00000000050";
+
+    /** Embossed name of {@link #WITNESS_CARD}, before the padding {@code CHAR(50)} carries. */
+    private static final String WITNESS_NAME = "Aniya Von";
+
+    /** Expiry date of {@link #WITNESS_CARD}, the value column {@code expiration_date} holds. */
+    private static final LocalDate WITNESS_EXPIRY = LocalDate.of(2023, 3, 9);
+
+    /** Four-character year slice of {@link #WITNESS_EXPIRY}. */
+    private static final String WITNESS_YEAR = "2023";
+
+    /** Two-character month slice of {@link #WITNESS_EXPIRY}. */
+    private static final String WITNESS_MONTH = "03";
+
+    /** Two-character day slice of {@link #WITNESS_EXPIRY}. */
+    private static final String WITNESS_DAY = "09";
+
+    /** Card number of seeded record two, written by the success-path test. */
+    private static final String SUCCESS_PATH_CARD = "0683586198171516";
+
+    /** Card number of seeded record three, written by the outbox-handoff test. */
+    private static final String OUTBOX_HANDOFF_CARD = "0923877193247330";
+
+    /** Card number of seeded record four, written by the stored-payload test. */
+    private static final String OUTBOX_PAYLOAD_CARD = "0927987108636232";
+
+    /** Card verification value of {@link #OUTBOX_PAYLOAD_CARD}, three characters. */
+    private static final String OUTBOX_PAYLOAD_CARD_VERIFICATION_VALUE = "003";
+
+    /** Account identifier of {@link #OUTBOX_PAYLOAD_CARD}, eleven characters. */
+    private static final String OUTBOX_PAYLOAD_ACCOUNT = "00000000020";
+
+    /** Card number of seeded record five, written by the expiry-day test. Stored day {@code 07}. */
+    private static final String EXPIRY_DAY_CARD = "0982496213629795";
+
+    /** Card number of seeded record six, written by the reassembly test. Expiry 2024-01-17. */
+    private static final String REASSEMBLY_CARD = "1014086565224350";
+
+    /** Expiry date of {@link #REASSEMBLY_CARD}. */
+    private static final LocalDate REASSEMBLY_EXPIRY = LocalDate.of(2024, 1, 17);
+
+    /** Card number of seeded record seven, written by the affirmative-flag test. */
+    private static final String STATUS_YES_CARD = "1142167692878931";
+
+    /** Card number of seeded record eight, written by the negative-flag test. */
+    private static final String STATUS_NO_CARD = "1561409106491600";
+
+    /** Card number of seeded record nine, the lowest-month test. Stored day {@code 08}. */
+    private static final String MONTH_LOWER_CARD = "2745303720002090";
+
+    /** Card number of seeded record ten, the highest-month test. Stored day {@code 11}. */
+    private static final String MONTH_UPPER_CARD = "2760836797107565";
+
+    /** Card number of seeded record eleven, the earliest-year test. Stored day {@code 08}. */
+    private static final String YEAR_LOWER_CARD = "2871968252812490";
+
+    /** Card number of seeded record twelve, the latest-year test. Stored day {@code 28}. */
+    private static final String YEAR_UPPER_CARD = "2940139362300449";
+
+    /** Card number of seeded record thirteen, written by the one-space-name test. */
+    private static final String NAME_ONE_SPACE_CARD = "2988091353094312";
+
+    /** Card number of seeded record fourteen, written by the two-space-name test. */
+    private static final String NAME_TWO_SPACE_CARD = "3260763612337560";
+
+    /**
+     * Card number of seeded record 47, written twice by the active-status test. Stored name
+     * {@code Sigrid Mann}, stored expiry 2025-03-01.
+     */
+    private static final String NEGATIVE_STATUS_CARD = "9349107475869214";
+
+    /** Embossed name of {@link #NEGATIVE_STATUS_CARD} as the fixture holds it. */
+    private static final String NEGATIVE_STATUS_CARD_NAME = "Sigrid Mann";
+
+    /**
+     * A sixteen-digit card number no seeded record holds, and one that fails a card-number
+     * checksum.
+     *
+     * <p>Every one of the fifty seeded card numbers satisfies that checksum, so a stored row cannot
+     * carry a failing one.
+     */
+    private static final String UNSEEDED_CARD = "9999999999999999";
+
+    /**
+     * The affirmative flag, from {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at
+     * {@code app/cbl/COCRDUPC.cbl:L91}.
+     */
+    private static final String STATUS_YES = "Y";
+
+    /** The negative flag, from the same condition name at {@code app/cbl/COCRDUPC.cbl:L91}. */
+    private static final String STATUS_NO = "N";
+
+    /**
+     * A name of letters and one space, which the edit at {@code app/cbl/COCRDUPC.cbl:L824} admits.
+     */
+    private static final String RENAMED_CARDHOLDER = "Renamed Cardholder";
+
+    /** Reads a stored payload back into properties. One instance serves the whole class. */
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** The service under test, built by the context over the migrated schema. */
+    @Autowired
+    private CardUpdateService cardUpdateService;
+
+    /** Reads committed rows straight from the migrated schema, outside any test transaction. */
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    /**
+     * The outbox writer the update path hands the card to, wrapped so a test can read that card.
+     *
+     * <p>The spy delegates to the real bean, so a captured call has also stored its row.
+     */
+    @MockitoSpyBean
     private OutboxWriter outboxWriter;
-    private MeterRegistry registry;
-    private CardUpdateService service;
-
-    /** Builds the subject over stubbed collaborators and real meters before each test. */
-    @BeforeEach
-    void buildService() {
-        validatorFactory = Validation.buildDefaultValidatorFactory();
-        Validator validator = validatorFactory.getValidator();
-
-        cards = mock(CardRepository.class);
-        cardQueries = mock(CardQueryService.class);
-        outboxWriter = mock(OutboxWriter.class);
-        registry = new SimpleMeterRegistry();
-
-        ObservabilityConfig meters = new ObservabilityConfig();
-        CardLatencyTimers timers = meters.cardLatencyTimers(registry);
-        service = new CardUpdateService(cards, cardQueries, outboxWriter, validator,
-                meters.cardUpdatesAppliedCounter(registry),
-                meters.cardUpdateConflictCounter(registry),
-                meters.cardInfrastructureFailureCounter(registry), timers, selfProvider());
-    }
-
-    /** Closes the validator factory the test opened. */
-    @AfterEach
-    void closeValidatorFactory() {
-        validatorFactory.close();
-    }
-
-    /** The order in which the checks run, which decides which of the seven answers arrives. */
-    @Nested
-    @DisplayName("the order of the checks")
-    class OrderOfTheChecks {
-
-        /**
-         * Asserts a request with no card number answers the missing-value text and reads nothing.
-         *
-         * <p>{@code app/cbl/COCRDUPC.cbl:L768-L774} tests the search key before anything is read, so
-         * a request with no key never reaches the database.
-         */
-        @Test
-        void aRequestWithNoCardNumberIsRefusedBeforeAnyRead() {
-            CardUpdateResponse answer = service.updateCard(request("", STORED_NAME, "2028", "11",
-                    "30", "Y"));
-
-            assertEquals(UpdateOutcome.VALIDATION_REJECTED, answer.outcome(), "an edit refused it");
-            assertEquals(CardValidationMessages.PROMPT_FOR_CARD, answer.message(),
-                    "the text app/cbl/COCRDUPC.cbl:L774 sets");
-            verify(cardQueries, never()).findByCardNumber(any());
-        }
-
-        /**
-         * Asserts sixteen zeros count as no card number rather than as a malformed one.
-         *
-         * <p>{@code CC-CARD-NUM-N EQUAL ZEROS} at {@code app/cbl/COCRDUPC.cbl:L770} is the third
-         * condition of the absence test, so an all-zero key takes the missing-value text and not the
-         * character-class text.
-         */
-        @Test
-        void sixteenZerosCountAsNoCardNumber() {
-            CardUpdateResponse answer = service.updateCard(request("0".repeat(16), STORED_NAME,
-                    "2028", "11", "30", "Y"));
-
-            assertEquals(CardValidationMessages.PROMPT_FOR_CARD, answer.message(),
-                    "the absence test reaches the all-zero value");
-            verify(cardQueries, never()).findByCardNumber(any());
-        }
-
-        /** Asserts a malformed card number answers the character-class text. */
-        @Test
-        void aMalformedCardNumberAnswersTheCharacterClassText() {
-            CardUpdateResponse answer = service.updateCard(request("411111111111115X",
-                    STORED_NAME, "2028", "11", "30", "Y"));
-
-            assertEquals(CardValidationMessages.CARD_FILTER_NOT_NUMERIC, answer.message(),
-                    "the text app/cbl/COCRDUPC.cbl:L789 moves into the message field");
-        }
-
-        /**
-         * Asserts the read runs before the field edits.
-         *
-         * <p>This is the ordering a boundary validation would get wrong. A request with a bad month
-         * for a card number that names no row answers the not-found text, because
-         * {@code 9000-READ-DATA} reaches its read at {@code app/cbl/COCRDUPC.cbl:L1394} while the
-         * field edits sit behind {@code app/cbl/COCRDUPC.cbl:L698-L708}, which the not-fetched branch
-         * at {@code app/cbl/COCRDUPC.cbl:L646-L663} never reaches.
-         */
-        @Test
-        void anAbsentRowAnswersBeforeAnyFieldEditRuns() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, STORED_NAME,
-                    "2028", "99", "30", "Y"));
-
-            assertEquals(UpdateOutcome.CARD_NOT_FOUND, answer.outcome(),
-                    "the absent row answers, and the month edit does not");
-            assertEquals(CardValidationMessages.DID_NOT_FIND_ACCTCARD_COMBO, answer.message(),
-                    "the text app/cbl/COCRDUPC.cbl:L1400 sets");
-            verify(cards, never()).findForUpdateByCardNumber(any());
-        }
-
-        /**
-         * Asserts the no-change comparison runs before the field edits.
-         *
-         * <p>{@code app/cbl/COCRDUPC.cbl:L685-L693} sets every field flag valid and jumps past the
-         * edit chain once the comparison holds, so a submission that matches the stored values
-         * receives no field message whatever those values are.
-         */
-        @Test
-        void anUnchangedSubmissionAnswersBeforeAnyFieldEditRuns() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, STORED_NAME,
-                    "2028", "11", "30", "Y"));
-
-            assertEquals(UpdateOutcome.NO_CHANGE_DETECTED, answer.outcome(),
-                    "the submitted group equals the stored group");
-            assertEquals(CardValidationMessages.NO_CHANGES_DETECTED, answer.message(),
-                    "the text app/cbl/COCRDUPC.cbl:L682 sets");
-            verify(cards, never()).findForUpdateByCardNumber(any());
-        }
-
-        /**
-         * Asserts a change of letter case alone counts as no change.
-         *
-         * <p>Both sides of the comparison at {@code app/cbl/COCRDUPC.cbl:L680-L681} pass through
-         * {@code FUNCTION UPPER-CASE}, so the fold is part of the rule and not an accident of the
-         * data.
-         */
-        @Test
-        void aChangeOfCaseAloneCountsAsNoChange() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER,
-                    STORED_NAME.toLowerCase(java.util.Locale.ROOT), "2028", "11", "30", "Y"));
-
-            assertEquals(UpdateOutcome.NO_CHANGE_DETECTED, answer.outcome(),
-                    "the comparison folds both sides to upper case");
-        }
-
-        /**
-         * Asserts a name shorter than the stored field still matches it.
-         *
-         * <p>Column {@code embossed_name} is fixed-width character storage, so a stored value returns
-         * padded to fifty characters, and {@code CCUP-NEW-CRDNAME PIC X(50)} is padded too. Comparing
-         * the two unpadded would report a change where the source reports none.
-         */
-        @Test
-        void aShorterNameStillMatchesTheStoredPaddedField() {
-            CardEntity padded = new CardEntity(CARD_NUMBER, ACCOUNT_ID, CARD_VERIFICATION_VALUE,
-                    STORED_NAME + " ".repeat(50 - STORED_NAME.length()), STORED_EXPIRY, "Y");
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(padded));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, STORED_NAME,
-                    "2028", "11", "30", "Y"));
-
-            assertEquals(UpdateOutcome.NO_CHANGE_DETECTED, answer.outcome(),
-                    "both sides are padded to the width the Picture clause declares");
-        }
-
-        /**
-         * Asserts the field edits answer in the order the source performs them.
-         *
-         * <p>All four values are wrong at once. The name edit runs first at
-         * {@code app/cbl/COCRDUPC.cbl:L698}, so the name text answers and the other three do not.
-         */
-        @Test
-        void theFirstFailingEditInSourceOrderOwnsTheAnswer() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN 9",
-                    "1800", "99", "30", "X"));
-
-            assertEquals(CardValidationMessages.NAME_MUST_BE_ALPHA, answer.message(),
-                    "1230-EDIT-NAME runs ahead of the status, month and year edits");
-        }
-
-        /** Asserts the status edit answers ahead of the two expiry edits. */
-        @Test
-        void theStatusEditAnswersAheadOfTheExpiryEdits() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "1800", "99", "30", "X"));
-
-            assertEquals(CardValidationMessages.CARD_STATUS_MUST_BE_YES_NO, answer.message(),
-                    "1240-EDIT-CARDSTATUS runs ahead of 1250 and 1260");
-        }
-
-        /** Asserts the month edit answers ahead of the year edit. */
-        @Test
-        void theMonthEditAnswersAheadOfTheYearEdit() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "1800", "99", "30", "Y"));
-
-            assertEquals(CardValidationMessages.CARD_EXPIRY_MONTH_NOT_VALID, answer.message(),
-                    "1250-EDIT-EXPIRY-MON runs ahead of 1260-EDIT-EXPIRY-YEAR");
-        }
-
-        /** Asserts a year outside the source range answers the year text. */
-        @Test
-        void aYearOutsideTheSourceRangeAnswersTheYearText() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "1800", "11", "30", "Y"));
-
-            assertEquals(CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID, answer.message(),
-                    "88 VALID-YEAR VALUES 1950 THRU 2099 at app/cbl/COCRDUPC.cbl:L99");
-        }
-
-        /**
-         * Asserts a day that is not on the calendar is refused, which is the one divergence of this
-         * path.
-         *
-         * <p>The source joins the three parts into ten characters of text at
-         * {@code app/cbl/COCRDUPC.cbl:L1467-L1474} and would store {@code 2028-02-31}. Column
-         * {@code expiration_date} is a {@code DATE}, so this platform refuses it, and the additive
-         * text says so rather than borrowing a text the source wrote for something else.
-         */
-        @Test
-        void aDayThatIsNotOnTheCalendarIsRefused() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "2028", "02", "31", "Y"));
-
-            assertEquals(UpdateOutcome.VALIDATION_REJECTED, answer.outcome(), "the date is refused");
-            assertEquals(CardValidationMessages.ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE,
-                    answer.message(), "the additive text names the calendar and not the width");
-            verify(cards, never()).findForUpdateByCardNumber(any());
-        }
-
-        /** Asserts a day of three characters is refused by the width edit, not by the calendar. */
-        @Test
-        void aDayWiderThanTheSourceFieldIsRefusedByTheWidthEdit() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "2028", "11", "030", "Y"));
-
-            assertEquals(CardValidationMessages.ADDITIVE_CARD_EXPIRY_DAY_WIDTH, answer.message(),
-                    "a 3270 field two characters wide cannot deliver a third");
-        }
-    }
-
-    /** The write, and the two ways it can be refused once the row has been read. */
-    @Nested
-    @DisplayName("the write")
-    class TheWrite {
-
-        /**
-         * Asserts an applied update rewrites the row, writes one event and moves the applied
-         * counter.
-         *
-         * <p>The stored date is the submitted year and month joined with the stored day, which is
-         * what {@code app/cbl/COCRDUPC.cbl:L1467-L1474} joins once the protected day field has
-         * echoed back.
-         */
-        @Test
-        void anAppliedUpdateWritesTheRowAndOneEvent() {
-            CardEntity stored = storedCard();
-            CardEntity locked = storedCard();
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(stored));
-            when(cards.findForUpdateByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(locked));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "2029", "12", STORED_DAY, "N"));
-
-            assertEquals(UpdateOutcome.UPDATED, answer.outcome(), "the row was rewritten");
-            assertNull(answer.message(), "UPDATED carries no message");
-            assertEquals("MORGAN" + " ".repeat(44), locked.getEmbossedName(),
-                    "the name is stored at the width the Picture clause declares");
-            assertEquals(LocalDate.of(2029, 12, 30), locked.getExpirationDate(),
-                    "the submitted year and month join the stored day");
-            assertEquals("N", locked.getActiveStatus(), "the status is stored as submitted");
-            verify(cards).save(locked);
-            verify(outboxWriter).writeCardUpdated(locked);
-            assertEquals(1.0, counter(ObservabilityConfig.METRIC_CARD_UPDATE_APPLIED),
-                    "the applied counter moved once");
-        }
-
-        /**
-         * Asserts a submitted expiry day never reaches the column, whatever the caller sends.
-         *
-         * <p>{@code app/bms/COCRDUP.bms:L142} declares {@code EXPDAY DFHMDF ATTRB=(DRK,FSET,PROT)}
-         * while the four editable fields at L107, L117, L127 and L135 declare {@code UNPROT}, so a
-         * 3270 operator cannot type a day at all. {@code app/cbl/COCRDUPC.cbl:L1110},
-         * {@code :L1123} and {@code :L1127} send {@code CCUP-OLD-EXPDAY} to that field on every
-         * path, and the move of {@code CCUP-NEW-EXPDAY} at {@code :L1122} is commented out. The
-         * absence of a 1270 paragraph follows from the field being protected.
-         */
-        @Test
-        void aSubmittedDayNeverReachesTheStoredDate() {
-            CardEntity locked = storedCard();
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-            when(cards.findForUpdateByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(locked));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "2029", "12", "07", "N"));
-
-            assertEquals(UpdateOutcome.UPDATED, answer.outcome(), "the row was rewritten");
-            assertEquals(LocalDate.of(2029, 12, 30), locked.getExpirationDate(),
-                    "the stored day survives a caller that submitted another one");
-        }
-
-        /**
-         * Asserts a change of the day alone is no change, since the effective day is the stored one.
-         *
-         * <p>A 3270 operator cannot reach this state. A Representational State Transfer (REST)
-         * caller can send any day, and the protected field of the map is reproduced by substituting
-         * the stored day before the comparison at {@code app/cbl/COCRDUPC.cbl:L680-L683}.
-         */
-        @Test
-        void aChangeOfTheDayAloneIsNoChange() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, STORED_NAME,
-                    "2028", "11", "07", "Y"));
-
-            assertEquals(UpdateOutcome.NO_CHANGE_DETECTED, answer.outcome(),
-                    "the submitted day is replaced by the stored day before the comparison");
-            verify(cards, never()).findForUpdateByCardNumber(any());
-        }
-
-        /** Asserts the account identifier and the verification value are left as they were. */
-        @Test
-        void theAccountAndTheVerificationValueAreNeverWritten() {
-            CardEntity locked = storedCard();
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-            when(cards.findForUpdateByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(locked));
-
-            service.updateCard(request(CARD_NUMBER, "MORGAN", "2029", "12", "31", "N"));
-
-            assertEquals(ACCOUNT_ID, locked.getAccountId(),
-                    "app/bms/COCRDUP.bms declares no account field");
-            assertEquals(CARD_NUMBER, locked.getCardNumber(), "the key is the search key");
-        }
-
-        /**
-         * Asserts a row another writer changed first is refused, with the row as it now stands.
-         *
-         * <p>The locked row carries a different status from the row the caller read, which is what
-         * {@code app/cbl/COCRDUPC.cbl:L1503-L1508} compares and
-         * {@code app/cbl/COCRDUPC.cbl:L1511-L1517} reports.
-         */
-        @Test
-        void aRowAnotherWriterChangedFirstIsRefusedWithTheCurrentValues() {
-            CardEntity changed = new CardEntity(CARD_NUMBER, ACCOUNT_ID, CARD_VERIFICATION_VALUE, "SOMEBODY ELSE",
-                    LocalDate.of(2030, 1, 2), "N");
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-            when(cards.findForUpdateByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(changed));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "2029", "12", "31", "N"));
-
-            assertEquals(UpdateOutcome.CHANGED_BEFORE_UPDATE, answer.outcome(), "the race is lost");
-            assertEquals(CardValidationMessages.DATA_WAS_CHANGED_BEFORE_UPDATE, answer.message(),
-                    "the text app/cbl/COCRDUPC.cbl:L1511 sets");
-            RefreshedCard refreshed = answer.refreshedCard();
-            assertNotNull(refreshed, "the outcome carries the row as it now stands");
-            assertEquals("2030", refreshed.expiryYear(), "the refreshed year slice");
-            assertEquals("01", refreshed.expiryMonth(), "the refreshed month slice, zero-padded");
-            assertEquals("02", refreshed.expiryDay(), "the refreshed day slice, zero-padded");
-            assertEquals("N", refreshed.activeStatus(), "the refreshed status");
-            verify(cards, never()).save(any());
-            verify(outboxWriter, never()).writeCardUpdated(any());
-            assertEquals(1.0, counter(ObservabilityConfig.METRIC_CARD_UPDATE_CONFLICTS),
-                    "the conflict counter moved once");
-        }
-
-        /**
-         * Asserts a stored name that changed only in letter case is no concurrent change.
-         *
-         * <p>The fold sits on both sides. {@code 9000-READ-DATA.} folds the fetched name at
-         * {@code app/cbl/COCRDUPC.cbl:L1356-L1358} before storing it at
-         * {@code app/cbl/COCRDUPC.cbl:L1360}, and {@code 9300-CHECK-CHANGE-IN-REC.} folds the
-         * re-read name at {@code app/cbl/COCRDUPC.cbl:L1499-L1501} before comparing it at
-         * {@code app/cbl/COCRDUPC.cbl:L1504}. Folding one side alone reports a race for any
-         * mixed-case name, and {@code app/data/ASCII/carddata.txt} carries names such as
-         * {@code Aniya Von}.
-         */
-        @Test
-        void aStoredNameThatChangedOnlyInCaseIsNoConcurrentChange() {
-            CardEntity refolded = new CardEntity(CARD_NUMBER, ACCOUNT_ID, CARD_VERIFICATION_VALUE,
-                    STORED_NAME.toLowerCase(Locale.ROOT), STORED_EXPIRY, "Y");
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-            when(cards.findForUpdateByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(refolded));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "2029", "12", STORED_DAY, "N"));
-
-            assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
-                    "both sides of the comparison are folded, so the case change is no race");
-            assertEquals(0.0, counter(ObservabilityConfig.METRIC_CARD_UPDATE_CONFLICTS),
-                    "the conflict counter did not move");
-        }
-
-        /**
-         * Asserts a refreshed snapshot carries the stored name folded, as the source refreshes it.
-         *
-         * <p>{@code app/cbl/COCRDUPC.cbl:L1513} moves the already-folded
-         * {@code CARD-EMBOSSED-NAME} into the saved field.
-         */
-        @Test
-        void aRefreshedSnapshotCarriesTheFoldedName() {
-            CardEntity changed = new CardEntity(CARD_NUMBER, ACCOUNT_ID, CARD_VERIFICATION_VALUE,
-                    "Somebody Else", LocalDate.of(2030, 1, 2), "N");
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-            when(cards.findForUpdateByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(changed));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "2029", "12", STORED_DAY, "N"));
-
-            assertEquals(UpdateOutcome.CHANGED_BEFORE_UPDATE, answer.outcome(), "the race is lost");
-            assertEquals("SOMEBODY ELSE" + " ".repeat(37), answer.refreshedCard().embossedName(),
-                    "the refreshed name is folded and padded to the declared width");
-        }
-
-        /** Asserts a row that could not be locked is refused with the source's lock text. */
-        @Test
-        void aRowThatCouldNotBeLockedIsRefused() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-            when(cards.findForUpdateByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "2029", "12", "31", "N"));
-
-            assertEquals(UpdateOutcome.LOCK_NOT_ACQUIRED, answer.outcome(),
-                    "the read for update returned nothing");
-            assertEquals(CardValidationMessages.COULD_NOT_LOCK_FOR_UPDATE, answer.message(),
-                    "the text app/cbl/COCRDUPC.cbl:L1446 sets");
-            verify(cards, never()).save(any());
-        }
-
-        /**
-         * Asserts a failing event write refuses the update rather than committing the row alone.
-         *
-         * <p>The two rows commit together or neither commits, so a failure of the event write has to
-         * refuse the update. The service reports it by throwing out of the transactional method,
-         * which is what rolls the row back, and answers the source's post-lock failure text.
-         */
-        @Test
-        void aFailingEventWriteRefusesTheUpdate() {
-            CardEntity locked = storedCard();
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-            when(cards.findForUpdateByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(locked));
-            when(outboxWriter.writeCardUpdated(locked))
-                    .thenThrow(new IllegalStateException("the broker row could not be stored"));
-
-            CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN",
-                    "2029", "12", "31", "N"));
-
-            assertEquals(UpdateOutcome.UPDATE_FAILED_AFTER_LOCK, answer.outcome(),
-                    "the write failed once the row was held");
-            assertEquals(CardValidationMessages.LOCKED_BUT_UPDATE_FAILED, answer.message(),
-                    "the text app/cbl/COCRDUPC.cbl:L1491 sets");
-            assertEquals(1.0, counter(ObservabilityConfig.METRIC_CARD_FAILURES),
-                    "the failure counter moved once");
-            assertEquals(0.0, counter(ObservabilityConfig.METRIC_CARD_UPDATE_APPLIED),
-                    "the applied counter did not move");
-        }
-
-        /**
-         * Asserts the transactional method throws rather than returning, so the transaction rolls
-         * back.
-         *
-         * <p>A method that returned an outcome would commit whatever the failing statement had
-         * already written, which for this path is a rewritten card row with no event beside it.
-         */
-        @Test
-        void theTransactionalMethodThrowsSoTheTransactionRollsBack() {
-            CardEntity locked = storedCard();
-            when(cards.findForUpdateByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(locked));
-            when(outboxWriter.writeCardUpdated(locked))
-                    .thenThrow(new IllegalStateException("the broker row could not be stored"));
-
-            assertThrows(CardUpdateService.UpdateFailedAfterLock.class,
-                    () -> service.applyUpdate(request(CARD_NUMBER, "MORGAN", "2029", "12", "31",
-                            "N"), snapshotOfStored(), LocalDate.of(2029, 12, 31)),
-                    "the failure leaves the transactional method by throwing");
-        }
-    }
-
-
-    /** The latency timer, which records whichever answer the call reached. */
-    @Nested
-    @DisplayName("the latency timer")
-    class TheLatencyTimer {
-
-        /** Asserts a refused update is timed as well as an applied one. */
-        @Test
-        void aRefusedUpdateIsTimedToo() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
-
-            service.updateCard(request(CARD_NUMBER, "MORGAN", "2029", "12", "31", "N"));
-
-            assertEquals(1L, registry.find(ObservabilityConfig.METRIC_CARD_UPDATE_LATENCY)
-                    .timer().count(), "one recording, for the answer the call reached");
-        }
-    }
-
-    /** The two arguments the transactional method requires. */
-    @Nested
-    @DisplayName("the transactional method's own guards")
-    class TransactionalGuards {
-
-        /** Asserts each of the three arguments is required. */
-        @Test
-        void everyArgumentIsRequired() {
-            CardUpdateRequest submitted = request(CARD_NUMBER, "MORGAN", "2029", "12", "31", "N");
-            RefreshedCard fetched = snapshotOfStored();
-            LocalDate expiry = LocalDate.of(2029, 12, 31);
-
-            assertThrows(NullPointerException.class,
-                    () -> service.applyUpdate(null, fetched, expiry), "the request is required");
-            assertThrows(NullPointerException.class,
-                    () -> service.applyUpdate(submitted, null, expiry), "the snapshot is required");
-            assertThrows(NullPointerException.class,
-                    () -> service.applyUpdate(submitted, fetched, null), "the date is required");
-        }
-
-        /** Asserts the constructor refuses every absent collaborator. */
-        @Test
-        void theConstructorRefusesAnAbsentCollaborator() {
-            assertThrows(NullPointerException.class,
-                    () -> new CardUpdateService(null, cardQueries, outboxWriter,
-                            validatorFactory.getValidator(),
-                            new ObservabilityConfig().cardUpdatesAppliedCounter(registry),
-                            new ObservabilityConfig().cardUpdateConflictCounter(registry),
-                            new ObservabilityConfig().cardInfrastructureFailureCounter(registry),
-                            new ObservabilityConfig().cardLatencyTimers(registry), selfProvider()),
-                    "the card repository is required");
-            assertThrows(NullPointerException.class,
-                    () -> new CardUpdateService(cards, null, outboxWriter,
-                            validatorFactory.getValidator(),
-                            new ObservabilityConfig().cardUpdatesAppliedCounter(registry),
-                            new ObservabilityConfig().cardUpdateConflictCounter(registry),
-                            new ObservabilityConfig().cardInfrastructureFailureCounter(registry),
-                            new ObservabilityConfig().cardLatencyTimers(registry), selfProvider()),
-                    "the read side is required");
-            assertThrows(NullPointerException.class,
-                    () -> new CardUpdateService(cards, cardQueries, null,
-                            validatorFactory.getValidator(),
-                            new ObservabilityConfig().cardUpdatesAppliedCounter(registry),
-                            new ObservabilityConfig().cardUpdateConflictCounter(registry),
-                            new ObservabilityConfig().cardInfrastructureFailureCounter(registry),
-                            new ObservabilityConfig().cardLatencyTimers(registry), selfProvider()),
-                    "the outbox writer is required");
-            assertThrows(NullPointerException.class,
-                    () -> new CardUpdateService(cards, cardQueries, outboxWriter,
-                            validatorFactory.getValidator(),
-                            new ObservabilityConfig().cardUpdatesAppliedCounter(registry),
-                            new ObservabilityConfig().cardUpdateConflictCounter(registry),
-                            new ObservabilityConfig().cardInfrastructureFailureCounter(registry),
-                            null, selfProvider()),
-                    "the latency timers are required");
-        }
-    }
 
     /**
-     * Asserts the ordered property list covers every component the request declares.
+     * Builds one request over the six components {@link CardUpdateRequest} declares.
      *
-     * <p>A component added to {@link CardUpdateRequest} with no entry in the order would be validated
-     * by nothing, and the request would be accepted with a value its own annotation refuses. This
-     * assertion is what makes the two lists a complete cover rather than a partial one.
-     */
-    @Test
-    @DisplayName("the ordered property lists cover every component of the request")
-    void theOrderedPropertyListsCoverEveryComponent() {
-        List<String> ordered = new java.util.ArrayList<>(CardUpdateService.SEARCH_KEY_PROPERTIES);
-        ordered.addAll(CardUpdateService.DATA_PROPERTIES);
-
-        List<String> declared = java.util.Arrays.stream(
-                        CardUpdateRequest.class.getRecordComponents())
-                .map(java.lang.reflect.RecordComponent::getName).toList();
-
-        assertEquals(new java.util.TreeSet<>(declared), new java.util.TreeSet<>(ordered),
-                "every component of the request is validated by one of the two ordered lists");
-        assertEquals(declared.size(), ordered.size(), "no component is validated twice");
-        assertEquals(List.of("cardNumber"), CardUpdateService.SEARCH_KEY_PROPERTIES,
-                "the search key is the card number, which app/cbl/COCRDUPC.cbl:L1427 keys on");
-        assertEquals(List.of("embossedName", "activeStatus", "expiryMonth", "expiryYear",
-                        "expiryDay"), CardUpdateService.DATA_PROPERTIES,
-                "the order app/cbl/COCRDUPC.cbl:L698-L708 performs, with the unedited day last");
-    }
-
-    /**
-     * Asserts the request constraints still carry the ranges the source condition names declare.
-     *
-     * <p>{@code 88 VALID-MONTH VALUES 1 THRU 12.} at {@code app/cbl/COCRDUPC.cbl:L95} and
-     * {@code 88 VALID-YEAR VALUES 1950 THRU 2099.} at {@code app/cbl/COCRDUPC.cbl:L99} are the only
-     * statements of those ranges. {@link CardValidationMessages#CARD_EXPIRY_YEAR_NOT_VALID} names no
-     * bound, so a constraint narrowed by mistake would answer the same text and pass unnoticed. This
-     * assertion is what fails instead.
-     */
-    @Test
-    @DisplayName("the request constraints carry the measured source ranges")
-    void theRequestConstraintsCarryTheMeasuredRanges() {
-        assertEquals(1, CardUpdateService.EXPIRY_MONTH_LOWER_BOUND, "app/cbl/COCRDUPC.cbl:L95");
-        assertEquals(12, CardUpdateService.EXPIRY_MONTH_UPPER_BOUND, "app/cbl/COCRDUPC.cbl:L95");
-        assertEquals(1950, CardUpdateService.EXPIRY_YEAR_LOWER_BOUND, "app/cbl/COCRDUPC.cbl:L99");
-        assertEquals(2099, CardUpdateService.EXPIRY_YEAR_UPPER_BOUND, "app/cbl/COCRDUPC.cbl:L99");
-        assertEquals(List.of("Y", "N"), CardUpdateService.ACTIVE_STATUS_FLAGS,
-                "88 FLG-YES-NO-VALID VALUES 'Y', 'N'. at app/cbl/COCRDUPC.cbl:L91");
-        assertEquals(16, PicClause.CARD_NUM_WIDTH,
-                "CARD-NUM PIC X(16) at app/cpy/CVACT02Y.cpy:L5");
-        assertEquals(11, CardUpdateService.ACCOUNT_ID_WIDTH,
-                "CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6");
-        assertEquals(3, CardUpdateService.CARD_VERIFICATION_VALUE_WIDTH,
-                "CARD-CARD_VERIFICATION_VALUE-CD PIC 9(03) at app/cpy/CVACT02Y.cpy:L7");
-
-        when(cardQueries.findByCardNumber(CARD_NUMBER))
-                .thenReturn(Optional.of(storedCard()), Optional.of(storedCard()),
-                        Optional.of(storedCard()), Optional.of(storedCard()));
-
-        assertEquals(CardValidationMessages.CARD_EXPIRY_MONTH_NOT_VALID,
-                service.updateCard(request(CARD_NUMBER, "MORGAN", "2029", "00", STORED_DAY, "N"))
-                        .message(), "month zero is below the lower bound");
-        assertEquals(CardValidationMessages.CARD_EXPIRY_MONTH_NOT_VALID,
-                service.updateCard(request(CARD_NUMBER, "MORGAN", "2029", "13", STORED_DAY, "N"))
-                        .message(), "month thirteen is above the upper bound");
-        assertEquals(CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID,
-                service.updateCard(request(CARD_NUMBER, "MORGAN", "1949", "12", STORED_DAY, "N"))
-                        .message(), "1949 is below the lower bound");
-        assertEquals(CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID,
-                service.updateCard(request(CARD_NUMBER, "MORGAN", "2100", "12", STORED_DAY, "N"))
-                        .message(), "2100 is above the upper bound");
-    }
-
-    /**
-     * Asserts the boundary values of both ranges are admitted and a lower-case flag is not.
-     *
-     * <p>{@code app/cbl/COCRDUPC.cbl:L91} tests two upper-case literals, and no edit of the program
-     * folds the case of that field.
-     */
-    @Test
-    @DisplayName("the boundary values pass and a lower-case status flag does not")
-    void theBoundaryValuesPassAndALowerCaseFlagDoesNot() {
-        when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-        when(cards.findForUpdateByCardNumber(CARD_NUMBER))
-                .thenAnswer(invocation -> Optional.of(storedCard()));
-
-        assertEquals(UpdateOutcome.UPDATED,
-                service.updateCard(request(CARD_NUMBER, "MORGAN", "1950", "01", STORED_DAY, "N"))
-                        .outcome(), "the lowest month and the lowest year are admitted");
-        assertEquals(UpdateOutcome.UPDATED,
-                service.updateCard(request(CARD_NUMBER, "MORGAN", "2099", "12", STORED_DAY, "N"))
-                        .outcome(), "the highest month and the highest year are admitted");
-        assertEquals(CardValidationMessages.CARD_STATUS_MUST_BE_YES_NO,
-                service.updateCard(request(CARD_NUMBER, "MORGAN", "2029", "12", STORED_DAY, "y"))
-                        .message(), "a lower-case flag fails");
-    }
-
-    /**
-     * Asserts the embossed-name edit admits letters and spaces and nothing else.
-     *
-     * <p>{@code 1230-EDIT-NAME.} at {@code app/cbl/COCRDUPC.cbl:L806-L840} converts every character
-     * of {@code LIT-ALL-ALPHA-FROM} at {@code app/cbl/COCRDUPC.cbl:L255-L257} to a space and then
-     * requires the field to trim to nothing. The blank test at
-     * {@code app/cbl/COCRDUPC.cbl:L811-L813} runs first, so a name of spaces answers
-     * {@code 'Card name not provided'} at {@code app/cbl/COCRDUPC.cbl:L182} and never reaches the
-     * conversion.
-     */
-    @Test
-    @DisplayName("the embossed-name edit admits letters and spaces only")
-    void theEmbossedNameEditAdmitsLettersAndSpacesOnly() {
-        when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-        when(cards.findForUpdateByCardNumber(CARD_NUMBER))
-                .thenAnswer(invocation -> Optional.of(storedCard()));
-
-        assertEquals(UpdateOutcome.UPDATED,
-                service.updateCard(request(CARD_NUMBER, "Aniya Von", "2029", "12", STORED_DAY, "N"))
-                        .outcome(), "letters and one space are admitted");
-        assertEquals(CardValidationMessages.NAME_MUST_BE_ALPHA,
-                service.updateCard(request(CARD_NUMBER, "Aniya-Von", "2029", "12", STORED_DAY, "N"))
-                        .message(), "a hyphen is outside LIT-ALL-ALPHA-FROM");
-        assertEquals(CardValidationMessages.PROMPT_FOR_NAME,
-                service.updateCard(request(CARD_NUMBER, "   ", "2029", "12", STORED_DAY, "N"))
-                        .message(), "the blank test runs ahead of the conversion test");
-    }
-
-    /**
-     * Asserts no outcome carries an unmasked card number or the card verification value.
-     *
-     * <p>{@code CARD-CARD_VERIFICATION_VALUE-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7} is stored in the clear and
-     * emitted nowhere. The masked rendering is what {@link PanMasker#maskCardNumber(String)}
-     * produces, twelve mask characters and the last four digits.
-     */
-    @Test
-    @DisplayName("no outcome carries an unmasked card number or the card verification value")
-    void noOutcomeCarriesCardholderSecrets() {
-        CardEntity changed = new CardEntity(CARD_NUMBER, ACCOUNT_ID, CARD_VERIFICATION_VALUE,
-                "SOMEBODY ELSE", LocalDate.of(2030, 1, 2), "N");
-        when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-        when(cards.findForUpdateByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(changed));
-
-        CardUpdateResponse answer = service.updateCard(request(CARD_NUMBER, "MORGAN", "2029", "12",
-                STORED_DAY, "N"));
-
-        String rendered = answer.toString() + answer.refreshedCard().toString();
-        assertFalse(rendered.contains(CARD_NUMBER), "no rendering carries the full card number");
-        assertFalse(rendered.contains(CARD_VERIFICATION_VALUE),
-                "no rendering carries the card verification value");
-        assertEquals("************1150", PanMasker.maskCardNumber(CARD_NUMBER),
-                "the masked rendering the log lines carry");
-    }
-
-    /**
-     * Builds one submitted update.
-     *
-     * @param cardNumber   the card number
-     * @param embossedName the embossed name
-     * @param expiryYear   the four-character year
-     * @param expiryMonth  the two-character month
-     * @param expiryDay    the two-character day
-     * @param activeStatus the one-character status
+     * @param cardNumber   the sixteen-digit card number the update names
+     * @param embossedName the cardholder name
+     * @param expiryYear   the four-character year slice
+     * @param expiryMonth  the two-character month slice
+     * @param expiryDay    the two-character day slice
+     * @param activeStatus the one-character active status
      * @return the request
      */
     private static CardUpdateRequest request(String cardNumber, String embossedName,
@@ -808,64 +306,830 @@ class CardUpdateServiceTest {
     }
 
     /**
-     * Builds the stored card row every test reads.
+     * Builds a request against {@link #WITNESS_CARD} that changes the name and nothing else.
      *
-     * @return the row
+     * <p>The name differs from the stored one, so the comparison at
+     * {@code app/cbl/COCRDUPC.cbl:L680-L681} reports a change and the four field edits run.
+     *
+     * @param activeStatus the active status to submit
+     * @return the request
      */
-    private static CardEntity storedCard() {
-        return new CardEntity(CARD_NUMBER, ACCOUNT_ID, CARD_VERIFICATION_VALUE, STORED_NAME, STORED_EXPIRY, "Y");
+    private static CardUpdateRequest witnessRequestWithStatus(String activeStatus) {
+        return request(WITNESS_CARD, RENAMED_CARDHOLDER, WITNESS_YEAR, WITNESS_MONTH, WITNESS_DAY,
+                activeStatus);
     }
 
     /**
-     * Builds the snapshot of the stored row, padded the way the service pads it.
+     * Builds a request against {@link #WITNESS_CARD} carrying one submitted expiry slice.
      *
-     * @return the snapshot
+     * @param expiryYear  the four-character year slice
+     * @param expiryMonth the two-character month slice
+     * @return the request
      */
-    private static RefreshedCard snapshotOfStored() {
-        return new RefreshedCard(STORED_NAME + " ".repeat(50 - STORED_NAME.length()), "2028", "11",
-                "30", "Y");
+    private static CardUpdateRequest witnessRequestWithExpiry(String expiryYear,
+            String expiryMonth) {
+        return request(WITNESS_CARD, RENAMED_CARDHOLDER, expiryYear, expiryMonth, WITNESS_DAY,
+                STATUS_YES);
     }
 
     /**
-     * Reads one counter of the registry this test built.
+     * Builds a request against {@link #WITNESS_CARD} carrying one submitted embossed name.
      *
-     * @param name the meter name
-     * @return the count
+     * @param embossedName the name to submit
+     * @return the request
      */
-    private double counter(String name) {
-        return registry.find(name).counter().count();
+    private static CardUpdateRequest witnessRequestWithName(String embossedName) {
+        return request(WITNESS_CARD, embossedName, WITNESS_YEAR, WITNESS_MONTH, WITNESS_DAY,
+                STATUS_YES);
     }
 
     /**
-     * Supplies the subject through a provider, standing in for the transactional proxy.
+     * Reads one column of one card row as text, with the padding of a fixed-width column removed.
      *
-     * <p>The provider hands back the same instance, so {@code applyUpdate} runs with no transaction
-     * here. That is the right shape for a unit test: the transaction boundary is a property of the
-     * proxy and {@code repository/CardRepositoryIT} exercises the real one.
-     *
-     * @return the provider
+     * @param cardNumber the sixteen-digit key of the row
+     * @param column     the column to read
+     * @return the stored value, trimmed
      */
-    private ObjectProvider<CardUpdateService> selfProvider() {
-        return new ObjectProvider<>() {
-            @Override
-            public CardUpdateService getObject() {
-                return service;
-            }
+    private String storedText(String cardNumber, String column) {
+        String value = jdbcTemplate.queryForObject(
+                "SELECT " + column + " FROM card WHERE card_number = ?", String.class, cardNumber);
+        return value == null ? null : value.strip();
+    }
 
-            @Override
-            public CardUpdateService getObject(Object... arguments) {
-                return service;
-            }
+    /**
+     * Reads {@code expiration_date} of one card row as a date.
+     *
+     * @param cardNumber the sixteen-digit key of the row
+     * @return the stored expiry date
+     */
+    private LocalDate storedExpiry(String cardNumber) {
+        return jdbcTemplate.queryForObject(
+                "SELECT expiration_date FROM card WHERE card_number = ?", LocalDate.class,
+                cardNumber);
+    }
 
-            @Override
-            public CardUpdateService getIfAvailable() {
-                return service;
-            }
+    /**
+     * Reads the seven columns of one card row in the order {@code app/cpy/CVACT02Y.cpy} declares
+     * the six it describes, with the derived token last.
+     *
+     * @param cardNumber the sixteen-digit key of the row
+     * @return the seven stored values, each trimmed
+     */
+    private List<String> storedRow(String cardNumber) {
+        return jdbcTemplate.queryForObject("""
+                SELECT card_number, account_id, card_verification_value, embossed_name,
+                       to_char(expiration_date, 'YYYY-MM-DD'), active_status, card_token
+                  FROM card
+                 WHERE card_number = ?
+                """,
+                (row, number) -> List.of(row.getString(1).strip(), row.getString(2).strip(),
+                        row.getString(3).strip(), row.getString(4).strip(),
+                        row.getString(5).strip(), row.getString(6).strip(),
+                        row.getString(7).strip()),
+                cardNumber);
+    }
 
-            @Override
-            public CardUpdateService getIfUnique() {
-                return service;
-            }
-        };
+    /**
+     * Reads the stored payload text of the one event row an account holds.
+     *
+     * @param accountId the eleven-character account identifier the row carries
+     * @return the payload as stored
+     */
+    private String storedPayloadText(String accountId) {
+        String payload = jdbcTemplate.queryForObject(
+                "SELECT payload FROM outbox_event WHERE aggregate_id = ?", String.class, accountId);
+        assertNotNull(payload, "the update stored one event row for account " + accountId);
+        return payload;
+    }
+
+    /** The three ranges the field edits admit, each declared as a condition name. */
+    @Nested
+    @DisplayName("the three ranges the edits admit")
+    class TheThreeRanges {
+
+        /**
+         * Asserts both active-status flags reach the row.
+         *
+         * <p>{@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at
+         * {@code app/cbl/COCRDUPC.cbl:L91} declares the two literals, and
+         * {@code app/cbl/COCRDUPC.cbl:L863} tests that condition name after the move at
+         * {@code app/cbl/COCRDUPC.cbl:L861}.
+         */
+        @Test
+        @DisplayName("Y and N both reach the stored row")
+        void theTwoActiveStatusFlagsAreAdmitted() {
+            CardUpdateResponse keptAffirmative = cardUpdateService.updateCard(
+                    request(STATUS_YES_CARD, RENAMED_CARDHOLDER, "2023", "10", "24", STATUS_YES));
+            CardUpdateResponse turnedNegative = cardUpdateService.updateCard(
+                    request(STATUS_NO_CARD, RENAMED_CARDHOLDER, "2025", "09", "23", STATUS_NO));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, keptAffirmative.outcome(),
+                            "Y passes the edit at app/cbl/COCRDUPC.cbl:L863"),
+                    () -> assertEquals(STATUS_YES, storedText(STATUS_YES_CARD, "active_status"),
+                            "the stored flag stays Y"),
+                    () -> assertEquals(UpdateOutcome.UPDATED, turnedNegative.outcome(),
+                            "N passes the same edit"),
+                    () -> assertEquals(STATUS_NO, storedText(STATUS_NO_CARD, "active_status"),
+                            "the stored flag is now N"));
+        }
+
+        /**
+         * Asserts a lower-case flag, another letter and a missing flag all answer one text.
+         *
+         * <p>The condition name at {@code app/cbl/COCRDUPC.cbl:L91} tests two upper-case literals
+         * and no edit of the program folds the case of the field. The missing-value branch sets the
+         * text at {@code app/cbl/COCRDUPC.cbl:L856} and the range branch sets the same text at
+         * {@code app/cbl/COCRDUPC.cbl:L869}.
+         */
+        @Test
+        @DisplayName("a lower-case y, the letter A and a missing flag all answer the status text")
+        void anyOtherActiveStatusIsRefused() {
+            CardUpdateResponse lowerCase =
+                    cardUpdateService.updateCard(witnessRequestWithStatus("y"));
+            CardUpdateResponse otherLetter =
+                    cardUpdateService.updateCard(witnessRequestWithStatus("A"));
+            CardUpdateResponse missing = cardUpdateService.updateCard(witnessRequestWithStatus(""));
+
+            assertAll(
+                    () -> assertEquals(CardValidationMessages.CARD_STATUS_MUST_BE_YES_NO,
+                            lowerCase.message(), "the edit folds no case"),
+                    () -> assertEquals(CardValidationMessages.CARD_STATUS_MUST_BE_YES_NO,
+                            otherLetter.message(), "the condition name admits Y and N alone"),
+                    () -> assertEquals(CardValidationMessages.CARD_STATUS_MUST_BE_YES_NO,
+                            missing.message(), "the missing-value branch sets the same text"),
+                    () -> assertEquals(WITNESS_NAME, storedText(WITNESS_CARD, "embossed_name"),
+                            "a refused update writes nothing"));
+        }
+
+        /**
+         * Asserts the lowest and the highest month reach the row.
+         *
+         * <p>{@code 88 VALID-MONTH VALUES 1 THRU 12.} at {@code app/cbl/COCRDUPC.cbl:L95} declares
+         * the range on the numeric redefine at {@code app/cbl/COCRDUPC.cbl:L93-L94}, and
+         * {@code app/cbl/COCRDUPC.cbl:L898} tests it.
+         *
+         * <p>The stored day joins the submitted month, so the dates below carry the seeded days
+         * {@code 08} and {@code 11}.
+         */
+        @Test
+        @DisplayName("month 01 and month 12 both reach the stored row")
+        void theTwoMonthBoundsAreAdmitted() {
+            CardUpdateResponse lowest = cardUpdateService.updateCard(
+                    request(MONTH_LOWER_CARD, RENAMED_CARDHOLDER, "2025", "01", "08", STATUS_YES));
+            CardUpdateResponse highest = cardUpdateService.updateCard(
+                    request(MONTH_UPPER_CARD, RENAMED_CARDHOLDER, "2025", "12", "11", STATUS_YES));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, lowest.outcome(),
+                            "month 01 passes the edit at app/cbl/COCRDUPC.cbl:L898"),
+                    () -> assertEquals(LocalDate.of(2025, 1, 8), storedExpiry(MONTH_LOWER_CARD),
+                            "the stored expiry carries month 01"),
+                    () -> assertEquals(UpdateOutcome.UPDATED, highest.outcome(),
+                            "month 12 passes the same edit"),
+                    () -> assertEquals(LocalDate.of(2025, 12, 11), storedExpiry(MONTH_UPPER_CARD),
+                            "the stored expiry carries month 12"));
+        }
+
+        /**
+         * Asserts a month below one and a month above twelve answer the month text.
+         *
+         * <p>The range at {@code app/cbl/COCRDUPC.cbl:L95} admits neither. A month of
+         * {@code 00} equals {@code ZEROS} and the not-supplied branch at
+         * {@code app/cbl/COCRDUPC.cbl:L885} catches it, so the text comes from
+         * {@code app/cbl/COCRDUPC.cbl:L889} and not from
+         * {@code app/cbl/COCRDUPC.cbl:L904}. Both texts hold the same characters.
+         */
+        @Test
+        @DisplayName("month 00 and month 13 both answer the month text")
+        void aMonthOutsideOneThroughTwelveIsRefused() {
+            CardUpdateResponse belowRange =
+                    cardUpdateService.updateCard(witnessRequestWithExpiry(WITNESS_YEAR, "00"));
+            CardUpdateResponse aboveRange =
+                    cardUpdateService.updateCard(witnessRequestWithExpiry(WITNESS_YEAR, "13"));
+
+            assertAll(
+                    () -> assertEquals(CardValidationMessages.CARD_EXPIRY_MONTH_NOT_VALID,
+                            belowRange.message(), "00 sits below the range"),
+                    () -> assertEquals(CardValidationMessages.CARD_EXPIRY_MONTH_NOT_VALID,
+                            aboveRange.message(), "13 sits above the range"),
+                    () -> assertEquals(WITNESS_EXPIRY, storedExpiry(WITNESS_CARD),
+                            "a refused update writes nothing"));
+        }
+
+        /**
+         * Asserts the earliest and the latest expiry year reach the row.
+         *
+         * <p>{@code 88 VALID-YEAR VALUES 1950 THRU 2099.} at {@code app/cbl/COCRDUPC.cbl:L99}
+         * declares the range on the numeric redefine at {@code app/cbl/COCRDUPC.cbl:L97-L98}, and
+         * {@code app/cbl/COCRDUPC.cbl:L934} tests it. That condition name is the only statement of
+         * the range in the source.
+         */
+        @Test
+        @DisplayName("year 1950 and year 2099 both reach the stored row")
+        void theTwoYearBoundsAreAdmitted() {
+            CardUpdateResponse earliest = cardUpdateService.updateCard(
+                    request(YEAR_LOWER_CARD, RENAMED_CARDHOLDER, "1950", "10", "08", STATUS_YES));
+            CardUpdateResponse latest = cardUpdateService.updateCard(
+                    request(YEAR_UPPER_CARD, RENAMED_CARDHOLDER, "2099", "12", "28", STATUS_YES));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, earliest.outcome(),
+                            "1950 passes the edit at app/cbl/COCRDUPC.cbl:L934"),
+                    () -> assertEquals(LocalDate.of(1950, 10, 8), storedExpiry(YEAR_LOWER_CARD),
+                            "the stored expiry carries 1950"),
+                    () -> assertEquals(UpdateOutcome.UPDATED, latest.outcome(),
+                            "2099 passes the same edit"),
+                    () -> assertEquals(LocalDate.of(2099, 12, 28), storedExpiry(YEAR_UPPER_CARD),
+                            "the stored expiry carries 2099"));
+        }
+
+        /**
+         * Asserts the year one below the range and the year one above it answer the year text.
+         *
+         * <p>The range at {@code app/cbl/COCRDUPC.cbl:L99} admits 1950 through 2099, so 1949 and
+         * 2100 are the two adjacent values it refuses. The text sits at
+         * {@code app/cbl/COCRDUPC.cbl:L200} and {@code app/cbl/COCRDUPC.cbl:L940} sets it.
+         */
+        @Test
+        @DisplayName("year 1949 and year 2100 both answer the year text")
+        void aYearOutsideNineteenFiftyThroughTwentyNinetyNineIsRefused() {
+            CardUpdateResponse belowRange =
+                    cardUpdateService.updateCard(witnessRequestWithExpiry("1949", WITNESS_MONTH));
+            CardUpdateResponse aboveRange =
+                    cardUpdateService.updateCard(witnessRequestWithExpiry("2100", WITNESS_MONTH));
+
+            assertAll(
+                    () -> assertEquals(CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID,
+                            belowRange.message(), "1949 sits one year below the range"),
+                    () -> assertEquals(CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID,
+                            aboveRange.message(), "2100 sits one year above the range"),
+                    () -> assertEquals(WITNESS_EXPIRY, storedExpiry(WITNESS_CARD),
+                            "a refused update writes nothing"));
+        }
+
+        /**
+         * Asserts each of the three edits answers one text for a missing value and for a value
+         * outside its range.
+         *
+         * <p>The status edit sets its text at {@code app/cbl/COCRDUPC.cbl:L856} and at
+         * {@code app/cbl/COCRDUPC.cbl:L869}, the month edit at {@code app/cbl/COCRDUPC.cbl:L889}
+         * and at {@code app/cbl/COCRDUPC.cbl:L904}, the year edit at
+         * {@code app/cbl/COCRDUPC.cbl:L922} and at {@code app/cbl/COCRDUPC.cbl:L940}. Each pair
+         * sets one condition name, so the answer names the rule and not the branch.
+         */
+        @Test
+        @DisplayName("a missing value and an out-of-range value share one text per rule")
+        void aBlankValueAndAnOutOfRangeValueShareOneTextPerRule() {
+            String missingStatus = cardUpdateService.updateCard(witnessRequestWithStatus(""))
+                    .message();
+            String refusedStatus = cardUpdateService.updateCard(witnessRequestWithStatus("A"))
+                    .message();
+            String missingMonth = cardUpdateService
+                    .updateCard(witnessRequestWithExpiry(WITNESS_YEAR, "")).message();
+            String refusedMonth = cardUpdateService
+                    .updateCard(witnessRequestWithExpiry(WITNESS_YEAR, "13")).message();
+            String missingYear = cardUpdateService
+                    .updateCard(witnessRequestWithExpiry("", WITNESS_MONTH)).message();
+            String refusedYear = cardUpdateService
+                    .updateCard(witnessRequestWithExpiry("2100", WITNESS_MONTH)).message();
+
+            assertAll(
+                    () -> assertEquals(missingStatus, refusedStatus,
+                            "L856 and L869 set one condition name"),
+                    () -> assertEquals(missingMonth, refusedMonth,
+                            "L889 and L904 set one condition name"),
+                    () -> assertEquals(missingYear, refusedYear,
+                            "L922 and L940 set one condition name"));
+        }
+    }
+
+    /** The order the edits run in, which decides which text a caller reads. */
+    @Nested
+    @DisplayName("the order of the edits")
+    class TheOrderOfTheEdits {
+
+        /**
+         * Asserts the status text arrives alone when the status, the month and the year all fail.
+         *
+         * <p>{@code 1200-EDIT-MAP-INPUTS.} performs the four field edits unconditionally and in one
+         * order: the name at {@code app/cbl/COCRDUPC.cbl:L698}, the status at
+         * {@code app/cbl/COCRDUPC.cbl:L701}, the month at {@code app/cbl/COCRDUPC.cbl:L704} and the
+         * year at {@code app/cbl/COCRDUPC.cbl:L707}. Each text sits behind
+         * {@code IF WS-RETURN-MSG-OFF}, so the first edit to fail owns the answer. The status guard
+         * at {@code app/cbl/COCRDUPC.cbl:L868} closes the field against the month guard at
+         * {@code app/cbl/COCRDUPC.cbl:L903} and the year guard at
+         * {@code app/cbl/COCRDUPC.cbl:L939}.
+         *
+         * <p>Three rules break in one request, and that is what pins the order: one broken rule
+         * shows a text and not a sequence. A reordered implementation answers the month text or the
+         * year text here. Every other test in this class drives one behaviour.
+         */
+        @Test
+        @DisplayName("a request breaking the status, month and year rules answers the status text")
+        void theStatusTextArrivesAloneWhenStatusMonthAndYearAllFail() {
+            CardUpdateResponse answer = cardUpdateService.updateCard(
+                    request(WITNESS_CARD, RENAMED_CARDHOLDER, "2100", "13", WITNESS_DAY, "A"));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.VALIDATION_REJECTED, answer.outcome(),
+                            "an edit refused the request"),
+                    () -> assertEquals(CardValidationMessages.CARD_STATUS_MUST_BE_YES_NO,
+                            answer.message(), "the status edit runs first, at L701"),
+                    () -> assertNotEquals(CardValidationMessages.CARD_EXPIRY_MONTH_NOT_VALID,
+                            answer.message(), "the month edit runs second, at L704"),
+                    () -> assertNotEquals(CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID,
+                            answer.message(), "the year edit runs third, at L707"));
+        }
+
+        /**
+         * Asserts a missing card number answers the card-number text and never the both-blank text.
+         *
+         * <p>{@code app/cbl/COCRDUPC.cbl:L656-L657} reads
+         * {@code IF FLG-ACCTFILTER-BLANK AND FLG-CARDFILTER-BLANK}, sets
+         * {@code NO-SEARCH-CRITERIA-RECEIVED} at {@code app/cbl/COCRDUPC.cbl:L658} and leaves the
+         * paragraph at {@code app/cbl/COCRDUPC.cbl:L661}. The test is an {@code AND}, so one blank
+         * search key takes its own text: the card edit sets that text at
+         * {@code app/cbl/COCRDUPC.cbl:L774}. {@link CardUpdateRequest} carries one search key, so
+         * the both-blank condition has no second filter to reach and no answer of this service
+         * carries its text.
+         */
+        @Test
+        @DisplayName("a missing card number answers the card-number text, not the both-blank text")
+        void aMissingCardNumberAnswersItsOwnTextAndNeverTheBothBlankText() {
+            CardUpdateResponse answer = cardUpdateService.updateCard(
+                    request("", RENAMED_CARDHOLDER, WITNESS_YEAR, WITNESS_MONTH, WITNESS_DAY,
+                            STATUS_YES));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.VALIDATION_REJECTED, answer.outcome(),
+                            "the search-key edit refused the request"),
+                    () -> assertEquals(CardValidationMessages.PROMPT_FOR_CARD, answer.message(),
+                            "the text L774 sets"),
+                    () -> assertNotEquals(CardValidationMessages.NO_SEARCH_CRITERIA_RECEIVED,
+                            answer.message(), "the condition at L656 needs both filters blank"));
+        }
+
+        /**
+         * Asserts an unchanged resubmission answers the no-change text and no field text.
+         *
+         * <p>{@code app/cbl/COCRDUPC.cbl:L680-L681} compares the submitted card group against the
+         * stored one and {@code app/cbl/COCRDUPC.cbl:L682} sets the text. The paragraph then sets
+         * all four field-valid flags, the name at {@code app/cbl/COCRDUPC.cbl:L688}, the status at
+         * {@code app/cbl/COCRDUPC.cbl:L689}, the month at {@code app/cbl/COCRDUPC.cbl:L690} and the
+         * year at {@code app/cbl/COCRDUPC.cbl:L691}, and leaves at
+         * {@code app/cbl/COCRDUPC.cbl:L692}. No field edit runs after that exit, so the no-change
+         * text cannot arrive beside a status, month or year text.
+         *
+         * <p>The request below carries three characters of expiry day, a value the width constraint
+         * refuses. The comparison excludes the submitted day, so the request is still unchanged and
+         * the day is never edited. The submitted values also differ from the stored ones in letter
+         * case, which the comparison folds away.
+         */
+        @Test
+        @DisplayName("an unchanged resubmission answers the no-change text and skips every edit")
+        void anUnchangedResubmissionAnswersTheNoChangeTextAlone() {
+            CardUpdateResponse answer = cardUpdateService.updateCard(
+                    request(WITNESS_CARD, WITNESS_NAME.toUpperCase(Locale.ROOT), WITNESS_YEAR,
+                            WITNESS_MONTH, "999", STATUS_YES));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.NO_CHANGE_DETECTED, answer.outcome(),
+                            "the comparison at L680 reported no change"),
+                    () -> assertEquals(CardValidationMessages.NO_CHANGES_DETECTED,
+                            answer.message(), "the text L682 sets"),
+                    () -> assertNotEquals(CardValidationMessages.ADDITIVE_CARD_EXPIRY_DAY_WIDTH,
+                            answer.message(), "the exit at L692 skipped every field edit"),
+                    () -> assertEquals(WITNESS_NAME, storedText(WITNESS_CARD, "embossed_name"),
+                            "an unchanged resubmission writes nothing"));
+        }
+    }
+
+    /** The character class the embossed-name edit admits. */
+    @Nested
+    @DisplayName("the embossed-name rule")
+    class TheEmbossedNameRule {
+
+        /**
+         * Asserts a name of letters and spaces reaches the row, including one holding two spaces.
+         *
+         * <p>{@code 1230-EDIT-NAME.} moves the submitted name into
+         * {@code CARD-NAME-CHECK PIC X(50)} at {@code app/cbl/COCRDUPC.cbl:L823}, converts every
+         * letter to a space at {@code app/cbl/COCRDUPC.cbl:L824-L826} against
+         * {@code LIT-ALL-ALPHA-FROM PIC X(52)} at {@code app/cbl/COCRDUPC.cbl:L255-L257}, and then
+         * requires the field to hold nothing but spaces at {@code app/cbl/COCRDUPC.cbl:L828}. The
+         * literal carries both letter cases, so both are stripped.
+         *
+         * <p>The equivalent predicate is exactly this: every character is a letter or a space. The
+         * length-zero test of the source depends on how the runtime trims a field of spaces, so the
+         * predicate stands in for it.
+         */
+        @Test
+        @DisplayName("a name of letters and spaces reaches the stored row, two spaces included")
+        void aNameOfLettersAndSpacesIsAdmitted() {
+            CardUpdateResponse oneSpace = cardUpdateService.updateCard(
+                    request(NAME_ONE_SPACE_CARD, "Aniya Von", "2023", "12", "16", STATUS_YES));
+            CardUpdateResponse twoSpaces = cardUpdateService.updateCard(
+                    request(NAME_TWO_SPACE_CARD, "Aniya  Von", "2023", "01", "27", STATUS_YES));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, oneSpace.outcome(),
+                            "letters and one space pass the edit at L828"),
+                    () -> assertEquals("Aniya Von",
+                            storedText(NAME_ONE_SPACE_CARD, "embossed_name"),
+                            "the stored name carries the submitted characters"),
+                    () -> assertEquals(UpdateOutcome.UPDATED, twoSpaces.outcome(),
+                            "a second space is a space like the first"),
+                    () -> assertEquals("Aniya  Von",
+                            storedText(NAME_TWO_SPACE_CARD, "embossed_name"),
+                            "both spaces survive to the row"));
+        }
+
+        /**
+         * Asserts a hyphen, a digit and an apostrophe each answer the name text.
+         *
+         * <p>None of the three appears in {@code LIT-ALL-ALPHA-FROM} at
+         * {@code app/cbl/COCRDUPC.cbl:L255-L257}, so each survives the conversion at
+         * {@code app/cbl/COCRDUPC.cbl:L824} and fails the test at
+         * {@code app/cbl/COCRDUPC.cbl:L828}. The text sits at {@code app/cbl/COCRDUPC.cbl:L184} and
+         * {@code app/cbl/COCRDUPC.cbl:L834} sets it.
+         *
+         * <p>The edit governs a submitted name and not a stored one. Record 34 of
+         * {@code app/data/ASCII/carddata.txt} holds {@code Lucious O'Connell}, a stored name this
+         * edit refuses.
+         */
+        @Test
+        @DisplayName("a hyphen, a digit and an apostrophe each answer the name text")
+        void aNameHoldingAnyOtherCharacterIsRefused() {
+            CardUpdateResponse hyphen = cardUpdateService.updateCard(witnessRequestWithName(
+                    "Aniya-Von"));
+            CardUpdateResponse digit = cardUpdateService.updateCard(witnessRequestWithName(
+                    "Aniya1"));
+            CardUpdateResponse apostrophe = cardUpdateService.updateCard(witnessRequestWithName(
+                    "O'Brien"));
+
+            assertAll(
+                    () -> assertEquals(CardValidationMessages.NAME_MUST_BE_ALPHA, hyphen.message(),
+                            "a hyphen is neither a letter nor a space"),
+                    () -> assertEquals(CardValidationMessages.NAME_MUST_BE_ALPHA, digit.message(),
+                            "a digit is neither a letter nor a space"),
+                    () -> assertEquals(CardValidationMessages.NAME_MUST_BE_ALPHA,
+                            apostrophe.message(), "an apostrophe is neither a letter nor a space"),
+                    () -> assertEquals(WITNESS_NAME, storedText(WITNESS_CARD, "embossed_name"),
+                            "a refused update writes nothing"));
+        }
+    }
+
+    /** The expiry date, taken apart on the way in and put back together on the way out. */
+    @Nested
+    @DisplayName("the expiry date in both directions")
+    class TheExpiryInBothDirections {
+
+        /**
+         * Asserts {@code expiration_date} is a {@code DATE} holding the seeded value.
+         *
+         * <p>The source field is positionally a calendar date and the program decomposes it.
+         * {@code CARD-EXPIRAION-DATE-X PIC X(10)} at {@code app/cbl/COCRDUPC.cbl:L115} is redefined
+         * at {@code app/cbl/COCRDUPC.cbl:L116} into a four-character year at
+         * {@code app/cbl/COCRDUPC.cbl:L117}, a separator, a two-character month at
+         * {@code app/cbl/COCRDUPC.cbl:L119}, a separator and a two-character day at
+         * {@code app/cbl/COCRDUPC.cbl:L121}. The four, one, two, one and two characters total ten.
+         *
+         * <p>The account service holds its own expiry as ten characters of text.
+         */
+        @Test
+        @DisplayName("expiration_date is a DATE column and reads back as 2023-03-09")
+        void theStoredExpiryIsADateColumnHoldingTheSeededValue() {
+            String columnType = jdbcTemplate.queryForObject("""
+                    SELECT data_type
+                      FROM information_schema.columns
+                     WHERE table_schema = ? AND table_name = 'card'
+                       AND column_name = 'expiration_date'
+                    """, String.class, MIGRATED_SCHEMA);
+
+            assertAll(
+                    () -> assertEquals("date", columnType,
+                            "the migration declares the column as a DATE"),
+                    () -> assertEquals(WITNESS_EXPIRY, storedExpiry(WITNESS_CARD),
+                            "record one of app/data/ASCII/carddata.txt carries 2023-03-09"));
+        }
+
+        /**
+         * Asserts the three slices reassemble into the date they were taken from.
+         *
+         * <p>The read path slices the stored date at {@code app/cbl/COCRDUPC.cbl:L1361-L1366}, and
+         * the write path joins the three parts with hyphens at
+         * {@code app/cbl/COCRDUPC.cbl:L1467-L1474}, {@code DELIMITED BY SIZE}, into
+         * {@code CARD-UPDATE-EXPIRAION-DATE PIC X(10)} at {@code app/cbl/COCRDUPC.cbl:L319}. Year,
+         * month and day in that order make the ten characters {@code YYYY-MM-DD}.
+         *
+         * <p>The update below changes the active status and resubmits the year and the month it
+         * read, so the stored date after the write is the stored date before it.
+         */
+        @Test
+        @DisplayName("resubmitting the year and month a card holds leaves its stored date alone")
+        void theThreeSlicesReassembleIntoTheStoredDate() {
+            CardUpdateResponse answer = cardUpdateService.updateCard(
+                    request(REASSEMBLY_CARD, "Irving Emard", "2024", "01", "17", STATUS_NO));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
+                            "the status change reached the row"),
+                    () -> assertEquals(REASSEMBLY_EXPIRY, storedExpiry(REASSEMBLY_CARD),
+                            "the reassembled date equals the date the read decomposed"),
+                    () -> assertEquals("2024-01-17",
+                            storedRow(REASSEMBLY_CARD).get(4),
+                            "the ten characters read YYYY-MM-DD"));
+        }
+
+        /**
+         * Asserts a submitted day the calendar does not hold passes every edit.
+         *
+         * <p>No day edit exists. The edit chain runs 1230, 1240, 1250 and 1260, closing at
+         * {@code app/cbl/COCRDUPC.cbl:L945}, and {@code 2000-DECIDE-ACTION.} opens at
+         * {@code app/cbl/COCRDUPC.cbl:L948}, so no paragraph between them reaches the day. The
+         * program carries the day straight into the reassembled date at
+         * {@code app/cbl/COCRDUPC.cbl:L1471}.
+         *
+         * <p>The request below submits day {@code 31} with a February expiry and the update is
+         * applied. The stored date takes the day the read carried, which is {@code 07} for this
+         * card, so no submitted day reaches the column.
+         */
+        @Test
+        @DisplayName("day 31 with a February expiry is admitted and never reaches the column")
+        void aSubmittedDayTheCalendarDoesNotHoldIsAdmitted() {
+            CardUpdateResponse answer = cardUpdateService.updateCard(
+                    request(EXPIRY_DAY_CARD, "Maci Robel", "2023", "02", "31", STATUS_YES));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
+                            "no edit refuses a day the calendar does not hold"),
+                    () -> assertNull(answer.message(), "an applied update carries no text"),
+                    () -> assertEquals(LocalDate.of(2023, 2, 7), storedExpiry(EXPIRY_DAY_CARD),
+                            "the stored day 07 joined the submitted month"));
+        }
+    }
+
+    /** The row the write leaves behind, and the answer a card number no row holds takes. */
+    @Nested
+    @DisplayName("the write")
+    class TheWrite {
+
+        /**
+         * Asserts an applied update moves three values and leaves the other four alone.
+         *
+         * <p>{@code 9200-WRITE-PROCESSING.} opens at {@code app/cbl/COCRDUPC.cbl:L1420} and closes
+         * at {@code app/cbl/COCRDUPC.cbl:L1494}. The paragraph moves the card number into the
+         * record key at {@code app/cbl/COCRDUPC.cbl:L1425} and takes the row for update at
+         * {@code app/cbl/COCRDUPC.cbl:L1427-L1436}.
+         *
+         * <p>Assembly of the record spans {@code app/cbl/COCRDUPC.cbl:L1461-L1475}. The card
+         * identifier lands at {@code app/cbl/COCRDUPC.cbl:L1462}, the account identifier at
+         * {@code app/cbl/COCRDUPC.cbl:L1463} and the card verification value at
+         * {@code app/cbl/COCRDUPC.cbl:L1464-L1465}. The embossed name lands at
+         * {@code app/cbl/COCRDUPC.cbl:L1466}, the reassembled expiry at
+         * {@code app/cbl/COCRDUPC.cbl:L1467-L1474} and the active status at
+         * {@code app/cbl/COCRDUPC.cbl:L1475}. The rewrite follows at
+         * {@code app/cbl/COCRDUPC.cbl:L1477-L1483}, and
+         * {@code app/cbl/COCRDUPC.cbl:L1488} tests it.
+         *
+         * <p>{@link CardEntity#applyUpdate(String, LocalDate, String)} is the one mutator, and it
+         * takes the embossed name, the expiry date and the active status. The four values it does
+         * not take are the card number, the account identifier, the card verification value and the
+         * card token.
+         */
+        @Test
+        @DisplayName("an applied update moves the name, the expiry and the status only")
+        void anAppliedUpdateMovesThreeValuesAndLeavesTheOtherFour() {
+            List<String> before = storedRow(SUCCESS_PATH_CARD);
+
+            CardUpdateResponse answer = cardUpdateService.updateCard(
+                    request(SUCCESS_PATH_CARD, RENAMED_CARDHOLDER, "2030", "06", "13", STATUS_NO));
+
+            List<String> after = storedRow(SUCCESS_PATH_CARD);
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
+                            "the rewrite at L1477 succeeded"),
+                    () -> assertNull(answer.message(), "an applied update carries no text"),
+                    () -> assertEquals(RENAMED_CARDHOLDER, after.get(3),
+                            "the embossed name moved, as L1466 moves it"),
+                    () -> assertEquals("2030-06-13", after.get(4),
+                            "the expiry moved, as L1467 through L1474 assemble it"),
+                    () -> assertEquals(STATUS_NO, after.get(5),
+                            "the active status moved, as L1475 moves it"),
+                    () -> assertEquals(before.get(0), after.get(0), "the card number stands"),
+                    () -> assertEquals(before.get(1), after.get(1),
+                            "the account identifier stands"),
+                    () -> assertEquals(before.get(2), after.get(2),
+                            "the card verification value stands"),
+                    () -> assertEquals(before.get(6), after.get(6), "the card token stands"));
+        }
+
+        /**
+         * Asserts a card number no row holds answers the not-found text and writes nothing.
+         *
+         * <p>The read runs ahead of the field edits. {@code 9100-GETCARD-BYACCTCARD.} at
+         * {@code app/cbl/COCRDUPC.cbl:L1376} sets the text at
+         * {@code app/cbl/COCRDUPC.cbl:L1400}, under the guard at
+         * {@code app/cbl/COCRDUPC.cbl:L1399}, in the branch a key naming no record takes.
+         */
+        @Test
+        @DisplayName("a card number no row holds answers the not-found text and stores nothing")
+        void aCardNumberNoRowHoldsAnswersNotFoundAndWritesNothing() {
+            CardUpdateResponse answer = cardUpdateService.updateCard(
+                    request(UNSEEDED_CARD, RENAMED_CARDHOLDER, "2030", "06", "13", STATUS_NO));
+
+            Integer rows = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM card WHERE card_number = ?", Integer.class,
+                    UNSEEDED_CARD);
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.CARD_NOT_FOUND, answer.outcome(),
+                            "the read found no row"),
+                    () -> assertEquals(CardValidationMessages.DID_NOT_FIND_ACCTCARD_COMBO,
+                            answer.message(), "the text L1400 sets"),
+                    () -> assertEquals(0, rows, "no row carries that card number"),
+                    () -> verify(outboxWriter, never()).writeCardUpdated(any()));
+        }
+    }
+
+    /** The handoff to the outbox, and where the card number is masked. */
+    @Nested
+    @DisplayName("the outbox handoff")
+    class TheOutboxHandoff {
+
+        /**
+         * Asserts the writer receives the card carrying the full sixteen-digit card number.
+         *
+         * <p>The decision and the read key on all sixteen characters, as
+         * {@code app/cbl/COCRDUPC.cbl:L1425} keys the record identifier. Masking belongs to the
+         * payload the writer produces and not to the value the writer receives.
+         */
+        @Test
+        @DisplayName("the writer receives the card carrying the full sixteen digits")
+        void theWriterReceivesTheCardCarryingTheFullCardNumber() {
+            cardUpdateService.updateCard(request(OUTBOX_HANDOFF_CARD, RENAMED_CARDHOLDER, "2024",
+                    "08", "11", STATUS_NO));
+
+            ArgumentCaptor<CardEntity> handedOver = ArgumentCaptor.forClass(CardEntity.class);
+            verify(outboxWriter).writeCardUpdated(handedOver.capture());
+
+            assertEquals(OUTBOX_HANDOFF_CARD, handedOver.getValue().getCardNumber(),
+                    "the writer receives the stored card number unmasked");
+        }
+
+        /**
+         * Asserts the stored payload carries the masked card number and no cardholder secret.
+         *
+         * <p>The source masks nothing: {@code app/bms/COCRDSL.bms:L99} gives the card detail field
+         * all sixteen characters. Masking is ADDITIVE and
+         * {@link PanMasker#maskCardNumber(String)} performs it at the serialization boundary,
+         * so the payload carries twelve mask characters and the last four digits.
+         *
+         * <p>The card verification value reaches no payload property.
+         * {@code app/cbl/COCRDUPC.cbl:L1503} compares it and {@link CardEntity} publishes no
+         * accessor for it. Property values carry that check, not the payload text: an event
+         * identifier or a timestamp can hold the same three digits by chance.
+         */
+        @Test
+        @DisplayName("the stored payload carries the masked number, the event type and the key")
+        void theStoredPayloadCarriesTheMaskedCardNumberAndNoCardholderSecret() {
+            cardUpdateService.updateCard(request(OUTBOX_PAYLOAD_CARD, RENAMED_CARDHOLDER, "2027",
+                    "03", "13", STATUS_NO));
+
+            String payload = storedPayloadText(OUTBOX_PAYLOAD_ACCOUNT);
+            var stored = MAPPER.readTree(payload);
+            String expectedMask = String.valueOf(PanMasker.MASK_CHARACTER)
+                    .repeat(PanMasker.CARD_NUMBER_LENGTH - PanMasker.VISIBLE_DIGIT_COUNT)
+                    + OUTBOX_PAYLOAD_CARD.substring(
+                            PanMasker.CARD_NUMBER_LENGTH - PanMasker.VISIBLE_DIGIT_COUNT);
+
+            assertAll(
+                    () -> assertEquals(expectedMask, stored.get("maskedCardNumber").asString(""),
+                            "twelve mask characters then the last four digits"),
+                    () -> assertEquals(CardUpdated.EVENT_TYPE, stored.get("eventType").asString(""),
+                            "the routing discriminator"),
+                    () -> assertEquals(OUTBOX_PAYLOAD_ACCOUNT, stored.get("aggregateId")
+                            .asString(""), "the eleven-character account key"),
+                    () -> assertEquals("2027-03-13", stored.get("expirationDate").asString(""),
+                            "the expiry travels as ten characters, hyphen separated"),
+                    () -> assertFalse(payload.contains(OUTBOX_PAYLOAD_CARD),
+                            "no property carries the full Primary Account Number"),
+                    () -> stored.properties().forEach(property -> assertNotEquals(
+                            OUTBOX_PAYLOAD_CARD_VERIFICATION_VALUE,
+                            property.getValue().asString(""),
+                            "property " + property.getKey()
+                                    + " carries the card verification value")));
+        }
+    }
+
+    /** The checks the source does not perform, and which this platform does not add. */
+    @Nested
+    @DisplayName("the checks the source does not perform")
+    class TheChecksTheSourceDoesNotPerform {
+
+        /**
+         * Asserts a card number failing a card-number checksum passes the search-key edit.
+         *
+         * <p>{@code 1220-EDIT-CARD.} tests {@code IF CC-CARD-NUM IS NOT NUMERIC} at
+         * {@code app/cbl/COCRDUPC.cbl:L784} and nothing further. The comments above it, at
+         * {@code app/cbl/COCRDUPC.cbl:L782-L783}, announce a length test the paragraph does not
+         * carry, and no paragraph of the program computes a check digit.
+         *
+         * <p>The number below fails such a checksum and the edit admits it, so the answer comes
+         * from the read that follows. The answer carries the not-found text and not the
+         * character-class text at {@code app/cbl/COCRDUPC.cbl:L789}. All fifty seeded card numbers
+         * satisfy that checksum, so the assertion lands on the edit and not on a stored row.
+         */
+        @Test
+        @DisplayName("a card number failing a checksum passes the edit and reaches the read")
+        void aCardNumberFailingAChecksumPassesTheEdit() {
+            CardUpdateResponse answer = cardUpdateService.updateCard(
+                    request(UNSEEDED_CARD, RENAMED_CARDHOLDER, "2030", "06", "13", STATUS_NO));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.CARD_NOT_FOUND, answer.outcome(),
+                            "the edit admitted the number, so the read answered and no edit did"),
+                    () -> assertNotEquals(CardValidationMessages.CARD_FILTER_NOT_NUMERIC,
+                            answer.message(), "the character-class text L789 sets stays unset"));
+        }
+
+        /**
+         * Asserts a card carrying either active status can be updated.
+         *
+         * <p>The posting program opens six files and the card file is not among them, and
+         * {@code app/jcl/POSTTRAN.jcl} allocates no card dataset, so no posting decision reads the
+         * status. The update path reads no status of its own either: the card this test turns
+         * negative is updated again immediately afterwards.
+         */
+        @Test
+        @DisplayName("a card whose active status is N can still be updated")
+        void aNegativeActiveStatusDoesNotBlockAnUpdate() {
+            cardUpdateService.updateCard(request(NEGATIVE_STATUS_CARD, RENAMED_CARDHOLDER, "2025",
+                    "03", "01", STATUS_NO));
+
+            CardUpdateResponse second = cardUpdateService.updateCard(request(NEGATIVE_STATUS_CARD,
+                    NEGATIVE_STATUS_CARD_NAME, "2025", "03", "01", STATUS_NO));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, second.outcome(),
+                            "an inactive card takes an update"),
+                    () -> assertEquals(NEGATIVE_STATUS_CARD_NAME,
+                            storedText(NEGATIVE_STATUS_CARD, "embossed_name"),
+                            "the second update reached the row"),
+                    () -> assertEquals(STATUS_NO,
+                            storedText(NEGATIVE_STATUS_CARD, "active_status"),
+                            "the status stayed negative through both updates"));
+        }
+    }
+
+    /**
+     * Asserts every message text this class relies on holds the characters the source declares.
+     *
+     * <p>Each literal below was read in {@code app/cbl/COCRDUPC.cbl} at the line named beside it,
+     * inside the condition names on {@code WS-RETURN-MSG PIC X(75)} at
+     * {@code app/cbl/COCRDUPC.cbl:L173}. Two condition names carry identical characters, at
+     * {@code app/cbl/COCRDUPC.cbl:L190} and at {@code app/cbl/COCRDUPC.cbl:L192}, and both are
+     * asserted.
+     *
+     * <p>The trailing full stop at {@code app/cbl/COCRDUPC.cbl:L188} and the two words of
+     * {@code some one} at {@code app/cbl/COCRDUPC.cbl:L208} belong to the source literals. Outside
+     * this method every assertion above names a constant.
+     */
+    @Test
+    @DisplayName("every message text this class asserts matches the source character for character")
+    void everyMessageTextThisClassAssertsMatchesTheSource() {
+        assertAll(
+                () -> assertEquals("Card name can only contain alphabets and spaces",
+                        CardValidationMessages.NAME_MUST_BE_ALPHA, "L184"),
+                () -> assertEquals("No input received",
+                        CardValidationMessages.NO_SEARCH_CRITERIA_RECEIVED, "L186"),
+                () -> assertEquals("No change detected with respect to values fetched.",
+                        CardValidationMessages.NO_CHANGES_DETECTED, "L188"),
+                () -> assertEquals("Account number must be a non zero 11 digit number",
+                        CardValidationMessages.NEVER_EMITTED_SEARCHED_ACCT_ZEROES, "L190"),
+                () -> assertEquals("Account number must be a non zero 11 digit number",
+                        CardValidationMessages.NEVER_EMITTED_SEARCHED_ACCT_NOT_NUMERIC, "L192"),
+                () -> assertEquals("Card number if supplied must be a 16 digit number",
+                        CardValidationMessages.NEVER_EMITTED_SEARCHED_CARD_NOT_NUMERIC, "L194"),
+                () -> assertEquals("Card Active Status must be Y or N",
+                        CardValidationMessages.CARD_STATUS_MUST_BE_YES_NO, "L196"),
+                () -> assertEquals("Card expiry month must be between 1 and 12",
+                        CardValidationMessages.CARD_EXPIRY_MONTH_NOT_VALID, "L198"),
+                () -> assertEquals("Invalid card expiry year",
+                        CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID, "L200"),
+                () -> assertEquals("Did not find this account in cards database",
+                        CardValidationMessages.NEVER_EMITTED_DID_NOT_FIND_ACCT_IN_CARDXREF, "L202"),
+                () -> assertEquals("Did not find cards for this search condition",
+                        CardValidationMessages.DID_NOT_FIND_ACCTCARD_COMBO, "L204"),
+                () -> assertEquals("Could not lock record for update",
+                        CardValidationMessages.COULD_NOT_LOCK_FOR_UPDATE, "L206"),
+                () -> assertEquals("Record changed by some one else. Please review",
+                        CardValidationMessages.DATA_WAS_CHANGED_BEFORE_UPDATE, "L208"),
+                () -> assertEquals("Update of record failed",
+                        CardValidationMessages.LOCKED_BUT_UPDATE_FAILED, "L210"),
+                () -> assertEquals("Error reading Card Data File",
+                        CardValidationMessages.NEVER_EMITTED_XREF_READ_ERROR, "L212"),
+                () -> assertEquals("Card number not provided",
+                        CardValidationMessages.PROMPT_FOR_CARD, "L180"));
     }
 }
