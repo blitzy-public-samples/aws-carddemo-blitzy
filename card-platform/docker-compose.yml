@@ -1005,6 +1005,15 @@ services:
       # The one topic this service publishes, on a mutation only. Its payload
       # matches schemas/account-state-changed-v1.json in event-contracts.
       TOPIC_ACCOUNT_STATE_CHANGED: ${TOPIC_ACCOUNT_STATE_CHANGED:-account.state-changed}
+      # The second topic this service publishes, on a cardholder-field change. The
+      # broker grants this identity producer access to it in create_acls above, and
+      # the notification service consumes it under GROUP_NOTIFICATION_CUSTOMER.
+      # Naming it here matches deploy/k8s/30-configmap.yaml, which supplies it to
+      # every service. Without the line the image falls back to the name compiled
+      # into it, so a deployment that renames the topic through the environment
+      # would create and consume the new name while this producer kept writing the
+      # old one.
+      TOPIC_CUSTOMER_CONTEXT_CHANGED: ${TOPIC_CUSTOMER_CONTEXT_CHANGED:-customer.context-changed}
       # The producer contract also validates the shared source-less fallback envelope.
       TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
