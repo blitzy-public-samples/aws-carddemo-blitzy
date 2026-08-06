@@ -6,10 +6,9 @@ import com.carddemo.card.api.dto.CardUpdateResponse.RefreshedCard;
 import com.carddemo.card.api.dto.CardValidationMessages;
 import com.carddemo.card.config.ObservabilityConfig.CardLatencyTimers;
 import com.carddemo.card.entity.CardEntity;
-import com.carddemo.card.entity.CardCrossReferenceEntity;
 import com.carddemo.card.outbox.OutboxWriter;
-import com.carddemo.card.repository.CardCrossReferenceRepository;
 import com.carddemo.card.repository.CardRepository;
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Timer;
@@ -33,129 +32,107 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Updates one card, and writes the event that update produces.
+ * Updates one card and writes the event that update produces.
  *
  * <p>Transformed from the card update program {@code app/cbl/COCRDUPC.cbl}. Its edit chain sits in
- * {@code 1200-EDIT-MAP-INPUTS} at {@code app/cbl/COCRDUPC.cbl:L641}, its write in
- * {@code 9600-WRITE-PROCESSING} at {@code app/cbl/COCRDUPC.cbl:L1418}, and its concurrency
- * comparison in {@code 9300-CHECK-CHANGE-IN-REC} at {@code app/cbl/COCRDUPC.cbl:L1498}.
+ * {@code 1200-EDIT-MAP-INPUTS.} at {@code app/cbl/COCRDUPC.cbl:L641-L714}, its write in
+ * {@code 9200-WRITE-PROCESSING.} at {@code app/cbl/COCRDUPC.cbl:L1420-L1493}, and its concurrency
+ * comparison in {@code 9300-CHECK-CHANGE-IN-REC.} at {@code app/cbl/COCRDUPC.cbl:L1498-L1523}.
  *
- * <h2>The order of the steps is the contract</h2>
+ * <h2>The order of the checks</h2>
  *
- * <p>The source runs its checks in one order and this class runs them in the same one, because the
- * order decides which of seven answers a caller receives. A caller that submits a bad month for a
- * card number that names no row reads {@code Did not find cards for this search condition} and not
- * the month text, because the read precedes the field edits.
+ * <p>Seven answers leave this class, and the order of the checks decides which one arrives. A
+ * caller that submits a bad month for a card number naming no row reads
+ * {@code 'Did not find cards for this search condition'}, the text at
+ * {@code app/cbl/COCRDUPC.cbl:L204}, since the read runs ahead of the field edits.
  *
  * <ol>
- * <li><b>The search key.</b> {@code 1220-EDIT-CARD} at {@code app/cbl/COCRDUPC.cbl:L762} refuses a
+ * <li>The search key. {@code 1220-EDIT-CARD.} at {@code app/cbl/COCRDUPC.cbl:L762-L800} refuses a
  * missing or malformed card number before anything is read.</li>
- * <li><b>The read.</b> {@code 9000-READ-DATA} reaches the card read at
- * {@code app/cbl/COCRDUPC.cbl:L1394}, whose not-found branch at
- * {@code app/cbl/COCRDUPC.cbl:L1399-L1400} sets the text. Nothing below runs when no row
- * answers.</li>
- * <li><b>The no-change comparison.</b> {@code app/cbl/COCRDUPC.cbl:L680-L682} compares the whole
- * submitted card group against the whole stored one, upper-cased on both sides, and
- * {@code app/cbl/COCRDUPC.cbl:L685-L693} then skips every field edit. A caller who submits the
- * stored values therefore receives no field message even when a field would have failed one.</li>
- * <li><b>The field edits.</b> {@code 1230-EDIT-NAME}, {@code 1240-EDIT-CARDSTATUS},
- * {@code 1250-EDIT-EXPIRY-MON} and {@code 1260-EDIT-EXPIRY-YEAR} run in that order from
- * {@code app/cbl/COCRDUPC.cbl:L698-L708}. The first failing edit owns the message, because every
- * write to {@code WS-RETURN-MSG} after the first sits behind the {@code WS-RETURN-MSG-OFF}
- * guard.</li>
- * <li><b>The lock.</b> {@code app/cbl/COCRDUPC.cbl:L1427} reads the row for update and
- * {@code app/cbl/COCRDUPC.cbl:L1441-L1446} reports a failure to acquire it.</li>
- * <li><b>The concurrency comparison.</b> {@code app/cbl/COCRDUPC.cbl:L1503-L1508} compares the
- * locked row against the values the caller last saw, and
- * {@code app/cbl/COCRDUPC.cbl:L1511-L1517} reports the difference and refreshes those values.</li>
- * <li><b>The write.</b> {@code app/cbl/COCRDUPC.cbl:L1477-L1483} rewrites the row and
- * {@code app/cbl/COCRDUPC.cbl:L1488-L1491} reports a rewrite that failed after the lock was
- * held.</li>
+ * <li>The read. {@code 9100-GETCARD-BYACCTCARD.} at {@code app/cbl/COCRDUPC.cbl:L1376-L1417} sets
+ * the not-found text at {@code app/cbl/COCRDUPC.cbl:L1400}.</li>
+ * <li>The no-change comparison at {@code app/cbl/COCRDUPC.cbl:L680-L683}, which
+ * {@code app/cbl/COCRDUPC.cbl:L685-L693} follows by skipping every field edit.</li>
+ * <li>The four field edits, performed in order at {@code app/cbl/COCRDUPC.cbl:L698-L708}.</li>
+ * <li>The lock. {@code app/cbl/COCRDUPC.cbl:L1427-L1436} reads the row for update and
+ * {@code app/cbl/COCRDUPC.cbl:L1441-L1448} reports a lock it could not take.</li>
+ * <li>The concurrency comparison at {@code app/cbl/COCRDUPC.cbl:L1503-L1508}, refreshed at
+ * {@code app/cbl/COCRDUPC.cbl:L1512-L1517}.</li>
+ * <li>The write at {@code app/cbl/COCRDUPC.cbl:L1477-L1483}, whose failure after the lock
+ * {@code app/cbl/COCRDUPC.cbl:L1491} reports.</li>
  * </ol>
  *
- * <h2>Why the field edits run here and not at the boundary</h2>
+ * <h2>Where a new edit goes</h2>
  *
- * <p>{@link CardUpdateRequest} carries one constraint per edit and names the source text of each,
- * and its documentation hands the edit order to its caller. This class is that caller. It validates
- * one property at a time, in the order above, so the first failing edit owns the answer exactly as
- * the guarded writes to {@code WS-RETURN-MSG} arrange. A single {@code @Valid} at the boundary would
- * report an unordered set of violations and would report it before the read, which changes the
- * answer for two of the seven outcomes.
+ * <p>One edit is one constraint on {@link CardUpdateRequest} plus one text on
+ * {@link CardValidationMessages}. A new edit needs those two additions and its property name in
+ * {@link #DATA_PROPERTIES}, at the position the source performs it. This class holds no chain of
+ * conditions to extend and no table of texts to keep in step.
  *
- * <h2>Where the transaction boundary sits, and why</h2>
+ * <p>{@code app/cbl/COCRDUPC.cbl:L377} of the batch posting program carries the comment
+ * {@code * ADD MORE VALIDATIONS HERE}, which marks the same seam in the source.
+ *
+ * <h2>The transaction boundary</h2>
  *
  * <p>{@link #updateCard(CardUpdateRequest)} opens no transaction. It reads the stored card through
- * {@link CardQueryService}, which opens and closes a read-only transaction of its own, and then
- * calls {@link #applyUpdate} through {@link #self}, so that call crosses the proxy and opens the
- * writing transaction.
+ * {@link CardQueryService}, which opens a read-only transaction of its own. It then calls
+ * {@link #applyUpdate} through {@link #self}, so that call crosses the proxy and opens the writing
+ * transaction. Two transactions leave a window between the read and the lock, which is the window
+ * step six inspects. One transaction shares one persistence context, and the locked read then
+ * answers with the instance the first read had already loaded.
  *
- * <p>That split is what makes step six mean anything. Both reads inside one transaction would share
- * one persistence context, the locked read would return the instance the first read had already
- * loaded, and the comparison would compare a value against itself. Two transactions put a real
- * window between the read and the lock, which is the window the source has between its display read
- * and its read for update.
- *
- * <p>The card row and the event row commit together, or neither commits.
- * {@link OutboxWriter#writeCardUpdated(CardEntity)} joins the transaction this class opened. That
- * atomicity is ADDITIVE: {@code app/csd/CARDDEMO.CSD} carries {@code RECOVERY(NONE)} and
- * {@code JOURNAL(NO)} on all eight of its file definitions, so the source offers none to reproduce.
+ * <p>The card row and the event row commit together or neither commits.
+ * {@link OutboxWriter#writeCardUpdated(CardEntity)} joins the transaction this class opens. That
+ * atomicity is ADDITIVE: every file definition in {@code app/csd/CARDDEMO.CSD} carries
+ * {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
  *
  * <h2>What this class does not add</h2>
  *
- * <p>No checksum rule, no account-status test and no card-status test.
- * {@code app/cbl/COCRDUPC.cbl:L784} tests a card number for sixteen digits and nothing else, and the
- * update path reads no account row at all. Each addition would refuse an update the source applies.
+ * <p>No card-number arithmetic, no account-status test and no card-status test.
+ * {@code app/cbl/COCRDUPC.cbl:L784} tests a card number for sixteen digits and nothing more.
+ * {@code app/jcl/POSTTRAN.jcl:L23} allocates nine data definitions to the posting program and names
+ * no card file, so no posting decision reads the status this class stores.
  *
- * <p>The account identifier and the card verification value are never written.
- * {@code app/bms/COCRDUP.bms} declares five editable fields, {@code CRDNAME} at L107,
- * {@code CRDSTCD} at L117, {@code EXPMON} at L127, {@code EXPYEAR} at L135 and {@code EXPDAY} at
- * L142, and {@link CardEntity#applyUpdate} changes exactly the three values those five carry.
+ * <p>No expiry-day edit and no calendar-validity edit. The paragraph sequence runs 1230, 1240,
+ * 1250, 1260 and then {@code 2000-DECIDE-ACTION.} at {@code app/cbl/COCRDUPC.cbl:L948}, with no
+ * 1270 paragraph anywhere in the program.
  *
- * <h2>The cross-reference replica</h2>
- *
- * <p>This path writes no cross-reference row and can write none. Every column of
- * {@code app/cpy/CVACT03Y.cpy} is a card number, a customer identifier or an account identifier, and
- * this path changes none of the three, so there is nothing to keep current. A row it found missing
- * could not be created either, because {@code XREF-CUST-ID PIC 9(09)} at
- * {@code app/cpy/CVACT03Y.cpy:L6} is a column the card record does not carry. The replica's opening
- * state comes from {@code V2__seed.sql} and nothing in this platform writes it afterwards, because
- * no operation in scope issues a card or moves one between accounts.
- *
- * <p>What this path does owe the replica is a comparison, and
- * {@link #recordCrossReferenceDivergence} makes it inside the writing transaction. This service is
- * the only one holding both the account of the card row and the account the replica names for that
- * card, and a disagreement between them puts the published event on one account's partition while
- * every authorization decision about the card reads another. The comparison changes no outcome; it
- * moves a counter and writes one line.
- *
- * <p>One cross-field rule of the source is unreachable here and is deliberately not reproduced.
- * {@code app/cbl/COCRDUPC.cbl:L656-L659} answers {@code No input received} when the account filter
- * and the card filter are both absent. {@link CardUpdateRequest} carries no account component,
- * because {@code app/cbl/COCRDUPC.cbl:L1427-L1430} keys the read for update on the card number
- * alone, so the account half of that condition can never hold.
+ * <p>No version column. The concurrency comparison is field level, over the values
+ * {@code app/cbl/COCRDUPC.cbl:L1503-L1508} names.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Service
 public class CardUpdateService {
 
-    /** Records one line per outcome, naming no card number and no cardholder name. */
+    /** Records one line per outcome, carrying a masked card number and no cardholder value. */
     private static final Logger log = LoggerFactory.getLogger(CardUpdateService.class);
 
     /**
-     * The one property step one validates, reproducing {@code 1220-EDIT-CARD} at
-     * {@code app/cbl/COCRDUPC.cbl:L762}.
+     * The one property step one validates, from {@code 1220-EDIT-CARD.} at
+     * {@code app/cbl/COCRDUPC.cbl:L762-L800}.
      */
     static final List<String> SEARCH_KEY_PROPERTIES = List.of("cardNumber");
 
     /**
      * The properties step four validates, in the order the source performs their edits.
      *
-     * <p>{@code app/cbl/COCRDUPC.cbl:L698-L708} performs {@code 1230-EDIT-NAME} at L806,
-     * {@code 1240-EDIT-CARDSTATUS} at L845, {@code 1250-EDIT-EXPIRY-MON} at L877 and
-     * {@code 1260-EDIT-EXPIRY-YEAR} at L913 in exactly that sequence. The day comes last and carries a
-     * width constraint alone: the source edits no day, which
-     * {@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_DAY_WIDTH} records.
+     * <p>{@code app/cbl/COCRDUPC.cbl:L698-L708} performs four paragraphs in this sequence:
+     * {@code 1230-EDIT-NAME.} at {@code app/cbl/COCRDUPC.cbl:L806-L840},
+     * {@code 1240-EDIT-CARDSTATUS.} at {@code app/cbl/COCRDUPC.cbl:L845-L873},
+     * {@code 1250-EDIT-EXPIRY-MON.} at {@code app/cbl/COCRDUPC.cbl:L877-L908} and
+     * {@code 1260-EDIT-EXPIRY-YEAR.} at {@code app/cbl/COCRDUPC.cbl:L913-L944}.
+     *
+     * <p>The name rule admits letters and spaces alone.
+     * {@code app/cbl/COCRDUPC.cbl:L823-L826} converts every character of
+     * {@code LIT-ALL-ALPHA-FROM PIC X(52)} at {@code app/cbl/COCRDUPC.cbl:L255-L257} to a space,
+     * and {@code app/cbl/COCRDUPC.cbl:L828} then requires the field to trim to nothing. The blank
+     * test at {@code app/cbl/COCRDUPC.cbl:L811-L813} runs ahead of that conversion, so a name of
+     * spaces takes {@link CardValidationMessages#PROMPT_FOR_NAME}.
+     *
+     * <p>The day comes last and carries a width constraint alone, recorded as ADDITIVE by
+     * {@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_DAY_WIDTH}. The source performs no day
+     * edit, and the position of this entry keeps its text behind all four source texts.
      */
     static final List<String> DATA_PROPERTIES =
             List.of("embossedName", "activeStatus", "expiryMonth", "expiryYear", "expiryDay");
@@ -167,27 +144,90 @@ public class CardUpdateService {
     private static final int CARD_NUMBER_WIDTH = PicClause.CARD_NUM_WIDTH;
 
     /**
+     * Digits an account identifier holds, from {@code CARD-ACCT-ID PIC 9(11)} at
+     * {@code app/cpy/CVACT02Y.cpy:L6}. The key of the card row this class never rewrites.
+     */
+    static final int ACCOUNT_ID_WIDTH = PicClause.CARD_ACCT_ID_WIDTH;
+
+    /**
+     * Digits the card verification value holds, from {@code CARD-CVV-CD PIC 9(03)} at
+     * {@code app/cpy/CVACT02Y.cpy:L7}. Stored in the clear, and emitted nowhere.
+     */
+    static final int CARD_VERIFICATION_VALUE_WIDTH = PicClause.CARD_CVV_CD_WIDTH;
+
+    /**
      * Characters the embossed name holds, from {@code CARD-EMBOSSED-NAME PIC X(50)} at
-     * {@code app/cpy/CVACT02Y.cpy:L8}.
+     * {@code app/cpy/CVACT02Y.cpy:L8} and {@code CARD-NAME-CHECK PIC X(50)} at
+     * {@code app/cbl/COCRDUPC.cbl:L87}.
      *
-     * <p>Column {@code embossed_name} is {@code bpchar(50)}, so a stored value returns padded to
-     * this width. The comparison below pads the submitted value to the same width, which is what
-     * {@code app/cbl/COCRDUPC.cbl:L680-L681} compares: two fixed-width groups, not two trimmed
-     * strings.
+     * <p>Column {@code embossed_name} is fixed-width character storage, so a stored value returns
+     * padded to this width. Both sides of the comparison at
+     * {@code app/cbl/COCRDUPC.cbl:L680-L681} are fixed-width groups.
      */
     private static final int EMBOSSED_NAME_WIDTH = PicClause.CARD_EMBOSSED_NAME_WIDTH;
 
-    /** Characters the expiry year holds, from {@code CCUP-NEW-EXPYEAR PIC X(4)} at L310. */
-    private static final int EXPIRY_YEAR_WIDTH = 4;
+    /**
+     * Characters the expiry year slice holds, from {@code CARD-EXPIRY-YEAR PIC X(4)} at
+     * {@code app/cbl/COCRDUPC.cbl:L117}.
+     */
+    private static final int EXPIRY_YEAR_WIDTH = PicClause.CARD_EXPIRATION_DATE_YEAR_WIDTH;
 
-    /** Characters the expiry month holds, from {@code CCUP-NEW-EXPMON PIC X(2)} at L311. */
-    private static final int EXPIRY_MONTH_WIDTH = 2;
+    /**
+     * Characters the expiry month slice holds, from {@code CARD-EXPIRY-MONTH PIC X(2)} at
+     * {@code app/cbl/COCRDUPC.cbl:L119}.
+     */
+    private static final int EXPIRY_MONTH_WIDTH = PicClause.CARD_EXPIRATION_DATE_MONTH_WIDTH;
 
-    /** Characters the expiry day holds, from {@code CCUP-NEW-EXPDAY PIC X(2)} at L312. */
-    private static final int EXPIRY_DAY_WIDTH = 2;
+    /**
+     * Characters the expiry day slice holds, from {@code CARD-EXPIRY-DAY PIC X(2)} at
+     * {@code app/cbl/COCRDUPC.cbl:L121}.
+     */
+    private static final int EXPIRY_DAY_WIDTH = PicClause.CARD_EXPIRATION_DATE_DAY_WIDTH;
 
-    /** Characters the active status holds, from {@code CARD-ACTIVE-STATUS PIC X(01)} at L10. */
-    private static final int ACTIVE_STATUS_WIDTH = 1;
+    /**
+     * Characters the active status holds, from {@code CARD-ACTIVE-STATUS PIC X(01)} at
+     * {@code app/cpy/CVACT02Y.cpy:L10}.
+     */
+    private static final int ACTIVE_STATUS_WIDTH = PicClause.CARD_ACTIVE_STATUS_WIDTH;
+
+    /**
+     * Lowest month the expiry month edit admits, from
+     * {@code 88 VALID-MONTH VALUES 1 THRU 12.} at {@code app/cbl/COCRDUPC.cbl:L95}.
+     *
+     * <p>{@link CardUpdateRequest} carries the bound as a constraint. This constant is what pins
+     * that constraint to the source condition name.
+     */
+    static final int EXPIRY_MONTH_LOWER_BOUND = 1;
+
+    /**
+     * Highest month the expiry month edit admits, from
+     * {@code 88 VALID-MONTH VALUES 1 THRU 12.} at {@code app/cbl/COCRDUPC.cbl:L95}.
+     */
+    static final int EXPIRY_MONTH_UPPER_BOUND = 12;
+
+    /**
+     * Lowest year the expiry year edit admits, from
+     * {@code 88 VALID-YEAR VALUES 1950 THRU 2099.} at {@code app/cbl/COCRDUPC.cbl:L99}.
+     *
+     * <p>{@link CardValidationMessages#CARD_EXPIRY_YEAR_NOT_VALID} names no bound, so only the
+     * condition name states this one.
+     */
+    static final int EXPIRY_YEAR_LOWER_BOUND = 1950;
+
+    /**
+     * Highest year the expiry year edit admits, from
+     * {@code 88 VALID-YEAR VALUES 1950 THRU 2099.} at {@code app/cbl/COCRDUPC.cbl:L99}.
+     */
+    static final int EXPIRY_YEAR_UPPER_BOUND = 2099;
+
+    /**
+     * The two flags the active status edit admits, from
+     * {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at {@code app/cbl/COCRDUPC.cbl:L91}.
+     *
+     * <p>The condition tests two upper-case literals, and no edit of the program folds the case of
+     * this field. A lower-case flag fails.
+     */
+    static final List<String> ACTIVE_STATUS_FLAGS = List.of("Y", "N");
 
     /** The character a fixed-width alphanumeric field pads with on the right. */
     private static final String FIELD_PAD = " ";
@@ -195,37 +235,13 @@ public class CardUpdateService {
     /** The digit a numeric display field pads with on the left. */
     private static final String KEY_PAD = "0";
 
-    /**
-     * Reject reason a cross-reference miss produces in the authorization path, named in the
-     * diagnostic a missing replica row writes.
-     *
-     * <p>{@code app/cbl/CBTRN02C.cbl:L385-L387} moves 100 into the failure reason and the text
-     * {@code INVALID CARD NUMBER FOUND} beside it. The value is held as text here because it is
-     * written into a log line and never compared, and because the platform carries the same code as
-     * {@code 0100} in its event contract.
-     */
-    private static final String XREF_MISS_DECLINE_REASON = "100";
-
-    /** Reads and writes the card table. */
+    /** Reads and writes table {@code card}. */
     private final CardRepository cards;
-
-    /**
-     * Reads the {@code card_xref} replica, to compare the account the two copies name.
-     *
-     * <p>This is the only reader of that table in this service, and the comparison it feeds is the
-     * only reason the table is here: no operation this platform serves changes a cross-reference
-     * row, so the replica has no writer and needs none. It could not have one even if an operation
-     * wanted it, because {@code XREF-CUST-ID PIC 9(09)} at {@code app/cpy/CVACT03Y.cpy:L6} is a
-     * column the card record does not carry, so this service cannot construct a cross-reference row
-     * from a card row. {@code V2__seed.sql} loads the opening state from
-     * {@code app/data/ASCII/cardxref.txt} and nothing writes it afterwards.
-     */
-    private final CardCrossReferenceRepository crossReferences;
 
     /** Reads the stored card in a transaction of its own, before the lock is taken. */
     private final CardQueryService cardQueries;
 
-    /** Stores the {@code CardUpdated} row that commits with the card row. */
+    /** Stores the event row that commits with the card row. */
     private final OutboxWriter outboxWriter;
 
     /** Applies the constraints {@link CardUpdateRequest} declares, one property at a time. */
@@ -234,14 +250,11 @@ public class CardUpdateService {
     /** Counts updates that committed. */
     private final Counter updatesApplied;
 
-    /** Counts updates refused because another writer changed the row first. */
+    /** Counts updates refused after another writer changed the row first. */
     private final Counter updateConflicts;
 
     /** Counts updates that failed on infrastructure after the lock was held. */
     private final Counter infrastructureFailures;
-
-    /** Counts updates whose row and cross-reference replica named different accounts. */
-    private final Counter crossReferenceDivergences;
 
     /** Times one update, from entry to commit. */
     private final Timer updateLatency;
@@ -249,40 +262,32 @@ public class CardUpdateService {
     /**
      * Supplies this bean through its own proxy, so {@link #applyUpdate} runs inside a transaction.
      *
-     * <p>A direct call from {@link #updateCard} would bypass the proxy and run the annotated method
-     * with no transaction at all, and the locked read, the rewrite and the event row would then
-     * commit one at a time. Every consumer of this platform uses the same indirection for the same
-     * reason.
+     * <p>A direct call from {@link #updateCard} bypasses the proxy, and the annotated method then
+     * runs with no transaction at all.
      */
     private final ObjectProvider<CardUpdateService> self;
 
     /**
-     * Takes the two repositories, the read side, the outbox writer, the validator and the five
-     * meters.
+     * Takes the repository, the read side, the outbox writer, the validator and the four meters.
      *
-     * @param cards                     the repository over table {@code card}
-     * @param crossReferences           the repository over the {@code card_xref} replica
-     * @param cardQueries               the read side, which fetches the stored card
-     * @param outboxWriter              the writer of the {@code CardUpdated} row
-     * @param validator                 the validator that applies the request constraints
-     * @param updatesApplied            counter of updates that committed
-     * @param updateConflicts           counter of updates refused after a concurrent change
-     * @param infrastructureFailures    counter of updates that failed after the lock was held
-     * @param crossReferenceDivergences counter of updates whose two copies named different accounts
-     * @param timers                    the latency timers of this service
-     * @param self                      provider of this bean through its own proxy
+     * @param cards                  the repository over table {@code card}
+     * @param cardQueries            the read side, which fetches the stored card
+     * @param outboxWriter           the writer of the event row
+     * @param validator              the validator that applies the request constraints
+     * @param updatesApplied         counter of updates that committed
+     * @param updateConflicts        counter of updates refused after a concurrent change
+     * @param infrastructureFailures counter of updates that failed after the lock was held
+     * @param timers                 the latency timers of this service
+     * @param self                   provider of this bean through its own proxy
      * @throws NullPointerException if any argument is {@code null}
      */
-    public CardUpdateService(CardRepository cards, CardCrossReferenceRepository crossReferences,
-            CardQueryService cardQueries, OutboxWriter outboxWriter, Validator validator,
+    public CardUpdateService(CardRepository cards, CardQueryService cardQueries,
+            OutboxWriter outboxWriter, Validator validator,
             @Qualifier("cardUpdatesAppliedCounter") Counter updatesApplied,
             @Qualifier("cardUpdateConflictCounter") Counter updateConflicts,
             @Qualifier("cardInfrastructureFailureCounter") Counter infrastructureFailures,
-            @Qualifier("cardCrossReferenceDivergenceCounter") Counter crossReferenceDivergences,
             CardLatencyTimers timers, ObjectProvider<CardUpdateService> self) {
         this.cards = Objects.requireNonNull(cards, "cards is required");
-        this.crossReferences =
-                Objects.requireNonNull(crossReferences, "crossReferences is required");
         this.cardQueries = Objects.requireNonNull(cardQueries, "cardQueries is required");
         this.outboxWriter = Objects.requireNonNull(outboxWriter, "outboxWriter is required");
         this.validator = Objects.requireNonNull(validator, "validator is required");
@@ -291,17 +296,15 @@ public class CardUpdateService {
                 Objects.requireNonNull(updateConflicts, "updateConflicts is required");
         this.infrastructureFailures = Objects.requireNonNull(infrastructureFailures,
                 "infrastructureFailures is required");
-        this.crossReferenceDivergences = Objects.requireNonNull(crossReferenceDivergences,
-                "crossReferenceDivergences is required");
         this.updateLatency = Objects.requireNonNull(timers, "timers is required").cardUpdate();
         this.self = Objects.requireNonNull(self, "self is required");
     }
 
     /**
-     * Applies one card update and answers with the outcome the source would have displayed.
+     * Applies one card update and answers with the outcome the source displays.
      *
-     * <p>The whole call is timed, whichever of the seven outcomes it reaches, so the latency of a
-     * refused update is measured alongside the latency of an applied one.
+     * <p>Every one of the seven outcomes is timed, so a refused update is measured alongside an
+     * applied one.
      *
      * @param request the submitted update, as it arrived
      * @return the outcome, never {@code null}
@@ -319,44 +322,50 @@ public class CardUpdateService {
     }
 
     /**
-     * Runs the seven steps in order and answers with the first outcome one of them reaches.
+     * Runs the checks in source order and answers with the first outcome one of them reaches.
+     *
+     * <p>Steps one through four run here, from {@code 1200-EDIT-MAP-INPUTS.} at
+     * {@code app/cbl/COCRDUPC.cbl:L641-L714}. Steps five through seven run in
+     * {@link #applyUpdate}.
      *
      * @param request the submitted update
      * @return the outcome
      */
     private CardUpdateResponse decide(CardUpdateRequest request) {
+        String masked = PanMasker.maskCardNumber(request.cardNumber());
+
         if (isAbsent(request.cardNumber(), CARD_NUMBER_WIDTH)) {
             log.info("A card update supplied no card number");
             return CardUpdateResponse.validationRejected(CardValidationMessages.PROMPT_FOR_CARD);
         }
         String searchKeyFailure = firstFailingMessage(request, SEARCH_KEY_PROPERTIES);
         if (searchKeyFailure != null) {
-            log.info("A card update supplied a card number the search-key edit refused");
+            log.info("A card update supplied a card number the search-key edit refused, {}",
+                    masked);
             return CardUpdateResponse.validationRejected(searchKeyFailure);
         }
 
-        Optional<CardEntity> stored =
-                cardQueries.findByCardNumber(padKey(request.cardNumber()));
+        Optional<CardEntity> stored = cardQueries.findByCardNumber(padKey(request.cardNumber()));
         if (stored.isEmpty()) {
-            log.info("A card update named no stored card");
+            log.info("A card update named no stored card, {}", masked);
             return CardUpdateResponse.cardNotFound();
         }
 
         RefreshedCard fetched = snapshotOf(stored.get());
         if (submittedMatches(request, fetched)) {
-            log.info("A card update submitted the values already stored");
+            log.info("A card update submitted the values already stored, {}", masked);
             return CardUpdateResponse.noChangeDetected();
         }
 
         String dataFailure = firstFailingMessage(request, DATA_PROPERTIES);
         if (dataFailure != null) {
-            log.info("A card update failed one field edit");
+            log.info("A card update failed one field edit, {}", masked);
             return CardUpdateResponse.validationRejected(dataFailure);
         }
 
-        LocalDate expiration = expirationDateOf(request);
+        LocalDate expiration = expirationDateOf(request, fetched.expiryDay());
         if (expiration == null) {
-            log.info("A card update named a day that is not on the calendar");
+            log.info("A card update named a month the stored day does not reach, {}", masked);
             return CardUpdateResponse.validationRejected(
                     CardValidationMessages.ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE);
         }
@@ -365,7 +374,7 @@ public class CardUpdateService {
             return self.getObject().applyUpdate(request, fetched, expiration);
         } catch (UpdateFailedAfterLock failed) {
             infrastructureFailures.increment();
-            log.warn("A card update failed after its row was locked", failed);
+            log.warn("A card update failed after its row was locked, {}", masked, failed);
             return CardUpdateResponse.updateFailedAfterLock();
         }
     }
@@ -373,13 +382,23 @@ public class CardUpdateService {
     /**
      * Locks the row, compares it against what the caller last saw, and rewrites it.
      *
+     * <p>Transformed from {@code 9200-WRITE-PROCESSING.} at
+     * {@code app/cbl/COCRDUPC.cbl:L1420-L1493}. The lock is the Customer Information Control System
+     * (CICS) {@code READ} carrying {@code UPDATE} at {@code app/cbl/COCRDUPC.cbl:L1429}, and the
+     * rewrite is the {@code REWRITE} at {@code app/cbl/COCRDUPC.cbl:L1477-L1483}.
+     *
      * <p>{@code @Transactional} carries the default propagation and the default read-write mode, so
      * this method opens the writing transaction when {@link #updateCard} calls it through
      * {@link #self}. The card row and the event row commit inside it.
      *
+     * <p>{@code app/cbl/COCRDUPC.cbl:L1461-L1475} rewrites all six fields of the record. Here the
+     * persistence layer issues the full-row statement and {@link CardEntity#applyUpdate} moves the
+     * three values the map admits. The card number, the account identifier and the card verification
+     * value are carried through, as {@code app/cbl/COCRDUPC.cbl:L1462-L1465} carries them.
+     *
      * @param request    the submitted update, whose components have passed every edit
      * @param fetched    the five values the caller last saw, read before this transaction opened
-     * @param expiration the expiry date the three submitted parts name
+     * @param expiration the expiry date the submitted year and month and the stored day name
      * @return the outcome: applied, refused for a concurrent change, or refused for a lock this
      *         method could not take
      * @throws NullPointerException  if any argument is {@code null}
@@ -393,10 +412,11 @@ public class CardUpdateService {
         Objects.requireNonNull(fetched, "fetched is required");
         Objects.requireNonNull(expiration, "expiration is required");
 
+        String masked = PanMasker.maskCardNumber(request.cardNumber());
         Optional<CardEntity> locked =
                 cards.findForUpdateByCardNumber(padKey(request.cardNumber()));
         if (locked.isEmpty()) {
-            log.info("A card update could not lock the row it had just read");
+            log.info("A card update could not lock the row it had just read, {}", masked);
             return CardUpdateResponse.lockNotAcquired();
         }
 
@@ -404,11 +424,9 @@ public class CardUpdateService {
         RefreshedCard current = snapshotOf(card);
         if (!current.equals(fetched)) {
             updateConflicts.increment();
-            log.info("A card update lost a race against another writer");
+            log.info("A card update lost a race against another writer, {}", masked);
             return CardUpdateResponse.changedBeforeUpdate(current);
         }
-
-        recordCrossReferenceDivergence(card);
 
         try {
             card.applyUpdate(padded(request.embossedName(), EMBOSSED_NAME_WIDTH), expiration,
@@ -420,84 +438,28 @@ public class CardUpdateService {
         }
 
         updatesApplied.increment();
-        log.info("A card update committed and produced one event");
+        log.info("A card update committed and produced one event, {}", masked);
         return CardUpdateResponse.updated();
-    }
-
-    /**
-     * Compares the account the locked card row names against the account the {@code card_xref}
-     * replica names for the same card, and records a disagreement without changing the outcome.
-     *
-     * <p>This service is the only one holding both values.
-     * {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6} is the account of the card
-     * row, and it is the value {@code outbox/OutboxWriter} uses as the message key of the
-     * {@code CardUpdated} event. {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}
-     * is the account the authorization decision resolves the same card to, reproducing the keyed
-     * read at {@code app/cbl/CBTRN02C.cbl:L383-L387}. When the two differ, the event for a card
-     * lands on one account's partition while every decision about that card reads another, and the
-     * per-account ordering the platform rests on is gone with nothing reporting it.
-     *
-     * <p>The comparison runs inside the writing transaction, on the row this transaction has locked,
-     * so the two values it compares are the two values that were true at the moment of the write.
-     * Reading the replica outside the transaction would compare against a row that could have moved.
-     *
-     * <p>It decides nothing. The source performs no such comparison: {@code app/cbl/COCRDUPC.cbl}
-     * reads {@code *COPY CVACT03Y.} commented out at {@code :L356} and its update path never opens
-     * the cross-reference dataset, so refusing an update here would answer a text no card program
-     * writes and would break equivalence. Transformation rule T7 governs this case, which is to
-     * reproduce behaviour and surface what looks wrong rather than silently correct it.
-     *
-     * <p>An absent cross-reference row counts as a disagreement, because a card with no
-     * cross-reference is a card every authorization declines with reason 100,
-     * {@code INVALID CARD NUMBER FOUND} at {@code app/cbl/CBTRN02C.cbl:L385-L387}, while this
-     * service continues to serve it as an active card. No row is written to repair it: the replica
-     * needs {@code XREF-CUST-ID PIC 9(09)} at {@code app/cpy/CVACT03Y.cpy:L6}, which the card record
-     * does not carry, so this service cannot construct the row it is missing. The gap is reported
-     * and left for the owner of the cross-reference to fill.
-     *
-     * <p>No log line and no meter tag carries a card number. The line names the account of the card
-     * row and the account the replica named, both of which are account identifiers, and the counter
-     * carries no identifier at all.
-     *
-     * @param card the locked card row, whose account is the authoritative one for this service
-     */
-    private void recordCrossReferenceDivergence(CardEntity card) {
-        Optional<CardCrossReferenceEntity> crossReference =
-                crossReferences.findByCardNumber(card.getCardNumber());
-
-        if (crossReference.isEmpty()) {
-            crossReferenceDivergences.increment();
-            log.warn("A card update wrote a card the cross-reference replica does not hold, so"
-                    + " every authorization for it declines with reason {} while this service"
-                    + " serves it. Account {} on the card row.",
-                    XREF_MISS_DECLINE_REASON, card.getAccountId());
-            return;
-        }
-
-        String replicaAccount = crossReference.get().getAccountId();
-        if (!card.getAccountId().equals(replicaAccount)) {
-            crossReferenceDivergences.increment();
-            log.warn("A card update wrote a card whose row names account {} and whose"
-                    + " cross-reference replica names account {}, so the event key and the"
-                    + " authorization decision disagree about which account the card belongs to.",
-                    card.getAccountId(), replicaAccount);
-        }
     }
 
     /**
      * Returns the text of the first failing edit among the named properties, in the order given.
      *
-     * <p>Within one property a missing value is reported ahead of a malformed one. Every edit of
-     * {@code app/cbl/COCRDUPC.cbl} tests {@code EQUAL LOW-VALUES} before it tests the character
-     * class, at {@code app/cbl/COCRDUPC.cbl:L725} then {@code L740} for the account, at
-     * {@code L768} then {@code L784} for the card, at {@code L811} then {@code L828} for the name,
-     * at {@code L851} then {@code L863} for the status, and in the same shape for both expiry
-     * parts. The constraint that carries a missing value is {@link NotBlank}, so that annotation
-     * decides the precedence.
+     * <p>Every text the program sets sits behind {@code IF WS-RETURN-MSG-OFF}, the condition name
+     * {@code VALUE SPACES} at {@code app/cbl/COCRDUPC.cbl:L174} on
+     * {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173}. Fifteen such guards
+     * stand across the program, and {@code app/cbl/COCRDUPC.cbl:L384} resets the field once per
+     * request. Every edit runs and the first text set is the text reported.
      *
-     * <p>Two violations of one property that carry the same text collapse, and the remaining order
-     * is the text itself. That keeps the answer of one request stable across runs, which an
-     * unordered violation set does not.
+     * <p>This method runs every named property and reports one text. It does not stop at the first
+     * failure and it does not answer with a list.
+     *
+     * <p>Within one property a missing value is reported ahead of a malformed one. Each edit tests
+     * {@code EQUAL LOW-VALUES} before it tests the character class. The card number does so at
+     * {@code app/cbl/COCRDUPC.cbl:L768} then {@code L784}, the name at
+     * {@code app/cbl/COCRDUPC.cbl:L811} then {@code L828}, and the status at
+     * {@code app/cbl/COCRDUPC.cbl:L851} then {@code L863}. The constraint carrying a missing value
+     * is {@link NotBlank}, so that annotation sets the precedence.
      *
      * @param request    the submitted update
      * @param properties the properties to validate, in source edit order
@@ -529,10 +491,10 @@ public class CardUpdateService {
     /**
      * Reports whether a numeric display field carries no value at all.
      *
-     * <p>The blank test of every edit reads three conditions, and the third is the numeric redefine
+     * <p>The blank test of each edit reads three conditions, and the third is the numeric redefine
      * against zero: {@code CC-CARD-NUM-N EQUAL ZEROS} at {@code app/cbl/COCRDUPC.cbl:L770}. Sixteen
-     * zeros are therefore absent rather than malformed, and they take
-     * {@link CardValidationMessages#PROMPT_FOR_CARD} rather than the character-class text.
+     * zeros are therefore absent, and they take
+     * {@link CardValidationMessages#PROMPT_FOR_CARD} and not the character-class text.
      *
      * @param value the submitted value, which may be {@code null}
      * @param width the width the Picture clause declares
@@ -546,26 +508,34 @@ public class CardUpdateService {
     }
 
     /**
-     * Reads the five values the concurrency comparison and the refresh both use.
+     * Reads the five values the concurrency comparison and the refresh both use, name folded.
      *
-     * <p>{@code app/cbl/COCRDUPC.cbl:L1513-L1517} refreshes exactly these five once the comparison
-     * fails. Every value is carried as text, matching the character slices the source compares at
-     * {@code app/cbl/COCRDUPC.cbl:L1504-L1508}.
+     * <p>{@code app/cbl/COCRDUPC.cbl:L1512-L1517} refreshes exactly these once the comparison at
+     * {@code app/cbl/COCRDUPC.cbl:L1503-L1508} fails. Every value is carried as text, matching the
+     * character slices the source compares.
      *
-     * <p>The source comparison opens on a sixth value, the card verification value at
-     * {@code app/cbl/COCRDUPC.cbl:L1503}, and this snapshot carries five. The sixth is immutable
-     * here: {@link CardEntity#applyUpdate} never writes it, {@link CardEntity} publishes no accessor
-     * for it, and no other path of this service writes a card row, so no writer can change it
-     * between the read and the lock. Carrying it would also put the value in a response body, which
-     * {@code CardholderDataExposureTest} refuses. Dropping it can therefore change no outcome, and
-     * it is the one difference between this comparison and the source's.
+     * <p>The embossed name arrives upper-cased, which puts the fold on both sides of that
+     * comparison. {@code 9000-READ-DATA.} folds the fetched name at
+     * {@code app/cbl/COCRDUPC.cbl:L1356-L1358} and stores it at
+     * {@code app/cbl/COCRDUPC.cbl:L1360}, and {@code 9300-CHECK-CHANGE-IN-REC.} folds the re-read
+     * name at {@code app/cbl/COCRDUPC.cbl:L1499-L1501} before comparing it at
+     * {@code app/cbl/COCRDUPC.cbl:L1504}. A stored name that changes only in letter case is
+     * therefore not a concurrent change. {@code app/data/ASCII/carddata.txt} carries mixed-case
+     * names such as {@code Aniya Von}, so the fold decides real rows.
+     *
+     * <p>The source comparison opens on a sixth value, {@code CARD-CVV-CD} at
+     * {@code app/cbl/COCRDUPC.cbl:L1503}, and this snapshot carries five. That value is invariant
+     * here: {@link CardEntity#applyUpdate} never writes it, {@link CardEntity} publishes no
+     * accessor for it, and no other path of this service writes a card row. Five values therefore
+     * cover every field a writer can change.
      *
      * @param card the card row to read
      * @return the snapshot
      */
     private static RefreshedCard snapshotOf(CardEntity card) {
         LocalDate expiration = card.getExpirationDate();
-        return new RefreshedCard(padded(card.getEmbossedName(), EMBOSSED_NAME_WIDTH),
+        return new RefreshedCard(
+                upperCased(padded(card.getEmbossedName(), EMBOSSED_NAME_WIDTH)),
                 digits(expiration.getYear(), EXPIRY_YEAR_WIDTH),
                 digits(expiration.getMonthValue(), EXPIRY_MONTH_WIDTH),
                 digits(expiration.getDayOfMonth(), EXPIRY_DAY_WIDTH),
@@ -575,25 +545,31 @@ public class CardUpdateService {
     /**
      * Reports whether the submitted values match the stored ones, upper-cased on both sides.
      *
-     * <p>Reproduces {@code app/cbl/COCRDUPC.cbl:L680-L681}, which compares
+     * <p>Reproduces {@code app/cbl/COCRDUPC.cbl:L680-L683}, which compares
      * {@code FUNCTION UPPER-CASE(CCUP-NEW-CARDDATA)} against
-     * {@code FUNCTION UPPER-CASE(CCUP-OLD-CARDDATA)}. That group is opened at
+     * {@code FUNCTION UPPER-CASE(CCUP-OLD-CARDDATA)} and sets
+     * {@code NO-CHANGES-DETECTED}, the text {@code 'No change detected with respect to values
+     * fetched.'} at {@code app/cbl/COCRDUPC.cbl:L188}. The group opens at
      * {@code app/cbl/COCRDUPC.cbl:L307} and holds fifty characters of name, four of year, two of
-     * month, two of day and one of status: fifty-nine characters, and the card number is not among
-     * them.
+     * month, two of day and one of status. The card number is not among them.
      *
-     * <p>Both sides are padded to those widths before the comparison, so a name of four letters
-     * matches the same four letters stored in a fifty-character field. Both sides are upper-cased,
-     * so a caller who changes only letter case reaches this branch, which is what
-     * {@link CardUpdateResponse.UpdateOutcome#NO_CHANGE_DETECTED} records.
+     * <p>Both sides are padded to those widths, so a name of four letters matches the same four
+     * letters stored in a fifty-character field.
+     *
+     * <p>The day of the submitted group is the stored day. {@code app/bms/COCRDUP.bms:L142}
+     * declares {@code EXPDAY DFHMDF ATTRB=(DRK,FSET,PROT)} while the four editable fields at L107,
+     * L117, L127 and L135 declare {@code UNPROT}, and
+     * {@code app/cbl/COCRDUPC.cbl:L1110}, {@code :L1123} and {@code :L1127} send
+     * {@code CCUP-OLD-EXPDAY} to that field on every path. {@code CCUP-NEW-EXPDAY} read back at
+     * {@code app/cbl/COCRDUPC.cbl:L621} is an echo of the stored day.
      *
      * @param request the submitted update
-     * @param fetched the stored values
+     * @param fetched the stored values, whose day is the effective submitted day
      * @return {@code true} when the two groups are equal
      */
     private static boolean submittedMatches(CardUpdateRequest request, RefreshedCard fetched) {
         String submitted = groupOf(request.embossedName(), request.expiryYear(),
-                request.expiryMonth(), request.expiryDay(), request.activeStatus());
+                request.expiryMonth(), fetched.expiryDay(), request.activeStatus());
         String storedGroup = groupOf(fetched.embossedName(), fetched.expiryYear(),
                 fetched.expiryMonth(), fetched.expiryDay(), fetched.activeStatus());
         return submitted.equals(storedGroup);
@@ -619,30 +595,37 @@ public class CardUpdateService {
     }
 
     /**
-     * Joins the three expiry parts into one date, or reports that they name no day.
+     * Joins the submitted year and month with the stored day into one date.
      *
-     * <p>{@code app/cbl/COCRDUPC.cbl:L1467-L1474} joins them with hyphens into ten characters of
-     * text, which holds an impossible day as readily as a real one. Column {@code expiration_date}
-     * is a {@code DATE}, so this platform refuses what the source would have stored, and
-     * {@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE} carries the reason.
+     * <p>{@code app/cbl/COCRDUPC.cbl:L1467-L1474} joins the three parts with hyphens into
+     * {@code CARD-UPDATE-EXPIRAION-DATE}, which is ten characters of text and holds an impossible
+     * day as readily as a real one. Column {@code expiration_date} is a {@code DATE}, so a month
+     * the stored day does not reach has no value to store, and
+     * {@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE} carries that outcome
+     * as ADDITIVE.
      *
-     * @param request the submitted update, whose three expiry parts have passed their constraints
-     * @return the date, or {@code null} when the three parts name no day of the calendar
+     * <p>The day is the stored one, so no submitted day reaches the column.
+     *
+     * @param request  the submitted update, whose year and month have passed their constraints
+     * @param storedDay the two-character day slice of the stored expiry
+     * @return the date, or {@code null} when the submitted month does not reach the stored day
      */
-    private static LocalDate expirationDateOf(CardUpdateRequest request) {
+    private static LocalDate expirationDateOf(CardUpdateRequest request, String storedDay) {
         try {
             return LocalDate.of(Integer.parseInt(request.expiryYear()),
-                    Integer.parseInt(request.expiryMonth()),
-                    Integer.parseInt(request.expiryDay()));
+                    Integer.parseInt(request.expiryMonth()), Integer.parseInt(storedDay));
         } catch (DateTimeException | NumberFormatException notADate) {
             return null;
         }
     }
 
     /**
-     * Pads a numeric display value on the left with zeros to the width its key column holds.
+     * Pads a numeric display value on the left with zeros to the width of the key column.
      *
-     * @param value the submitted value
+     * <p>{@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} is the key
+     * {@code app/cbl/COCRDUPC.cbl:L1425} moves into the record identifier.
+     *
+     * @param value the submitted value, which may be {@code null}
      * @return the value at exactly {@value #CARD_NUMBER_WIDTH} characters
      */
     private static String padKey(String value) {
@@ -688,10 +671,14 @@ public class CardUpdateService {
     /**
      * Reports that the rewrite or the event row failed once the row was held.
      *
-     * <p>Reproduces the condition {@code app/cbl/COCRDUPC.cbl:L1488} tests and
-     * {@code app/cbl/COCRDUPC.cbl:L1491} reports. Throwing rather than returning is deliberate: the
-     * transaction has to roll back, and a method that returned an outcome would commit whatever the
-     * failing statement had already written.
+     * <p>Carries the condition {@code app/cbl/COCRDUPC.cbl:L1488} tests and
+     * {@code app/cbl/COCRDUPC.cbl:L1491} reports, which sets
+     * {@code LOCKED-BUT-UPDATE-FAILED}, the text {@code 'Update of record failed'} at
+     * {@code app/cbl/COCRDUPC.cbl:L210}. That one assignment is the program's single unguarded
+     * text.
+     *
+     * <p>Leaving {@link #applyUpdate} by throwing is what rolls the transaction back, so the card
+     * row and the event row leave the database as they were.
      */
     public static final class UpdateFailedAfterLock extends RuntimeException {
 

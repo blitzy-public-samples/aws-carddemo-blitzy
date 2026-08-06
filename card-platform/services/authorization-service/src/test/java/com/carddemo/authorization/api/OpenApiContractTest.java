@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.authorization.api.GlobalExceptionHandler.ApiErrorResponse;
 import com.carddemo.events.DeclineReason;
 import java.io.InputStream;
 import java.lang.reflect.RecordComponent;
@@ -61,15 +62,19 @@ final class OpenApiContractTest {
     }
 
     /**
-     * Asserts the document describes the six status codes the endpoint answers with.
+     * Asserts the document describes the eight status codes the endpoint answers with.
      *
-     * <p>Both outcomes of a decision share {@code 200}, so there is no separate code for a decline.
-     * {@code 413} is the request body ceiling {@code config/RequestBodyCeilingFilter} applies.
+     * <p>An approval answers {@code 200} and a decline answers {@code 422}, which a rejected body
+     * shares, so no code belongs to a decline alone. {@code 413} is the request body ceiling
+     * {@code config/RequestBodyCeilingFilter} applies. {@code 406} and {@code 415} are the two media
+     * type refusals {@link GlobalExceptionHandler#onUnsupportedMediaType} carries the framework
+     * status of, and a caller reads both here without opening Java.
      */
     @Test
-    void theDocumentDescribesTheSixStatusCodes() {
-        assertEquals(Set.of("200", "400", "413", "422", "500", "503"), responses().keySet(),
-                "an approval answers 200, a decline and a rejected body share 422, and the four "
+    void theDocumentDescribesTheEightStatusCodes() {
+        assertEquals(Set.of("200", "400", "406", "413", "415", "422", "500", "503"),
+                responses().keySet(),
+                "an approval answers 200, a decline and a rejected body share 422, and the five "
                         + "remaining failure codes follow");
     }
 

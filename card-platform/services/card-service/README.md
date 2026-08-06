@@ -72,7 +72,6 @@ All three abandonment paths route through one method, so a row cannot reach `ABA
 | `carddemo.card.update.conflicts` | Counter | One update refused after a concurrent change |
 | `carddemo.card.events.published` | Counter | One outbox row published and marked |
 | `carddemo.card.failures` | Counter | One publish attempt that failed |
-| `carddemo.card.xref.divergence` | Counter | One replica disagreement observed during an update |
 | `carddemo.card.outbox.abandoned` | Counter | One row spent, with its diagnostic acknowledged |
 | `carddemo.card.dead.letters.failed` | Counter | One diagnostic the broker refused |
 | `carddemo.card.update.latency` | Timer | Update duration to commit |
@@ -95,7 +94,7 @@ The private database is `carddemo_card`, with schema `card_service`.
 
 `V2__seed.sql` loads 50 card rows and 50 cross-reference rows. The source text fixture carries only the 36 populated cross-reference bytes; its copybook and dataset declare 50 bytes.
 
-Before a committed update, the service compares `card.account_id` with `card_xref.account_id`. Missing or different data increments `carddemo.card.xref.divergence` and writes a diagnostic. It does not block or repair the update.
+`card_xref` has no reader and no writer in this service. `app/cbl/COCRDUPC.cbl` reads `*COPY CVACT03Y.` commented out at `:L356`, and its three file operations at `:L1383`, `:L1428` and `:L1478` touch only the card file, so the update path reproduces no cross-reference access. Reconciling the replica against `card.account_id` is an open task in [Suggested Next Tasks](../../docs/suggested-next-tasks.md).
 
 <br/>
 
@@ -115,7 +114,7 @@ Before a committed update, the service compares `card.account_id` with `card_xre
 
 ## Architecture
 
-Figure 1 shows the read paths, update transaction, divergence diagnostic, and asynchronous publish.
+Figure 1 shows the read paths, the update transaction, and the asynchronous publish.
 
 **Figure 1 — Card Read, Update, and CardUpdated Flow**
 
@@ -126,9 +125,7 @@ graph LR
     DETAIL["card detail"]
     UPDATE["ordered card update"]
     CARD[("card")]
-    XREF[("card_xref")]
-    CHECK{"account ids agree"}
-    METER["xref divergence counter"]
+    LOCK{"row locked and unchanged"}
     OUT[("outbox_event")]
     RELAY["outbox relay"]
     TOPIC{{"card.updated"}}
@@ -140,11 +137,9 @@ graph LR
     LIST --> CARD
     DETAIL --> CARD
     UPDATE --> CARD
-    UPDATE --> XREF
-    XREF --> CHECK
-    CARD --> CHECK
-    CHECK -->|no| METER
-    CHECK -->|yes or no| OUT
+    CARD --> LOCK
+    LOCK -->|no| UPDATE
+    LOCK -->|yes| OUT
     OUT --> RELAY
     RELAY ==> TOPIC
     RELAY -.->|row abandoned| DEAD
@@ -152,12 +147,12 @@ graph LR
 
 Legend for Figure 1:
 
-- Plain arrows are request, read, write, or diagnostic work.
-- The diamond compares the two local account identifiers.
+- Plain arrows are request, read, or write work.
+- The diamond is the field-level compare-and-swap of `app/cbl/COCRDUPC.cbl:L1503-L1508`, taken on the locked row.
 - Cylinders are private card-service tables.
 - The thick arrow is the Kafka publication.
 - The dotted arrow is the terminal diagnostic a spent outbox row produces.
-- The comparison never changes the source-compatible update outcome.
+- The card row and the outbox row commit in one transaction, or neither commits.
 
 The platform-wide consumer paths are in [Event Flow](../../docs/event-flow.md).
 

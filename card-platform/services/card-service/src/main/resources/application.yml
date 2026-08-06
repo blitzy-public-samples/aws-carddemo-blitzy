@@ -132,9 +132,9 @@ spring:
     # app/cpy/CVACT03Y.cpy is a card number, a customer identifier or an account
     # identifier, and no operation this platform serves alters any of the three.
     # V2__seed.sql puts the opening state there and nothing writes it afterwards.
-    # domain/CardUpdateService reads it inside the writing transaction and reports a
-    # disagreement through carddemo.card.xref.divergence, which is the maintenance the
-    # replica actually owes.
+    # No path reads it either: app/cbl/COCRDUPC.cbl has *COPY CVACT03Y. commented out
+    # at :L356 and its three file operations touch only the card file. The maintenance
+    # the replica owes is recorded as an open task in docs/suggested-next-tasks.md.
     #
     # The two settings below still hold the platform acknowledgement discipline, so a
     # listener added later inherits it rather than choosing it: a listener commits its

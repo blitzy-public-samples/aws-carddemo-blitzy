@@ -14,7 +14,6 @@ import java.util.Objects;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.kafka.support.KafkaHeaders;
@@ -25,9 +24,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * Reads one risk assessment and renders the cardholder alert a flagged transaction produces.
  *
- * <p>ADDITIVE in full. {@code app/cbl/CBSTM03A.CBL} carries no fraud concept, and no Common Business
- * Oriented Language (COBOL) program in CardDemo scores a transaction. The cardholder fields the
- * alert reports are the fields {@code 5000-CREATE-STATEMENT} assembles at
+ * <p>ADDITIVE in full. {@code app/cbl/CBSTM03A.CBL} carries no fraud concept, and no Common
+ * Business Oriented Language (COBOL) program in CardDemo scores a transaction. The cardholder
+ * fields the alert reports are the fields {@code 5000-CREATE-STATEMENT} assembles at
  * {@code app/cbl/CBSTM03A.CBL:L458-L504}.
  *
  * <p>This listener is the second independent reader of a second event, and it reads an event that
@@ -35,16 +34,17 @@ import org.springframework.transaction.support.TransactionTemplate;
  * class needed no change to the fraud service, to the ledger service or to the authorization
  * service.
  *
- * <p>One topic carries both assessment outcomes. {@link FraudFlagged} and {@link FraudCleared} both
- * travel on {@code fraud.assessed} and {@link #onFraudAssessed} routes on the concrete type the
- * deserializer built from the envelope {@code eventType} field. A cleared assessment produces no
- * alert and still claims its event, so a redelivery of it stays harmless.
+ * <p>One topic carries both assessment outcomes. {@link FraudFlagged} and {@link FraudCleared}
+ * travel together on the assessment topic, and {@link #onFraudAssessed} routes on the concrete type
+ * the deserializer built from the envelope {@code eventType} field. A payload parameter narrowed to
+ * one of the two records sends every delivery of the other to the dead-letter topic. A cleared
+ * assessment produces no alert and still claims its event, so a redelivery of it stays harmless.
  *
  * <p>Correlation is durable. The alert names the cardholder of the account the assessment carries,
  * read from {@code cardholder_context}, which {@code messaging/CustomerContextChangedConsumer}
- * fills. Nothing about the assessment is held in memory between two deliveries, and an account with
- * no row there renders as spaces, the state {@code INITIALIZE STATEMENT-LINES} at
- * {@code app/cbl/CBSTM03A.CBL:L459} leaves.
+ * fills. Nothing about the assessment is held in memory between two deliveries. An account the
+ * projection holds no row for fails the delivery, so the gap reaches the dead-letter topic in place
+ * of an alert carrying no name and no address.
  *
  * <p>No delivery-attempt row is written here. {@code notification_log} keys a row by card token and
  * masked card number, and an assessment carries neither.
@@ -68,6 +68,12 @@ public class FraudFlaggedConsumer {
     private static final String ABEND_CODE = "0999";
 
     /**
+     * Failure classifier a payload outside the two assessment outcomes carries, four characters
+     * wide, from {@code ABEND-CODE PIC X(4)} at {@code app/cpy/CSMSG02Y.cpy:L22}.
+     */
+    private static final String CONTRACT_CODE = "TYPE";
+
+    /**
      * Identity of this listener in the dead-letter metadata, eight characters wide, from
      * {@code ABEND-CULPRIT PIC X(8)} at {@code app/cpy/CSMSG02Y.cpy:L24}.
      */
@@ -82,6 +88,15 @@ public class FraudFlaggedConsumer {
      */
     private static final String NOTHING_WRITTEN =
             "no alert rendered or marker written for /transactionId";
+
+    /**
+     * Detail the dead-letter metadata carries for a payload this listener does not read.
+     *
+     * <p>The text names the envelope field the deserializer resolved the payload type from, and it
+     * holds no field value.
+     */
+    private static final String UNREADABLE_PAYLOAD =
+            "/eventType names a payload outside the two assessment outcomes";
 
     /** Reads the account-keyed cardholder fields one alert reports. */
     private final CardholderContextReader cardholderContextReader;
@@ -99,13 +114,14 @@ public class FraudFlaggedConsumer {
     private final NotificationMetrics metrics;
 
     /**
-     * Takes the two repositories, the domain service, the transaction runner and the meters.
+     * Takes the projection reader, the marker store, the domain service, the transaction runner and
+     * the meters.
      *
      * @param cardholderContextReader reader of the account-keyed cardholder projection
-     * @param processedEvents     store of duplicate-delivery markers
-     * @param notificationService renderer of the cardholder alert
-     * @param transactionTemplate runner of the one local transaction this listener opens
-     * @param metrics             the meter holder {@code config/ObservabilityConfig} registers
+     * @param processedEvents         store of duplicate-delivery markers
+     * @param notificationService     renderer of the cardholder alert
+     * @param transactionTemplate     runner of the one local transaction this listener opens
+     * @param metrics                 the meter holder {@code config/ObservabilityConfig} registers
      * @throws NullPointerException if any argument is null
      */
     public FraudFlaggedConsumer(CardholderContextReader cardholderContextReader,
@@ -127,9 +143,9 @@ public class FraudFlaggedConsumer {
      * acknowledges.
      *
      * <p>The topic and the consumer group both resolve from configuration, so neither name appears
-     * here as text. The payload type is the record the deserializer built, and this method accepts
-     * the two the shared topic carries. Any other payload is refused, which routes the record to the
-     * dead-letter topic rather than acknowledging an event no listener understood.
+     * here as text. The payload parameter is {@link Record}, which binds the event the deserializer
+     * built and leaves the transport record to the listener adapter. Both assessment outcomes are
+     * records, and this method refuses any other payload.
      *
      * <p>A failure leaves the offset uncommitted and travels to the listener container, which
      * decides between another delivery attempt and the dead-letter topic. The acknowledgement below
@@ -141,10 +157,6 @@ public class FraudFlaggedConsumer {
      * @throws NullPointerException if {@code event} or {@code acknowledgment} is null
      * @throws IllegalArgumentException if the payload is neither assessment outcome
      */
-    // The payload parameter is java.lang.Record and not Object on purpose. An Object
-    // parameter matches the ConsumerRecord the container supplies before payload
-    // resolution runs, so a valid assessment reaches the default branch and is
-    // dead-lettered. Record matches only the deserialized event.
     @KafkaListener(topics = "${carddemo.kafka.topics.fraud-assessed}",
             groupId = "${carddemo.kafka.groups.fraud-assessed}")
     public void onFraudAssessed(Record event, Acknowledgment acknowledgment,
@@ -152,12 +164,12 @@ public class FraudFlaggedConsumer {
         Objects.requireNonNull(event, "event is required");
         Objects.requireNonNull(acknowledgment, "acknowledgment is required");
 
-        switch (event) {
-            case FraudFlagged flagged -> applyFlagged(flagged, consumedTopic);
-            case FraudCleared cleared -> applyCleared(cleared, consumedTopic);
-            default -> throw new IllegalArgumentException("The record on this topic carries a "
-                    + event.getClass().getSimpleName()
-                    + ", and this listener reads a flagged or a cleared assessment.");
+        if (event instanceof FraudFlagged flagged) {
+            applyFlagged(flagged, consumedTopic);
+        } else if (event instanceof FraudCleared cleared) {
+            applyCleared(cleared, consumedTopic);
+        } else {
+            throw refusePayload(event);
         }
 
         acknowledgment.acknowledge();
@@ -217,8 +229,11 @@ public class FraudFlaggedConsumer {
      * Claims one event identifier inside the open transaction, and reports whether this delivery
      * took it.
      *
-     * <p>One statement claims the event, so no delivery reads the marker table and then writes it.
-     * The claim and whatever follows it commit together or not at all.
+     * <p>ADDITIVE. The source carries no duplicate detection: a replayed feed drives
+     * {@code 2900-WRITE-TRANSACTION-FILE} at {@code app/cbl/CBTRN02C.cbl:L562-L579} into a
+     * duplicate-key condition and on to its abend routine. One statement claims the event here, so
+     * no delivery reads the marker table and then writes it. The claim and whatever follows it
+     * commit together or not at all.
      *
      * @param eventId       the identifier the fraud service assigned
      * @param consumedTopic the topic the delivery arrived on, recorded on the marker
@@ -239,9 +254,9 @@ public class FraudFlaggedConsumer {
     /**
      * Reads the ten cardholder fields one account carries, refusing when the projection holds none.
      *
-     * <p>An account with no row once yielded blank fields, so a fraud alert reached a cardholder with
-     * no name and no address on it. {@link CardholderContextReader#require(String)} reports the gap
-     * instead, which leaves the offset uncommitted and has the delivery taken again.
+     * <p>{@link CardholderContextReader#require(String)} raises a fault for an account the
+     * projection holds no row for, which leaves the offset uncommitted and has the delivery taken
+     * again. {@code messaging/CustomerContextChangedConsumer} fills that projection.
      *
      * @param accountId the account the assessment names
      * @return the cardholder fields the projection holds for the account
@@ -249,7 +264,6 @@ public class FraudFlaggedConsumer {
     private CardholderDetails cardholderDetails(String accountId) {
         return cardholderContextReader.require(accountId);
     }
-
 
     /**
      * Normalises the consumed topic for the marker column, which holds null for none.
@@ -264,11 +278,12 @@ public class FraudFlaggedConsumer {
     /**
      * Counts one failure and reports its four metadata fields, leaving the throw to the caller.
      *
-     * <p>The four fields carry the layout of {@code 01 ABEND-DATA} at
-     * {@code app/cpy/CSMSG02Y.cpy:L21-L29}. {@code ABEND-REASON} names the exception type and
-     * {@code ABEND-MSG} names one field by its JSON pointer, so no field value and no payload
-     * reaches a log line. Retry counting and routing to the dead-letter topic belong to the
-     * listener container in {@code com.carddemo.notification.config}.
+     * <p>ADDITIVE. The four fields carry the layout of {@code 01 ABEND-DATA} at
+     * {@code app/cpy/CSMSG02Y.cpy:L21-L29}, a copybook the statement program never copies.
+     * {@code ABEND-REASON} names the exception type and {@code ABEND-MSG} names one field by its
+     * JSON pointer, so no field value and no payload reaches a log line. Retry counting and routing
+     * to the dead-letter topic belong to the listener container in
+     * {@code com.carddemo.notification.config}.
      *
      * @param eventId the identifier of the event that failed
      * @param failure the fault this delivery raised
@@ -287,15 +302,44 @@ public class FraudFlaggedConsumer {
     }
 
     /**
+     * Counts one contract failure, reports its four metadata fields, and builds the refusal the
+     * caller throws.
+     *
+     * <p>ADDITIVE, on the same layout {@link #reportFailure(UUID, RuntimeException)} carries.
+     * {@code ABEND-REASON} names the record type the deserializer built and {@code ABEND-MSG} names
+     * one envelope field by its JSON pointer, so no field value reaches a log line. A payload
+     * outside the two assessment outcomes repeats on every attempt, and the listener container
+     * routes it to the dead-letter topic once its attempts run out.
+     *
+     * @param event the payload this delivery carried
+     * @return the refusal the caller throws, which leaves the offset uncommitted
+     */
+    private IllegalArgumentException refusePayload(Record event) {
+        String received = event.getClass().getSimpleName();
+        DeadLetterMetadata metadata =
+                DeadLetterMetadata.of(CONTRACT_CODE, CULPRIT, received, UNREADABLE_PAYLOAD);
+        metrics.failures(NotificationMetrics.FAILURE_SCHEMA_VALIDATION).increment();
+
+        LOG.atError()
+                .addKeyValue("abendCode", metadata.abendCode())
+                .addKeyValue("abendCulprit", metadata.culprit())
+                .addKeyValue("abendReason", metadata.reason())
+                .addKeyValue("abendMessage", metadata.message())
+                .log("A payload of type {} arrived on the assessment topic, and this delivery stays"
+                        + " unacknowledged.", received);
+
+        return new IllegalArgumentException("The record on this topic carries a " + received
+                + ", and this listener reads a flagged or a cleared assessment.");
+    }
+
+    /**
      * Names the failure kind one fault counts under.
      *
      * <p>A database fault counts as a persistence failure and every other fault as a rendering
      * failure. {@code ObservabilityConfig.NotificationMetrics#isPersistenceFault} decides the first
-     * case for the whole service: a paused or unreachable database raises
-     * {@code CannotCreateTransactionException} from the connection pool, which is a transaction
-     * fault and not a data-access fault, so testing for the latter alone counted a database outage as
-     * a rendering failure and left the persistence series at zero.
-     * {@code config/ObservabilityConfig} registers both series.
+     * case for the whole service, and it names a transaction fault as well as a data-access fault:
+     * an unreachable database raises {@code CannotCreateTransactionException} from the connection
+     * pool. {@code config/ObservabilityConfig} registers both series.
      *
      * @param failure the fault this delivery raised
      * @return the tag value the failure counter carries

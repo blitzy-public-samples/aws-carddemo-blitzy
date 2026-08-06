@@ -3,24 +3,21 @@ package com.carddemo.notification.api;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
 
+import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PanMasker;
-import com.carddemo.notification.config.ObservabilityConfig;
-import com.carddemo.notification.domain.NotificationRenderer;
-import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.entity.StatementTransactionEntity;
 import com.carddemo.notification.entity.StatementTransactionEntity.StatementTransactionId;
-import com.carddemo.notification.repository.NotificationLogRepository;
-import com.carddemo.notification.repository.StatementTransactionRepository;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
-import java.util.Iterator;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
@@ -30,438 +27,954 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * Response tests for {@link NotificationHistoryResponse} and {@link NotificationTransactionItem}.
+ * Envelope and serialized-body tests for {@link NotificationHistoryResponse}.
  *
- * <p>{@link NotificationService#totalOf(List)} owns the per-card total, and this record renders it.
- * {@code MOVE ZERO TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L325} resets it for each card and
- * {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429} adds one row at a time,
- * truncating toward zero. Every total below travels through that service, so the two agree.
+ * <p>Five components carry one card's alert history. The record declares them in the order
+ * {@code cardToken}, {@code cardNumber}, {@code transactionCount}, {@code totalAmount},
+ * {@code transactions}.
  *
- * <p>The item mapping decodes fixed-width storage. A {@code CHAR} column returns space-padded, and
- * the two numeric identifiers return without their leading zeros.
+ * <p>The statement program splits the envelope from the item. The move into
+ * {@code TRNX-CARD-NUM} at {@code app/cbl/CBSTM03A.CBL:L421} runs once per card group. The move
+ * into {@code TRNX-ID} at {@code app/cbl/CBSTM03A.CBL:L424-L425} and the move into
+ * {@code TRNX-REST} at {@code app/cbl/CBSTM03A.CBL:L426-L427} run once per transaction. The card
+ * number sits on the envelope at the width {@code TRNX-CARD-NUM PIC X(16)} at
+ * {@code app/cpy/COSTM01.CPY:L22} declares, inside the group {@code 05 TRNX-KEY.} at
+ * {@code app/cpy/COSTM01.CPY:L21}. The trailing {@code FILLER PIC X(20)} at
+ * {@code app/cpy/COSTM01.CPY:L36} is dropped and carries no component.
+ *
+ * <p>{@code WS-TOTAL-AMT PIC S9(9)V99 VALUE 0} at {@code app/cbl/CBSTM03A.CBL:L65} sits under
+ * {@code 01 COMP3-VARIABLES COMP-3.} at {@code app/cbl/CBSTM03A.CBL:L64}. The program zeroes it
+ * for each card at {@code app/cbl/CBSTM03A.CBL:L325}, then enters the transaction loop at
+ * {@code app/cbl/CBSTM03A.CBL:L326}. It adds one row at {@code app/cbl/CBSTM03A.CBL:L429}, after
+ * the render at {@code app/cbl/CBSTM03A.CBL:L428}, and moves the sum into
+ * {@code WS-TRN-AMT PIC S9(9)V99} at {@code app/cbl/CBSTM03A.CBL:L68} through
+ * {@code app/cbl/CBSTM03A.CBL:L433}. Nine integer digits is the ceiling on a summed total.
+ *
+ * <p>{@code NotificationService} in the sibling {@code domain} package accumulates the per-card
+ * total. The tests below assert how the factory renders a total handed to it.
+ *
+ * <p>Masking is an addition. The card detail map shows all sixteen characters: {@code LENGTH=16}
+ * at {@code app/bms/COCRDSL.bms:L99}, under the label at {@code app/bms/COCRDSL.bms:L95}. The card
+ * record keeps its verification value in the clear as {@code CARD-CVV-CD PIC 9(03)} at
+ * {@code app/cpy/CVACT02Y.cpy:L7}, beside {@code CARD-NUM PIC X(16)} at
+ * {@code app/cpy/CVACT02Y.cpy:L5}. A full Primary Account Number (PAN) reaches the mask helper and
+ * goes no further, and the JavaScript Object Notation (JSON) body carries the masked form alone.
+ *
+ * <p>{@code card-platform/docs/decision-log.md} carries two decisions. The first is the masked card
+ * number as an additive deviation, evidenced by {@code app/bms/COCRDSL.bms:L99} and
+ * {@code app/cpy/CVACT02Y.cpy:L7}. The second is truncation toward zero over half-up at every
+ * arithmetic site, from Agent Action Plan section 0.1.1 item I1.
+ *
+ * <p>{@code card-platform/docs/business-rule-flags.md} carries one source finding. The move at
+ * {@code app/cbl/CBSTM03A.CBL:L433} drops a high-order digit and raises no diagnostic.
+ *
+ * <p>Every input below is built in this class. These tests read no file, start no application
+ * context, open no database connection and reach no broker.
  */
 final class NotificationHistoryResponseTest {
 
-    /** A masked card number, which every item displays. */
-    private static final String MASKED_CARD = "************7065";
+    /**
+     * The five component names, in the order {@link NotificationHistoryResponse} declares them.
+     */
+    private static final List<String> DECLARED_COMPONENTS = List.of(
+            "cardToken", "cardNumber", "transactionCount", "totalAmount", "transactions");
 
-    /** A full card number, split so no sixteen-digit literal appears in one piece. */
-    private static final String FULL_CARD = "4859452612877" + "065";
+    /**
+     * The property names a body carries where the read model holds no row for the card. The
+     * display card number is left out of the body altogether.
+     */
+    private static final List<String> PROPERTIES_WITHOUT_A_DISPLAY_CARD_NUMBER = List.of(
+            "cardToken", "transactionCount", "totalAmount", "transactions");
 
-    /** Card token of that card, and the identity every response below is keyed on. */
-    private static final String CARD_TOKEN = PanMasker.cardToken(FULL_CARD);
+    /**
+     * Paging and cursor names, lower-cased. The history route carries no paging parameter. No
+     * component names one.
+     */
+    private static final List<String> PAGING_NAMES = List.of("page", "size", "limit", "offset",
+            "cursor", "sort", "nextpage", "hasnext", "totalpages", "links");
 
-    /** Card token of a second card, used where a token has to differ from {@link #CARD_TOKEN}. */
-    private static final String OTHER_CARD_TOKEN = PanMasker.cardToken("4859452612870" + "001");
+    /**
+     * Fields other services own, lower-cased. The statement program renders six of them, and the
+     * account service owns every one.
+     *
+     * <p>{@code ST-NAME PIC X(75)} sits at {@code app/cbl/CBSTM03A.CBL:L91}, under the group at
+     * {@code app/cbl/CBSTM03A.CBL:L90}. The three address groups sit at
+     * {@code app/cbl/CBSTM03A.CBL:L93}, {@code app/cbl/CBSTM03A.CBL:L96} and
+     * {@code app/cbl/CBSTM03A.CBL:L99}. {@code ST-CURR-BAL PIC 9(9).99-} sits at
+     * {@code app/cbl/CBSTM03A.CBL:L113}, under the label at {@code app/cbl/CBSTM03A.CBL:L112}.
+     * {@code ST-FICO-SCORE PIC X(20)} sits at {@code app/cbl/CBSTM03A.CBL:L118}.</p>
+     */
+    private static final List<String> FIELDS_OTHER_SERVICES_OWN = List.of("accountid",
+            "currentbalance", "creditlimit", "cashcreditlimit", "activestatus", "opendate",
+            "expir", "reissuedate", "groupid", "ficoscore", "customername", "addressline1",
+            "addressline2", "addressline3", "declinereason", "cardstatus", "accountstatus",
+            "deliverychannel", "emailaddress", "phonenumber");
 
-    /** Shape the interface description declares for a monetary value. */
-    private static final Pattern MONEY = Pattern.compile("^-?\\d{1,9}\\.\\d{2}$");
+    /**
+     * The envelope property names every event schema declares, lower-cased. A history body
+     * restates none of them.
+     */
+    private static final List<String> EVENT_ENVELOPE_NAMES = List.of("eventid", "eventtype",
+            "schemaversion", "occurredat", "aggregateid");
 
-    /** Totals rows the way the endpoint does. */
-    private static final NotificationService NOTIFICATIONS = new NotificationService(List.of(),
-            mock(StatementTransactionRepository.class), mock(NotificationLogRepository.class),
-            new ObservabilityConfig().notificationMetrics(new SimpleMeterRegistry()));
+    /**
+     * The abbreviated verification field of the source card record, lower-cased. Source:
+     * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}.
+     */
+    private static final String VERIFICATION_FIELD_ABBREVIATION =
+            "CARD-CVV-CD".split("-")[1].toLowerCase(Locale.ROOT);
 
+    /** Two further spellings of a verification field, lower-cased. */
+    private static final List<String> VERIFICATION_FIELD_SPELLINGS =
+            List.of("cardverification", "securitycode");
+
+    /**
+     * The two fractional digits {@code TRNX-AMT PIC S9(09)V99} at
+     * {@code app/cpy/COSTM01.CPY:L29} declares.
+     */
+    private static final int AMOUNT_SCALE = 2;
+
+    /** Shape of a masked card number: twelve mask characters then four digits. */
+    private static final Pattern MASKED_CARD_NUMBER_SHAPE = Pattern.compile("^\\*{12}[0-9]{4}$");
+
+    /**
+     * Shape of a rendered total: an optional leading minus, at most nine integer digits, a point
+     * and two fractional digits. The nine integer digits come from
+     * {@code WS-TOTAL-AMT PIC S9(9)V99} at {@code app/cbl/CBSTM03A.CBL:L65}.
+     */
+    private static final Pattern TOTAL_SHAPE = Pattern.compile("^-?\\d{1,9}\\.\\d{2}$");
+
+    /** A run of sixteen digits, the shape of a full card number. */
+    private static final Pattern SIXTEEN_DIGIT_RUN = Pattern.compile("[0-9]{16}");
+
+    /** A property name made of digits alone, the shape a reject reason code would take. */
+    private static final Pattern DIGITS_ONLY = Pattern.compile("^[0-9]+$");
+
+    /** The masked form of {@link #fullCardNumber()}: twelve mask characters then four digits. */
+    private static final String MASKED_CARD_NUMBER = PanMasker.maskCardNumber(fullCardNumber());
+
+    /** The masked form of {@link #secondFullCardNumber()}, ending in different digits. */
+    private static final String SECOND_MASKED_CARD_NUMBER =
+            PanMasker.maskCardNumber(secondFullCardNumber());
+
+    /**
+     * The card token every row and response below is keyed on: sixty-four lower-case hexadecimal
+     * characters, the shape {@link PanMasker#CARD_TOKEN_PATTERN} declares. Eight characters
+     * repeated eight times. No digit run in the value reaches two characters.
+     */
+    private static final String CARD_TOKEN = "a1b2c3d4".repeat(8);
+
+    /**
+     * A transaction identifier at the sixteen characters {@code app/cpy/COSTM01.CPY:L23} declares.
+     */
+    private static final String FIRST_TRANSACTION_ID = "TRN0000000000001";
+
+    /** A second transaction identifier at the same width. */
+    private static final String SECOND_TRANSACTION_ID = "TRN0000000000002";
+
+    /** A third transaction identifier at the same width. */
+    private static final String THIRD_TRANSACTION_ID = "TRN0000000000003";
+
+    /** A type code at the two characters {@code app/cpy/COSTM01.CPY:L25} declares. */
+    private static final String TYPE_CODE = "01";
+
+    /** A category code below the four digits {@code app/cpy/COSTM01.CPY:L26} declares. */
+    private static final String CATEGORY_CODE = "5";
+
+    /** A source value below the ten characters {@code app/cpy/COSTM01.CPY:L27} declares. */
+    private static final String SOURCE = "POS TERM";
+
+    /** A description below the hundred characters {@code app/cpy/COSTM01.CPY:L28} declares. */
+    private static final String DESCRIPTION = "PURCHASE HARBOUR CO.";
+
+    /** A merchant identifier below the nine digits {@code app/cpy/COSTM01.CPY:L30} declares. */
+    private static final String MERCHANT_ID = "42";
+
+    /** A merchant name below the fifty characters {@code app/cpy/COSTM01.CPY:L31} declares. */
+    private static final String MERCHANT_NAME = "HARBOUR SUPPLY CO";
+
+    /** A merchant city below the fifty characters {@code app/cpy/COSTM01.CPY:L32} declares. */
+    private static final String MERCHANT_CITY = "AUSTIN";
+
+    /** A merchant mail code below the ten characters {@code app/cpy/COSTM01.CPY:L33} declares. */
+    private static final String MERCHANT_ZIP = "72112";
+
+    /**
+     * An origin timestamp at the twenty-six characters {@code app/cpy/COSTM01.CPY:L34} declares,
+     * with a space between the day and the hour.
+     */
+    private static final String ORIGIN_TIMESTAMP = "2022-06-10 19:27:53.000000";
+
+    /**
+     * A processing timestamp at the twenty-six characters {@code app/cpy/COSTM01.CPY:L35}
+     * declares, with a dash between the day and the hour.
+     */
+    private static final String PROCESSING_TIMESTAMP = "2022-07-19-23.16.01.470000";
+
+    /** A row amount at the two fractional digits {@code app/cpy/COSTM01.CPY:L29} declares. */
+    private static final BigDecimal ROW_AMOUNT = new BigDecimal("50.47");
+
+    /** A total already at scale two. */
+    private static final BigDecimal TOTAL_AT_SCALE_TWO = new BigDecimal("1234.56");
+
+    /** A zero total at scale two, the value a card with no row carries. */
+    private static final BigDecimal ZERO_TOTAL = new BigDecimal("0.00");
+
+    /** A total at the nine integer digits {@code app/cbl/CBSTM03A.CBL:L65} declares. */
+    private static final BigDecimal NINE_INTEGER_DIGIT_TOTAL = new BigDecimal("999999999.99");
+
+    /** A refund total, which carries a leading minus. */
+    private static final BigDecimal REFUND_TOTAL = new BigDecimal("-125.00");
+
+    /** A total one fractional digit past the scale the factory accepts. */
+    private static final BigDecimal TOTAL_PAST_SCALE_TWO = new BigDecimal("1.005");
+
+    /** A negative total one fractional digit past the scale the factory accepts. */
+    private static final BigDecimal NEGATIVE_TOTAL_PAST_SCALE_TWO = new BigDecimal("-1.005");
+
+    /** Serializes a response the way the module serializes one. */
+    private static final ObjectMapper MAPPER = JsonMapper.builder().build();
+
+    /** Asserts {@link NotificationHistoryResponse} is a record. */
     @Test
-    void anAccountWithNoRowsCarriesAnEmptyArrayAndAZeroTotal() {
-        NotificationHistoryResponse response = response(List.of());
-        assertEquals(CARD_TOKEN, response.cardToken(), "card token");
-        assertNull(response.cardNumber(),
-                "no row holds the masked form, so the envelope invents none");
-        assertEquals(0, response.transactionCount(), "count");
-        assertEquals("0.00", response.totalAmount(), "total");
-        assertEquals(List.of(), response.transactions(), "transactions");
+    void theResponseIsARecord() {
+        assertTrue(NotificationHistoryResponse.class.isRecord(),
+                "NotificationHistoryResponse is a record");
     }
 
+    /** Asserts the response declares five components and no sixth. */
     @Test
-    void theCardNumberComesFromTheStoredRowAndNotFromTheRequest() {
-        NotificationHistoryResponse response = response(List.of(row("0000000000000001", "1.00")));
-        assertEquals(MASKED_CARD, response.cardNumber(),
-                "the response reports the masked form the row holds");
-        assertEquals(CARD_TOKEN, response.cardToken(), "the token travels through unchanged");
-        assertFalse(response.cardNumber().contains(FULL_CARD.substring(0, 12)),
-                "no digit but the last four reaches the response");
+    void theResponseDeclaresFiveComponents() {
+        assertEquals(5, NotificationHistoryResponse.class.getRecordComponents().length,
+                "component count");
     }
 
+    /**
+     * Asserts the component names and their order. The card number is envelope-level, from
+     * {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22}, and the move at
+     * {@code app/cbl/CBSTM03A.CBL:L421} runs once per card group where
+     * {@code app/cbl/CBSTM03A.CBL:L424-L427} runs once per transaction.
+     */
     @Test
-    void theCountMatchesTheRowsSupplied() {
-        NotificationHistoryResponse response = response(
-                List.of(row("0000000000000001", "10.00"), row("0000000000000002", "5.50")));
-        assertEquals(MASKED_CARD, response.cardNumber(), "the rows supply the masked card number");
-        assertEquals(2, response.transactionCount(), "count");
-        assertEquals(2, response.transactions().size(), "items");
+    void theComponentNamesFollowTheOrderTheRecordDeclares() {
+        assertEquals(DECLARED_COMPONENTS, componentNames(),
+                "the five component names, in declaration order");
     }
 
+    /** Asserts the declared type of each component. */
     @Test
-    void theTotalAddsEveryAmountAtTwoFractionalDigits() {
-        NotificationHistoryResponse response = response(
-                List.of(row("0000000000000001", "194.00"), row("0000000000000002", "310.77")));
-        assertEquals("504.77", response.totalAmount(), "total");
-        assertTrue(MONEY.matcher(response.totalAmount()).matches(), "shape");
+    void eachComponentCarriesTheTypeTheRecordDeclares() {
+        assertEquals(String.class, componentNamed("cardToken").getType(), "cardToken");
+        assertEquals(String.class, componentNamed("cardNumber").getType(), "cardNumber");
+        assertEquals(int.class, componentNamed("transactionCount").getType(), "transactionCount");
+        assertEquals(String.class, componentNamed("totalAmount").getType(), "totalAmount");
+        assertEquals(List.class, componentNamed("transactions").getType(), "transactions");
     }
 
+    /**
+     * Asserts the total travels as text. The two fractional digits come from
+     * {@code TRNX-AMT PIC S9(09)V99} at {@code app/cpy/COSTM01.CPY:L29}.
+     */
     @Test
-    void aRefundLowersTheTotalAndKeepsItsSign() {
-        NotificationHistoryResponse response = response(
-                List.of(row("0000000000000001", "10.00"), row("0000000000000002", "-25.50")));
-        assertEquals("-15.50", response.totalAmount(), "a negative total keeps its minus");
-        assertTrue(MONEY.matcher(response.totalAmount()).matches(), "shape");
+    void theTotalIsDeclaredAsTextAndNotAsANumericType() {
+        assertEquals(String.class, componentNamed("totalAmount").getType(), "declared type");
+        assertNotEquals(BigDecimal.class, componentNamed("totalAmount").getType(),
+                "the total is text on the wire");
     }
 
+    /** Asserts the element type of the transaction list. */
     @Test
-    void aNegativeTotalTruncatesTowardZeroAndNotTowardNegativeInfinity() {
-        BigDecimal awkward = new BigDecimal("-0.005");
-        assertEquals("0.00", awkward.setScale(2, RoundingMode.DOWN).toPlainString(),
-                "truncation toward zero");
-        assertNotEquals(awkward.setScale(2, RoundingMode.DOWN),
-                awkward.setScale(2, RoundingMode.FLOOR),
-                "FLOOR agrees with DOWN for positive values and diverges here");
+    void theTransactionsComponentIsATypedListOfItems() {
+        ParameterizedType listType =
+                (ParameterizedType) componentNamed("transactions").getGenericType();
+
+        assertEquals(1, listType.getActualTypeArguments().length, "type argument count");
+        assertEquals(NotificationTransactionItem.class, listType.getActualTypeArguments()[0],
+                "element type");
     }
 
+    /** Asserts no component names a paging or cursor parameter. */
     @Test
-    void theItemsKeepTheOrderTheRowsArrivedIn() {
-        NotificationHistoryResponse response = response(
-                List.of(row("0000000000000001", "1.00"), row("0000000000000002", "2.00"),
-                        row("0000000000000003", "3.00")));
-        assertEquals(List.of("0000000000000001", "0000000000000002", "0000000000000003"),
+    void noComponentCarriesAPagingParameter() {
+        for (String pagingName : PAGING_NAMES) {
+            assertFalse(anyComponentNameContains(pagingName),
+                    "no component names " + pagingName);
+        }
+    }
+
+    /**
+     * Asserts the display card number carries twelve mask characters then four digits. The width
+     * is the sixteen characters {@code TRNX-CARD-NUM PIC X(16)} at
+     * {@code app/cpy/COSTM01.CPY:L22} declares.
+     */
+    @Test
+    void theDisplayCardNumberCarriesTwelveMaskCharactersThenFourDigits() {
+        NotificationHistoryResponse response = responseWithOneRow();
+
+        assertTrue(MASKED_CARD_NUMBER_SHAPE.matcher(response.cardNumber()).matches(),
+                "the masked shape");
+        assertEquals("************7065", response.cardNumber(), "the masked value");
+    }
+
+    /** Asserts the display card number holds sixteen characters. */
+    @Test
+    void theDisplayCardNumberHoldsSixteenCharacters() {
+        assertEquals(PanMasker.CARD_NUMBER_LENGTH, responseWithOneRow().cardNumber().length(),
+                "display width");
+    }
+
+    /** Asserts the display card number keeps the last four digits of the card number. */
+    @Test
+    void theDisplayCardNumberKeepsTheLastFourDigitsOfTheCardNumber() {
+        String cardNumber = fullCardNumber();
+        String lastFour = cardNumber.substring(cardNumber.length() - PanMasker.VISIBLE_DIGIT_COUNT);
+
+        String displayed = responseWithOneRow().cardNumber();
+
+        assertEquals(lastFour, displayed.substring(displayed.length() - lastFour.length()),
+                "the four digits kept");
+    }
+
+    /** Asserts the display card number differs from the card number it was masked from. */
+    @Test
+    void theDisplayCardNumberDiffersFromTheCardNumberItWasMaskedFrom() {
+        NotificationHistoryResponse response = responseWithOneRow();
+
+        assertNotEquals(fullCardNumber(), response.cardNumber(), "masked, not passed through");
+        assertFalse(response.cardNumber().contains(fullCardNumber().substring(0, 12)),
+                "no leading digit group survives");
+    }
+
+    /**
+     * Asserts no accessor on the response or on any item returns the card number. Five response
+     * accessors and thirteen item accessors are read.
+     */
+    @Test
+    void noAccessorOnTheResponseOrItsItemsReturnsTheCardNumber() throws Exception {
+        String cardNumber = fullCardNumber();
+
+        List<String> values = everyAccessorValue(responseWithThreeRows());
+
+        assertEquals(5 + 3 * 13, values.size(), "accessors read");
+        for (String value : values) {
+            assertFalse(value.contains(cardNumber), "no accessor returns the card number");
+            assertFalse(SIXTEEN_DIGIT_RUN.matcher(value).find(),
+                    "no accessor returns a sixteen-digit run");
+        }
+    }
+
+    /**
+     * Asserts the serialized body carries no sixteen-digit run and no card number. Masking is an
+     * addition: {@code LENGTH=16} at {@code app/bms/COCRDSL.bms:L99} shows the source field
+     * unmasked, under the label at {@code app/bms/COCRDSL.bms:L95}.
+     */
+    @Test
+    void noSerializedBodyCarriesASixteenDigitRun() {
+        String body = MAPPER.writeValueAsString(responseWithThreeRows());
+
+        assertFalse(SIXTEEN_DIGIT_RUN.matcher(body).find(), "no sixteen-digit run in the body");
+        assertFalse(body.contains(fullCardNumber()), "the card number reaches no property");
+        assertFalse(body.contains(fullCardNumber().substring(0, 12)),
+                "no leading digit group of the card number reaches a property");
+        assertTrue(body.contains(MASKED_CARD_NUMBER), "the masked form is what the body carries");
+    }
+
+    /**
+     * Asserts no property of the body names a verification field. The source card record keeps
+     * that value in the clear as {@code CARD-CVV-CD PIC 9(03)} at
+     * {@code app/cpy/CVACT02Y.cpy:L7}.
+     */
+    @Test
+    void noSerializedBodyCarriesAVerificationFieldProperty() {
+        List<String> names = lowerCasePropertyNames(bodyOf(responseWithThreeRows()));
+
+        for (String name : names) {
+            assertFalse(name.contains(VERIFICATION_FIELD_ABBREVIATION),
+                    "no property names the abbreviated verification field");
+            for (String spelling : VERIFICATION_FIELD_SPELLINGS) {
+                assertFalse(name.contains(spelling), "no property names " + spelling);
+            }
+        }
+    }
+
+    /** Asserts the body carries five properties, named and ordered as the record declares them. */
+    @Test
+    void theSerializedBodyCarriesFivePropertiesInDeclarationOrder() {
+        JsonNode body = bodyOf(responseWithThreeRows());
+
+        assertEquals(DECLARED_COMPONENTS, propertiesOf(body), "property names, in that order");
+        assertEquals(5, body.size(), "property count");
+        assertTrue(body.get("cardToken").isString(), "the token travels as text");
+        assertTrue(body.get("cardNumber").isString(), "the display value travels as text");
+        assertTrue(body.get("totalAmount").isString(), "the total travels as text");
+        assertTrue(body.get("transactions").isArray(), "the transactions travel as an array");
+    }
+
+    /**
+     * Asserts a body for a card with no row carries four properties and leaves out the display
+     * value.
+     */
+    @Test
+    void aBodyForACardWithNoRowLeavesOutTheDisplayCardNumber() {
+        JsonNode body = bodyOf(emptyResponse());
+
+        assertEquals(PROPERTIES_WITHOUT_A_DISPLAY_CARD_NUMBER, propertiesOf(body),
+                "property names, in that order");
+        assertEquals(4, body.size(), "property count");
+        assertFalse(body.has("cardNumber"), "the display value is absent from the body");
+        assertEquals(CARD_TOKEN, body.get("cardToken").stringValue(), "the token is present");
+    }
+
+    /** Asserts three rows yield a count of three. */
+    @Test
+    void threeRowsYieldACountOfThree() {
+        assertEquals(3, responseWithThreeRows().transactionCount(), "count");
+    }
+
+    /** Asserts one row yields a count of one. */
+    @Test
+    void oneRowYieldsACountOfOne() {
+        assertEquals(1, responseWithOneRow().transactionCount(), "count");
+    }
+
+    /** Asserts the count equals the item count for every row count the factory is handed. */
+    @Test
+    void theCountEqualsTheItemCountForEveryRowCountSupplied() {
+        List<StatementTransactionEntity> rows = threeRows();
+
+        for (int size = 0; size <= rows.size(); size++) {
+            List<StatementTransactionEntity> page = rows.subList(0, size);
+            NotificationHistoryResponse response =
+                    NotificationHistoryResponse.fromCardRows(CARD_TOKEN, ZERO_TOTAL, page);
+
+            assertEquals(response.transactions().size(), response.transactionCount(),
+                    "count equals the item count at size " + size);
+            assertEquals(size, response.transactionCount(), "count at size " + size);
+        }
+    }
+
+    /**
+     * Asserts the factory keeps the order of the rows it is handed. The ascending order the
+     * repository returns is asserted elsewhere.
+     */
+    @Test
+    void theItemsFollowTheOrderTheRowsArrivedIn() {
+        NotificationHistoryResponse response = responseWithThreeRows();
+
+        assertEquals(
+                List.of(FIRST_TRANSACTION_ID, SECOND_TRANSACTION_ID, THIRD_TRANSACTION_ID),
                 response.transactions().stream()
                         .map(NotificationTransactionItem::transactionId)
                         .toList(),
-                "order");
+                "item order");
     }
 
+    /** Asserts a total already at scale two renders character for character. */
     @Test
-    void theTransactionsArrayIsNotWritable() {
-        NotificationHistoryResponse response = response(List.of(row("0000000000000001", "1.00")));
-        assertThrows(UnsupportedOperationException.class, () -> response.transactions().clear(),
-                "the array a caller receives cannot be edited");
+    void aTotalAtScaleTwoRendersCharacterForCharacter() {
+        assertEquals("1234.56", responseWithTotal(TOTAL_AT_SCALE_TWO).totalAmount(), "total");
+    }
+
+    /** Asserts the rendered total carries exactly two characters after the decimal point. */
+    @Test
+    void theRenderedTotalCarriesExactlyTwoFractionalDigits() {
+        List<BigDecimal> totals = List.of(ZERO_TOTAL, TOTAL_AT_SCALE_TWO, REFUND_TOTAL,
+                NINE_INTEGER_DIGIT_TOTAL);
+
+        for (BigDecimal total : totals) {
+            String rendered = responseWithTotal(total).totalAmount();
+
+            assertTrue(TOTAL_SHAPE.matcher(rendered).matches(), "shape of " + rendered);
+            assertEquals(AMOUNT_SCALE, rendered.length() - rendered.indexOf('.') - 1,
+                    "fractional digits of " + rendered);
+        }
+    }
+
+    /** Asserts the rendered total carries no exponent marker. */
+    @Test
+    void theRenderedTotalCarriesNoExponentMarker() {
+        String rendered = responseWithTotal(NINE_INTEGER_DIGIT_TOTAL).totalAmount();
+
+        assertFalse(rendered.contains("E"), "no upper-case exponent marker");
+        assertFalse(rendered.contains("e"), "no lower-case exponent marker");
     }
 
     /**
-     * Asserts each item carries the masked card number its row stores, and that the envelope names
-     * the account rather than a card.
-     *
-     * <p>The masked value is display only. It identifies no card, because every card whose last four
-     * digits agree masks to the same sixteen characters, so it cannot address a response.
+     * Asserts a total at nine integer digits renders in full. Nine integer digits is the ceiling
+     * {@code WS-TOTAL-AMT PIC S9(9)V99} at {@code app/cbl/CBSTM03A.CBL:L65} sets, and the move at
+     * {@code app/cbl/CBSTM03A.CBL:L433} into {@code WS-TRN-AMT PIC S9(9)V99} at
+     * {@code app/cbl/CBSTM03A.CBL:L68} drops a tenth digit with no diagnostic.
      */
     @Test
-    void theFactoryReadsTheMaskedFormFromTheRowsAndTheTokenFromTheRequest() {
-        NotificationHistoryResponse response = response(List.of(row("0000000000000001", "1.00")));
+    void aTotalAtNineIntegerDigitsRendersInFull() {
+        String rendered = responseWithTotal(NINE_INTEGER_DIGIT_TOTAL).totalAmount();
+
+        assertEquals("999999999.99", rendered, "total");
+        assertEquals(9, rendered.indexOf('.'), "integer digits");
+    }
+
+    /** Asserts a refund total renders with a leading minus. */
+    @Test
+    void aRefundTotalRendersWithALeadingMinus() {
+        String rendered = responseWithTotal(REFUND_TOTAL).totalAmount();
+
+        assertEquals("-125.00", rendered, "total");
+        assertTrue(rendered.startsWith("-"), "leading minus");
+    }
+
+    /**
+     * Asserts the factory refuses a total past two fractional digits, for both signs. Negative
+     * amounts are ordinary traffic: 50 of the 300 records in
+     * {@code app/data/ASCII/dailytran.txt} carry a negative amount.
+     */
+    @Test
+    void aTotalPastTwoFractionalDigitsIsRefusedForBothSigns() {
+        IllegalArgumentException positive = assertThrows(IllegalArgumentException.class,
+                () -> NotificationHistoryResponse.fromCardRows(CARD_TOKEN, TOTAL_PAST_SCALE_TWO,
+                        List.of()),
+                "a total at three fractional digits");
+        assertTrue(positive.getMessage().contains("scale"), "the message names the scale");
+
+        IllegalArgumentException negative = assertThrows(IllegalArgumentException.class,
+                () -> NotificationHistoryResponse.fromCardRows(CARD_TOKEN,
+                        NEGATIVE_TOTAL_PAST_SCALE_TWO, List.of()),
+                "a negative total at three fractional digits");
+        assertTrue(negative.getMessage().contains("scale"), "the message names the scale");
+    }
+
+    /**
+     * Asserts truncation toward zero and half-up produce different values at the third fractional
+     * digit, for both signs. {@link CobolDecimal} pins truncation toward zero and takes no rounding
+     * mode. {@link BigDecimal} supplies the half-up values below.
+     */
+    @Test
+    void truncationTowardZeroDivergesFromHalfUpAtTheThirdFractionalDigit() {
+        BigDecimal truncatedPositive =
+                CobolDecimal.truncateToScale(TOTAL_PAST_SCALE_TWO, AMOUNT_SCALE);
+        BigDecimal truncatedNegative =
+                CobolDecimal.truncateToScale(NEGATIVE_TOTAL_PAST_SCALE_TWO, AMOUNT_SCALE);
+        BigDecimal halfUpPositive =
+                TOTAL_PAST_SCALE_TWO.setScale(AMOUNT_SCALE, RoundingMode.HALF_UP);
+        BigDecimal halfUpNegative =
+                NEGATIVE_TOTAL_PAST_SCALE_TWO.setScale(AMOUNT_SCALE, RoundingMode.HALF_UP);
+
+        assertEquals("1.00", responseWithTotal(truncatedPositive).totalAmount(),
+                "a truncated positive total");
+        assertEquals("-1.00", responseWithTotal(truncatedNegative).totalAmount(),
+                "a truncated negative total");
+        assertEquals(new BigDecimal("1.01"), halfUpPositive, "half-up on a positive total");
+        assertEquals(new BigDecimal("-1.01"), halfUpNegative, "half-up on a negative total");
+        assertNotEquals(halfUpPositive, truncatedPositive, "the two modes differ at 1.005");
+        assertNotEquals(halfUpNegative, truncatedNegative, "the two modes differ at -1.005");
+    }
+
+    /**
+     * Asserts truncation toward zero agrees with floor for a positive total and diverges from it
+     * for a negative one. {@link CobolDecimal} pins truncation toward zero. {@link BigDecimal}
+     * supplies the floor values below.
+     */
+    @Test
+    void truncationTowardZeroAgreesWithFloorOnlyForAPositiveTotal() {
+        BigDecimal truncatedPositive =
+                CobolDecimal.truncateToScale(TOTAL_PAST_SCALE_TWO, AMOUNT_SCALE);
+        BigDecimal truncatedNegative =
+                CobolDecimal.truncateToScale(NEGATIVE_TOTAL_PAST_SCALE_TWO, AMOUNT_SCALE);
+        BigDecimal floorPositive = TOTAL_PAST_SCALE_TWO.setScale(AMOUNT_SCALE, RoundingMode.FLOOR);
+        BigDecimal floorNegative =
+                NEGATIVE_TOTAL_PAST_SCALE_TWO.setScale(AMOUNT_SCALE, RoundingMode.FLOOR);
+
+        assertEquals(new BigDecimal("1.00"), floorPositive, "floor on a positive total");
+        assertEquals(floorPositive, truncatedPositive, "floor agrees on a positive total");
+        assertEquals(new BigDecimal("-1.01"), floorNegative, "floor on a negative total");
+        assertNotEquals(floorNegative, truncatedNegative, "floor diverges on a negative total");
+    }
+
+    /** Asserts a card with no row carries a count of zero. */
+    @Test
+    void aCardWithNoRowCarriesACountOfZero() {
+        assertEquals(0, emptyResponse().transactionCount(), "count");
+    }
+
+    /**
+     * Asserts a card with no row carries a zero total at two fractional digits. The statement
+     * program zeroes the total for each card at {@code app/cbl/CBSTM03A.CBL:L325}.
+     */
+    @Test
+    void aCardWithNoRowCarriesAZeroTotalAtTwoFractionalDigits() {
+        String rendered = emptyResponse().totalAmount();
+
+        assertEquals("0.00", rendered, "total");
+        assertTrue(TOTAL_SHAPE.matcher(rendered).matches(), "shape");
+    }
+
+    /** Asserts a card with no row carries an empty transaction list and never null. */
+    @Test
+    void aCardWithNoRowCarriesAnEmptyListAndNeverNull() {
+        List<NotificationTransactionItem> transactions = emptyResponse().transactions();
+
+        assertNotNull(transactions, "the list is present");
+        assertTrue(transactions.isEmpty(), "the list is empty");
+        assertEquals(List.of(), transactions, "the list holds no item");
+    }
+
+    /** Asserts a card with no row carries its token and withholds the display card number. */
+    @Test
+    void aCardWithNoRowCarriesItsTokenAndWithholdsTheDisplayCardNumber() {
+        NotificationHistoryResponse response = emptyResponse();
 
         assertEquals(CARD_TOKEN, response.cardToken(), "the token the request path carried");
-        assertEquals(MASKED_CARD, response.cardNumber(), "the masked form the rows report");
-        assertFalse(response.cardNumber().contains(FULL_CARD.substring(0, 12)),
-                "no digit but the last four reaches the response");
-        assertFalse(response.toString().contains(MASKED_CARD),
-                "the rendering names the token and no card number");
+        assertNull(response.cardNumber(), "no row holds a masked form to report");
     }
 
-    /**
-     * Asserts no full card number survives anywhere in a serialized response.
-     *
-     * <p>The row that built each item was written with a masked value, so this is a check that
-     * nothing on the path back out reconstructs a full one.
-     */
+    /** Asserts a transaction list a caller receives cannot be edited. */
     @Test
-    void noCardNumberOfEitherFormCanServeAsTheIdentity() {
-        assertThrows(IllegalArgumentException.class,
-                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD,
-                        NOTIFICATIONS.totalOf(List.of()), List.of()),
-                "a masked card number identifies no single card, so it keys no history");
-        assertThrows(IllegalArgumentException.class,
-                () -> NotificationHistoryResponse.fromCardRows(FULL_CARD,
-                        NOTIFICATIONS.totalOf(List.of()), List.of()),
-                "a full card number belongs in no route and no key");
+    void theTransactionListACallerReceivesCannotBeEdited() {
+        List<NotificationTransactionItem> transactions = responseWithThreeRows().transactions();
+
+        assertThrows(UnsupportedOperationException.class, transactions::clear,
+                "the list is unmodifiable");
     }
 
+    /** Asserts no property of the body, at any depth, names a field another service owns. */
     @Test
-    void theTokenIdentifiesOneCardWhereTheMaskedFormIdentifiesNone() {
-        assertNotEquals(CARD_TOKEN, OTHER_CARD_TOKEN,
-                "two cards sharing no digits tokenize apart");
-        assertEquals(PanMasker.CARD_TOKEN_LENGTH, CARD_TOKEN.length(), "token width");
-        assertTrue(CARD_TOKEN.matches(PanMasker.CARD_TOKEN_PATTERN), "token shape");
-        assertFalse(CARD_TOKEN.contains(FULL_CARD.substring(FULL_CARD.length() - 4)),
-                "the token carries no digit group of the card it names");
+    void noSerializedBodyCarriesAFieldAnotherServiceOwns() {
+        List<String> names = lowerCasePropertyNames(bodyOf(responseWithThreeRows()));
+
+        assertFalse(names.isEmpty(), "the body carries properties to scan");
+        for (String owned : FIELDS_OTHER_SERVICES_OWN) {
+            for (String name : names) {
+                assertFalse(name.contains(owned), "no property names " + owned);
+            }
+        }
     }
 
+    /** Asserts no property of the body restates an event envelope property. */
     @Test
-    void aTotalAtAnotherScaleIsRefused() {
+    void noSerializedBodyRestatesAnEventEnvelopeProperty() {
+        List<String> names = lowerCasePropertyNames(bodyOf(responseWithThreeRows()));
+
+        for (String envelopeName : EVENT_ENVELOPE_NAMES) {
+            assertFalse(names.contains(envelopeName), "no property named " + envelopeName);
+        }
+    }
+
+    /** Asserts no property of the body is named for a reject reason code or a decline reason. */
+    @Test
+    void noSerializedBodyCarriesARejectReasonProperty() {
+        List<String> names = lowerCasePropertyNames(bodyOf(responseWithThreeRows()));
+
+        for (String name : names) {
+            assertFalse(DIGITS_ONLY.matcher(name).matches(), "no property named in digits alone");
+            assertFalse(name.contains("reason"), "no property names a reason");
+            assertFalse(name.contains("reject"), "no property names a reject");
+        }
+    }
+
+    /** Asserts the body of a card with no row carries no forbidden property either. */
+    @Test
+    void aBodyForACardWithNoRowCarriesNoForbiddenProperty() {
+        List<String> names = lowerCasePropertyNames(bodyOf(emptyResponse()));
+
+        assertEquals(4, names.size(), "property count");
+        for (String owned : FIELDS_OTHER_SERVICES_OWN) {
+            for (String name : names) {
+                assertFalse(name.contains(owned), "no property names " + owned);
+            }
+        }
+        for (String envelopeName : EVENT_ENVELOPE_NAMES) {
+            assertFalse(names.contains(envelopeName), "no property named " + envelopeName);
+        }
+    }
+
+    /** Asserts the constructor refuses a display card number that is not the masked form. */
+    @Test
+    void aDisplayCardNumberThatIsNotMaskedIsRefused() {
+        String cardNumber = fullCardNumber();
+
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> NotificationHistoryResponse.fromCardRows(CARD_TOKEN, new BigDecimal("1.5"),
+                () -> new NotificationHistoryResponse(CARD_TOKEN, cardNumber, 0, "0.00",
                         List.of()),
-                "a total at one fractional digit");
-        assertTrue(refused.getMessage().contains("scale"), "the message names the scale");
+                "a card number in the display component");
+
+        assertFalse(refused.getMessage().contains(cardNumber), "no message names a card number");
     }
 
-    /**
-     * Asserts a card number of either form is refused where the account identifier belongs.
-     *
-     * <p>A full one would put a Primary Account Number on the envelope. A masked one would address a
-     * response to a value shared by several cards.
-     */
+    /** Asserts the constructor refuses a card token outside the shape it declares. */
     @Test
-    void aCardNumberThatIsNotMaskedIsRefusedByTheConstructor() {
-        IllegalArgumentException fullCard = assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, FULL_CARD, 0, "0.00", List.of()),
-                "a full card number in the display component");
-        assertFalse(fullCard.getMessage().contains(FULL_CARD),
-                "no message names a card number");
-
+    void aCardTokenOutsideItsDeclaredShapeIsRefused() {
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(MASKED_CARD, MASKED_CARD, 0, "0.00",
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, null, 0, "0.00",
                         List.of()),
                 "a masked card number where the token belongs");
-    }
-
-    @Test
-    void aTokenOutsideItsShapeIsRefusedByTheConstructor() {
-        assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(MASKED_CARD, null, 0, "0.00", List.of()),
-                "a masked card number in the token position");
         assertThrows(IllegalArgumentException.class,
                 () -> new NotificationHistoryResponse(CARD_TOKEN.toUpperCase(Locale.ROOT), null, 0,
                         "0.00", List.of()),
                 "a token in upper case");
+        assertEquals(PanMasker.CARD_TOKEN_LENGTH, CARD_TOKEN.length(), "token width");
+        assertTrue(CARD_TOKEN.matches(PanMasker.CARD_TOKEN_PATTERN), "token shape");
     }
 
-    @Test
-    void aCardNumberDisagreeingWithTheItemsIsRefusedByTheConstructor() {
-        List<NotificationTransactionItem> one =
-                List.of(NotificationTransactionItem.from(row("0000000000000001", "1.00")));
-        assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, MASKED_CARD, 0, "0.00",
-                        List.of()),
-                "a card number with no item to have read it from");
-        assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, null, 1, "1.00", one),
-                "items with no card number read from them");
-    }
-
-    @Test
-    void aTokenOutsideTheDeclaredShapeIsRefusedByTheConstructor() {
-        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(MASKED_CARD, MASKED_CARD, 0, "0.00",
-                        List.of()),
-                "a masked card number in the identity component");
-        assertFalse(refused.getMessage().contains(MASKED_CARD), "no message names a card number");
-        assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN.toUpperCase(Locale.ROOT), null, 0,
-                        "0.00", List.of()),
-                "an upper-case rendering is not the form PanMasker.cardToken produces");
-    }
-
-    @Test
-    void anArrayAboveTheRowCeilingIsRefusedByTheConstructor() {
-        List<NotificationTransactionItem> overCeiling =
-                new ArrayList<>(NotificationRenderer.MAXIMUM_STATEMENT_ROWS + 1);
-        for (int index = 0; index <= NotificationRenderer.MAXIMUM_STATEMENT_ROWS; index++) {
-            overCeiling.add(NotificationTransactionItem
-                    .from(row(String.format("%016d", index + 1), "1.00")));
-        }
-
-        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, MASKED_CARD,
-                        overCeiling.size(), "1.00", overCeiling),
-                "one item above the ceiling the renderer declares");
-        assertTrue(refused.getMessage()
-                        .contains(String.valueOf(NotificationRenderer.MAXIMUM_STATEMENT_ROWS)),
-                "the message names the ceiling");
-
-        List<NotificationTransactionItem> atCeiling =
-                overCeiling.subList(0, NotificationRenderer.MAXIMUM_STATEMENT_ROWS);
-        assertEquals(NotificationRenderer.MAXIMUM_STATEMENT_ROWS,
-                new NotificationHistoryResponse(CARD_TOKEN, MASKED_CARD, atCeiling.size(),
-                        "1.00", atCeiling).transactionCount(),
-                "the ceiling itself is accepted");
-    }
-
-    @Test
-    void aTotalOutsideTheDeclaredShapeIsRefusedByTheConstructor() {
-        assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, MASKED_CARD, 0, "0", List.of()),
-                "a total without its two fractional digits");
-        assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, MASKED_CARD, 0, "1234567890.00", List.of()),
-                "a total at ten integer digits");
-    }
-
+    /** Asserts the constructor refuses a count that disagrees with the items supplied. */
     @Test
     void aCountThatDisagreesWithTheItemsIsRefused() {
-        List<NotificationTransactionItem> one =
-                List.of(NotificationTransactionItem.from(row("0000000000000001", "1.00")));
+        List<NotificationTransactionItem> one = responseWithOneRow().transactions();
+
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, MASKED_CARD, 2, "1.00", one),
+                () -> new NotificationHistoryResponse(CARD_TOKEN, MASKED_CARD_NUMBER, 2, "0.00",
+                        one),
                 "a count above the items supplied");
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, MASKED_CARD, -1, "0.00", List.of()),
+                () -> new NotificationHistoryResponse(CARD_TOKEN, MASKED_CARD_NUMBER, -1, "0.00",
+                        List.of()),
                 "a negative count");
     }
 
+    /** Asserts the constructor refuses a total outside the shape the record declares. */
     @Test
-    void theSerializedBodyCarriesExactlyFivePropertiesInTheSchemaOrder() {
-        NotificationHistoryResponse response = response(
-                List.of(row("0000000000000001", "194.00"), row("0000000000000002", "310.77")));
-        ObjectMapper mapper = JsonMapper.builder().build();
-
-        JsonNode body = mapper.readTree(mapper.writeValueAsString(response));
-
-        assertEquals(List.of("cardToken", "cardNumber", "transactionCount", "totalAmount",
-                        "transactions"),
-                propertiesOf(body), "the five properties the schema declares, in that order");
-        assertEquals(5, body.size(), "additionalProperties is false, so there is no sixth");
-        assertTrue(body.get("cardToken").isString(), "the identity travels as text");
-        assertTrue(body.get("totalAmount").isString(), "money travels as text, never as a number");
-        assertEquals(response, mapper.readValue(mapper.writeValueAsString(response),
-                NotificationHistoryResponse.class), "the body round trips field for field");
+    void aTotalOutsideTheDeclaredShapeIsRefused() {
+        assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(CARD_TOKEN, null, 0, "0", List.of()),
+                "a total without its two fractional digits");
+        assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(CARD_TOKEN, null, 0, "1234567890.00",
+                        List.of()),
+                "a total at ten integer digits");
     }
 
+    /**
+     * Asserts the constructor refuses a display card number that disagrees with the items. The
+     * display value is envelope-level, from {@code TRNX-CARD-NUM PIC X(16)} at
+     * {@code app/cpy/COSTM01.CPY:L22}.
+     */
     @Test
-    void anEmptyHistoryWithholdsTheDisplayCardNumberRatherThanWritingNull() {
-        ObjectMapper mapper = JsonMapper.builder().build();
+    void aDisplayCardNumberDisagreeingWithTheItemsIsRefused() {
+        List<NotificationTransactionItem> one = responseWithOneRow().transactions();
 
-        JsonNode body = mapper.readTree(mapper.writeValueAsString(response(List.of())));
-
-        assertEquals(List.of("cardToken", "transactionCount", "totalAmount", "transactions"),
-                propertiesOf(body),
-                "cardNumber is absent, not present and null: the schema leaves it out of required");
-        assertEquals(4, body.size(), "four properties when the read model holds no row");
-        assertEquals(CARD_TOKEN, body.get("cardToken").stringValue(), "the identity is always there");
+        assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(CARD_TOKEN, SECOND_MASKED_CARD_NUMBER, 1,
+                        "0.00", one),
+                "a display value no item reports");
+        assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(CARD_TOKEN, null, 1, "0.00", one),
+                "items with no display value beside them");
+        assertNotEquals(MASKED_CARD_NUMBER, SECOND_MASKED_CARD_NUMBER,
+                "two cards ending in different digits mask apart");
     }
 
-    @Test
-    void noSerializedBodyCarriesTheFullCardNumberInAnyProperty() {
-        ObjectMapper mapper = JsonMapper.builder().build();
-
-        String body = mapper.writeValueAsString(
-                response(List.of(row("0000000000000001", "194.00"))));
-
-        assertFalse(body.contains(FULL_CARD), "the full card number reaches no property");
-        assertFalse(body.contains(FULL_CARD.substring(0, 12)),
-                "no leading digit group of the card number reaches a property");
-        assertTrue(body.contains(CARD_TOKEN), "the token is the identity the body carries");
-    }
-
-    @Test
-    void theItemDecodesTheTrailingSpacesAFixedWidthColumnReturns() {
-        StatementTransactionEntity padded = new StatementTransactionEntity(
-                new StatementTransactionId(CARD_TOKEN, "0000000000000001"), MASKED_CARD, "01",
-                "1", "POS TERM  ", "Purchase at Abshire-Lowe" + " ".repeat(76),
-                new BigDecimal("194.00"), "800000000",
-                "Abshire-Lowe" + " ".repeat(38), "North Enoshaven" + " ".repeat(35),
-                "72112     ", "2022-06-10 19:27:53.000000", "2022-07-19-23.16.01.470000");
-        NotificationTransactionItem item = NotificationTransactionItem.from(padded);
-
-        assertEquals("POS TERM", item.source(), "source");
-        assertEquals("Purchase at Abshire-Lowe", item.description(), "description");
-        assertEquals("Abshire-Lowe", item.merchantName(), "merchant name");
-        assertEquals("North Enoshaven", item.merchantCity(), "merchant city");
-        assertEquals("72112", item.merchantZip(), "merchant mail code");
-    }
-
-    @Test
-    void theItemRestoresTheLeadingZerosOfTheTwoNumericIdentifiers() {
-        NotificationTransactionItem item =
-                NotificationTransactionItem.from(row("0000000000000001", "1.00"));
-        assertEquals("0001", item.categoryCode(), "four digits");
-        assertEquals("800000000", item.merchantId(), "nine digits");
-        assertTrue(item.categoryCode().matches("^[0-9]{4}$"), "category shape");
-        assertTrue(item.merchantId().matches("^[0-9]{9}$"), "merchant shape");
-    }
-
-    @Test
-    void theItemKeepsBothTimestampsAtTwentySixCharacters() {
-        NotificationTransactionItem item =
-                NotificationTransactionItem.from(row("0000000000000001", "1.00"));
-        assertEquals(26, item.originTimestamp().length(), "origin width");
-        assertEquals(26, item.processingTimestamp().length(), "processing width");
-        assertTrue(item.originTimestamp()
-                .matches("^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{6}$"), "origin shape");
-        assertTrue(item.processingTimestamp()
-                        .matches("^\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0{4}$"),
-                "processing shape");
-    }
-
-    @Test
-    void theItemRendersTheAmountAsADecimalStringAndNeverANumber() {
-        NotificationTransactionItem item =
-                NotificationTransactionItem.from(row("0000000000000001", "194.00"));
-        assertEquals("194.00", item.amount(), "amount");
-        assertTrue(MONEY.matcher(item.amount()).matches(), "shape");
-    }
-
-    @Test
-    void aBlankStoredColumnStillDecodesRatherThanFailing() {
-        StatementTransactionEntity blank = new StatementTransactionEntity(
-                new StatementTransactionId(CARD_TOKEN, "0000000000000001"), MASKED_CARD, "  ",
-                "0", " ".repeat(10), " ".repeat(100), new BigDecimal("194.00"),
-                "0", " ".repeat(50), " ".repeat(50), " ".repeat(10), " ".repeat(26),
-                "2022-07-19-23.16.01.470000");
-        NotificationTransactionItem item = NotificationTransactionItem.from(blank);
-
-        assertEquals("", item.typeCode(), "type code");
-        assertEquals("", item.description(), "description");
-        assertEquals("0000", item.categoryCode(), "category code reads as zeros");
-        assertEquals("000000000", item.merchantId(), "merchant identifier reads as zeros");
-        assertEquals("194.00", item.amount(), "the amount decodes beside the blanks");
-    }
-
+    /** Asserts the factory names each null argument it refuses. */
     @Test
     void aNullArgumentToTheFactoryIsRefusedByName() {
         NullPointerException noToken = assertThrows(NullPointerException.class,
-                () -> NotificationHistoryResponse.fromCardRows(null,
-                        NOTIFICATIONS.totalOf(List.of()), List.of()),
+                () -> NotificationHistoryResponse.fromCardRows(null, ZERO_TOTAL, List.of()),
                 "a null card token");
-        assertTrue(noToken.getMessage().contains("cardToken"), "named");
+        assertTrue(noToken.getMessage().contains("cardToken"), "the message names the argument");
 
         NullPointerException noTotal = assertThrows(NullPointerException.class,
                 () -> NotificationHistoryResponse.fromCardRows(CARD_TOKEN, null, List.of()),
                 "a null total");
-        assertTrue(noTotal.getMessage().contains("total"), "named");
+        assertTrue(noTotal.getMessage().contains("total"), "the message names the argument");
 
-        assertThrows(NullPointerException.class,
-                () -> NotificationHistoryResponse.fromCardRows(CARD_TOKEN,
-                        NOTIFICATIONS.totalOf(List.of()), null),
+        NullPointerException noRows = assertThrows(NullPointerException.class,
+                () -> NotificationHistoryResponse.fromCardRows(CARD_TOKEN, ZERO_TOTAL, null),
                 "null rows");
+        assertTrue(noRows.getMessage().contains("rows"), "the message names the argument");
     }
 
     /**
-     * Builds one response the way the endpoint does: the domain totals the rows, and the record
-     * renders them.
+     * Builds the sixteen-digit card number the row-writing path masks. The value is assembled at
+     * run time. No sixteen-digit literal appears in this file.
      *
-     * @param rows the account's rows in ascending transaction-identifier order
+     * @return sixteen digits ending in the four the masked form keeps
+     */
+    private static String fullCardNumber() {
+        return "5".repeat(12) + "7065";
+    }
+
+    /**
+     * Builds a second sixteen-digit card number, ending in different digits.
+     *
+     * @return sixteen digits that mask to a value other than {@link #MASKED_CARD_NUMBER}
+     */
+    private static String secondFullCardNumber() {
+        return "5".repeat(12) + "7066";
+    }
+
+    /**
+     * Builds one response over three rows, at a total already at scale two.
+     *
      * @return the response
      */
-    private static NotificationHistoryResponse response(List<StatementTransactionEntity> rows) {
-        return NotificationHistoryResponse.fromCardRows(CARD_TOKEN, NOTIFICATIONS.totalOf(rows),
-                rows);
+    private static NotificationHistoryResponse responseWithThreeRows() {
+        return NotificationHistoryResponse.fromCardRows(CARD_TOKEN, TOTAL_AT_SCALE_TWO,
+                threeRows());
     }
 
     /**
-     * Reads the property names of one object body in wire order.
+     * Builds one response over a single row, at a total already at scale two.
+     *
+     * @return the response
+     */
+    private static NotificationHistoryResponse responseWithOneRow() {
+        return NotificationHistoryResponse.fromCardRows(CARD_TOKEN, TOTAL_AT_SCALE_TWO,
+                List.of(row(FIRST_TRANSACTION_ID)));
+    }
+
+    /**
+     * Builds one response over a single row, at the total supplied.
+     *
+     * @param total the total, at scale two
+     * @return the response
+     */
+    private static NotificationHistoryResponse responseWithTotal(BigDecimal total) {
+        return NotificationHistoryResponse.fromCardRows(CARD_TOKEN, total,
+                List.of(row(FIRST_TRANSACTION_ID)));
+    }
+
+    /**
+     * Builds one response for a card the read model holds no row for.
+     *
+     * @return the response
+     */
+    private static NotificationHistoryResponse emptyResponse() {
+        return NotificationHistoryResponse.fromCardRows(CARD_TOKEN, ZERO_TOTAL, List.of());
+    }
+
+    /**
+     * Builds three rows of one card, in ascending transaction-identifier order.
+     *
+     * @return the rows
+     */
+    private static List<StatementTransactionEntity> threeRows() {
+        return List.of(row(FIRST_TRANSACTION_ID), row(SECOND_TRANSACTION_ID),
+                row(THIRD_TRANSACTION_ID));
+    }
+
+    /**
+     * Builds one read-model row carrying the masked display value.
+     *
+     * @param transactionId the sixteen-character identifier
+     * @return the row
+     */
+    private static StatementTransactionEntity row(String transactionId) {
+        return new StatementTransactionEntity(
+                new StatementTransactionId(CARD_TOKEN, transactionId), MASKED_CARD_NUMBER,
+                TYPE_CODE, CATEGORY_CODE, SOURCE, DESCRIPTION, ROW_AMOUNT, MERCHANT_ID,
+                MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP, ORIGIN_TIMESTAMP,
+                PROCESSING_TIMESTAMP);
+    }
+
+    /**
+     * Serializes one response and reads it back as a tree.
+     *
+     * @param response the response
+     * @return the serialized body
+     */
+    private static JsonNode bodyOf(NotificationHistoryResponse response) {
+        return MAPPER.readTree(MAPPER.writeValueAsString(response));
+    }
+
+    /**
+     * Reads the top-level property names of one body, in wire order.
      *
      * @param body the serialized response
      * @return the property names, in the order the body carries them
      */
     private static List<String> propertiesOf(JsonNode body) {
-        List<String> properties = new ArrayList<>();
-        for (Iterator<String> names = body.propertyNames().iterator(); names.hasNext();) {
-            properties.add(names.next());
-        }
-        return properties;
+        return List.copyOf(body.propertyNames());
     }
 
     /**
-     * Builds one read-model row.
+     * Collects every property name of one body at every depth, lower-cased. The envelope and each
+     * item of the transaction array are read.
      *
-     * @param transactionId the sixteen-character identifier
-     * @param amount the amount at two fractional digits
-     * @return the row
+     * @param body the serialized response
+     * @return the property names, lower-cased
      */
-    private static StatementTransactionEntity row(String transactionId, String amount) {
-        return new StatementTransactionEntity(
-                new StatementTransactionId(CARD_TOKEN, transactionId), MASKED_CARD, "01", "1",
-                "POS TERM", "Purchase", new BigDecimal(amount), "800000000",
-                "Abshire-Lowe", "North Enoshaven", "72112", "2022-06-10 19:27:53.000000",
-                "2022-07-19-23.16.01.470000");
+    private static List<String> lowerCasePropertyNames(JsonNode body) {
+        List<String> names = new ArrayList<>();
+        collectPropertyNames(body, names);
+        return names;
+    }
+
+    /**
+     * Adds the property names of one node, and of every node below it, to a list.
+     *
+     * @param node the node to read
+     * @param names the list the names are added to, lower-cased
+     */
+    private static void collectPropertyNames(JsonNode node, List<String> names) {
+        if (node.isObject()) {
+            for (String name : node.propertyNames()) {
+                names.add(name.toLowerCase(Locale.ROOT));
+                collectPropertyNames(node.get(name), names);
+            }
+            return;
+        }
+        if (node.isArray()) {
+            for (JsonNode element : node) {
+                collectPropertyNames(element, names);
+            }
+        }
+    }
+
+    /**
+     * Reads every accessor of one response and of every item it carries. Five response accessors
+     * and thirteen accessors per item are read.
+     *
+     * @param response the response
+     * @return the rendered value of each accessor
+     * @throws Exception if an accessor cannot be read
+     */
+    private static List<String> everyAccessorValue(NotificationHistoryResponse response)
+            throws Exception {
+        List<String> values = new ArrayList<>();
+        for (RecordComponent component : NotificationHistoryResponse.class.getRecordComponents()) {
+            values.add(String.valueOf(component.getAccessor().invoke(response)));
+        }
+        for (NotificationTransactionItem item : response.transactions()) {
+            for (RecordComponent component
+                    : NotificationTransactionItem.class.getRecordComponents()) {
+                values.add(String.valueOf(component.getAccessor().invoke(item)));
+            }
+        }
+        return values;
+    }
+
+    /**
+     * Reads the component names of the response, in declaration order.
+     *
+     * @return the component names
+     */
+    private static List<String> componentNames() {
+        return Arrays.stream(NotificationHistoryResponse.class.getRecordComponents())
+                .map(RecordComponent::getName)
+                .toList();
+    }
+
+    /**
+     * Finds one component of the response by name.
+     *
+     * @param name the component name
+     * @return the component
+     * @throws IllegalStateException if the response declares no component of that name
+     */
+    private static RecordComponent componentNamed(String name) {
+        return Arrays.stream(NotificationHistoryResponse.class.getRecordComponents())
+                .filter(component -> component.getName().equals(name))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "NotificationHistoryResponse declares no component named " + name));
+    }
+
+    /**
+     * Reports whether any component name holds one lower-cased token.
+     *
+     * @param lowerCaseToken the token to look for
+     * @return true when a component name holds the token
+     */
+    private static boolean anyComponentNameContains(String lowerCaseToken) {
+        return componentNames().stream()
+                .map(name -> name.toLowerCase(Locale.ROOT))
+                .anyMatch(name -> name.contains(lowerCaseToken));
     }
 }

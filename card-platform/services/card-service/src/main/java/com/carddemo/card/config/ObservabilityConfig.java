@@ -66,25 +66,6 @@ public class ObservabilityConfig {
     public static final String METRIC_CARD_FAILURES = "carddemo.card.failures";
 
     /**
-     * Card updates whose row disagreed with the {@code card_xref} replica about the account.
-     *
-     * <p>ADDITIVE, with no card program ancestor, because the source has no replica to disagree
-     * with: {@code app/cbl/COCRDSLC.cbl} reads the cross-reference dataset itself, and
-     * {@code app/cbl/COCRDUPC.cbl:L356} reads {@code *COPY CVACT03Y.} commented out.
-     *
-     * <p>This service holds both values, and it is the only service that does.
-     * {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6} carries the account of the
-     * card row and is what a published event keys on, while
-     * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} carries the account the
-     * authorization decision resolves the same card to at
-     * {@code app/cbl/CBTRN02C.cbl:L383-L387}. A disagreement puts an event on one account's
-     * partition while the decision for that card reads another, which loses the per-account
-     * ordering this platform rests on. The counter is how that becomes visible instead of silent.
-     */
-    public static final String METRIC_CARD_XREF_DIVERGENCE =
-            "carddemo.card.xref.divergence";
-
-    /**
      * Outbox rows this service gave up on, each one named by a dead letter the broker acknowledged.
      *
      * <p>ADDITIVE, with no card program ancestor. The source answer to a record it could not write
@@ -185,35 +166,6 @@ public class ObservabilityConfig {
         Objects.requireNonNull(registry, "registry");
         return Counter.builder(METRIC_CARD_FAILURES)
                 .description("Card work that failed on infrastructure")
-                .register(registry);
-    }
-
-    /**
-     * Counts card updates whose row and cross-reference replica named different accounts.
-     *
-     * <p>{@code domain/CardUpdateService} increments it inside the writing transaction, after the
-     * row is locked and before the event row is written, and it changes no outcome: the update
-     * commits exactly as it would have. The source performs no such comparison, so refusing an
-     * update here would answer a text no card program writes. Recording it is what transformation
-     * rule T7 asks for, which is to reproduce behaviour and surface what looks wrong rather than
-     * silently correct it.
-     *
-     * <p>The counter is expected to stay at zero. Both copies are loaded from
-     * {@code app/data/ASCII/cardxref.txt}, and no operation this platform serves changes a
-     * cross-reference row: the card update edits the embossed name, the expiry and the active status
-     * alone, from {@code CCUP-NEW-CARDDATA} at {@code app/cbl/COCRDUPC.cbl:L307}, and none of those
-     * three is a cross-reference column. A non-zero reading therefore means an out-of-band change,
-     * which is exactly the case a demonstration cannot otherwise see.
-     *
-     * @param registry the meter registry Spring Boot supplies
-     * @return the registered counter, named {@link #METRIC_CARD_XREF_DIVERGENCE}
-     */
-    @Bean
-    public Counter cardCrossReferenceDivergenceCounter(MeterRegistry registry) {
-        Objects.requireNonNull(registry, "registry");
-        return Counter.builder(METRIC_CARD_XREF_DIVERGENCE)
-                .description("Card updates whose row and cross-reference replica named different"
-                        + " accounts")
                 .register(registry);
     }
 

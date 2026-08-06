@@ -102,7 +102,7 @@ for port in 9081 9082 9083 9084 9085 9086; do
 done
 ```
 
-The authorization example and Kafka console command are in [Onboarding](docs/onboarding.md). The authorization response uses HTTP 200 for both approval and source-equivalent decline.
+The authorization example and Kafka console command are in [Onboarding](docs/onboarding.md). The authorization response uses HTTP 200 for an approval and HTTP 422 for a source-equivalent decline. A decline is expected traffic, so it never answers 500.
 
 `approved` distinguishes the two outcomes. An approval reaches ledger, fraud, and notification independently, and each of the three reads it under its own consumer group.
 

@@ -341,17 +341,23 @@ paths:
       operationId: readCustomer
       summary: Read one customer.
       description: >-
-        Reproduces the customer read at app/cbl/COACTVWC.cbl:L860-L870.
+        Reproduces the keyed read 9400-GETCUSTDATA-BYCUST issues at
+        app/cbl/COACTVWC.cbl:L826-L834, and answers the customer values
+        app/cbl/COACTVWC.cbl:L494-L522 moves to the screen.
 
 
-        The identifier is taken directly rather than resolved from an account, because ACCOUNT-RECORD
-        declares no customer identifier and the source reaches a customer only through the
-        cross-reference record, which the card service owns.
+        The path names the customer. ACCOUNT-RECORD at app/cpy/CVACT01Y.cpy:L4-L17 declares twelve
+        fields and a filler, and none of them is a customer identifier. The source reads the
+        identifier from the cross-reference record at app/cbl/COACTVWC.cbl:L739 and keys the
+        customer file with it at app/cbl/COACTVWC.cbl:L708. Deviation D5 in
+        card-platform/docs/decision-log.md records the resolution.
 
 
-        The view carries sixteen of the nineteen components CUSTOMER-RECORD declares. The three it
-        omits are the Social Security column and the government-issued identifier, which a read is
-        the wrong operation to disclose, and which no caller of this platform needs back.
+        The view carries sixteen of the eighteen fields CUSTOMER-RECORD declares at
+        app/cpy/CVCUS01Y.cpy:L5-L22. The two it omits are CUST-SSN at app/cpy/CVCUS01Y.cpy:L17 and
+        CUST-GOVT-ISSUED-ID at app/cpy/CVCUS01Y.cpy:L18, which the source displays at
+        app/cbl/COACTVWC.cbl:L496-L504 and app/cbl/COACTVWC.cbl:L519. Deviation D10 in
+        card-platform/docs/decision-log.md records that divergence.
 
 
         An ordinary identity reads the customers its authorities name and receives 403 for any other.
@@ -386,7 +392,23 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: >-
+            This service holds no such customer row. The detail reproduces the text
+            9400-GETCUSTDATA-BYCUST builds at app/cbl/COACTVWC.cbl:L846-L856, which concatenates
+            four literals around the customer identifier, a response code and a reason code. The
+            identifier is the one the caller put in the path, and the two codes are the status of
+            this response and its reason phrase. Two spellings of the source are kept: L850 carries
+            one space after 'Resp:' and L852 carries 'REAS:' in upper case, where the account text
+            at L802 carries 'Reas:'.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: about:blank
+                title: Not found
+                status: 404
+                detail: 'CustId:000000001 not found in customer master.Resp: 404 REAS:Not Found'
         '422':
           $ref: '#/components/responses/ValidationFailed'
         '500':

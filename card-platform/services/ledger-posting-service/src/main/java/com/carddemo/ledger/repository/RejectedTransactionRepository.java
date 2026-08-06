@@ -14,10 +14,9 @@ import org.springframework.data.repository.Repository;
  * rather than the whole block, so no unmasked Primary Account Number is stored. The interface
  * follows {@code LK-M03B-AREA} at {@code app/cbl/CBSTM03B.CBL:L100-L112}, a generic parameter area
  * whose operation code dispatches every input and output call behind one subroutine.
- * {@code domain/RejectRecorder} is the caller, reproducing paragraph
- * {@code 2500-WRITE-REJECT-REC} at {@code app/cbl/CBTRN02C.cbl:L446-L465}, and
- * {@code messaging/TransactionAuthorizedConsumer} reaches it when the ledger holds no balance row
- * for the account an event names.</p>
+ * {@code domain/RejectRecorder} is the one caller, reproducing paragraph
+ * {@code 2500-WRITE-REJECT-REC} at {@code app/cbl/CBTRN02C.cbl:L446-L465}. A reject is a
+ * feed-validation failure, so no Kafka listener of this service reaches this interface.</p>
  *
  * <p>The interface is insert-only, and the application assigns the Universally Unique Identifier
  * (UUID) that keys each row. Extending {@link Repository} holds the interface to that surface, so

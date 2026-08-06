@@ -85,7 +85,7 @@ These checks are reasonable improvements, but each changes source-equivalent out
 ### Define cross-reference repair ownership
 
 - **Change:** Define an authoritative event or operator workflow for a missing or mismatched `card_xref` replica.
-- **Where:** `CardUpdateService` currently increments `carddemo.card.xref.divergence` and cannot reconstruct customer identifier data from the card row.
+- **Where:** No path compares the two copies. `app/cbl/COCRDUPC.cbl` reads `*COPY CVACT03Y.` commented out at `:L356` and its three file operations at `:L1383`, `:L1428` and `:L1478` touch only the card file, so `CardUpdateService` reproduces no cross-reference access and the card service's `card_xref` replica has neither a reader nor a writer. A repairing owner also needs `XREF-CUST-ID PIC 9(09)` at `app/cpy/CVACT03Y.cpy:L6`, which the card row does not carry, and a meter of its own once it exists.
 - **Check:** Repair one divergent row without changing the source-equivalent card-update result.
 - **Behavior change:** Operational correction only.
 

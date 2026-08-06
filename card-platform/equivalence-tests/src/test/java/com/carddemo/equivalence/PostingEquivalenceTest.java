@@ -64,7 +64,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -1904,9 +1903,7 @@ class PostingEquivalenceTest {
                     TransactionAuthorized event = authorizationEventFor(record, accountId);
                     Acknowledgment acknowledgment = acknowledgments::incrementAndGet;
 
-                    consumer.onTransactionAuthorized(
-                            new ConsumerRecord<>(AUTHORIZED_TOPIC, 0, offset, accountId, event),
-                            acknowledgment);
+                    consumer.onTransactionAuthorized(event, acknowledgment);
                     approvedIds.add(record.transactionId());
                 } else {
                     declinedOutcomes.add(record.transactionId() + "," + reason.code());

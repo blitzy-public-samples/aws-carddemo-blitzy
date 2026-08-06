@@ -171,7 +171,7 @@ curl -sS -X POST http://localhost:8081/authorizations \
        \"processingTimestamp\":\"2026-08-04-10.30.00.000000\"}"
 ```
 
-The response returns HTTP 200 for either outcome. `approved` separates an approval from a source-equivalent decline.
+The response returns HTTP 200 for an approval and HTTP 422 for a source-equivalent decline. `approved` separates the two outcomes.
 
 Watch the asynchronous path from inside the broker container:
 

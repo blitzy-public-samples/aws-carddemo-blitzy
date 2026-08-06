@@ -1,7 +1,7 @@
 package com.carddemo.ledger.messaging;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -24,43 +25,45 @@ import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
 import com.carddemo.ledger.domain.AccountBalanceUpdater.AccountBalanceRowMissingException;
 import com.carddemo.ledger.domain.PostingService;
 import com.carddemo.ledger.domain.RejectRecorder;
-import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
-import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
+import com.carddemo.ledger.entity.ProcessedEventEntity;
 import com.carddemo.ledger.repository.ProcessedEventRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.math.BigDecimal;
-import java.time.Instant;
-import java.util.Optional;
 import java.util.UUID;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.ObjectProvider;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
+import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Direct tests for {@link TransactionAuthorizedConsumer}, the ingress that replaces a job step.
  *
  * <p>The subject stands in for {@code app/jcl/POSTTRAN.jcl:L23}, which names program
- * {@code CBTRN02C}, and for the sequential feed {@code :L30-L31} allocates. Two source facts decide
- * every assertion below.
+ * {@code CBTRN02C}, and for the sequential feed that job allocated. Two source facts decide every
+ * assertion below.
  *
  * <p>First, the order of the two decisions. {@code 1500-B-LOOKUP-ACCT} reads the account record at
- * {@code app/cbl/CBTRN02C.cbl:L395} and assigns reject reason {@code 0101} on an invalid key at
+ * {@code app/cbl/CBTRN02C.cbl:L395} and assigns its reject reason on an invalid key at
  * {@code :L397-L399}. Only a record that read cleanly reaches {@code 2000-POST-TRANSACTION} at
- * {@code :L424}. A missing balance row must therefore reach the reject path and never the posting
- * path.
+ * {@code :L424}. A missing balance row must therefore be a fault here and never a decline.
  *
  * <p>Second, a reject is expected traffic. {@code app/cbl/CBTRN02C.cbl:L229-L230} moves 4 into
- * {@code RETURN-CODE} when the reject count is positive and raises no abend, so a rejected delivery
- * acknowledges and counts under an outcome rather than under a failure.
+ * {@code RETURN-CODE} when the reject count is positive and raises no abend, so a reject is counted
+ * as an outcome and not as a failure. This listener records none.
  *
  * <p>Duplicate handling is ADDITIVE, and the source proves the need: a replayed feed reaches
  * {@code 2900-WRITE-TRANSACTION-FILE} at {@code :L562-L579}, hits a duplicate key and abends. The
- * claim is one insert, so the tests below drive it by its return value rather than by a prior read.
+ * guard is one read, so the tests below drive it by that read.
  *
  * <p>Every test runs in memory. None opens a database connection, and none contacts a broker.
  */
@@ -76,8 +79,8 @@ final class TransactionAuthorizedConsumerTest {
     private static final String MASKED_CARD_NUMBER = "************5740";
 
     /**
-     * The card token every fixture event carries: {@value com.carddemo.cobol.PanMasker#CARD_TOKEN_LENGTH}
-     * lower-case hexadecimal characters, the rendering {@code PanMasker.cardToken} produces.
+     * The card token every fixture event carries: the rendering {@code PanMasker.cardToken}
+     * produces.
      */
     private static final String CARD_TOKEN =
             com.carddemo.cobol.PanMasker.cardToken("4859452612877065");
@@ -88,8 +91,11 @@ final class TransactionAuthorizedConsumerTest {
     /** An amount at the scale {@code TRAN-AMT PIC S9(09)V99} declares. */
     private static final BigDecimal AMOUNT = new BigDecimal("38.72");
 
-    /** The topic name a delivery reports, and the value the marker records. */
+    /** The topic this listener reads, and the value every marker records. */
     private static final String TOPIC = "transaction.authorized";
+
+    /** The topic a record the container gives up on is addressed to. */
+    private static final String DEAD_LETTER_TOPIC = "carddemo.dead-letter";
 
     private PostingService postingService;
     private ProcessedEventRepository processedEvents;
@@ -101,10 +107,8 @@ final class TransactionAuthorizedConsumerTest {
     /**
      * Builds the subject over stubbed collaborators and a real meter registry.
      *
-     * <p>The self-provider returns the subject itself, so the listener reaches the apply method
-     * directly. That is what the framework's proxy does at runtime, minus the transaction
-     * interceptor, which no unit test can supply and none needs: each assertion below observes the
-     * calls, not the commit.
+     * <p>The transaction template runs its callback on the calling thread, so no transaction
+     * manager is needed. Each assertion below observes the calls, not the commit.
      */
     @BeforeEach
     void buildSubject() {
@@ -113,35 +117,16 @@ final class TransactionAuthorizedConsumerTest {
         registry = new SimpleMeterRegistry();
         meters = new ObservabilityConfig().ledgerMeters(registry);
         acknowledgment = mock(Acknowledgment.class);
-        consumer = new TransactionAuthorizedConsumer(postingService, processedEvents, meters,
-                selfProviderReturningSubject());
+        consumer = new TransactionAuthorizedConsumer(postingService, processedEvents,
+                immediateTransactions(), meters, TOPIC, DEAD_LETTER_TOPIC);
     }
 
-    /**
-     * Supplies a provider whose {@code getObject} answers with the consumer under test.
-     *
-     * @return the provider the constructor takes
-     */
-    private ObjectProvider<TransactionAuthorizedConsumer> selfProviderReturningSubject() {
-        return new ObjectProvider<>() {
+    /** Runs the callback on the calling thread, so no transaction manager is needed. */
+    private static TransactionTemplate immediateTransactions() {
+        return new TransactionTemplate() {
             @Override
-            public TransactionAuthorizedConsumer getObject() {
-                return consumer;
-            }
-
-            @Override
-            public TransactionAuthorizedConsumer getObject(Object... args) {
-                return consumer;
-            }
-
-            @Override
-            public TransactionAuthorizedConsumer getIfAvailable() {
-                return consumer;
-            }
-
-            @Override
-            public TransactionAuthorizedConsumer getIfUnique() {
-                return consumer;
+            public <T> T execute(TransactionCallback<T> action) {
+                return action.doInTransaction(new SimpleTransactionStatus(true));
             }
         };
     }
@@ -157,34 +142,26 @@ final class TransactionAuthorizedConsumerTest {
                 "72112", MASKED_CARD_NUMBER, CARD_TOKEN, AUTHORIZED_AT);
     }
 
-    /**
-     * Wraps one event in a delivery from the authorized topic.
-     *
-     * @param event the event the delivery carries, or {@code null} for a delivery with no payload
-     * @return the delivery the listener reads
-     */
-    private static ConsumerRecord<String, TransactionAuthorized> aDelivery(
-            TransactionAuthorized event) {
-        return new ConsumerRecord<>(TOPIC, 0, 0L, ACCOUNT_ID, event);
-    }
-
     /** Reports the value of one counter series. */
     private double counter(String name, String tagKey, String tagValue) {
         return registry.get(name).tag(tagKey, tagValue).counter().count();
     }
 
-    /** Answers the claim with {@code 1}, so this delivery is the first to hold the identifier. */
-    private void claimSucceeds() {
-        when(processedEvents.claimEvent(any(UUID.class), any(Instant.class), anyString()))
-                .thenReturn(1);
+    /** Answers the guard with no marker, so this delivery is the first to hold the identifier. */
+    private void markerAbsent() {
+        when(processedEvents.existsById(any(UUID.class))).thenReturn(false);
+    }
+
+    /** Answers the guard with a marker, so a delivery of this event has already been applied. */
+    private void markerPresent() {
+        when(processedEvents.existsById(any(UUID.class))).thenReturn(true);
     }
 
     /**
      * Makes the posting raise the fault a missing balance row produces.
      *
      * <p>{@code domain/AccountBalanceUpdater} performs that read, so this class observes only the
-     * exception. A missing row means this service's replica of the account record is behind, not that
-     * the account is absent: the authorization service read its own copy of it moments earlier.
+     * exception.
      */
     private void postingFindsNoBalanceRow() {
         doThrow(new AccountBalanceRowMissingException(ACCOUNT_ID))
@@ -192,60 +169,105 @@ final class TransactionAuthorizedConsumerTest {
                         anyString());
     }
 
+    /** Captures the marker the subject saved. */
+    private ProcessedEventEntity savedMarker() {
+        ArgumentCaptor<ProcessedEventEntity> captor =
+                ArgumentCaptor.forClass(ProcessedEventEntity.class);
+        verify(processedEvents).save(captor.capture());
+        return captor.getValue();
+    }
+
+    /** Reads the {@link KafkaListener} the one listener method carries. */
+    private static KafkaListener listenerAnnotation() {
+        return listenerMethod().getAnnotation(KafkaListener.class);
+    }
+
+    /** Finds the one listener method of the subject. */
+    private static Method listenerMethod() {
+        for (Method method : TransactionAuthorizedConsumer.class.getDeclaredMethods()) {
+            if (method.getName().equals("onTransactionAuthorized")) {
+                return method;
+            }
+        }
+        throw new AssertionError("onTransactionAuthorized must stay a method of the subject");
+    }
+
     @Nested
     @DisplayName("The posting path, app/cbl/CBTRN02C.cbl:L424-L444")
     class PostingPath {
 
         @Test
-        @DisplayName("one delivery with a balance row posts once and acknowledges once")
+        @DisplayName("one delivery with no marker posts once and acknowledges once")
         void oneDeliveryPostsAndAcknowledges() {
-            claimSucceeds();
+            markerAbsent();
             TransactionAuthorized event = anEvent();
 
-            consumer.onTransactionAuthorized(aDelivery(event), acknowledgment);
+            consumer.onTransactionAuthorized(event, acknowledgment);
 
             verify(postingService, times(1)).postTransaction(event, ACCOUNT_ID);
             verify(acknowledgment, times(1)).acknowledge();
         }
 
         @Test
-        @DisplayName("the event travels to the posting service unchanged")
+        @DisplayName("the event travels to the posting service unchanged, keyed by its aggregate")
         void theEventTravelsUnchanged() {
-            claimSucceeds();
+            markerAbsent();
             TransactionAuthorized event = anEvent();
 
-            TransactionAuthorizedConsumer.Outcome outcome = consumer.applyOneEvent(event, ACCOUNT_ID, TOPIC);
+            consumer.onTransactionAuthorized(event, acknowledgment);
 
-            assertEquals(TransactionAuthorizedConsumer.Outcome.POSTED, outcome,
-                    "a delivery whose account holds a balance row posts");
-            verify(postingService).postTransaction(assertSameEvent(event), ACCOUNT_ID);
+            ArgumentCaptor<TransactionAuthorized> captor =
+                    ArgumentCaptor.forClass(TransactionAuthorized.class);
+            verify(postingService).postTransaction(captor.capture(), eq(ACCOUNT_ID));
+            assertSame(event, captor.getValue(), "the listener passes the event it received");
+            assertEquals(event.aggregateId(), ACCOUNT_ID,
+                    "the key the posting service requires is the aggregate identifier");
         }
 
-        /**
-         * Matches the one event the caller passed, by identity.
-         *
-         * @param expected the event the delivery carried
-         * @return the same reference, so Mockito compares by identity
-         */
-        private TransactionAuthorized assertSameEvent(TransactionAuthorized expected) {
-            assertNotNull(expected, "the test must supply an event");
-            return expected;
+        @Test
+        @DisplayName("the marker follows the posting, so no marker outlives a failed posting")
+        void theMarkerFollowsThePosting() {
+            markerAbsent();
+
+            consumer.onTransactionAuthorized(anEvent(), acknowledgment);
+
+            InOrder order = inOrder(processedEvents, postingService);
+            order.verify(processedEvents).existsById(any(UUID.class));
+            order.verify(postingService).postTransaction(any(TransactionAuthorized.class),
+                    anyString());
+            order.verify(processedEvents).save(any(ProcessedEventEntity.class));
+        }
+
+        @Test
+        @DisplayName("the marker records the event identifier and the topic the delivery arrived on")
+        void theMarkerRecordsTheTopic() {
+            markerAbsent();
+            TransactionAuthorized event = anEvent();
+
+            consumer.onTransactionAuthorized(event, acknowledgment);
+
+            ProcessedEventEntity marker = savedMarker();
+            assertEquals(event.eventId(), marker.getEventId(),
+                    "the marker is keyed by the envelope identifier");
+            assertEquals(TOPIC, marker.getConsumedTopic(),
+                    "the marker names the topic this listener reads");
+            assertNotNull(marker.getProcessedAt(), "the consumer supplies the instant");
         }
 
         @Test
         @DisplayName("a posting counts one consumed event and one posted outcome")
         void aPostingCountsItsOutcome() {
-            claimSucceeds();
+            markerAbsent();
 
-            consumer.onTransactionAuthorized(aDelivery(anEvent()), acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), acknowledgment);
 
             assertEquals(1.0d, registry.get("carddemo.ledger.events.consumed").counter().count(),
                     "one delivery is one consumed event");
             assertEquals(1.0d, counter("carddemo.ledger.transactions.processed", "outcome",
-                    "posted"), "WS-TRANSACTION-COUNT at app/cbl/CBTRN02C.cbl:L185 counts a posting");
+                    "posted"), "WS-TRANSACTION-COUNT at app/cbl/CBTRN02C.cbl:L206 counts a posting");
             assertEquals(0.0d, counter("carddemo.ledger.transactions.processed", "outcome",
                     "rejected"), "a posting is not a reject");
-            assertTrue(registry.get("carddemo.ledger.processing.latency").timer().count() == 1L,
+            assertEquals(1L, registry.get("carddemo.ledger.processing.latency").timer().count(),
                     "the latency timer records one observation per delivery");
         }
     }
@@ -257,12 +279,12 @@ final class TransactionAuthorizedConsumerTest {
         @Test
         @DisplayName("an absent balance row refuses the acknowledgement and records no decline")
         void anAbsentBalanceRowIsAFault() {
-            claimSucceeds();
+            markerAbsent();
             postingFindsNoBalanceRow();
 
             assertThrows(AccountBalanceRowMissingException.class,
-                    () -> consumer.onTransactionAuthorized(aDelivery(anEvent()), acknowledgment),
-                    "the fault travels to the container rather than being answered with a decline");
+                    () -> consumer.onTransactionAuthorized(anEvent(), acknowledgment),
+                    "the fault travels to the container and is not answered with a decline");
 
             verify(acknowledgment, never()).acknowledge();
             assertEquals(0.0d, counter("carddemo.ledger.transactions.processed", "outcome",
@@ -272,22 +294,20 @@ final class TransactionAuthorizedConsumerTest {
         }
 
         @Test
-        @DisplayName("no outcome value names a reject, so this class cannot report one")
-        void noOutcomeValueNamesAReject() {
-            assertEquals(2, TransactionAuthorizedConsumer.Outcome.values().length,
-                    "one delivery either posts or is a duplicate");
-            for (TransactionAuthorizedConsumer.Outcome outcome
-                    : TransactionAuthorizedConsumer.Outcome.values()) {
-                assertNotEquals("REJECTED", outcome.name(),
-                        "a reject is a feed-validation failure and belongs to RejectRecorder");
+        @DisplayName("this listener holds no reject path, so it cannot report one")
+        void thisListenerHoldsNoRejectPath() {
+            for (Field field : TransactionAuthorizedConsumer.class.getDeclaredFields()) {
+                assertFalse(RejectRecorder.class.equals(field.getType()),
+                        () -> "field " + field.getName() + " must not be a reject recorder: a"
+                                + " reject is a feed-validation failure and belongs to"
+                                + " RejectRecorder");
             }
         }
 
         @Test
-        @DisplayName("the reject reason of app/cbl/CBTRN02C.cbl:L398 is established before publication")
+        @DisplayName("the reject reason of app/cbl/CBTRN02C.cbl:L398 is established before"
+                + " publication")
         void theReasonIsEstablishedBeforePublication() {
-            assertEquals("0101", DeclineReason.ACCOUNT_NOT_FOUND.code(),
-                    "reject reason 0101 is assigned at app/cbl/CBTRN02C.cbl:L397");
             assertEquals("ACCOUNT RECORD NOT FOUND", DeclineReason.ACCOUNT_NOT_FOUND.description(),
                     "the text is moved at app/cbl/CBTRN02C.cbl:L398");
             assertTrue(DeclineReason.ACCOUNT_NOT_FOUND.resolvesAccount(),
@@ -300,41 +320,42 @@ final class TransactionAuthorizedConsumerTest {
     class DuplicateDelivery {
 
         @Test
-        @DisplayName("a claimed identifier leaves every table untouched and still acknowledges")
-        void aClaimedIdentifierAppliesNothing() {
-            when(processedEvents.claimEvent(any(UUID.class), any(Instant.class), anyString()))
-                    .thenReturn(0);
+        @DisplayName("a marked identifier leaves every table untouched and still acknowledges")
+        void aMarkedIdentifierAppliesNothing() {
+            markerPresent();
 
-            consumer.onTransactionAuthorized(aDelivery(anEvent()), acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), acknowledgment);
 
             verifyNoInteractions(postingService);
+            verify(processedEvents, never()).save(any(ProcessedEventEntity.class));
             verify(acknowledgment, times(1)).acknowledge();
             assertEquals(1.0d, counter("carddemo.ledger.transactions.processed", "outcome",
                     "duplicate"), "a duplicate delivery counts under its own outcome");
         }
 
         @Test
-        @DisplayName("the claim runs before the posting, so no write precedes the guard")
-        void theClaimRunsFirst() {
-            when(processedEvents.claimEvent(any(UUID.class), any(Instant.class), anyString()))
-                    .thenReturn(0);
+        @DisplayName("the guard runs before the posting, so no write precedes it")
+        void theGuardRunsFirst() {
+            markerPresent();
+            TransactionAuthorized event = anEvent();
 
-            assertEquals(TransactionAuthorizedConsumer.Outcome.DUPLICATE,
-                    consumer.applyOneEvent(anEvent(), ACCOUNT_ID, TOPIC),
-                    "the claim decides the outcome on its own");
-            verify(processedEvents, times(1)).claimEvent(any(UUID.class), any(Instant.class),
-                    eq(TOPIC));
+            consumer.onTransactionAuthorized(event, acknowledgment);
+
+            verify(processedEvents, times(1)).existsById(event.eventId());
             verifyNoInteractions(postingService);
         }
 
         @Test
-        @DisplayName("the marker records the topic the delivery arrived on")
-        void theMarkerRecordsTheTopic() {
-            claimSucceeds();
+        @DisplayName("a duplicate delivery counts no failure")
+        void aDuplicateCountsNoFailure() {
+            markerPresent();
 
-            consumer.applyOneEvent(anEvent(), ACCOUNT_ID, TOPIC);
+            consumer.onTransactionAuthorized(anEvent(), acknowledgment);
 
-            verify(processedEvents).claimEvent(any(UUID.class), any(Instant.class), eq(TOPIC));
+            assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "process"),
+                    "a duplicate is expected traffic and not a fault");
+            assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "deserialize"),
+                    "a duplicate reached this listener, so nothing failed to deserialize");
         }
     }
 
@@ -345,12 +366,12 @@ final class TransactionAuthorizedConsumerTest {
         @Test
         @DisplayName("a posting fault leaves the offset uncommitted and counts one failure")
         void aPostingFaultRefusesTheAcknowledgement() {
-            claimSucceeds();
+            markerAbsent();
             doThrow(new IllegalStateException("store unavailable")).when(postingService)
                     .postTransaction(any(TransactionAuthorized.class), eq(ACCOUNT_ID));
 
             assertThrows(IllegalStateException.class,
-                    () -> consumer.onTransactionAuthorized(aDelivery(anEvent()), acknowledgment),
+                    () -> consumer.onTransactionAuthorized(anEvent(), acknowledgment),
                     "a fault must reach the container, which decides between retry and dead letter");
             verify(acknowledgment, never()).acknowledge();
             assertEquals(1.0d, counter("carddemo.ledger.failures", "stage", "process"),
@@ -358,27 +379,26 @@ final class TransactionAuthorizedConsumerTest {
         }
 
         @Test
-        @DisplayName("a delivery with no payload counts a deserialize failure and applies nothing")
-        void aDeliveryWithNoPayloadIsRefused() {
-            assertThrows(IllegalArgumentException.class,
-                    () -> consumer.onTransactionAuthorized(aDelivery(null), acknowledgment),
-                    "a delivery carrying no payload names no transaction to apply");
-            verify(acknowledgment, never()).acknowledge();
-            verifyNoInteractions(postingService);
-            verifyNoInteractions(processedEvents);
-            assertEquals(1.0d, counter("carddemo.ledger.failures", "stage", "deserialize"),
-                    "a payload the deserializer could not supply counts under its own stage");
+        @DisplayName("a failed posting saves no marker")
+        void aFailedPostingSavesNoMarker() {
+            markerAbsent();
+            postingFindsNoBalanceRow();
+
+            assertThrows(AccountBalanceRowMissingException.class,
+                    () -> consumer.onTransactionAuthorized(anEvent(), acknowledgment));
+
+            verify(processedEvents, never()).save(any(ProcessedEventEntity.class));
         }
 
         @Test
         @DisplayName("the latency timer records even when the delivery failed")
         void theTimerRecordsAFailedDelivery() {
-            claimSucceeds();
+            markerAbsent();
             doThrow(new IllegalStateException("store unavailable")).when(postingService)
                     .postTransaction(any(TransactionAuthorized.class), eq(ACCOUNT_ID));
 
             assertThrows(IllegalStateException.class,
-                    () -> consumer.onTransactionAuthorized(aDelivery(anEvent()), acknowledgment));
+                    () -> consumer.onTransactionAuthorized(anEvent(), acknowledgment));
 
             assertEquals(1L, registry.get("carddemo.ledger.processing.latency").timer().count(),
                     "the timer is stopped in a finally block, so a failure is measured too");
@@ -389,12 +409,74 @@ final class TransactionAuthorizedConsumerTest {
         void neitherArgumentMayBeAbsent() {
             assertThrows(NullPointerException.class,
                     () -> consumer.onTransactionAuthorized(null, acknowledgment),
-                    "a listener with no delivery has nothing to read");
+                    "a listener with no event has nothing to apply");
             assertThrows(NullPointerException.class,
-                    () -> consumer.onTransactionAuthorized(aDelivery(anEvent()), null),
+                    () -> consumer.onTransactionAuthorized(anEvent(), null),
                     "a listener with no acknowledgement could never commit its offset");
-            assertThrows(NullPointerException.class, () -> consumer.applyOneEvent(null, ACCOUNT_ID, TOPIC),
-                    "the apply method requires an event");
+        }
+    }
+
+    @Nested
+    @DisplayName("The listener contract the container binds")
+    class ListenerContract {
+
+        @Test
+        @DisplayName("the topic is a property placeholder and never a literal")
+        void theTopicIsAPlaceholder() {
+            String[] topics = listenerAnnotation().topics();
+
+            assertEquals(1, topics.length, "one listener reads one topic");
+            assertEquals("${carddemo.kafka.topics.transaction-authorized}", topics[0],
+                    "a renamed key must break startup rather than bind a stale topic");
+        }
+
+        @Test
+        @DisplayName("the group is a property placeholder, so the source names the group it joins")
+        void theGroupIsAPlaceholder() {
+            assertEquals("${spring.kafka.consumer.group-id}", listenerAnnotation().groupId(),
+                    "a group of its own is what makes this reader independent of the other two");
+        }
+
+        @Test
+        @DisplayName("the method takes one event and one acknowledgement, and returns nothing")
+        void theMethodTakesTwoParameters() {
+            Method listener = listenerMethod();
+
+            assertEquals(2, listener.getParameterCount(),
+                    "one record per invocation, and no header or record parameter");
+            assertEquals(TransactionAuthorized.class, listener.getParameterTypes()[0],
+                    "the first parameter is the deserialized payload");
+            assertEquals(Acknowledgment.class, listener.getParameterTypes()[1],
+                    "the second parameter is the offset commit");
+            assertEquals(void.class, listener.getReturnType(), "a listener returns nothing");
+        }
+
+        @Test
+        @DisplayName("no diagnostic constant carries a digit, so none can carry an identifier")
+        void noDiagnosticConstantCarriesADigit() throws ReflectiveOperationException {
+            assertConstantIsSafe("ABEND_CODE", DeadLetterMetadata.ABEND_CODE_MAX_LENGTH);
+            assertConstantIsSafe("CULPRIT", DeadLetterMetadata.CULPRIT_MAX_LENGTH);
+            assertConstantIsSafe("POSTING_NOT_COMPLETED", DeadLetterMetadata.REASON_MAX_LENGTH);
+        }
+
+        /**
+         * Asserts one diagnostic constant fits its component and carries no digit.
+         *
+         * @param fieldName the constant to read
+         * @param maxLength the width the component holds
+         * @throws ReflectiveOperationException if the constant is absent
+         */
+        private void assertConstantIsSafe(String fieldName, int maxLength)
+                throws ReflectiveOperationException {
+            Field field = TransactionAuthorizedConsumer.class.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            String value = (String) field.get(null);
+
+            assertNotNull(value, () -> fieldName + " must hold text");
+            assertTrue(value.length() <= maxLength,
+                    () -> fieldName + " must fit the component that holds it");
+            assertFalse(value.chars().anyMatch(Character::isDigit),
+                    () -> fieldName + " must carry no digit, so no identifier can travel in it");
         }
     }
 
@@ -448,8 +530,8 @@ final class TransactionAuthorizedConsumerTest {
         @Test
         @DisplayName("no meter name and no tag value carries an identifier")
         void noMeterCarriesAnIdentifier() {
-            claimSucceeds();
-            consumer.onTransactionAuthorized(aDelivery(anEvent()), acknowledgment);
+            markerAbsent();
+            consumer.onTransactionAuthorized(anEvent(), acknowledgment);
 
             registry.getMeters().forEach(meter -> {
                 String rendered = meter.getId().getName() + " "

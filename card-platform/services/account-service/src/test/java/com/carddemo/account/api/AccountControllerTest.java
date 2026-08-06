@@ -3,16 +3,17 @@ package com.carddemo.account.api;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
 import com.carddemo.account.api.dto.AccountDataRequest;
 import com.carddemo.account.api.dto.AccountUpdateRequest;
@@ -26,29 +27,52 @@ import com.carddemo.account.entity.AccountEntity;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.account.repository.AccountRepository;
 import com.carddemo.account.repository.CustomerRepository;
+import com.carddemo.cobol.PicClause;
+import java.lang.reflect.Field;
+import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.validation.beanvalidation.MethodValidationPostProcessor;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 /**
- * Behaviour tests for {@link AccountController}.
+ * Web-layer tests for {@link AccountController}, driving both routes and reading each answer off
+ * the wire.
  *
- * <p>Two Customer Information Control System (CICS) transactions are under test here.
- * {@code app/cbl/COACTVWC.cbl} runs under {@code CAVW} and displays one account;
- * {@code app/cbl/COACTUPC.cbl} runs under {@code CAUP} and updates one account and its customer. What
- * these tests assert is the translation of their outcomes into status codes, and the merge rule that
- * lets a partial body mean what a whole-screen submit meant.
+ * <p>Two Customer Information Control System (CICS) transactions reach this class.
+ * {@code app/cbl/COACTVWC.cbl} displays one account, and {@code app/cbl/COACTUPC.cbl} updates one
+ * account with its customer. These tests assert the shape of each answer: which properties arrive,
+ * in what order, and in what form.
  *
- * <p>The service is stubbed, so nothing here re-tests the edits or the concurrency check. Those belong
- * to {@code domain/AccountUpdateServiceTest}, which drives them directly.
+ * <p>The dispatcher is built over the controller and the real {@link AccountApiExceptionHandler},
+ * so request mapping, path-variable binding, method validation, body binding and serialization are
+ * all the running ones. No application context, no database, no broker and no container takes part.
+ * One command runs this class on a clean machine.
  *
- * <p>No application context, no database and no broker takes part.
+ * <p>Every collaborator is stubbed. Nothing here re-tests a field edit, a concurrency check or an
+ * outbox row. {@code domain/AccountUpdateServiceTest}, {@code domain/validation/} and the classes
+ * under {@code outbox/} own those, and {@code repository/SchemaColumnTypeTest} owns every
+ * schema-level claim.
+ *
+ * <p>Rationale for the two-hop resolution asserted here, against the three hops
+ * {@code 9000-READ-ACCT} performs at {@code app/cbl/COACTVWC.cbl:L687-L720}:
+ * {@code card-platform/docs/decision-log.md}. The three guards whose setters are commented out at
+ * {@code app/cbl/COACTVWC.cbl:L696}, {@code :L792} and {@code :L842}:
+ * {@code card-platform/docs/business-rule-flags.md}. Field mapping, among it the corrected spelling
+ * of {@code ACCT-EXPIRAION-DATE} at {@code app/cpy/CVACT01Y.cpy:L11}:
+ * {@code card-platform/docs/traceability-matrix.md}.
  */
 @DisplayName("the account read and update surface")
 class AccountControllerTest {
@@ -56,7 +80,7 @@ class AccountControllerTest {
     /** Row one of {@code app/data/ASCII/acctdata.txt}, its account identifier. */
     private static final String ACCOUNT_ID = "00000000050";
 
-    /** The customer the update names, nine digits. */
+    /** Row one of {@code app/data/ASCII/custdata.txt}, its customer identifier. */
     private static final String CUSTOMER_ID = "000000050";
 
     /** The postal code row one of {@code app/data/ASCII/acctdata.txt} carries. */
@@ -68,463 +92,728 @@ class AccountControllerTest {
     /** The government-issued identifier that same row carries. */
     private static final String STORED_GOVERNMENT_ISSUED_ID = "AR8829114";
 
+    /**
+     * The eleven read properties, in the order {@code 1200-SETUP-SCREEN-VARS} moves them.
+     *
+     * <p>The paragraph label sits at {@code app/cbl/COACTVWC.cbl:L460}. The account block is gated
+     * at {@code :L471-L472}. Each move carries its own locator.
+     *
+     * <ul>
+     *   <li>{@code CC-ACCT-ID} at {@code :L468}</li>
+     *   <li>{@code ACCT-ACTIVE-STATUS} at {@code :L473}</li>
+     *   <li>{@code ACCT-CURR-BAL} at {@code :L475}</li>
+     *   <li>{@code ACCT-CREDIT-LIMIT} at {@code :L477}</li>
+     *   <li>{@code ACCT-CASH-CREDIT-LIMIT} at {@code :L479-L480}</li>
+     *   <li>{@code ACCT-CURR-CYC-CREDIT} at {@code :L482-L483}</li>
+     *   <li>{@code ACCT-CURR-CYC-DEBIT} at {@code :L485}</li>
+     *   <li>{@code ACCT-OPEN-DATE} at {@code :L487}</li>
+     *   <li>{@code ACCT-EXPIRAION-DATE} at {@code :L488}</li>
+     *   <li>{@code ACCT-REISSUE-DATE} at {@code :L489}</li>
+     *   <li>{@code ACCT-GROUP-ID} at {@code :L490}</li>
+     * </ul>
+     */
+    private static final List<String> VIEW_PROPERTIES_IN_SOURCE_ORDER = List.of(
+            "accountId", "activeStatus", "currentBalance", "creditLimit", "cashCreditLimit",
+            "currentCycleCredit", "currentCycleDebit", "openDate", "expirationDate", "reissueDate",
+            "groupId");
+
+    /**
+     * The five monetary read properties paired with the scale their source field declares.
+     *
+     * <p>{@code app/cpy/CVACT01Y.cpy} declares {@code PIC S9(10)V99} at {@code :L7} for the
+     * balance, at {@code :L8} and {@code :L9} for the two credit limits, and at {@code :L13} and
+     * {@code :L14} for the two cycle accumulators. Each scale is read from {@link PicClause}.
+     */
+    private static final List<MonetaryProperty> MONETARY_PROPERTIES = List.of(
+            new MonetaryProperty("currentBalance", PicClause.ACCT_CURR_BAL_SCALE),
+            new MonetaryProperty("creditLimit", PicClause.ACCT_CREDIT_LIMIT_SCALE),
+            new MonetaryProperty("cashCreditLimit", PicClause.ACCT_CASH_CREDIT_LIMIT_SCALE),
+            new MonetaryProperty("currentCycleCredit", PicClause.ACCT_CURR_CYC_CREDIT_SCALE),
+            new MonetaryProperty("currentCycleDebit", PicClause.ACCT_CURR_CYC_DEBIT_SCALE));
+
+    /**
+     * The three date read properties paired with the width their source field declares.
+     *
+     * <p>{@code app/cpy/CVACT01Y.cpy} declares {@code PIC X(10)} at {@code :L10}, {@code :L11} and
+     * {@code :L12}. Each width is read from {@link PicClause}.
+     */
+    private static final List<DateProperty> DATE_PROPERTIES = List.of(
+            new DateProperty("openDate", PicClause.ACCT_OPEN_DATE_WIDTH),
+            new DateProperty("expirationDate", PicClause.ACCT_EXPIRATION_DATE_WIDTH),
+            new DateProperty("reissueDate", PicClause.ACCT_REISSUE_DATE_WIDTH));
+
+    /**
+     * Property names that would carry a list of field texts or a stack trace.
+     *
+     * <p>{@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COACTUPC.cbl:L479} is one field under
+     * the guard {@code 88 WS-RETURN-MSG-OFF VALUE SPACES} at {@code :L480}, so one text is all a
+     * validation pass produces. No answer of this class carries any of these.
+     */
+    private static final List<String> LIST_AND_TRACE_PROPERTIES = List.of(
+            "messages", "errors", "violations", "fieldErrors", "timestamp", "trace");
+
+    /** Packages holding a type that could publish an event. */
+    private static final List<String> PUBLISHING_PACKAGES = List.of(
+            "com.carddemo.account.outbox", "com.carddemo.account.messaging",
+            "com.carddemo.account.config", "com.carddemo.events");
+
+    /** Reads each answer back off the wire. */
+    private static final ObjectMapper JSON = new ObjectMapper();
+
     private AccountRepository accounts;
     private CustomerRepository customers;
     private AccountUpdateService accountUpdates;
-    private AccountController controller;
+    private MockMvc mockMvc;
 
-    /** Builds the controller over stubbed collaborators before each test. */
+    /** Builds the dispatcher over stubbed collaborators and the real error handler. */
     @BeforeEach
-    void buildController() {
+    void buildSlice() {
         accounts = mock(AccountRepository.class);
         customers = mock(CustomerRepository.class);
         accountUpdates = mock(AccountUpdateService.class);
-        controller = new AccountController(accounts, customers, accountUpdates);
+
+        mockMvc = MockMvcBuilders
+                .standaloneSetup(validating(
+                        new AccountController(accounts, customers, accountUpdates)))
+                .setControllerAdvice(new AccountApiExceptionHandler())
+                .build();
     }
 
-    /** The read path. */
+    /**
+     * Wraps the controller so its {@code @Validated} method constraints are enforced.
+     *
+     * <p>A running service gets this from {@code spring-boot-starter-validation}, which proxies
+     * every {@code @Validated} bean. A standalone dispatcher registers no post-processor, so without
+     * the wrapper the {@code @Pattern} on the path variable would be inert.
+     *
+     * @param controller the controller to wrap
+     * @return the controller behind a validating proxy
+     */
+    private static AccountController validating(AccountController controller) {
+        MethodValidationPostProcessor processor = new MethodValidationPostProcessor();
+        processor.afterPropertiesSet();
+        return (AccountController) processor.postProcessAfterInitialization(controller,
+                AccountController.class.getSimpleName());
+    }
+
+    /** The eleven properties a read answers, their order, and the form each takes. */
     @Nested
-    @DisplayName("reading one account")
-    class ReadingOneAccount {
+    @DisplayName("the eleven account view properties")
+    class TheElevenAccountViewProperties {
 
-        /** Asserts a stored account is returned with every one of the eleven view components. */
+        /**
+         * Asserts a read answers exactly eleven properties and no twelfth.
+         *
+         * <p>{@code 1200-SETUP-SCREEN-VARS} at {@code app/cbl/COACTVWC.cbl:L460} moves eleven
+         * values, at {@code :L468} and {@code :L473-L490}.
+         */
         @Test
-        void aStoredAccountIsReturnedInFull() {
-            when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.of(storedAccount()));
+        void aReadAnswersExactlyElevenProperties() throws Exception {
+            resolveAccount();
 
-            ResponseEntity<?> response = controller.readAccount(ACCOUNT_ID);
+            JsonNode answer = readAccount();
 
-            assertEquals(HttpStatus.OK, response.getStatusCode(), "a stored row answers 200");
-            AccountView view = assertInstanceOf(AccountView.class, response.getBody());
-            assertEquals(ACCOUNT_ID, view.accountId(), "the identifier keeps its leading zeros");
-            assertEquals(new BigDecimal("10000.00"), view.creditLimit(),
-                    "the credit limit the authorization service authorizes against");
-            assertEquals(new BigDecimal("1010.00"), view.currentCycleDebit(),
-                    "the accumulator a cycle close returns to zero");
-            assertEquals("2025-02-28", view.expirationDate(),
-                    "the expiry stays ten characters of text, per app/cbl/CBTRN02C.cbl:L414-L420");
-            assertEquals("ZEROAPR", view.groupId(), "the disclosure group the interest program reads");
+            assertAll("the read carries the eleven values of the source paragraph",
+                    () -> assertEquals(11, answer.size(),
+                            "eleven properties arrive and no twelfth"),
+                    () -> assertEquals(VIEW_PROPERTIES_IN_SOURCE_ORDER,
+                            List.copyOf(answer.propertyNames()),
+                            "and they are the eleven the paragraph moves"));
         }
 
         /**
-         * Asserts a read that missed answers 404 carrying the text the source builds.
+         * Asserts the eleven properties arrive in the order the source paragraph moves them.
          *
-         * <p>{@code 9300-GETACCTDATA-BYACCT} concatenates four literals around the account
-         * identifier, a response code and a reason code at {@code app/cbl/COACTVWC.cbl:L796-L806}.
-         * The identifier is the one the caller put in the path. The source carries no space after
-         * {@code file.} and none after either colon, and the answer keeps that spacing.
+         * <p>The order runs from {@code app/cbl/COACTVWC.cbl:L468} to {@code :L490}. Each name is
+         * located in the raw answer, and the positions strictly increase.
          */
         @Test
-        void aReadThatMissedAnswersNotFoundWithTheSourceText() {
-            when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
+        void thePropertiesArriveInTheSourceMoveOrder() throws Exception {
+            resolveAccount();
 
-            ResponseEntity<?> response = controller.readAccount(ACCOUNT_ID);
+            String wire = readAccountBody();
 
-            assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode(), "no row answers 404");
-            ApiProblem problem = assertInstanceOf(ApiProblem.class, response.getBody());
-            assertEquals(ApiProblem.NOT_FOUND, problem.title(), "one fixed title");
-            assertEquals(
-                    "Account:00000000050 not found in Acct Master file.Resp:404 Reas:Not Found",
-                    problem.detail(),
-                    "app/cbl/COACTVWC.cbl:L796-L806 character for character");
-            assertNull(problem.messages(),
-                    "one text travels, and the detail is the slot it travels in");
+            int previous = -1;
+            for (String property : VIEW_PROPERTIES_IN_SOURCE_ORDER) {
+                int position = wire.indexOf('"' + property + '"');
+                assertTrue(position > previous,
+                        property + " follows the property the paragraph moves before it");
+                previous = position;
+            }
         }
 
         /**
-         * Asserts the payload carries the eleven values the source moves to the screen and no other.
+         * Asserts the view declares no postal code property.
          *
-         * <p>{@code 1200-SETUP-SCREEN-VARS} moves them at {@code app/cbl/COACTVWC.cbl:L468-L490}.
-         * {@code ACCT-ADDR-ZIP} at {@code app/cpy/CVACT01Y.cpy:L15} is not among them, and
-         * {@code ACCOUNT-RECORD} at {@code app/cpy/CVACT01Y.cpy:L4-L17} declares no customer
-         * identifier for a twelfth component to carry.
+         * <p>{@code ACCT-ADDR-ZIP} at {@code app/cpy/CVACT01Y.cpy:L15} has zero references across
+         * the whole of {@code app/cbl/COACTVWC.cbl}, so the display program never reads it. The
+         * column is stored and the entity maps it.
          */
         @Test
-        void thePayloadCarriesElevenValuesAndNeitherTheZipNorACustomer() throws Exception {
-            when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.of(storedAccount()));
+        void theViewCarriesNoPostalCode() throws Exception {
+            resolveAccount();
 
-            ResponseEntity<?> response = controller.readAccount(ACCOUNT_ID);
+            JsonNode answer = readAccount();
 
-            AccountView view = assertInstanceOf(AccountView.class, response.getBody());
-            assertEquals(java.util.List.of("accountId", "activeStatus", "currentBalance",
-                            "creditLimit", "cashCreditLimit", "currentCycleCredit",
-                            "currentCycleDebit", "openDate", "expirationDate", "reissueDate",
-                            "groupId"),
-                    java.util.Arrays.stream(AccountView.class.getRecordComponents())
-                            .map(java.lang.reflect.RecordComponent::getName).toList(),
-                    "the eleven values of app/cbl/COACTVWC.cbl:L468-L490, in source order");
-            assertFalse(renderedValuesOf(view).contains(STORED_ADDRESS_ZIP),
-                    "the postal code the record holds reaches no component");
+            assertAll("the postal code the display program never reads reaches no property",
+                    () -> assertFalse(answer.has("addressZip"),
+                            "no postal code property arrives"),
+                    () -> assertFalse(propertyNamesOf(AccountView.class).contains("addressZip"),
+                            "and the record declares none"),
+                    () -> assertFalse(readAccountBody().contains(STORED_ADDRESS_ZIP),
+                            "so the stored value reaches no answer"));
         }
 
-        /** Asserts a read writes nothing at all. */
+        /**
+         * Asserts the view declares no customer identifier property.
+         *
+         * <p>{@code ACCOUNT-RECORD} at {@code app/cpy/CVACT01Y.cpy:L4-L17} declares twelve fields
+         * at {@code :L5-L16}, and none is a customer identifier. The source resolves one through
+         * the cross-reference read at {@code app/cbl/COACTVWC.cbl:L723}.
+         */
         @Test
-        void aReadWritesNothing() {
-            when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.of(storedAccount()));
+        void theViewCarriesNoCustomerIdentifier() throws Exception {
+            resolveAccount();
 
-            controller.readAccount(ACCOUNT_ID);
+            JsonNode answer = readAccount();
+            List<String> declared = propertyNamesOf(AccountView.class);
 
-            verify(accounts, never()).save(any());
-            verify(accountUpdates, never()).updateAccount(any(), any(), any(), any());
+            assertAll("an account record names no customer, so the view names none",
+                    () -> assertFalse(answer.has("customerId"),
+                            "no customer identifier property arrives"),
+                    () -> assertFalse(declared.contains("customerId"),
+                            "and the record declares none"),
+                    () -> assertTrue(declared.stream()
+                            .noneMatch(name -> name.toLowerCase().contains("customer")),
+                            "and no property of the view names a customer at all"));
+        }
+
+        /**
+         * Asserts each monetary property arrives as text at the scale its source field declares.
+         *
+         * <p>The five {@code PIC S9(10)V99} fields sit at {@code app/cpy/CVACT01Y.cpy:L7},
+         * {@code :L8}, {@code :L9}, {@code :L13} and {@code :L14}. Each scale is read from
+         * {@link PicClause}.
+         */
+        @Test
+        void eachMonetaryPropertyArrivesAsTextAtItsDeclaredScale() throws Exception {
+            resolveAccount();
+
+            JsonNode answer = readAccount();
+
+            assertAll(MONETARY_PROPERTIES.stream().map(money -> () -> {
+                JsonNode value = answer.get(money.property());
+                assertTrue(value.isString(),
+                        money.property() + " arrives as text and never as a number");
+                String text = value.stringValue();
+                assertEquals(money.scale(), text.length() - text.indexOf('.') - 1,
+                        money.property() + " keeps the fractional digits its scale declares");
+            }));
+        }
+
+        /**
+         * Asserts each date property arrives as text at the width its source field declares.
+         *
+         * <p>The three {@code PIC X(10)} fields sit at {@code app/cpy/CVACT01Y.cpy:L10},
+         * {@code :L11} and {@code :L12}. {@code app/cbl/CBTRN02C.cbl:L414-L420} compares the
+         * expiry as text against the leading characters of a timestamp, so the ten characters
+         * stand.
+         */
+        @Test
+        void eachDatePropertyArrivesAsTextAtItsDeclaredWidth() throws Exception {
+            resolveAccount();
+
+            JsonNode answer = readAccount();
+
+            assertAll(DATE_PROPERTIES.stream().map(date -> () -> {
+                JsonNode value = answer.get(date.property());
+                assertTrue(value.isString(), date.property() + " arrives as text");
+                assertEquals(date.width(), value.stringValue().length(),
+                        date.property() + " keeps the characters its width declares");
+            }));
+        }
+
+        /**
+         * Asserts the expiry property carries the corrected spelling.
+         *
+         * <p>The source field is {@code ACCT-EXPIRAION-DATE} at {@code app/cpy/CVACT01Y.cpy:L11},
+         * and the display program moves it at {@code app/cbl/COACTVWC.cbl:L488}.
+         */
+        @Test
+        void theExpiryPropertyCarriesTheCorrectedSpelling() {
+            List<String> declared = propertyNamesOf(AccountView.class);
+
+            assertAll("one spelling reaches the wire",
+                    () -> assertTrue(declared.contains("expirationDate"),
+                            "the corrected spelling is the property name"),
+                    () -> assertFalse(declared.contains("expiraionDate"),
+                            "and the source spelling reaches no property"));
         }
     }
 
-    /** The update path, and the four answers it can give. */
+    /** The one message slot every answer carries. */
     @Nested
-    @DisplayName("updating one account")
-    class UpdatingOneAccount {
+    @DisplayName("the single message slot")
+    class TheSingleMessageSlot {
 
-        /** Asserts a written pair answers 200 with the applied text and the stored row. */
+        /**
+         * Asserts an accepted update answers exactly two properties.
+         *
+         * <p>{@link AccountUpdateResponse} models one text and the resulting account.
+         * {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COACTUPC.cbl:L479} is that one text,
+         * open when it holds spaces per {@code :L480}.
+         */
         @Test
-        void aWrittenPairAnswersTheAppliedText() {
+        void anAcceptedUpdateAnswersExactlyTwoProperties() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
                     .thenReturn(EditResult.ok());
 
-            ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
+            JsonNode answer = JSON.readTree(updateAccount(bodyNamingTheCustomer()).getResponse()
+                    .getContentAsString());
 
-            assertEquals(HttpStatus.OK, response.getStatusCode(), "a written pair answers 200");
-            AccountUpdateResponse body =
-                    assertInstanceOf(AccountUpdateResponse.class, response.getBody());
-            assertEquals(AccountController.UPDATE_APPLIED_MESSAGE, body.message(),
-                    "the caller reads that both rows were written");
-            assertNotNull(body.account(), "the stored row as it now stands travels back");
+            assertAll("one text and one account, and nothing else",
+                    () -> assertEquals(2, answer.size(), "two properties arrive and no third"),
+                    () -> assertEquals(List.of("message", "account"),
+                            List.copyOf(answer.propertyNames()),
+                            "and they are the two the record declares"),
+                    () -> assertEquals(2, AccountUpdateResponse.class.getRecordComponents().length,
+                            "the record declares two components"));
         }
 
         /**
-         * Asserts an unchanged pair answers 200 carrying the source's own no-change text.
+         * Asserts an accepted update nests the resulting account under one property.
          *
-         * <p>{@code app/cbl/COACTUPC.cbl:L1463-L1467} returns before any field edit and before any
-         * write, and saying so is more useful to a caller than an empty success.
+         * <p>The eleven values are the same eleven {@code app/cbl/COACTVWC.cbl:L468-L490} moves,
+         * so a caller reads the row as it now stands without a second call.
          */
         @Test
-        void anUnchangedPairAnswersTheNoChangeText() {
+        void anAcceptedUpdateNestsTheViewUnderAccount() throws Exception {
             resolveBoth();
-            String noChange = "No change detected with respect to values fetched.";
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(new EditResult(true, noChange));
+                    .thenReturn(EditResult.ok());
 
-            ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
+            JsonNode answer = JSON.readTree(updateAccount(bodyNamingTheCustomer()).getResponse()
+                    .getContentAsString());
+            JsonNode account = answer.get("account");
 
-            assertEquals(HttpStatus.OK, response.getStatusCode(),
-                    "nothing changed is still not a failure");
-            AccountUpdateResponse body =
-                    assertInstanceOf(AccountUpdateResponse.class, response.getBody());
-            assertEquals(noChange, body.message(), "the source text reaches the caller verbatim");
+            assertAll("the nested account is one whole view",
+                    () -> assertEquals(AccountController.UPDATE_APPLIED_MESSAGE,
+                            answer.get("message").stringValue(),
+                            "the accepted text of app/cbl/COACTUPC.cbl:L474-L475"),
+                    () -> assertEquals(11, account.size(), "eleven nested properties arrive"),
+                    () -> assertEquals(VIEW_PROPERTIES_IN_SOURCE_ORDER,
+                            List.copyOf(account.propertyNames()),
+                            "in the order the source paragraph moves them"));
         }
 
         /**
-         * Asserts a lost race answers 409 and carries the changed-record text.
+         * Asserts a refused field answers one text in one slot.
          *
-         * <p>{@code app/cbl/COACTUPC.cbl:L3947-L3952} detects it by comparing the re-read rows field
-         * by field. A caller reading this answer should read the row again and resubmit, which is why
-         * it is not a 422.
+         * <p>The text arrives character for character. {@code app/cbl/COACTUPC.cbl:L2209} supplies
+         * {@code ' is not valid'} with no trailing period, and no answer of this class adds one.
          */
         @Test
-        void aChangedRecordAnswersConflict() {
+        void aRefusedFieldAnswersOneTextInOneSlot() throws Exception {
+            String refusal = AccountDataRequest.CREDIT_LIMIT_LABEL
+                    + AccountDataRequest.IS_NOT_VALID_MESSAGE_SUFFIX;
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.failure(refusal));
+
+            MvcResult result = updateAccount(bodyNamingTheCustomer());
+            JsonNode answer = JSON.readTree(result.getResponse().getContentAsString());
+
+            assertAll("one text, in one slot, unaltered",
+                    () -> assertEquals(422, result.getResponse().getStatus(),
+                            "a refused field is a caller's to correct"),
+                    () -> assertEquals(refusal, answer.get("detail").stringValue(),
+                            "the text arrives with the spacing the source supplies"),
+                    () -> assertFalse(answer.get("detail").stringValue().endsWith("."),
+                            "and no trailing period is added to it"));
+        }
+
+        /**
+         * Asserts a failing answer carries no list of field texts and no stack trace.
+         *
+         * <p>The guard at {@code app/cbl/COACTUPC.cbl:L480} lets one text stand per validation
+         * pass, and {@code :L876} reopens the slot once per pass.
+         */
+        @Test
+        void aFailingAnswerCarriesNoListAndNoTrace() throws Exception {
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.failure(AccountDataRequest.CURRENT_BALANCE_LABEL
+                            + AccountDataRequest.IS_NOT_VALID_MESSAGE_SUFFIX));
+
+            MvcResult result = updateAccount(bodyNamingTheCustomer());
+            JsonNode answer = JSON.readTree(result.getResponse().getContentAsString());
+
+            assertAll("one text is the whole error contract",
+                    () -> assertEquals(MediaType.APPLICATION_PROBLEM_JSON_VALUE,
+                            result.getResponse().getContentType(),
+                            "a refusal answers one problem document"),
+                    () -> assertAll(LIST_AND_TRACE_PROPERTIES.stream()
+                            .map(absent -> () -> assertFalse(answer.has(absent),
+                                    absent + " reaches no failing answer"))));
+        }
+
+        /**
+         * Asserts a lost race answers the concurrency text in that same slot.
+         *
+         * <p>{@link ConcurrentChangeDetector#RECORD_CHANGED_MESSAGE} is the verdict of
+         * {@code app/cbl/COACTUPC.cbl:L3950-L3952}, whose literal sits at {@code :L521-L522}. A
+         * lost race is a caller's to retry, so it answers a status of its own.
+         */
+        @Test
+        void aLostRaceAnswersTheConcurrencyTextInThatSameSlot() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any())).thenReturn(
                     EditResult.failure(ConcurrentChangeDetector.RECORD_CHANGED_MESSAGE));
 
-            ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
+            MvcResult result = updateAccount(bodyNamingTheCustomer());
+            JsonNode answer = JSON.readTree(result.getResponse().getContentAsString());
 
-            assertEquals(HttpStatus.CONFLICT, response.getStatusCode(),
-                    "a lost race is worth retrying, so it is not a 422");
-            ApiProblem problem = assertInstanceOf(ApiProblem.class, response.getBody());
-            assertEquals(ApiProblem.CONFLICT, problem.title(), "one fixed title");
-            assertEquals(ConcurrentChangeDetector.RECORD_CHANGED_MESSAGE, problem.detail(),
-                    "the source text reaches the caller verbatim");
+            assertAll("the concurrency verdict reaches the caller unaltered",
+                    () -> assertEquals(409, result.getResponse().getStatus(),
+                            "a lost race is a caller's to retry"),
+                    () -> assertEquals(ConcurrentChangeDetector.RECORD_CHANGED_MESSAGE,
+                            answer.get("detail").stringValue(),
+                            "carrying the text of app/cbl/COACTUPC.cbl:L521-L522"));
         }
 
-        /** Asserts each of the two lock failures answers 409 rather than 422. */
+        /**
+         * Asserts a passing verdict that carries its own text answers that text.
+         *
+         * <p>{@code app/cbl/COACTUPC.cbl:L1463-L1467} returns when it finds nothing changed, and
+         * that outcome wrote no row.
+         */
         @Test
-        void bothLockFailuresAnswerConflict() {
-            for (String lockFailure : AccountUpdateService.lockFailureMessages()) {
-                buildController();
-                resolveBoth();
-                when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                        .thenReturn(EditResult.failure(lockFailure));
-
-                ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
-
-                assertEquals(HttpStatus.CONFLICT, response.getStatusCode(),
-                        "a row that could not be locked is worth retrying: " + lockFailure);
-            }
-        }
-
-        /** Asserts a failed edit answers 422 carrying the verbatim text as one message. */
-        @Test
-        void aFailedEditAnswersUnprocessableWithItsSourceText() {
+        void aPassingVerdictCarryingATextAnswersThatText() throws Exception {
             resolveBoth();
-            String ficoMessage = "FICO Score: should be between 300 and 850";
-            when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.failure(ficoMessage));
+            when(accountUpdates.updateAccount(any(), any(), any(), any())).thenReturn(
+                    new EditResult(true, AccountUpdateService.NO_CHANGE_DETECTED));
 
-            ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
+            JsonNode answer = JSON.readTree(updateAccount(bodyNamingTheCustomer()).getResponse()
+                    .getContentAsString());
 
-            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, response.getStatusCode(),
-                    "a field a caller can correct answers 422");
-            ApiProblem problem = assertInstanceOf(ApiProblem.class, response.getBody());
-            assertEquals(ApiProblem.VALIDATION_FAILED, problem.title(), "one fixed title");
-            assertEquals(ficoMessage, problem.detail(),
-                    "the edit text reaches the caller character for character");
-            assertNull(problem.messages(),
-                    "one edit produced one text, so no list carries it");
+            assertEquals(AccountUpdateService.NO_CHANGE_DETECTED,
+                    answer.get("message").stringValue(),
+                    "the no-change text of app/cbl/COACTUPC.cbl:L1463-L1467 stands");
+        }
+    }
+
+    /** What each route publishes, and what it could publish at all. */
+    @Nested
+    @DisplayName("publication behaviour")
+    class PublicationBehaviour {
+
+        /**
+         * Asserts a read touches no collaborator that mutates.
+         *
+         * <p>An account read is a supporting query. {@code 9300-GETACCTDATA-BYACCT} at
+         * {@code app/cbl/COACTVWC.cbl:L774-L784} performs one keyed read and writes nothing.
+         */
+        @Test
+        void aReadTouchesNoMutatingCollaborator() throws Exception {
+            resolveAccount();
+
+            readAccount();
+
+            assertAll("a query writes nothing and publishes nothing",
+                    () -> verifyNoInteractions(accountUpdates),
+                    () -> verify(accounts, never()).save(any()),
+                    () -> verifyNoInteractions(customers));
         }
 
-        /** Asserts an unknown account answers 404 and never reaches the service. */
+        /**
+         * Asserts an update delegates exactly once to the collaborator that owns the write.
+         *
+         * <p>{@code app/cbl/COACTUPC.cbl} rewrites two files in one unit of work,
+         * {@code REWRITE FILE(LIT-ACCTFILENAME)} at {@code :L4066} and
+         * {@code REWRITE FILE(LIT-CUSTFILENAME)} at {@code :L4086}. {@link AccountUpdateService}
+         * opens the one transaction both rows and the outbox row commit in, so one delegation is
+         * one outbox row.
+         */
         @Test
-        void anUnknownAccountAnswersNotFoundAndUpdatesNothing() {
+        void anUpdateDelegatesExactlyOnce() throws Exception {
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.ok());
+
+            updateAccount(bodyNamingTheCustomer());
+
+            verify(accountUpdates, times(1)).updateAccount(any(), any(), any(), any());
+            verifyNoMoreInteractions(accountUpdates);
+        }
+
+        /**
+         * Asserts no declared field of the controller could publish an event.
+         *
+         * <p>Request handling reaches no publisher, no outbox writer and no event type, so a read
+         * cannot publish whatever it does.
+         *
+         * <p>{@code app/cbl/COACTVWC.cbl} carries three {@code EXEC CICS READ} operations and zero
+         * {@code WRITE}, {@code REWRITE} or {@code DELETE} operations across all 941 of its lines,
+         * so the display transaction changes nothing a consumer could observe.
+         */
+        @Test
+        void noDeclaredFieldCouldPublish() {
+            List<String> reachable = Arrays.stream(AccountController.class.getDeclaredFields())
+                    .map(Field::getType)
+                    .map(Class::getName)
+                    .toList();
+
+            assertAll("nothing that publishes is reachable from a request",
+                    PUBLISHING_PACKAGES.stream().map(banned -> () -> assertTrue(
+                            reachable.stream().noneMatch(type -> type.startsWith(banned + ".")),
+                            "no declared field has a type in " + banned)));
+        }
+
+        /**
+         * Asserts an update writes through no store of its own.
+         *
+         * <p>The two rewrites of {@code app/cbl/COACTUPC.cbl:L4066} and {@code :L4086} belong to
+         * one collaborator here, and this route reaches neither store to write.
+         */
+        @Test
+        void anUpdateWritesThroughNoStoreOfItsOwn() throws Exception {
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.ok());
+
+            updateAccount(bodyNamingTheCustomer());
+
+            assertAll("one collaborator owns the write",
+                    () -> verify(accounts, never()).save(any()),
+                    () -> verify(customers, never()).save(any()));
+        }
+    }
+
+    /** How a read resolves one account, and what a miss answers. */
+    @Nested
+    @DisplayName("the resolution path")
+    class TheResolutionPath {
+
+        /**
+         * Asserts a read resolves by account identifier alone.
+         *
+         * <p>{@code 9000-READ-ACCT} at {@code app/cbl/COACTVWC.cbl:L687-L720} performs three hops:
+         * the cross-reference read at {@code :L723}, the account read at {@code :L774}, and the
+         * customer read at {@code :L825}. This service holds no cross-reference table, and
+         * {@code GET /customers/{customerId}} answers the customer.
+         *
+         * <p>The identifier reaches the store as text, keeping the leading zeros
+         * {@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5} declares.
+         */
+        @Test
+        void aReadResolvesByAccountIdentifierAlone() throws Exception {
+            resolveAccount();
+
+            readAccount();
+
+            ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
+            verify(accounts, times(1)).findByAccountId(key.capture());
+            assertAll("one keyed read serves the route",
+                    () -> assertEquals(ACCOUNT_ID, key.getValue(),
+                            "the identifier keeps its leading zeros"),
+                    () -> verifyNoMoreInteractions(accounts));
+        }
+
+        /**
+         * Asserts a read that missed answers the source text and no customer data.
+         *
+         * <p>{@code 9300-GETACCTDATA-BYACCT} concatenates four literals around the identifier at
+         * {@code app/cbl/COACTVWC.cbl:L796-L806}. The spacing of each survives unaltered.
+         *
+         * <ul>
+         *   <li>{@code 'Account:'} at {@code :L797}, then the identifier at {@code :L798}</li>
+         *   <li>{@code ' not found in'} at {@code :L799}</li>
+         *   <li>{@code ' Acct Master file.Resp:'} at {@code :L800}, carrying no space on either
+         *       side of the colon</li>
+         *   <li>{@code ' Reas:'} at {@code :L802}, in mixed case</li>
+         * </ul>
+         */
+        @Test
+        void aReadThatMissedAnswersTheSourceTextAndNoCustomerData() throws Exception {
             when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
 
-            ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
+            MvcResult result = mockMvc.perform(get("/accounts/{accountId}", ACCOUNT_ID))
+                    .andReturn();
+            String wire = result.getResponse().getContentAsString();
+            JsonNode answer = JSON.readTree(wire);
 
-            assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode(), "no account answers 404");
-            verify(accountUpdates, never()).updateAccount(any(), any(), any(), any());
+            assertAll("the miss text arrives whole, and it names one account",
+                    () -> assertEquals(404, result.getResponse().getStatus(),
+                            "a row this service does not hold answers 404"),
+                    () -> assertTrue(answer.get("detail").stringValue().startsWith(
+                            AccountController.ACCOUNT_NOT_FOUND_OPENING + ACCOUNT_ID
+                                    + AccountController.ACCOUNT_NOT_FOUND_MISSING),
+                            "the first three literals arrive in order"),
+                    () -> assertTrue(answer.get("detail").stringValue().contains(
+                            AccountController.ACCOUNT_NOT_FOUND_FILE_AND_RESPONSE),
+                            "the spacing of app/cbl/COACTVWC.cbl:L800 survives"),
+                    () -> assertTrue(answer.get("detail").stringValue().contains(
+                            AccountController.ACCOUNT_NOT_FOUND_REASON),
+                            "and the mixed case of app/cbl/COACTVWC.cbl:L802 survives"),
+                    () -> assertFalse(wire.contains(STORED_SOCIAL_SECURITY_NUMBER),
+                            "no customer value reaches a miss answer"),
+                    () -> assertFalse(wire.contains("Arlene"),
+                            "and no customer name reaches it"));
         }
 
-        /** Asserts an unknown customer answers 404 and never reaches the service. */
+        /**
+         * Asserts an update naming a customer this service does not hold answers the miss outcome.
+         *
+         * <p>The customer read of {@code 9400-GETCUSTDATA-BYCUST} at
+         * {@code app/cbl/COACTVWC.cbl:L825} is keyed strictly on the customer identifier, and this
+         * route reads it the same way.
+         */
         @Test
-        void anUnknownCustomerAnswersNotFoundAndUpdatesNothing() {
-            when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.of(storedAccount()));
+        void anUpdateNamingNoStoredCustomerAnswersTheMissOutcome() throws Exception {
+            when(accounts.findByAccountId(ACCOUNT_ID))
+                    .thenReturn(Optional.of(storedAccount()));
             when(customers.findByCustomerId(CUSTOMER_ID)).thenReturn(Optional.empty());
 
-            ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
+            MvcResult result = updateAccount(bodyNamingTheCustomer());
+            JsonNode answer = JSON.readTree(result.getResponse().getContentAsString());
 
-            assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode(), "no customer answers 404");
-            verify(accountUpdates, never()).updateAccount(any(), any(), any(), any());
+            assertAll("a missing row answers the miss outcome and writes nothing",
+                    () -> assertEquals(404, result.getResponse().getStatus(),
+                            "a row this service does not hold answers 404"),
+                    () -> assertEquals(ApiProblem.NOT_FOUND_DETAIL,
+                            answer.get("detail").stringValue(),
+                            "carrying the one miss text this service writes"),
+                    () -> verifyNoInteractions(accountUpdates));
         }
 
         /**
-         * Asserts a body naming no customer answers 422 and reads nothing.
+         * Asserts a path carrying anything but eleven digits is refused before any store is read.
          *
-         * <p>An account record declares no customer identifier at
-         * {@code app/cpy/CVACT01Y.cpy:L4-L17}, and this service owns no cross-reference table, so
-         * there is nothing to resolve one from and the caller has to name it.
+         * <p>{@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5} fixes the width, and
+         * {@code MOVE WS-CARD-RID-ACCT-ID-X TO WS-CARD-RID-ACCT-ID} at
+         * {@code app/cbl/COACTVWC.cbl:L691} lands the digits over zeros.
          */
         @Test
-        void aBodyNamingNoCustomerAnswersUnprocessable() {
-            ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID,
-                    new AccountUpdateRequest(accountDataRaising(), null));
+        void aPathOfTheWrongWidthIsRefusedBeforeAnyStoreIsRead() throws Exception {
+            MvcResult result = mockMvc.perform(get("/accounts/{accountId}", "50")).andReturn();
 
-            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, response.getStatusCode(),
-                    "a caller that names no customer has not made a complete request");
-            ApiProblem problem = assertInstanceOf(ApiProblem.class, response.getBody());
-            assertEquals(AccountController.CUSTOMER_ID_REQUIRED_MESSAGE, problem.detail(),
-                    "the answer says which component was missing");
-            assertNull(problem.messages(), "one text travels, and no list carries it");
-            verify(accounts, never()).findByAccountId(any());
+            assertAll("the width is checked before the store",
+                    () -> assertEquals(422, result.getResponse().getStatus(),
+                            "a path of the wrong width is a caller's to correct"),
+                    () -> verifyNoInteractions(accounts));
         }
     }
 
-    /** The merge rule: what a partial body keeps and what it replaces. */
+    /** The blocks an update body carries, and how the stored pair is read. */
     @Nested
-    @DisplayName("merging a submitted body over the stored row")
-    class MergingTheBody {
+    @DisplayName("the update request contract")
+    class TheUpdateRequestContract {
 
-        /** Asserts a component the body carries replaces the stored value. */
+        /**
+         * Asserts the request declares two blocks, of ten and twenty components.
+         *
+         * <p>{@code ACUP-NEW-DETAILS} at {@code app/cbl/COACTUPC.cbl:L757} groups the submitted
+         * screen fields, and the customer block opens with {@code ACUP-NEW-CUST-ID-X} at
+         * {@code :L798}. The three Social Security parts are modelled apart, as
+         * {@code app/cbl/COACTUPC.cbl:L1607} reads them.
+         */
         @Test
-        void aSubmittedComponentReplacesTheStoredValue() {
-            resolveBoth();
-            when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
-
-            controller.updateAccount(ACCOUNT_ID, requestRaising());
-
-            assertEquals(new BigDecimal("12000.00"), proposedAccount().getCreditLimit(),
-                    "the submitted credit limit reached the service at the column's scale");
+        void theRequestDeclaresTwoBlocksOfTenAndTwenty() {
+            assertAll("the submitted shape matches the screen the source submits",
+                    () -> assertEquals(List.of("accountData", "customerData"),
+                            propertyNamesOf(AccountUpdateRequest.class),
+                            "two blocks, and no identifier component beside them"),
+                    () -> assertEquals(10, AccountDataRequest.class.getRecordComponents().length,
+                            "ten account components"),
+                    () -> assertEquals(20, CustomerDataRequest.class.getRecordComponents().length,
+                            "twenty customer components"),
+                    () -> assertTrue(propertyNamesOf(CustomerDataRequest.class).containsAll(
+                            List.of("socialSecurityPart1", "socialSecurityPart2",
+                                    "socialSecurityPart3")),
+                            "with the three Social Security parts modelled apart"));
         }
 
         /**
-         * Asserts a component the body omits keeps the stored value.
+         * Asserts the path identifier is the only identifier the update route reads.
          *
-         * <p>These tests call the controller directly, so bean validation has already run or, here, has
-         * not. Over the Hypertext Transfer Protocol most of these components carry a mandatory-field
-         * edit and a body omitting one is refused before this merge is reached, which
-         * {@code AccountRouteWiringTest} asserts. What this test pins is the merge itself: an absent
-         * value never overwrites a stored one. The property matters for the components that may be
-         * omitted, and it has to hold for all of them, because a merge that guards one field and not its
-         * neighbour is a merge a later change quietly breaks.
+         * <p>{@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5} is the key, and
+         * {@code MOVE WS-CARD-RID-ACCT-ID-X TO WS-CARD-RID-ACCT-ID} at
+         * {@code app/cbl/COACTVWC.cbl:L691} lands it. {@code ACUP-NEW-DETAILS} at
+         * {@code app/cbl/COACTUPC.cbl:L757} groups the submitted fields and names no account.
+         *
+         * <p>A body naming a second account would let a caller entitled to one account write
+         * another.
          */
         @Test
-        void anOmittedComponentKeepsTheStoredValue() {
+        void thePathIdentifierIsTheOnlyOneTheRouteReads() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
                     .thenReturn(EditResult.ok());
 
-            controller.updateAccount(ACCOUNT_ID, requestRaising());
+            updateAccount(bodyNamingTheCustomer());
 
-            AccountEntity proposed = proposedAccount();
-            assertEquals(new BigDecimal("1010.00"), proposed.getCurrentBalance(),
-                    "the balance was not submitted, so it stands as stored");
-            assertEquals("2015-03-01", proposed.getOpenDate(), "and so does the open date");
-            assertEquals("ZEROAPR", proposed.getGroupId(), "and so does the disclosure group");
-        }
-
-        /**
-         * Asserts a submitted amount is read under the tolerant grammar the source gates on.
-         *
-         * <p>{@code app/cbl/COACTUPC.cbl:L2201} gates on the currency-aware conversion, so a currency
-         * sign and thousands separators are accepted. Constructing a decimal from the string directly
-         * would reject both.
-         */
-        @Test
-        void aSubmittedAmountIsReadUnderTheTolerantGrammar() {
-            resolveBoth();
-            when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
-
-            controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
-                    new AccountDataRequest(null, null, "$12,000.00", null, null, null, null, null,
-                            null, null),
-                    customerData()));
-
-            assertEquals(new BigDecimal("12000.00"), proposedAccount().getCreditLimit(),
-                    "a currency sign and separators read as one amount");
-
-            buildController();
-            resolveBoth();
-            when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
-
-            controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
-                    new AccountDataRequest(null, null, "$1,234.56", null, null, null, null, null,
-                            null, null),
-                    customerData()));
-
-            assertEquals(new BigDecimal("1234.56"), proposedAccount().getCreditLimit(),
-                    "the contract refuses neither the sign nor the separator");
-        }
-
-        /**
-         * Asserts a submitted date of eight characters reaches the column as ten.
-         *
-         * <p>{@code ACUP-NEW-OPEN-DATE PIC X(08)} at {@code app/cbl/COACTUPC.cbl:L772} is the shape a
-         * caller submits, and {@code ACCT-UPDATE-RECORD} declares the column {@code PIC X(10)} at
-         * {@code app/cbl/COACTUPC.cbl:L427}. A separated ten-character value is the stored shape and
-         * not the submitted one, so it reaches the column as a value the date edit refuses.
-         */
-        @Test
-        void aSubmittedDateOfEightCharactersReachesTheColumnAsTen() {
-            resolveBoth();
-            when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
-
-            controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
-                    new AccountDataRequest(null, null, null, null, "20150302", null, null, null,
-                            null, null),
-                    customerData()));
-
-            assertEquals("2015-03-02", proposedAccount().getOpenDate(),
-                    "eight characters reach the ten the column holds");
-
-            buildController();
-            resolveBoth();
-            when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
-
-            controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
-                    new AccountDataRequest(null, null, null, null, "2015-03-02", null, null, null,
-                            null, null),
-                    customerData()));
-
-            assertNotEquals("2015-03-02", proposedAccount().getOpenDate(),
-                    "a value already carrying separators is not the shape the request declares");
-        }
-
-        /**
-         * Asserts the path identifier wins over any identifier the body carries.
-         *
-         * <p>{@code config/SecurityConfig} scopes a caller against the path variable, so a body naming
-         * a different account would let a caller entitled to one account write another.
-         */
-        @Test
-        void thePathIdentifierWinsOverTheBody() {
-            resolveBoth();
-            when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
-
-            controller.updateAccount(ACCOUNT_ID,
-                    new AccountUpdateRequest(accountDataRaising(), customerData()));
-
-            assertAll("the path identifier is the only identifier this route reads",
-                    () -> assertEquals(ACCOUNT_ID, proposedAccount().getAccountId(),
+            ArgumentCaptor<AccountEntity> proposed = ArgumentCaptor.forClass(AccountEntity.class);
+            verify(accountUpdates).updateAccount(proposed.capture(), any(), any(), any());
+            assertAll("the path names the account written",
+                    () -> assertEquals(ACCOUNT_ID, proposed.getValue().getAccountId(),
                             "the account the caller is scoped against is the account written"),
-                    () -> assertEquals(java.util.List.of("accountData", "customerData"),
-                            java.util.Arrays.stream(AccountUpdateRequest.class
-                                            .getRecordComponents())
-                                    .map(java.lang.reflect.RecordComponent::getName).toList(),
-                            "the body declares no identifier component, so it cannot name one"));
+                    () -> assertFalse(propertyNamesOf(AccountUpdateRequest.class)
+                            .contains("accountId"),
+                            "and the body declares no identifier component"));
         }
 
         /**
-         * Asserts the fetched pair handed to the service is a copy and not the stored object.
+         * Asserts both stored rows are read by their text identifiers.
          *
-         * <p>Handing over the same object the service later mutates would make the comparison find
-         * every field equal however much changed, so the copy is what makes the check mean anything.
+         * <p>Each store keys on the identifier as text, so a value keeps the leading zeros its
+         * Picture clause declares. {@code ACCT-ID PIC 9(11)} sits at
+         * {@code app/cpy/CVACT01Y.cpy:L5} and {@code CUST-ID PIC 9(09)} at
+         * {@code app/cpy/CVCUS01Y.cpy:L5}.
+         *
+         * <p>An accepted update reads the account twice. The first read supplies the pair the
+         * caller was shown, which {@code app/cbl/COACTUPC.cbl} holds in
+         * {@code ACUP-OLD-ACCT-DATA}. The second read answers the row as it now stands.
          */
         @Test
-        void theFetchedPairIsACopyAndNotTheStoredObject() {
-            AccountEntity stored = storedAccount();
-            CustomerEntity storedCustomer = storedCustomer();
-            when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.of(stored));
-            when(customers.findByCustomerId(CUSTOMER_ID)).thenReturn(Optional.of(storedCustomer));
-            when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
-
-            controller.updateAccount(ACCOUNT_ID, requestRaising());
-
-            ArgumentCaptor<AccountEntity> fetched = ArgumentCaptor.forClass(AccountEntity.class);
-            verify(accountUpdates).updateAccount(any(), any(), fetched.capture(), any());
-            assertTrue(fetched.getValue() != stored,
-                    "the fetched copy is a different object from the one the store returned");
-            assertEquals(stored.getCreditLimit(), fetched.getValue().getCreditLimit(),
-                    "and it carries the same values");
-        }
-
-        /**
-         * Asserts the three Social Security parts are recombined only when all three arrive.
-         *
-         * <p>Writing a number two thirds of which came from the stored row is a value no caller asked
-         * for, so a body carrying one part alone leaves the column as stored. Over the Hypertext Transfer
-         * Protocol a cross-field check on the block refuses that body outright, and this is the second
-         * guard behind it.
-         */
-        @Test
-        void theSocialSecurityPartsAreRecombinedOnlyTogether() {
+        void bothStoredRowsAreReadByTheirTextIdentifiers() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
                     .thenReturn(EditResult.ok());
 
-            controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(null,
-                    customerDataWithSocialSecurity("429", null, null)));
-            assertEquals("429541163", proposedCustomer().getSocialSecurityNumber(),
-                    "one part alone leaves the stored number as it stands");
+            updateAccount(bodyNamingTheCustomer());
 
-            buildController();
-            resolveBoth();
-            when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
-
-            controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(null,
-                    customerDataWithSocialSecurity("111", "22", "3333")));
-            assertEquals("111223333", proposedCustomer().getSocialSecurityNumber(),
-                    "all three parts together write the column");
+            assertAll("the pair is read by two text keys, and the account twice",
+                    () -> verify(accounts, times(2)).findByAccountId(ACCOUNT_ID),
+                    () -> verify(customers, times(1)).findByCustomerId(CUSTOMER_ID));
         }
-    }
-
-    /** What no answer carries, whatever the outcome. */
-    @Nested
-    @DisplayName("what no answer carries")
-    class WhatNoAnswerCarries {
 
         /**
-         * Asserts neither identity document reaches a read payload or an update payload.
+         * Asserts a body naming no customer is refused with one text.
+         *
+         * <p>{@code ACCOUNT-RECORD} at {@code app/cpy/CVACT01Y.cpy:L4-L17} declares no customer
+         * identifier, so a caller names the customer it means to write.
+         */
+        @Test
+        void aBodyNamingNoCustomerIsRefusedWithOneText() throws Exception {
+            MvcResult result = updateAccount("{}");
+            JsonNode answer = JSON.readTree(result.getResponse().getContentAsString());
+
+            assertAll("the customer is named by the caller",
+                    () -> assertEquals(422, result.getResponse().getStatus(),
+                            "an unnamed customer is a caller's to correct"),
+                    () -> assertEquals(AccountController.CUSTOMER_ID_REQUIRED_MESSAGE,
+                            answer.get("detail").stringValue(),
+                            "carrying the one text this branch writes"),
+                    () -> verifyNoInteractions(accountUpdates));
+        }
+
+        /**
+         * Asserts neither identity document reaches a read answer or an update answer.
          *
          * <p>{@code CUST-SSN} at {@code app/cpy/CVCUS01Y.cpy:L17} and
-         * {@code CUST-GOVT-ISSUED-ID} at {@code app/cpy/CVCUS01Y.cpy:L18} are both stored, and the
-         * source moves them to the screen at {@code app/cbl/COACTVWC.cbl:L496-L504} and
-         * {@code app/cbl/COACTVWC.cbl:L519}. No answer of this class carries either value.
+         * {@code CUST-GOVT-ISSUED-ID} at {@code :L18} are both stored, and the source moves them
+         * to the screen at {@code app/cbl/COACTVWC.cbl:L496-L504} and {@code :L519}.
          */
         @Test
         void neitherIdentityDocumentReachesAnAnswer() throws Exception {
@@ -532,9 +821,9 @@ class AccountControllerTest {
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
                     .thenReturn(EditResult.ok());
 
-            String read = renderedValuesOf(controller.readAccount(ACCOUNT_ID).getBody());
-            String updated = renderedValuesOf(
-                    controller.updateAccount(ACCOUNT_ID, requestRaising()).getBody());
+            String read = readAccountBody();
+            String updated = updateAccount(bodyNamingTheCustomer()).getResponse()
+                    .getContentAsString();
 
             assertAll("neither document travels in either answer",
                     () -> assertFalse(read.contains(STORED_SOCIAL_SECURITY_NUMBER),
@@ -546,96 +835,95 @@ class AccountControllerTest {
                     () -> assertFalse(updated.contains(STORED_GOVERNMENT_ISSUED_ID),
                             "the update answer carries no government-issued identifier"));
         }
-
-        /** Asserts an update reads no row it does not need and writes through no store of its own. */
-        @Test
-        void anUpdateWritesThroughNoStoreOfItsOwn() {
-            resolveBoth();
-            when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
-
-            controller.updateAccount(ACCOUNT_ID, requestRaising());
-
-            verify(accounts, never()).save(any());
-            verify(customers, never()).save(any());
-        }
     }
 
     // Fixtures and helpers.
 
     /**
-     * Renders every value one response body carries, walking into a nested record.
+     * One monetary read property and the scale its source field declares.
      *
-     * @param body the response body, or {@code null}
-     * @return every value the body carries, separated
-     * @throws Exception when a component accessor cannot be read
+     * @param property the property name on the wire
+     * @param scale    the scale from {@link PicClause}
      */
-    private static String renderedValuesOf(Object body) throws Exception {
-        if (body == null) {
-            return "";
-        }
-        if (!body.getClass().isRecord()) {
-            return String.valueOf(body);
-        }
-        StringBuilder rendered = new StringBuilder();
-        for (java.lang.reflect.RecordComponent component
-                : body.getClass().getRecordComponents()) {
-            rendered.append(renderedValuesOf(component.getAccessor().invoke(body))).append('|');
-        }
-        return rendered.toString();
+    private record MonetaryProperty(String property, int scale) {}
+
+    /**
+     * One date read property and the width its source field declares.
+     *
+     * @param property the property name on the wire
+     * @param width    the width from {@link PicClause}
+     */
+    private record DateProperty(String property, int width) {}
+
+    /**
+     * Names the record components of one type, in declaration order.
+     *
+     * @param type the record type
+     * @return the component names, in the order the record declares them
+     */
+    private static List<String> propertyNamesOf(Class<?> type) {
+        return Arrays.stream(type.getRecordComponents()).map(RecordComponent::getName).toList();
+    }
+
+    /** Stubs the account store to resolve its row. */
+    private void resolveAccount() {
+        when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.of(storedAccount()));
     }
 
     /** Stubs both stores to resolve their rows. */
     private void resolveBoth() {
-        when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.of(storedAccount()));
+        resolveAccount();
         when(customers.findByCustomerId(CUSTOMER_ID)).thenReturn(Optional.of(storedCustomer()));
     }
 
-    /** @return the proposed account the controller handed the service */
-    private AccountEntity proposedAccount() {
-        ArgumentCaptor<AccountEntity> proposed = ArgumentCaptor.forClass(AccountEntity.class);
-        verify(accountUpdates).updateAccount(proposed.capture(), any(), any(), any());
-        return proposed.getValue();
-    }
-
-    /** @return the proposed customer the controller handed the service */
-    private CustomerEntity proposedCustomer() {
-        ArgumentCaptor<CustomerEntity> proposed = ArgumentCaptor.forClass(CustomerEntity.class);
-        verify(accountUpdates).updateAccount(any(), proposed.capture(), any(), any());
-        return proposed.getValue();
-    }
-
-    /** @return one request raising the credit limit and leaving every other field as stored */
-    private static AccountUpdateRequest requestRaising() {
-        return new AccountUpdateRequest(accountDataRaising(), customerData());
-    }
-
-    /** @return account values carrying a new credit limit and nothing else */
-    private static AccountDataRequest accountDataRaising() {
-        return new AccountDataRequest(null, null, "12000.00", null, null, null, null, null, null,
-                null);
-    }
-
-    /** @return customer values naming the customer and nothing else */
-    private static CustomerDataRequest customerData() {
-        return customerDataWithSocialSecurity(null, null, null);
+    /**
+     * Reads one account and parses the answer.
+     *
+     * @return the answer, parsed
+     * @throws Exception when the request or the parse fails
+     */
+    private JsonNode readAccount() throws Exception {
+        return JSON.readTree(readAccountBody());
     }
 
     /**
-     * Builds customer values naming the customer and the three Social Security parts given.
+     * Reads one account and returns the answer as it arrived on the wire.
      *
-     * @param part1 the area part, or {@code null}
-     * @param part2 the group part, or {@code null}
-     * @param part3 the serial part, or {@code null}
-     * @return the submitted customer values
+     * @return the raw answer
+     * @throws Exception when the request fails
      */
-    private static CustomerDataRequest customerDataWithSocialSecurity(String part1, String part2,
-            String part3) {
-        return new CustomerDataRequest(CUSTOMER_ID, null, null, null, null, null, null, null, null,
-                null, null, null, part1, part2, part3, null, null, null, null, null);
+    private String readAccountBody() throws Exception {
+        return mockMvc.perform(get("/accounts/{accountId}", ACCOUNT_ID))
+                .andReturn().getResponse().getContentAsString();
     }
 
-    /** @return the stored account, from row one of app/data/ASCII/acctdata.txt */
+    /**
+     * Submits one update body.
+     *
+     * @param body the body to submit
+     * @return the result, carrying the answer
+     * @throws Exception when the request fails
+     */
+    private MvcResult updateAccount(String body) throws Exception {
+        return mockMvc.perform(put("/accounts/{accountId}", ACCOUNT_ID)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body)).andReturn();
+    }
+
+    /**
+     * Builds the smallest body the update route accepts, which names the customer and nothing else.
+     *
+     * @return the body
+     */
+    private static String bodyNamingTheCustomer() {
+        return "{\"customerData\":{\"customerId\":\"" + CUSTOMER_ID + "\"}}";
+    }
+
+    /**
+     * Builds the stored account row.
+     *
+     * @return row one of {@code app/data/ASCII/acctdata.txt}
+     */
     private static AccountEntity storedAccount() {
         AccountEntity stored = new AccountEntity();
         stored.setAccountId(ACCOUNT_ID);
@@ -653,7 +941,11 @@ class AccountControllerTest {
         return stored;
     }
 
-    /** @return the stored customer, from row one of app/data/ASCII/custdata.txt */
+    /**
+     * Builds the stored customer row.
+     *
+     * @return row one of {@code app/data/ASCII/custdata.txt}
+     */
     private static CustomerEntity storedCustomer() {
         CustomerEntity stored = new CustomerEntity();
         stored.setCustomerId(CUSTOMER_ID);
@@ -665,7 +957,7 @@ class AccountControllerTest {
         stored.setAddressCity("North Enoshaven");
         stored.setAddressStateCode("AR");
         stored.setAddressCountryCode("USA");
-        stored.setAddressZip("72112");
+        stored.setAddressZip(STORED_ADDRESS_ZIP);
         stored.setPhoneNumber1("(501)5551234");
         stored.setPhoneNumber2("(501)5555678");
         stored.setSocialSecurityNumber(STORED_SOCIAL_SECURITY_NUMBER);

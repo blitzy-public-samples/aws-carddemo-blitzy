@@ -1,0 +1,238 @@
+# This file records the expected disclosure-group interest rates of app/data/ASCII/discgrp.txt and the default-group fallback of app/cbl/CBACT04C.cbl. 51 fixture records, 236 data rows. Rates are decoded from the zoned-decimal sign overpunch and written at scale 2. evaluation_model NOT_APPLICABLE: a rate table does not depend on accumulator state. Consuming test: InterestCalculationEquivalenceTest.
+evaluation_model,derived_from,record_seq,entity_key,expected_field,expected_value,pic_clause,source_locator
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,0,discgrp,record_count,51,NONE,app/data/ASCII/discgrp.txt
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,0,discgrp,record_length,50,NONE,app/cpy/CVTRA02Y.cpy:L4
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,0,discgrp,filler_character,"ASCII zero",NONE,app/cpy/CVTRA02Y.cpy:L10
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,0,discgrp,overpunch_position_count,51,NONE,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,0,discgrp,distinct_group_count,3,NONE,app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,0,discgrp,rows_per_group,17,NONE,app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,0,discgrp,group_id_values,"A000000000,DEFAULT,ZEROAPR",NONE,app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/jcl/DISCGRP.jcl,0,discgrp,cluster_key_width,16,NONE,app/jcl/DISCGRP.jcl:L40
+NOT_APPLICABLE,app/jcl/DISCGRP.jcl,0,discgrp,cluster_key_offset,0,NONE,app/jcl/DISCGRP.jcl:L40
+NOT_APPLICABLE,app/jcl/DISCGRP.jcl,0,discgrp,cluster_record_size,50,NONE,app/jcl/DISCGRP.jcl:L41
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,0,discgrp,zeroapr_all_rates_zero,yes,NONE,app/data/ASCII/discgrp.txt
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,0,discgrp,a000000000_vs_default_divergent_row_count,1,NONE,app/data/ASCII/discgrp.txt
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,0,discgrp,a000000000_vs_default_divergent_key,07||0001,NONE,app/data/ASCII/discgrp.txt
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,0,discgrp,default_zero_rated_key,03||0001,NONE,app/data/ASCII/discgrp.txt
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,1,A000000000||01||0001,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,1,A000000000||01||0001,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,1,A000000000||01||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,1,A000000000||01||0001,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,2,A000000000||01||0002,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,2,A000000000||01||0002,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,2,A000000000||01||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,2,A000000000||01||0002,dis_int_rate,25.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,3,A000000000||01||0003,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,3,A000000000||01||0003,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,3,A000000000||01||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,3,A000000000||01||0003,dis_int_rate,25.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,4,A000000000||01||0004,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,4,A000000000||01||0004,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,4,A000000000||01||0004,dis_tran_cat_cd,0004,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,4,A000000000||01||0004,dis_int_rate,25.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,5,A000000000||02||0001,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,5,A000000000||02||0001,dis_tran_type_cd,02,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,5,A000000000||02||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,5,A000000000||02||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,6,A000000000||02||0002,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,6,A000000000||02||0002,dis_tran_type_cd,02,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,6,A000000000||02||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,6,A000000000||02||0002,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,7,A000000000||02||0003,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,7,A000000000||02||0003,dis_tran_type_cd,02,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,7,A000000000||02||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,7,A000000000||02||0003,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,8,A000000000||03||0001,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,8,A000000000||03||0001,dis_tran_type_cd,03,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,8,A000000000||03||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,8,A000000000||03||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,9,A000000000||03||0002,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,9,A000000000||03||0002,dis_tran_type_cd,03,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,9,A000000000||03||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,9,A000000000||03||0002,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,10,A000000000||03||0003,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,10,A000000000||03||0003,dis_tran_type_cd,03,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,10,A000000000||03||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,10,A000000000||03||0003,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,11,A000000000||04||0001,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,11,A000000000||04||0001,dis_tran_type_cd,04,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,11,A000000000||04||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,11,A000000000||04||0001,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,12,A000000000||04||0002,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,12,A000000000||04||0002,dis_tran_type_cd,04,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,12,A000000000||04||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,12,A000000000||04||0002,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,13,A000000000||04||0003,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,13,A000000000||04||0003,dis_tran_type_cd,04,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,13,A000000000||04||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,13,A000000000||04||0003,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,14,A000000000||05||0001,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,14,A000000000||05||0001,dis_tran_type_cd,05,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,14,A000000000||05||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,14,A000000000||05||0001,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,15,A000000000||06||0001,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,15,A000000000||06||0001,dis_tran_type_cd,06,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,15,A000000000||06||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,15,A000000000||06||0001,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,16,A000000000||06||0002,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,16,A000000000||06||0002,dis_tran_type_cd,06,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,16,A000000000||06||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,16,A000000000||06||0002,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,17,A000000000||07||0001,dis_acct_group_id,"A000000000",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,17,A000000000||07||0001,dis_tran_type_cd,07,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,17,A000000000||07||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,17,A000000000||07||0001,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,18,DEFAULT||01||0001,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,18,DEFAULT||01||0001,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,18,DEFAULT||01||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,18,DEFAULT||01||0001,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,19,DEFAULT||01||0002,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,19,DEFAULT||01||0002,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,19,DEFAULT||01||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,19,DEFAULT||01||0002,dis_int_rate,25.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,20,DEFAULT||01||0003,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,20,DEFAULT||01||0003,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,20,DEFAULT||01||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,20,DEFAULT||01||0003,dis_int_rate,25.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,21,DEFAULT||01||0004,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,21,DEFAULT||01||0004,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,21,DEFAULT||01||0004,dis_tran_cat_cd,0004,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,21,DEFAULT||01||0004,dis_int_rate,25.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,22,DEFAULT||02||0001,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,22,DEFAULT||02||0001,dis_tran_type_cd,02,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,22,DEFAULT||02||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,22,DEFAULT||02||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,23,DEFAULT||02||0002,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,23,DEFAULT||02||0002,dis_tran_type_cd,02,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,23,DEFAULT||02||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,23,DEFAULT||02||0002,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,24,DEFAULT||02||0003,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,24,DEFAULT||02||0003,dis_tran_type_cd,02,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,24,DEFAULT||02||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,24,DEFAULT||02||0003,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,25,DEFAULT||03||0001,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,25,DEFAULT||03||0001,dis_tran_type_cd,03,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,25,DEFAULT||03||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,25,DEFAULT||03||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,26,DEFAULT||03||0002,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,26,DEFAULT||03||0002,dis_tran_type_cd,03,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,26,DEFAULT||03||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,26,DEFAULT||03||0002,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,27,DEFAULT||03||0003,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,27,DEFAULT||03||0003,dis_tran_type_cd,03,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,27,DEFAULT||03||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,27,DEFAULT||03||0003,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,28,DEFAULT||04||0001,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,28,DEFAULT||04||0001,dis_tran_type_cd,04,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,28,DEFAULT||04||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,28,DEFAULT||04||0001,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,29,DEFAULT||04||0002,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,29,DEFAULT||04||0002,dis_tran_type_cd,04,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,29,DEFAULT||04||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,29,DEFAULT||04||0002,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,30,DEFAULT||04||0003,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,30,DEFAULT||04||0003,dis_tran_type_cd,04,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,30,DEFAULT||04||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,30,DEFAULT||04||0003,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,31,DEFAULT||05||0001,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,31,DEFAULT||05||0001,dis_tran_type_cd,05,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,31,DEFAULT||05||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,31,DEFAULT||05||0001,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,32,DEFAULT||06||0001,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,32,DEFAULT||06||0001,dis_tran_type_cd,06,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,32,DEFAULT||06||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,32,DEFAULT||06||0001,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,33,DEFAULT||06||0002,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,33,DEFAULT||06||0002,dis_tran_type_cd,06,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,33,DEFAULT||06||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,33,DEFAULT||06||0002,dis_int_rate,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,34,DEFAULT||07||0001,dis_acct_group_id,"DEFAULT   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,34,DEFAULT||07||0001,dis_tran_type_cd,07,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,34,DEFAULT||07||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,34,DEFAULT||07||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,35,ZEROAPR||01||0001,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,35,ZEROAPR||01||0001,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,35,ZEROAPR||01||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,35,ZEROAPR||01||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,36,ZEROAPR||01||0002,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,36,ZEROAPR||01||0002,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,36,ZEROAPR||01||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,36,ZEROAPR||01||0002,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,37,ZEROAPR||01||0003,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,37,ZEROAPR||01||0003,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,37,ZEROAPR||01||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,37,ZEROAPR||01||0003,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,38,ZEROAPR||01||0004,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,38,ZEROAPR||01||0004,dis_tran_type_cd,01,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,38,ZEROAPR||01||0004,dis_tran_cat_cd,0004,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,38,ZEROAPR||01||0004,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,39,ZEROAPR||02||0001,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,39,ZEROAPR||02||0001,dis_tran_type_cd,02,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,39,ZEROAPR||02||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,39,ZEROAPR||02||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,40,ZEROAPR||02||0002,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,40,ZEROAPR||02||0002,dis_tran_type_cd,02,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,40,ZEROAPR||02||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,40,ZEROAPR||02||0002,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,41,ZEROAPR||02||0003,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,41,ZEROAPR||02||0003,dis_tran_type_cd,02,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,41,ZEROAPR||02||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,41,ZEROAPR||02||0003,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,42,ZEROAPR||03||0001,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,42,ZEROAPR||03||0001,dis_tran_type_cd,03,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,42,ZEROAPR||03||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,42,ZEROAPR||03||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,43,ZEROAPR||03||0002,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,43,ZEROAPR||03||0002,dis_tran_type_cd,03,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,43,ZEROAPR||03||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,43,ZEROAPR||03||0002,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,44,ZEROAPR||03||0003,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,44,ZEROAPR||03||0003,dis_tran_type_cd,03,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,44,ZEROAPR||03||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,44,ZEROAPR||03||0003,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,45,ZEROAPR||04||0001,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,45,ZEROAPR||04||0001,dis_tran_type_cd,04,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,45,ZEROAPR||04||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,45,ZEROAPR||04||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,46,ZEROAPR||04||0002,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,46,ZEROAPR||04||0002,dis_tran_type_cd,04,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,46,ZEROAPR||04||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,46,ZEROAPR||04||0002,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,47,ZEROAPR||04||0003,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,47,ZEROAPR||04||0003,dis_tran_type_cd,04,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,47,ZEROAPR||04||0003,dis_tran_cat_cd,0003,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,47,ZEROAPR||04||0003,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,48,ZEROAPR||05||0001,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,48,ZEROAPR||05||0001,dis_tran_type_cd,05,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,48,ZEROAPR||05||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,48,ZEROAPR||05||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,49,ZEROAPR||06||0001,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,49,ZEROAPR||06||0001,dis_tran_type_cd,06,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,49,ZEROAPR||06||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,49,ZEROAPR||06||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,50,ZEROAPR||06||0002,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,50,ZEROAPR||06||0002,dis_tran_type_cd,06,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,50,ZEROAPR||06||0002,dis_tran_cat_cd,0002,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,50,ZEROAPR||06||0002,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,51,ZEROAPR||07||0001,dis_acct_group_id,"ZEROAPR   ",X(10),app/cpy/CVTRA02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,51,ZEROAPR||07||0001,dis_tran_type_cd,07,X(02),app/cpy/CVTRA02Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,51,ZEROAPR||07||0001,dis_tran_cat_cd,0001,9(04),app/cpy/CVTRA02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,51,ZEROAPR||07||0001,dis_int_rate,0.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/dailytran.txt,0,default_group_fallback,fallback_fires_on_key_count,99,NONE,app/cbl/CBACT04C.cbl:L436-L438
+NOT_APPLICABLE,app/data/ASCII/dailytran.txt,0,default_group_fallback,fallback_fires_on_key_total,99,NONE,app/cbl/CBACT04C.cbl:L436-L438
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,0,default_group_fallback,account_group_id_value,"          ",NONE,app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,0,default_group_fallback,account_group_id_present_in_discgrp_keys,no,NONE,app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,0,default_group_fallback,addr_zip_is_a_real_group_id,yes,NONE,app/cpy/CVACT01Y.cpy:L15
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,0,default_group_fallback,substituted_key_component,DIS-ACCT-GROUP-ID,NONE,app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,0,default_group_fallback,type_and_category_carry_over_unchanged,yes,NONE,app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,0,default_group_fallback,first_read_accepted_statuses,"00,23",NONE,app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,0,default_group_fallback,retry_read_accepted_statuses,00,NONE,app/cbl/CBACT04C.cbl:L446
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,0,default_group_fallback,read_count_on_matched_key,1,NONE,app/cbl/CBACT04C.cbl:L416
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,0,default_group_fallback,read_count_on_missed_key,2,NONE,app/cbl/CBACT04C.cbl:L444
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,0,default_group_fallback,second_miss_outcome,abend,NONE,app/cbl/CBACT04C.cbl:L455-L458
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,0,default_group_fallback,second_miss_abend_code,999,NONE,app/cbl/CBACT04C.cbl:L631
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,0,default_group_fallback,interest_formula,"(TRAN-CAT-BAL * DIS-INT-RATE) / 1200",NONE,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cpy/CVACT01Y.cpy,0,default_group_fallback,cycle_credit_accumulator_field,ACCT-CURR-CYC-CREDIT,NONE,app/cpy/CVACT01Y.cpy:L13
+NOT_APPLICABLE,app/cpy/CVACT01Y.cpy,0,default_group_fallback,cycle_debit_accumulator_field,ACCT-CURR-CYC-DEBIT,NONE,app/cpy/CVACT01Y.cpy:L14
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,0,default_group_fallback,cycle_close_zeroes_both_accumulators,yes,NONE,app/cbl/CBACT04C.cbl:L353-L354
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,0,default_group_fallback,cycle_close_omits_interest_add,yes,NONE,app/cbl/CBACT04C.cbl:L352

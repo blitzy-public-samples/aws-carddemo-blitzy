@@ -35,7 +35,7 @@ beyond the handling stated.
 
 ## Register coverage
 
-The specification's 26 register items map onto the 32 entries below. Where one register item is split,
+The specification's 26 register items map onto the 35 entries below. Where one register item is split,
 the split separates two source sites that need different handling.
 
 | Register item | Entries here |
@@ -67,10 +67,11 @@ the split separates two source sites that need different handling.
 | 25 fixture width mismatch | 29 and 30, split between the width gap and the absent security-user fixture |
 | 26 a dead duplicate copybook | 20 |
 
-Three entries below have no register ancestor and were measured while remediating: 9, the raw text
-comparison of the expiry date; 12, the measured absence of `ROUNDED`; and 13, the tolerant numeric
-parse. Item 27, the plaintext password comparison, appears in the specification as a flagged question
-outside the numbered register.
+Six entries below have no register ancestor and were measured while remediating: 9, the raw text
+comparison of the expiry date; 12, the measured absence of `ROUNDED`; 13, the tolerant numeric parse;
+33, the expiry-year edit's borrowed comments; 34, its out-of-order default; and 35, the five card
+message constants that are declared and never set. Item 27, the plaintext password comparison, appears
+in the specification as a flagged question outside the numbered register.
 
 <br/>
 
@@ -437,6 +438,47 @@ ledger keep a replica. The close therefore publishes `AccountStateChanged`, and 
 the zeroed values under its own consumer group. A replica that stopped being fed would keep reading
 grown accumulators, which is why authorization refuses traffic once its replica passes
 `carddemo.replica.max-staleness` rather than deciding against numbers it knows to be old.
+
+### 33. The expiry-year edit carries the month edit's comments — CLOSED
+
+`app/cbl/COCRDUPC.cbl:L927-L928` reads `* Must be numeric` and `* Must be 1 to 12` inside
+`1260-EDIT-EXPIRY-YEAR.`, copied verbatim from `app/cbl/COCRDUPC.cbl:L894-L895` in the month edit,
+while the condition at `app/cbl/COCRDUPC.cbl:L934` tests
+`88 VALID-YEAR VALUES 1950 THRU 2099.` at `app/cbl/COCRDUPC.cbl:L99`. The message the edit sets,
+`'Invalid card expiry year'` at `app/cbl/COCRDUPC.cbl:L200`, names no range either, so the comment is
+the only prose about the rule and it describes a different rule.
+
+Handling: the measured range 1950 through 2099 is implemented, as `@Min` and `@Max` on
+`api/dto/CardUpdateRequest`, and `CardUpdateServiceTest` asserts all four boundaries against the
+condition name. The comment is reported here and reproduced nowhere.
+
+### 34. The expiry-year edit sets its pessimistic default out of order — CLOSED
+
+`app/cbl/COCRDUPC.cbl:L930` sets `FLG-CARDEXPYEAR-NOT-OK` after the not-supplied test at
+`app/cbl/COCRDUPC.cbl:L916-L925`. Its five sibling edits set theirs first, at
+`app/cbl/COCRDUPC.cbl:L722`, `:L765`, `:L808`, `:L847` and `:L880`. The not-supplied branch exits
+before reading the flag, so no outcome differs.
+
+Handling: behaviourally harmless and not reproduced as a structural quirk. It is one instance of the
+varying coding style the repository's own `README.md:L28` publishes.
+
+### 35. Five card message constants are declared and never set — CLOSED
+
+`app/cbl/COCRDUPC.cbl:L189-L194` declares `SEARCHED-ACCT-ZEROES`, `SEARCHED-ACCT-NOT-NUMERIC` and
+`SEARCHED-CARD-NOT-NUMERIC`, and no `SET` statement anywhere in the program names any of the three.
+The live account and card filter texts are inline upper-case literals at
+`app/cbl/COCRDUPC.cbl:L744-L746` and `app/cbl/COCRDUPC.cbl:L788-L790` instead.
+`DID-NOT-FIND-ACCT-IN-CARDXREF` at `app/cbl/COCRDUPC.cbl:L202` and `XREF-READ-ERROR` at
+`app/cbl/COCRDUPC.cbl:L212` are likewise never set on the update path, and the not-found branch at
+`app/cbl/COCRDUPC.cbl:L1400` sets `DID-NOT-FIND-ACCTCARD-COMBO` at `app/cbl/COCRDUPC.cbl:L204`
+instead.
+
+Handling: `api/dto/CardValidationMessages` carries the live texts as the constants the service binds
+to, and carries the five unset texts under a `NEVER_EMITTED_` prefix so a reader can find them and no
+response body can return one. The specification's description of six verbatim messages at
+`app/cbl/COCRDUPC.cbl:L190-L202` is corrected by this entry: three of those declarations are dead and
+the live pair is inline.
+
 
 <br/>
 

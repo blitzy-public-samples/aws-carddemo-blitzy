@@ -35,6 +35,7 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * Verifies the terminal path of the card outbox relay: what happens to a row whose attempts are
@@ -66,6 +67,12 @@ class OutboxRelayDeadLetterTest {
     private static final String SENTINEL_PAN = "4111111111111111";
 
     private static final String SENTINEL_CVV = "937";
+
+    /**
+     * Members of a diagnostic that a run generates, which no scan for a payload value reads.
+     */
+    private static final List<String> GENERATED_MEMBERS =
+            List.of("eventId", "failedEventId", "occurredAt");
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -177,10 +184,30 @@ class OutboxRelayDeadLetterTest {
 
         assertThat(row.getPayload()).contains(SENTINEL_PAN, SENTINEL_CVV);
         assertThat(publications).singleElement().satisfies(published ->
-                assertThat(published.payload())
+                assertThat(scannableMembersOf(published.payload()))
                         .as("no field of the payload travels on the diagnostic")
                         .doesNotContain(SENTINEL_PAN)
                         .doesNotContain(SENTINEL_CVV));
+    }
+
+    /**
+     * Renders one diagnostic without the three members a run generates, so the scan above reads only
+     * the members that could carry a payload value.
+     *
+     * <p>{@code eventId}, {@code failedEventId} and {@code occurredAt} are minted by the relay and by
+     * the row, and {@link #aRowWhoseAttemptsAreSpentIsNamedByOneGovernedDeadLetter} measures the
+     * second against the row it names. A random identifier carries a three-character sentinel
+     * roughly once in a hundred renderings, and a scan that read one would report a leak no code
+     * performed.
+     *
+     * @param diagnostic the published diagnostic
+     * @return the same document without those three members
+     */
+    private static String scannableMembersOf(String diagnostic) {
+        ObjectNode scanned = (ObjectNode) MAPPER.readTree(diagnostic);
+        scanned.remove(GENERATED_MEMBERS);
+        assertThat(scanned.propertyNames()).isNotEmpty();
+        return scanned.toString();
     }
 
     @Test

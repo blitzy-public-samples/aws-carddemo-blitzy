@@ -165,11 +165,12 @@ class ApiSurfaceSecurityContractTest {
 
     /**
      * Source files making up the Application Programming Interface surface of the three modules
-     * this class classifies: the account, authorization and card services. Eighteen of the
-     * twenty-seven declare a record; the other nine are the six endpoints those modules answer a
-     * request on, the two handlers that answer a rejected request, and the card message inventory.
+     * this class classifies: the account, authorization and card services. Nineteen of the
+     * twenty-nine declare a record carrying the name of their file; the other ten are the five
+     * endpoint files those modules answer requests on, the three handlers that answer a rejected
+     * request, the account record mapper and the card message inventory.
      */
-    private static final int API_SOURCE_FILE_COUNT = 30;
+    private static final int API_SOURCE_FILE_COUNT = 29;
 
     /** Components the twelve response types declare between them. */
     private static final int RESPONSE_COMPONENT_COUNT = 68;
@@ -1237,9 +1238,9 @@ class ApiSurfaceSecurityContractTest {
     class ResponseRedaction {
 
         /**
-         * The surface is thirty files, and every record among them is classified as a response
+         * The surface is twenty-nine files, and every record among them is classified as a response
          * or a request. A new file or a new record fails here, which is where classification is
-         * enforced. Ten of the thirty declare no record: the authorization endpoint and the
+         * enforced. Ten of the twenty-nine declare no record: the authorization endpoint and the
          * handler that answers a rejected request, both of which the plan requires at
          * {@code POST /authorizations}; the three account-service endpoints and the handler beside
          * them, plus the package-private account mapper, which the plan requires for the account
@@ -1247,10 +1248,12 @@ class ApiSurfaceSecurityContractTest {
          * which the plan requires for the card list, the card view and the card update; and the card
          * message inventory.
          *
-         * <p>Eighteen files declare a record and seventeen record names come out of them, because
-         * {@code ApiErrorResponse} is declared once in the authorization service and once in the card
-         * service. The two declarations carry different components, and the classified inventory
-         * holds the card one, which is the shape {@code ErrorBodyExposure} measures.</p>
+         * <p>Nineteen files declare a record and nineteen record names come out of them, one name per
+         * file. {@code ApiErrorResponse} is declared once across the three modules, in the card
+         * service, and that declaration is the shape {@code ErrorBodyExposure} measures. The
+         * authorization service declares its error body as a record nested inside
+         * {@code GlobalExceptionHandler}, so it carries no file of its own and is classified with
+         * that handler.</p>
          *
          * <p>One endpoint file serves three routes. {@code CardController} maps the list, the read
          * and the update of {@code app/cbl/COCRDLIC.cbl}, {@code app/cbl/COCRDSLC.cbl} and
@@ -1258,8 +1261,8 @@ class ApiSurfaceSecurityContractTest {
          * different numbers and neither substitutes for the other.</p>
          */
         @Test
-        @DisplayName("the surface is thirty files and every record on it is classified")
-        void theApiSurfaceIsThirtyFilesAndEveryRecordIsClassified() {
+        @DisplayName("the surface is twenty-nine files and every record on it is classified")
+        void theApiSurfaceIsTwentyNineFilesAndEveryRecordIsClassified() {
             Map<String, String> apiSources = new LinkedHashMap<>();
             readSourcesBelow(REPOSITORY_ROOT.get().resolve(SERVICES_DIRECTORY)
                     .resolve("account-service").resolve(MAIN_SOURCE_PATH)

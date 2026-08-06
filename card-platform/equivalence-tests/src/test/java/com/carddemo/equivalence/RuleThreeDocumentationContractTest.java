@@ -316,7 +316,8 @@ class RuleThreeDocumentationContractTest {
             assertTrue(onboarding.contains(command), "onboarding must carry " + command);
         }
         assertTrue(onboarding.contains("`mvn test` does not run the equivalence classes"));
-        assertTrue(onboarding.contains("HTTP 200 for either outcome"));
+        assertTrue(onboarding.contains(
+                "HTTP 200 for an approval and HTTP 422 for a source-equivalent decline"));
     }
 
     private static List<Path> allGuides() {
