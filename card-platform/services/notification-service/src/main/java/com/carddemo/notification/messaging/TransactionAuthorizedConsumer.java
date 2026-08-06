@@ -265,11 +265,17 @@ public class TransactionAuthorizedConsumer {
     /**
      * Names the failure kind one fault records against.
      *
+     * <p>A database fault counts as a persistence failure and every other fault as a rendering
+     * failure. {@code ObservabilityConfig.NotificationMetrics#isPersistenceFault} decides the first
+     * case for the whole service, and it names a transaction fault as well as a data-access fault: a
+     * paused or unreachable database raises {@code CannotCreateTransactionException} from the
+     * connection pool, which is the former.
+     *
      * @param failure the fault this delivery raised
      * @return the tag value {@code config/ObservabilityConfig} registers a series for
      */
     private static String failureKind(RuntimeException failure) {
-        return failure instanceof DataAccessException
+        return NotificationMetrics.isPersistenceFault(failure)
                 ? NotificationMetrics.FAILURE_PERSISTENCE
                 : NotificationMetrics.FAILURE_RENDERING;
     }

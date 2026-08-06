@@ -3,10 +3,13 @@ package com.carddemo.notification.config;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import java.sql.SQLException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessException;
+import org.springframework.transaction.TransactionException;
 import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -145,6 +148,9 @@ public class ObservabilityConfig {
         /** Tag value a lookup resolves to when it receives a value outside its own set. */
         public static final String UNKNOWN = "unknown";
 
+        /** Depth cap on a cause-chain walk, which ends the walk on a self-referencing cause. */
+        private static final int MAX_CAUSE_DEPTH = 16;
+
         private static final String EVENT_TYPE_TAG = "event.type";
         private static final String FAILURE_KIND_TAG = "failure.kind";
         private static final String FORMAT_TAG = "format";
@@ -229,6 +235,43 @@ public class ObservabilityConfig {
         /** Returns the counter of events an idempotency guard skipped. */
         public Counter duplicatesSkipped() {
             return this.duplicatesSkipped;
+        }
+
+        /**
+         * Whether {@code failure} names a database fault anywhere in its cause chain.
+         *
+         * <p>This is the one place the platform decides what {@link #FAILURE_PERSISTENCE} covers, and
+         * every caller that tags a fault reads it. Three types answer yes.
+         * {@link DataAccessException} covers a statement the database refused.
+         * {@link TransactionException} covers a fault raised before a statement ran, and a connection
+         * pool that cannot hand out a connection raises exactly that: a paused or unreachable
+         * database surfaces as {@code CannotCreateTransactionException}, which is a
+         * {@code TransactionException} and is not a {@code DataAccessException}. {@link SQLException}
+         * covers a driver fault that reached a caller unwrapped.
+         *
+         * <p>Testing only for a data-access fault left {@link #FAILURE_PERSISTENCE} at zero for the
+         * most common database failure there is, while {@link #FAILURE_RENDERING} counted faults that
+         * never reached a renderer. A failure count an operator cannot read the degraded integration
+         * from does not meet the observability requirement.
+         *
+         * <p>The walk is depth-capped and ends on a self-referencing cause, so a malformed chain
+         * cannot spin.
+         *
+         * @param failure the fault a delivery raised; may be {@code null}
+         * @return {@code true} when the chain names a database fault
+         */
+        public static boolean isPersistenceFault(Throwable failure) {
+            Throwable cause = failure;
+
+            for (int depth = 0; cause != null && depth < MAX_CAUSE_DEPTH; depth++) {
+                if (cause instanceof DataAccessException
+                        || cause instanceof TransactionException
+                        || cause instanceof SQLException) {
+                    return true;
+                }
+                cause = cause.getCause() == cause ? null : cause.getCause();
+            }
+            return false;
         }
 
         private static Map<String, Counter> counters(MeterRegistry registry, String name,

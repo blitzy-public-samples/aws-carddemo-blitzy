@@ -311,15 +311,19 @@ public class CustomerContextChangedConsumer {
     /**
      * Names the failure kind one fault counts under.
      *
-     * <p>A data-access fault counts as a persistence failure and every other fault as a schema
+     * <p>A database fault counts as a persistence failure and every other fault as a schema
      * validation failure, since a tree this listener cannot read is a tree that did not carry what
-     * its document declares. {@code config/ObservabilityConfig} registers both series.
+     * its document declares. {@code ObservabilityConfig.NotificationMetrics#isPersistenceFault}
+     * decides the first case for the whole service, and it names a transaction fault as well as a
+     * data-access fault: a paused or unreachable database raises
+     * {@code CannotCreateTransactionException} from the connection pool, which is the former.
+     * {@code config/ObservabilityConfig} registers both series.
      *
      * @param failure the fault this delivery raised
      * @return the tag value the failure counter carries
      */
     private static String failureKind(RuntimeException failure) {
-        return failure instanceof DataAccessException
+        return NotificationMetrics.isPersistenceFault(failure)
                 ? NotificationMetrics.FAILURE_PERSISTENCE
                 : NotificationMetrics.FAILURE_SCHEMA_VALIDATION;
     }

@@ -76,8 +76,23 @@ public class KafkaConsumerConfig {
     private static final String DEAD_LETTER_MESSAGE =
             "attempts governed by carddemo.consumer.retry.max-attempts";
 
-    /** In-process header carrying only the failure type selected by this service. */
+    /**
+     * The four headers a dead letter carries, one per component of {@code 01 ABEND-DATA} at
+     * {@code app/cpy/CSMSG02Y.cpy:L21-L29}.
+     *
+     * <p>Every value is generated here from a constant or from the failure type, and the outgoing set
+     * is rebuilt from {@link #ALLOWED_DEAD_LETTER_HEADERS} reading the LAST value of each name, so a
+     * producer that put one of these names on its own record cannot have it survive.
+     *
+     * <p>The four components already travel in the fixed-width value. They travel as headers as well
+     * because the notification and fraud dead-letter routes carry the same four, and a reader of all
+     * three topics would otherwise have to parse the value of one service and read the headers of the
+     * others.
+     */
+    static final String HEADER_ABEND_CODE = "carddemo-dl-code";
+    static final String HEADER_CULPRIT = "carddemo-dl-culprit";
     static final String HEADER_REASON = "carddemo-dl-reason";
+    static final String HEADER_MESSAGE = "carddemo-dl-message";
 
     /**
      * The {@code aggregateId} of a dead letter whose failing record carried no account key. That
@@ -118,6 +133,10 @@ public class KafkaConsumerConfig {
      * have been discarded.
      */
     private static final Set<String> ALLOWED_DEAD_LETTER_HEADERS = Set.of(
+            HEADER_ABEND_CODE,
+            HEADER_CULPRIT,
+            HEADER_REASON,
+            HEADER_MESSAGE,
             KafkaHeaders.DLT_ORIGINAL_TOPIC,
             KafkaHeaders.DLT_ORIGINAL_PARTITION,
             KafkaHeaders.DLT_ORIGINAL_OFFSET,
@@ -291,6 +310,16 @@ public class KafkaConsumerConfig {
      * up on rather than as one more failed attempt. {@code carddemo.ledger.dead.letters} carries that
      * count, once per record and tagged by whether the diagnostic reached the broker.
      *
+     * <p>{@link DefaultErrorHandler#setCommitRecovered(boolean)} commits the offset of a record the
+     * route has published, which is what makes the route terminal. Both containers acknowledge by
+     * hand, so nothing acknowledges a record its listener never accepted, and without this setting
+     * the offset of a dead-lettered record stayed uncommitted: the next start-up or the next
+     * partition assignment read that record again and published a second diagnostic for the same
+     * coordinates, so {@code carddemo.ledger.dead.letters} counted one record more than once. The
+     * container applies the setting under acknowledgement mode {@code MANUAL_IMMEDIATE}, which the
+     * shipped {@code spring.kafka.listener.ack-mode} names; under {@code MANUAL} it reports the
+     * setting as ignored and commits nothing.
+     *
      * @param deadLetterKafkaTemplate the byte-serializing template, resolved by bean name
      * @param ledgerProperties        the bound {@code carddemo} block
      * @param meters                  the recording surface the terminal outcome is counted against
@@ -312,6 +341,7 @@ public class KafkaConsumerConfig {
                 new FixedBackOff(retry.backoffMs(), retry.maxAttempts() - FIRST_DELIVERY));
         errorHandler.addNotRetryableExceptions(DeserializationException.class,
                 SerializationException.class);
+        errorHandler.setCommitRecovered(true);
 
         return errorHandler;
     }
@@ -405,7 +435,8 @@ public class KafkaConsumerConfig {
     }
 
     /**
-     * Builds one bounded diagnostic header from the failure type and never from its message.
+     * Builds the four bounded diagnostic headers from constants and the failure type, and never from a
+     * failure message, which can repeat a rejected value.
      */
     static Headers diagnosticHeaders(Exception failure) {
         String reason = UNCLASSIFIED_REASON;
@@ -417,8 +448,16 @@ public class KafkaConsumerConfig {
             }
             cause = cause.getCause();
         }
-        return new RecordHeaders().add(HEADER_REASON,
-                reason.getBytes(StandardCharsets.UTF_8));
+        return new RecordHeaders()
+                .add(HEADER_ABEND_CODE, utf8(DEAD_LETTER_ABEND_CODE))
+                .add(HEADER_CULPRIT, utf8(POSTING_JOB_NAME))
+                .add(HEADER_REASON, utf8(reason))
+                .add(HEADER_MESSAGE, utf8(DEAD_LETTER_MESSAGE));
+    }
+
+    /** One diagnostic component as UTF-8 bytes. Every component here is a constant or a type name. */
+    private static byte[] utf8(String component) {
+        return component.getBytes(StandardCharsets.UTF_8);
     }
 
     /**

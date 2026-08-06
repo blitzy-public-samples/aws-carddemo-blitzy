@@ -29,7 +29,6 @@ import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
-import org.springframework.dao.DataAccessException;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
@@ -236,8 +235,18 @@ public class KafkaConsumerConfig {
      * thousand milliseconds that yields three deliveries at one-second intervals: the first attempt
      * and two retries. {@link DeserializationException} and {@link SerializationException} are
      * registered as not retryable, and a record either of them refused reaches the recoverer on the
-     * first pass. Acknowledgement after handling keeps its default, which commits the offset of a
-     * recovered record and lets the consumer advance.
+     * first pass.
+     *
+     * <p>{@link DefaultErrorHandler#setCommitRecovered(boolean)} makes the dead-letter route
+     * terminal. Every container of this service acknowledges by hand, so nothing acknowledges a
+     * record its listener never accepted, and the offset of a dead-lettered record stayed
+     * uncommitted: the next start-up or the next partition assignment read that record again and
+     * published a second dead letter naming the same coordinates. The setting commits the offset
+     * after the recoverer returns, which is after the diagnostic reached the broker, so one refused
+     * record produces exactly one dead letter and {@code records_dead_lettered} carries one
+     * increment per record. The container applies it under acknowledgement mode
+     * {@code MANUAL_IMMEDIATE}, which {@code spring.kafka.listener.ack-mode} names in the shipped
+     * file; under {@code MANUAL} the container reports the setting as ignored and commits nothing.
      *
      * @param notificationDeadLetterRecoverer the dead-letter route
      * @param notificationMetrics             the meter holder {@code config/ObservabilityConfig}
@@ -265,6 +274,7 @@ public class KafkaConsumerConfig {
                 new FixedBackOff(backoffMs, maxAttempts - FIRST_DELIVERY));
         errorHandler.addNotRetryableExceptions(DeserializationException.class,
                 SerializationException.class);
+        errorHandler.setCommitRecovered(true);
 
         return errorHandler;
     }
@@ -345,8 +355,11 @@ public class KafkaConsumerConfig {
      *
      * <p>The whole cause chain is searched for one type at a time, most specific first. A schema
      * violation arrives as a {@link SerializationException} wrapped in a
-     * {@link DeserializationException}, and it counts as a schema validation failure. A chain naming
-     * none of the three types resolves to {@code unknown}, which is itself a registered tag value.
+     * {@link DeserializationException}, and it counts as a schema validation failure. A database
+     * fault is named by
+     * {@link ObservabilityConfig.NotificationMetrics#isPersistenceFault(Throwable)}, which is the one
+     * place the platform decides what that tag covers. A chain naming none of them resolves to
+     * {@code unknown}, which is itself a registered tag value.
      *
      * @param failure the exception the container reported; may be {@code null}
      * @return one registered tag value
@@ -358,7 +371,7 @@ public class KafkaConsumerConfig {
         if (chainCarries(failure, DeserializationException.class)) {
             return ObservabilityConfig.NotificationMetrics.FAILURE_DESERIALIZATION;
         }
-        if (chainCarries(failure, DataAccessException.class)) {
+        if (ObservabilityConfig.NotificationMetrics.isPersistenceFault(failure)) {
             return ObservabilityConfig.NotificationMetrics.FAILURE_PERSISTENCE;
         }
         return ObservabilityConfig.NotificationMetrics.UNKNOWN;

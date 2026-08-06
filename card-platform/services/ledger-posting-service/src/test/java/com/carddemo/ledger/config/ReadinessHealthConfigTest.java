@@ -4,6 +4,10 @@ import com.carddemo.ledger.entity.OutboxEventEntity;
 import com.carddemo.ledger.repository.OutboxEventRepository;
 
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import org.apache.kafka.clients.MetadataRecoveryStrategy;
+import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.DescribeClusterOptions;
 import org.apache.kafka.clients.admin.DescribeClusterResult;
@@ -175,5 +179,55 @@ class ReadinessHealthConfigTest {
 
         assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
         assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+    }
+
+    /**
+     * Asserts the readiness administrator carries bounded connection settings.
+     *
+     * <p>A broker that is unreachable at start-up left this client rebootstrapping without pause: it
+     * wrote thousands of {@code Rebootstrapping with Cluster} lines a second at INFO, spent
+     * measurable processor time on them, and buried the line that named the degraded dependency.
+     * {@code metadata.recovery.strategy} defaults to {@code rebootstrap}, and the client logs one
+     * such line every time it looks for a node and finds none.
+     *
+     * <p>The settings are read from the copy the bean method builds rather than from a running
+     * client, so this test opens no client and contacts no broker.
+     */
+    @Test
+    @DisplayName("the readiness administrator keeps a broker outage bounded")
+    void theReadinessAdministratorKeepsABrokerOutageBounded() {
+        Map<String, Object> configured = new LinkedHashMap<>();
+        configured.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, "kafka:29092");
+        configured.put(AdminClientConfig.METADATA_RECOVERY_STRATEGY_CONFIG,
+                MetadataRecoveryStrategy.REBOOTSTRAP.name);
+
+        Map<String, Object> bounded = ReadinessHealthConfig.boundedAdminSettings(configured);
+
+        assertThat(bounded)
+                .as("the loop is removed at its source: no node to send to no longer logs a line")
+                .containsEntry(AdminClientConfig.METADATA_RECOVERY_STRATEGY_CONFIG,
+                        MetadataRecoveryStrategy.NONE.name)
+                .containsEntry(AdminClientConfig.CLIENT_ID_CONFIG,
+                        ReadinessHealthConfig.READINESS_CLIENT_ID)
+                .containsEntry(AdminClientConfig.RECONNECT_BACKOFF_MS_CONFIG,
+                        ReadinessHealthConfig.RECONNECT_BACKOFF_MS)
+                .containsEntry(AdminClientConfig.RECONNECT_BACKOFF_MAX_MS_CONFIG,
+                        ReadinessHealthConfig.RECONNECT_BACKOFF_MAX_MS)
+                .containsEntry(AdminClientConfig.RETRY_BACKOFF_MS_CONFIG,
+                        ReadinessHealthConfig.RETRY_BACKOFF_MS)
+                .containsEntry(AdminClientConfig.RETRY_BACKOFF_MAX_MS_CONFIG,
+                        ReadinessHealthConfig.RETRY_BACKOFF_MAX_MS)
+                .containsEntry(AdminClientConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG,
+                        ReadinessHealthConfig.CONNECTION_SETUP_TIMEOUT_MS)
+                .containsEntry(AdminClientConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG,
+                        ReadinessHealthConfig.CONNECTION_SETUP_TIMEOUT_MAX_MS)
+                .containsEntry(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG,
+                        ReadinessHealthConfig.REQUEST_TIMEOUT_MS)
+                .containsEntry(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG,
+                        ReadinessHealthConfig.DEFAULT_API_TIMEOUT_MS)
+                .containsEntry(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, "kafka:29092");
+        assertThat(new AdminClientConfig(bounded).values())
+                .as("every pinned key is one the administrator declares, so none is discarded")
+                .isNotEmpty();
     }
 }

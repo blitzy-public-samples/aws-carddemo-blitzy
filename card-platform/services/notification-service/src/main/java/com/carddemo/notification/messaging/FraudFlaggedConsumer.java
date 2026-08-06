@@ -289,14 +289,19 @@ public class FraudFlaggedConsumer {
     /**
      * Names the failure kind one fault counts under.
      *
-     * <p>A data-access fault counts as a persistence failure and every other fault as a rendering
-     * failure. {@code config/ObservabilityConfig} registers both series.
+     * <p>A database fault counts as a persistence failure and every other fault as a rendering
+     * failure. {@code ObservabilityConfig.NotificationMetrics#isPersistenceFault} decides the first
+     * case for the whole service: a paused or unreachable database raises
+     * {@code CannotCreateTransactionException} from the connection pool, which is a transaction
+     * fault and not a data-access fault, so testing for the latter alone counted a database outage as
+     * a rendering failure and left the persistence series at zero.
+     * {@code config/ObservabilityConfig} registers both series.
      *
      * @param failure the fault this delivery raised
      * @return the tag value the failure counter carries
      */
     private static String failureKind(RuntimeException failure) {
-        return failure instanceof DataAccessException
+        return NotificationMetrics.isPersistenceFault(failure)
                 ? NotificationMetrics.FAILURE_PERSISTENCE
                 : NotificationMetrics.FAILURE_RENDERING;
     }

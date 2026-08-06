@@ -2,24 +2,34 @@ package com.carddemo.fraud.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.events.TransactionAuthorized;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.serializer.DeserializationException;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Holds the error handler to counting a deserialization failure, to counting every record it gives up
@@ -170,6 +180,61 @@ class DeserializeFailureCountingTest {
             assertThat(deadLetters(registry, "published"))
                     .as("a diagnostic the broker refused is not a diagnostic an operator can find")
                     .isZero();
+        }
+    }
+
+    @Nested
+    @DisplayName("The offset of a record the route published")
+    class RecoveredOffset {
+
+        /**
+         * Asserts the dead-letter route is terminal.
+         *
+         * <p>The container acknowledges by hand, so nothing acknowledges a record its listener never
+         * accepted. Left at its default this setting committed nothing, so the next start-up or the
+         * next partition assignment read the same refused record again and published a second
+         * diagnostic naming the same coordinates.
+         */
+        @Test
+        @DisplayName("is committed, so a restart or a rebalance does not read it again")
+        void isCommittedSoARestartDoesNotReadItAgain() {
+            DefaultErrorHandler errorHandler = shippedErrorHandler();
+            Consumer<?, ?> consumer = mock(Consumer.class);
+
+            assertThat(ReflectionTestUtils.getField(errorHandler, "commitRecovered"))
+                    .as("commitRecovered, which the container applies under MANUAL_IMMEDIATE")
+                    .isEqualTo(Boolean.TRUE);
+            assertThat(errorHandler.seeksAfterHandling())
+                    .as("the container hands a record to handleRemaining, the path asserted below")
+                    .isTrue();
+
+            errorHandler.handleRemaining(new QueryTimeoutException("the write timed out"),
+                    List.of(record()), consumer, manualImmediateContainer());
+
+            verify(consumer).commitSync(
+                    eq(Map.of(new TopicPartition(TOPIC, 0), new OffsetAndMetadata(1L))),
+                    nullable(Duration.class));
+        }
+
+        /** The shipped handler with one delivery, so the first failure spends the backoff at once. */
+        @SuppressWarnings("unchecked")
+        private DefaultErrorHandler shippedErrorHandler() {
+            KafkaConsumerConfig config = new KafkaConsumerConfig("kafka:29092", TOPIC,
+                    "fraud-detection", DEAD_LETTER_TOPIC, DEAD_LETTER_SUFFIX, 1L, 0L);
+            return config.transactionAuthorizedErrorHandler(mock(KafkaTemplate.class),
+                    new ObservabilityConfig().fraudMeters(new SimpleMeterRegistry()));
+        }
+
+        /**
+         * A container acknowledging by hand and at once, which is the mode
+         * {@code transactionAuthorizedListenerContainerFactory} sets on every container it builds.
+         */
+        private MessageListenerContainer manualImmediateContainer() {
+            ContainerProperties containerProperties = new ContainerProperties(TOPIC);
+            containerProperties.setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+            MessageListenerContainer container = mock(MessageListenerContainer.class);
+            when(container.getContainerProperties()).thenReturn(containerProperties);
+            return container;
         }
     }
 

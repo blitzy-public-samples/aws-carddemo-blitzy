@@ -3,9 +3,12 @@ package com.carddemo.authorization.config;
 import com.carddemo.authorization.entity.OutboxEventEntity;
 import com.carddemo.authorization.repository.OutboxEventRepository;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import org.apache.kafka.clients.MetadataRecoveryStrategy;
 import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.DescribeClusterOptions;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -22,6 +25,63 @@ import org.springframework.kafka.listener.MessageListenerContainer;
 @Configuration
 public class ReadinessHealthConfig {
 
+    /**
+     * Client identifier of the administrator this class opens, so a broker-side or client-side log
+     * line names the readiness probe rather than an anonymous client.
+     */
+    static final String READINESS_CLIENT_ID = "authorization-readiness-admin";
+
+    /**
+     * Wait before the first reconnect to an address that refused a connection, and the ceiling that
+     * wait grows to. The client default starts at fifty milliseconds, which is a reconnect attempt
+     * roughly twenty times a second while a broker is down.
+     */
+    static final long RECONNECT_BACKOFF_MS = 1_000L;
+    static final long RECONNECT_BACKOFF_MAX_MS = 30_000L;
+
+    /** Wait before a refused request is retried, and the ceiling that wait grows to. */
+    static final long RETRY_BACKOFF_MS = 1_000L;
+    static final long RETRY_BACKOFF_MAX_MS = 30_000L;
+
+    /** How long one connection attempt may take, and the ceiling that grows to. */
+    static final long CONNECTION_SETUP_TIMEOUT_MS = 2_000L;
+    static final long CONNECTION_SETUP_TIMEOUT_MAX_MS = 10_000L;
+
+    /**
+     * How long one request waits, and the ceiling on the whole call. Both stay above the operation
+     * timeout {@code spring.kafka.admin.operation-timeout} carries, which is what
+     * {@link #kafkaHealth} passes and therefore what actually bounds one check.
+     */
+    static final int REQUEST_TIMEOUT_MS = 5_000;
+    static final int DEFAULT_API_TIMEOUT_MS = 10_000;
+
+    /**
+     * Opens the administrator the Kafka readiness check asks the cluster through, over settings that
+     * stay bounded while no broker answers.
+     *
+     * <p>The connection settings are pinned rather than inherited. A broker that is unreachable when
+     * this service starts left the client rebootstrapping in a tight loop: it wrote thousands of
+     * {@code Rebootstrapping with Cluster} lines per second at INFO, spent measurable processor time
+     * doing it, and buried the one line that named the degraded dependency. The cause is exact.
+     * {@code metadata.recovery.strategy} defaults to {@code rebootstrap}, and the client logs one
+     * such line every time it looks for a node to send a metadata request to and finds none, with no
+     * interval between attempts of its own.
+     *
+     * <p>{@code metadata.recovery.strategy=none} is the setting that removes the loop. Rebootstrap
+     * re-reads {@code bootstrap.servers} for a client whose known brokers have all moved, which a
+     * long-lived producer or consumer needs; this client knows the bootstrap addresses and nothing
+     * else, so it has nothing to recover to. Failing the call is the answer a probe wants:
+     * {@link #kafkaHealth} catches it and reports the dependency down, naming the exception type.
+     * The four backoff settings and the two connection timeouts bound how often the client retries
+     * while the broker is away, and the two request settings bound how long one check may take.
+     *
+     * <p>Nothing here contacts a broker. The bean is lazy, so the client opens on the first
+     * readiness poll, and the container closes it with the context.
+     *
+     * @param kafkaAdmins provider of the auto-configured administrator settings
+     * @return the administrator the Kafka readiness check uses
+     * @throws IllegalStateException when the auto-configured settings are unavailable
+     */
     @Bean(destroyMethod = "close")
     @Lazy
     public Admin readinessKafkaAdmin(ObjectProvider<KafkaAdmin> kafkaAdmins) {
@@ -29,7 +89,34 @@ public class ReadinessHealthConfig {
         if (kafkaAdmin == null) {
             throw new IllegalStateException("KafkaAdmin is unavailable");
         }
-        return Admin.create(kafkaAdmin.getConfigurationProperties());
+        return Admin.create(boundedAdminSettings(kafkaAdmin.getConfigurationProperties()));
+    }
+
+    /**
+     * Copies {@code configured} and pins the settings that keep a broker outage quiet.
+     *
+     * @param configured the auto-configured administrator settings, including the broker address
+     *                   and the login this deployment resolved
+     * @return a copy carrying the bounded connection, retry and timeout settings
+     */
+    static Map<String, Object> boundedAdminSettings(Map<String, Object> configured) {
+        Map<String, Object> bounded = new LinkedHashMap<>(configured);
+
+        bounded.put(AdminClientConfig.CLIENT_ID_CONFIG, READINESS_CLIENT_ID);
+        bounded.put(AdminClientConfig.METADATA_RECOVERY_STRATEGY_CONFIG,
+                MetadataRecoveryStrategy.NONE.name);
+        bounded.put(AdminClientConfig.RECONNECT_BACKOFF_MS_CONFIG, RECONNECT_BACKOFF_MS);
+        bounded.put(AdminClientConfig.RECONNECT_BACKOFF_MAX_MS_CONFIG, RECONNECT_BACKOFF_MAX_MS);
+        bounded.put(AdminClientConfig.RETRY_BACKOFF_MS_CONFIG, RETRY_BACKOFF_MS);
+        bounded.put(AdminClientConfig.RETRY_BACKOFF_MAX_MS_CONFIG, RETRY_BACKOFF_MAX_MS);
+        bounded.put(AdminClientConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MS_CONFIG,
+                CONNECTION_SETUP_TIMEOUT_MS);
+        bounded.put(AdminClientConfig.SOCKET_CONNECTION_SETUP_TIMEOUT_MAX_MS_CONFIG,
+                CONNECTION_SETUP_TIMEOUT_MAX_MS);
+        bounded.put(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, REQUEST_TIMEOUT_MS);
+        bounded.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, DEFAULT_API_TIMEOUT_MS);
+
+        return bounded;
     }
 
     @Bean

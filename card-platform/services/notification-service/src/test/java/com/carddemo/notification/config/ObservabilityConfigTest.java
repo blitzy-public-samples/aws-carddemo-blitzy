@@ -9,6 +9,7 @@ import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -27,6 +28,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.CannotCreateTransactionException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.core.env.ConfigurableEnvironment;
@@ -392,6 +395,74 @@ class ObservabilityConfigTest {
                     .as("failure.kind values meter %s carries", FAILURES)
                     .containsExactlyInAnyOrderElementsOf(expected);
         });
+    }
+
+    /**
+     * Asserts a database outage counts under {@code persistence} rather than under a tag naming
+     * something that did not fail.
+     *
+     * <p>The three cases are the three shapes a database failure arrives in. A statement the database
+     * refused is a {@code DataAccessException}. A connection pool that cannot hand out a connection
+     * raises {@code CannotCreateTransactionException}, which is a {@code TransactionException} and is
+     * NOT a {@code DataAccessException} — this is the case a paused database produces, and testing
+     * only for the data-access type left the registered {@code persistence} series permanently at
+     * zero while {@code rendering} counted faults that never reached a renderer. A driver fault that
+     * reached a caller unwrapped is a {@code SQLException}, here behind two wrappers so the
+     * cause-chain walk is exercised.
+     */
+    @Test
+    @DisplayName("a database outage is named a persistence fault in each shape it arrives in")
+    void aDatabaseOutageIsNamedAPersistenceFault() {
+        assertThat(NotificationMetrics.isPersistenceFault(
+                new QueryTimeoutException("the statement timed out")))
+                .as("a statement the database refused")
+                .isTrue();
+        assertThat(NotificationMetrics.isPersistenceFault(
+                new CannotCreateTransactionException("could not open a connection")))
+                .as("a pool that cannot hand out a connection, which is what a paused database gives")
+                .isTrue();
+        assertThat(NotificationMetrics.isPersistenceFault(new IllegalStateException(
+                "the alert was not written",
+                new RuntimeException("wrapper", new SQLException("connection refused")))))
+                .as("a driver fault deeper in the chain")
+                .isTrue();
+    }
+
+    @Test
+    @DisplayName("a fault that touched no database is not named a persistence fault")
+    void aFaultThatTouchedNoDatabaseIsNotAPersistenceFault() {
+        assertThat(NotificationMetrics.isPersistenceFault(
+                new IllegalArgumentException("the key names another aggregate")))
+                .as("a refused delivery is not a database fault, so rendering stays meaningful")
+                .isFalse();
+        assertThat(NotificationMetrics.isPersistenceFault(null))
+                .as("no fault at all")
+                .isFalse();
+    }
+
+    @Test
+    @DisplayName("a self-referencing cause chain ends the walk")
+    void aSelfReferencingCauseChainEndsTheWalk() {
+        SelfCausedException loop = new SelfCausedException();
+
+        assertThat(NotificationMetrics.isPersistenceFault(loop))
+                .as("a malformed chain must not spin")
+                .isFalse();
+    }
+
+    /** A fault whose cause is itself, which is the chain shape the depth cap exists for. */
+    private static final class SelfCausedException extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        private SelfCausedException() {
+            super("its own cause");
+        }
+
+        @Override
+        public synchronized Throwable getCause() {
+            return this;
+        }
     }
 
     @Test

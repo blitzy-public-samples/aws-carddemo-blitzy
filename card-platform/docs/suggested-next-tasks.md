@@ -204,6 +204,31 @@ Three items were measured while resolving review findings and left deliberately 
 - **Check:** Refuse the dead-letter publication and assert the row is claimable again with its attempt count unchanged.
 - **Behavior change:** None today. The note exists because the guarantee depends on a property of the port, not on the relay.
 
+## Work the runtime QA pass surfaced
+
+Three items were measured while resolving runtime findings and confirmed rather than changed. Each names the reason the current behaviour was kept and what a person has to decide.
+
+### Unify the failure-metric discriminator across the six services
+
+- **Change:** Pick one tag name for the per-attempt failure family and one name for the per-record terminal family, and apply both to every service.
+- **Where:** Notification publishes `carddemo.notification.failures` discriminated by `failure.kind` and `carddemo.notification.records.dead.lettered` by the same tag. The ledger and fraud publish `carddemo.<service>.failures` discriminated by `stage` and `carddemo.<service>.dead.letters` by `outcome`. Every series is bounded and pre-registered, and each service's naming is deliberate: notification tags by what failed, the other two by the stage that failed. The [decision log](decision-log.md) records why the divergence was left in place.
+- **Check:** One Prometheus query spans every service's failure count, and one spans every service's terminal count. Each service's `ObservabilityConfig` test still asserts a bounded tag set.
+- **Behavior change:** A renamed series. A deployment already collecting the current names has to be updated with the code, which is why this is a task rather than a fix.
+
+### Decide whether a broker outage should mark every container unhealthy
+
+- **Change:** Confirm that a Kafka outage marking all six containers unhealthy is the intended operational signal, or move the broker check to a health group the Compose health check does not read.
+- **Where:** `management.endpoint.health.group.readiness.include` names `kafka` in all six services, and the Compose health check probes `/actuator/health/readiness`. Liveness stays up, and Docker restarts an exited container rather than an unhealthy one, so the shipped `restart: unless-stopped` cannot loop on an outage. The [decision log](decision-log.md) records the reasoning for keeping the check in readiness.
+- **Check:** Stop the broker and confirm the intended reading of `docker compose ps` and of both Kubernetes probes.
+- **Behavior change:** None unless the grouping changes. Moving the check would let traffic reach an instance that cannot consume.
+
+### Confirm the printable-text contract for cardholder-facing values
+
+- **Change:** Confirm that refusing a non-ASCII merchant name or description is intended, or add a transliteration step ahead of rendering.
+- **Where:** The notification contract constrains rendered text with `^[ -~]*$`, because the renderers reproduce the column-oriented layout at `app/cbl/CBSTM03A.CBL:L86-L159` where each field occupies fixed character positions. A record carrying a multi-byte character is dead-lettered rather than rendered misaligned.
+- **Check:** Publish an event carrying an accented merchant name and confirm the intended outcome, whether that is a dead letter or a transliterated alert.
+- **Behavior change:** Transliteration would put a value in a cardholder-facing alert that no source field held, which is why the decision belongs to a person.
+
 ## Informational register items
 
 Some register entries explain the source without suggesting a change. Items 18 through 22 document specification conflicts, abandoned menu intent, unreachable role logic, stale identity moves, and over-allocated presentation arrays.

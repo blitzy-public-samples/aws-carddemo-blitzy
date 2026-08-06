@@ -280,6 +280,14 @@ public class KafkaConsumerConfig {
      * as one more failed attempt. {@code carddemo.fraud.dead.letters} carries that count, tagged by
      * whether the diagnostic reached the broker.
      *
+     * <p>{@link DefaultErrorHandler#setCommitRecovered(boolean)} commits the offset of a record the
+     * route has published. The container acknowledges by hand, so nothing acknowledges a record its
+     * listener never accepted, and without this setting the offset of a dead-lettered record stayed
+     * uncommitted: the next start-up or the next partition assignment read that record again and
+     * published a second diagnostic for the same coordinates. The container applies the setting under
+     * acknowledgement mode {@code MANUAL_IMMEDIATE}, which
+     * {@link #transactionAuthorizedListenerContainerFactory} sets on every container it builds.
+     *
      * @param deadLetterTemplate the raw-byte template, resolved by bean name
      * @param meters             the recording surface, so a failure the listener cannot see is still
      *                           counted
@@ -298,6 +306,7 @@ public class KafkaConsumerConfig {
                 new FixedBackOff(retryBackoffMs, deliveryAttempts - FIRST_ATTEMPT));
         errorHandler.addNotRetryableExceptions(DeserializationException.class,
                 SerializationException.class);
+        errorHandler.setCommitRecovered(true);
         return errorHandler;
     }
 
@@ -311,10 +320,20 @@ public class KafkaConsumerConfig {
      * that reason: a factory that ignored it would start a consumer whatever the property said, so a
      * context that has to load without a broker could not.
      *
+     * <p>{@code concurrency} is applied for the same reason, and the shipped file declares it. A
+     * factory that read the key and did nothing with it left the declaration inert: the shipped value
+     * of one happens to equal the framework default, so a deployment raising it got one consumer
+     * thread anyway and no indication that its setting was discarded. The ledger factory applies the
+     * same value the same way, so the two services now answer a bound listener block alike.
+     *
+     * <p>The acknowledgement mode is the one listener setting this factory does not read. It is
+     * pinned to {@code MANUAL_IMMEDIATE} because the listener acknowledges after its own writes
+     * commit, and an automatic mode would acknowledge on its behalf.
+     *
      * @param consumerFactory the pinned consumer factory, resolved by bean name
      * @param errorHandler    the retry and dead-letter handler, resolved by bean name
      * @param kafkaProperties the bound {@code spring.kafka} block, read for
-     *                        {@code listener.auto-startup}
+     *                        {@code listener.auto-startup} and {@code listener.concurrency}
      * @return the factory a listener of this service names
      */
     @Bean(name = {LISTENER_CONTAINER_FACTORY_BEAN, DEFAULT_LISTENER_CONTAINER_FACTORY_BEAN})
@@ -330,6 +349,12 @@ public class KafkaConsumerConfig {
         factory.setCommonErrorHandler(errorHandler);
         factory.setBatchListener(Boolean.FALSE);
         factory.setAutoStartup(kafkaProperties.getListener().isAutoStartup());
+
+        Integer concurrency = kafkaProperties.getListener().getConcurrency();
+        if (concurrency != null) {
+            factory.setConcurrency(concurrency);
+        }
+
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
         return factory;
     }

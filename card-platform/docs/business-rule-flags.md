@@ -12,9 +12,9 @@ The default handling is to reproduce the source behaviour and flag it. Parity is
 correctness improvement is a separate decision a human owner must make. Where an item is instead
 corrected, the entry says so and states why the correction changes no outcome.
 
-One place answers differently from the source on purpose, and it is recorded apart from the register in
-[Departures this platform makes from the source](#departures-this-platform-makes-from-the-source),
-because it is a decision about this platform rather than a finding about the source.
+Two places answer differently from the source on purpose, and both are recorded apart from the register
+in [Departures this platform makes from the source](#departures-this-platform-makes-from-the-source),
+because each is a decision about this platform rather than a finding about the source.
 
 Each item marked **DECISION OWED** needs a human answer. Each item marked **CLOSED** needed no answer
 beyond the handling stated.
@@ -442,10 +442,10 @@ grown accumulators, which is why authorization refuses traffic once its replica 
 
 ## Departures this platform makes from the source
 
-The 32 entries above record source behaviour. This section records the opposite case: a place where
-this platform deliberately answers differently from the source. It is separate from the register
-because it is not a defect in the source, and it is here rather than only in
-[decision-log.md](decision-log.md) because a reader checking parity will look for it here.
+The 32 entries above record source behaviour. This section records the opposite case: two places where
+this platform deliberately answers differently from the source. Neither is a defect in the source, so
+neither belongs in the register, and both are here rather than only in
+[decision-log.md](decision-log.md) because a reader checking parity will look for them here.
 
 ### D1. Card detail refuses a row that belongs to another account — CORRECTED, NOT REPRODUCED
 
@@ -473,6 +473,33 @@ does this: each of the 50 cards in `app/data/ASCII/carddata.txt` names one accou
 demonstration always sends the pair from the same row.
 
 <br/>
+
+### D2. Text bound for a cardholder is restricted to printable United States ASCII — ADDED, DECISION OWED
+
+The source places no character restriction on the text it renders. `CBSTM03A` writes a statement line
+by moving a field into a fixed span of a print record, so `app/cbl/CBSTM03A.CBL:L86-L159` lays out
+each transaction across counted character positions and pads the remainder. Alignment is a property of
+the layout, not of a validation, and no paragraph refuses a value for the characters it holds.
+
+This platform refuses one. The pattern `^[ -~]*$` constrains every text component of
+`TransactionAuthorized` and `TransactionPosted` in the event contract library, and the same pattern
+constrains the free-text fields of the authorization request and of the account and customer update
+requests. A synchronous caller sending a value outside it receives a validation refusal; an event
+carrying one is refused at deserialization and dead-lettered rather than rendered.
+
+The restriction is additive, and it exists because the notification renderers reproduce the source
+layout. `PlainTextRenderer` lays a merchant name and a description into counted columns exactly as the
+source paragraph does, and a multi-byte character occupies one position in the pattern and more than
+one in the rendered line, so a value the source would have printed misaligned is refused instead.
+Widening the pattern would let a cardholder-facing alert render out of column; transliterating would
+put a value in that alert which no source field held.
+
+**What a human owner should decide:** whether refusing an accented merchant name or cardholder
+description is the intended product behaviour, or whether a transliteration step should run ahead of
+rendering. No fixture reaches the question: every text value across the nine fixtures under
+`app/data/ASCII/` is already printable ASCII, so the restriction refuses nothing the shipped
+demonstration sends. The [decision log](decision-log.md) records the reasoning, and
+[suggested next tasks](suggested-next-tasks.md) carries the confirmation as a task.
 
 ## Measurement discrepancies against the specification
 

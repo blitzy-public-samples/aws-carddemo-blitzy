@@ -4,12 +4,23 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.nullable;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.carddemo.ledger.messaging.DeadLetterMetadata;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
@@ -17,7 +28,12 @@ import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.DefaultErrorHandler;
+import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.KafkaHeaders;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Verifies that ledger dead letters retain broker coordinates and no refused or producer data.
@@ -30,7 +46,16 @@ class KafkaConsumerConfigTest {
     private static final String REFUSED_JSON =
             "{\"cardNumber\":\"" + FULL_CARD_NUMBER + "\",\"cvv\":\"123\"}";
 
+    /**
+     * The seven headers a ledger dead letter carries: the four diagnostic components, which the
+     * notification and fraud routes also carry, and the three broker coordinates. Nothing a producer
+     * chose survives.
+     */
     private static final Set<String> EXPECTED_HEADERS = Set.of(
+            KafkaConsumerConfig.HEADER_ABEND_CODE,
+            KafkaConsumerConfig.HEADER_CULPRIT,
+            KafkaConsumerConfig.HEADER_REASON,
+            KafkaConsumerConfig.HEADER_MESSAGE,
             KafkaHeaders.DLT_ORIGINAL_TOPIC,
             KafkaHeaders.DLT_ORIGINAL_PARTITION,
             KafkaHeaders.DLT_ORIGINAL_OFFSET,
@@ -45,8 +70,13 @@ class KafkaConsumerConfigTest {
         refused.headers().add("producer-secret", utf8(FULL_CARD_NUMBER));
 
         Headers assembled = new RecordHeaders();
+        assembled.add(KafkaConsumerConfig.HEADER_ABEND_CODE, utf8("SPOOF"));
+        assembled.add(KafkaConsumerConfig.HEADER_CULPRIT, utf8("SPOOFED"));
+        assembled.add(KafkaConsumerConfig.HEADER_MESSAGE, utf8(REFUSED_JSON));
         assembled.add(KafkaConsumerConfig.HEADER_REASON, utf8(FULL_CARD_NUMBER));
-        assembled.add(KafkaConsumerConfig.HEADER_REASON, utf8("PayloadRejectedException"));
+        KafkaConsumerConfig.diagnosticHeaders(new IllegalStateException("PayloadRejected",
+                        new PayloadRejectedException(REFUSED_JSON)))
+                .forEach(header -> assembled.add(header.key(), header.value()));
         assembled.add(KafkaHeaders.DLT_ORIGINAL_TOPIC, utf8("spoofed.topic"));
         assembled.add(KafkaHeaders.DLT_ORIGINAL_TOPIC, utf8(SOURCE_TOPIC));
         assembled.add(KafkaHeaders.DLT_ORIGINAL_PARTITION, intBytes(2));
@@ -80,6 +110,24 @@ class KafkaConsumerConfigTest {
                 "exception message");
         assertEquals(1, count(outgoing.headers(), KafkaHeaders.DLT_ORIGINAL_TOPIC),
                 "one canonical topic header");
+        assertEquals("DEAD", text(outgoing.headers().lastHeader(
+                KafkaConsumerConfig.HEADER_ABEND_CODE)), "generated abend code, not the spoofed one");
+        assertEquals("POSTTRAN", text(outgoing.headers().lastHeader(
+                KafkaConsumerConfig.HEADER_CULPRIT)), "generated culprit, not the spoofed one");
+        assertEquals("PayloadRejectedException", text(outgoing.headers().lastHeader(
+                KafkaConsumerConfig.HEADER_REASON)), "deepest failure type");
+        assertFalse(text(outgoing.headers().lastHeader(KafkaConsumerConfig.HEADER_MESSAGE))
+                .contains(FULL_CARD_NUMBER), "no refused payload in the message header");
+    }
+
+    /** A failure whose type name the diagnostic reports, standing in for a refused payload. */
+    private static final class PayloadRejectedException extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        private PayloadRejectedException(String message) {
+            super(message);
+        }
     }
 
     @Test
@@ -110,6 +158,69 @@ class KafkaConsumerConfigTest {
                 text(headers.lastHeader(KafkaConsumerConfig.HEADER_REASON)));
         assertFalse(text(headers.lastHeader(KafkaConsumerConfig.HEADER_REASON))
                 .contains(FULL_CARD_NUMBER));
+    }
+
+    /**
+     * Asserts the dead-letter route is terminal: the offset of a record it published is committed.
+     *
+     * <p>Both containers of this service acknowledge by hand, so nothing acknowledges a record its
+     * listener never accepted. Left at its default this setting committed nothing, so the next
+     * start-up or the next partition assignment read the same refused record again, published a
+     * second diagnostic for the same coordinates and counted one record twice under
+     * {@code carddemo.ledger.dead.letters}.
+     */
+    @Test
+    @DisplayName("a record the route published has its offset committed, so it is read once")
+    void aDeadLetteredRecordHasItsOffsetCommitted() {
+        DefaultErrorHandler errorHandler = terminalOnFirstFailureErrorHandler();
+        Consumer<?, ?> consumer = mock(Consumer.class);
+        ConsumerRecord<String, Object> refused =
+                new ConsumerRecord<>(SOURCE_TOPIC, 1, 4L, "00000000011", REFUSED_JSON);
+
+        assertEquals(Boolean.TRUE,
+                ReflectionTestUtils.getField(errorHandler, "commitRecovered"),
+                "commitRecovered, which the container applies under MANUAL_IMMEDIATE");
+        assertTrue(errorHandler.seeksAfterHandling(),
+                "the container hands a record to handleRemaining, which is the path asserted below");
+
+        errorHandler.handleRemaining(new IllegalStateException("the posting did not complete"),
+                List.of(refused), consumer, manualImmediateContainer());
+
+        verify(consumer).commitSync(
+                eq(Map.of(new TopicPartition(SOURCE_TOPIC, 1), new OffsetAndMetadata(5L))),
+                nullable(Duration.class));
+    }
+
+    /**
+     * A container acknowledging by hand and at once, which is what the shipped
+     * {@code spring.kafka.listener.ack-mode} names.
+     */
+    private static MessageListenerContainer manualImmediateContainer() {
+        ContainerProperties containerProperties = new ContainerProperties(SOURCE_TOPIC);
+        containerProperties.setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        MessageListenerContainer container = mock(MessageListenerContainer.class);
+        when(container.getContainerProperties()).thenReturn(containerProperties);
+        return container;
+    }
+
+    /**
+     * The shipped handler with one delivery, so the first failure spends the backoff at once. Every
+     * value except the attempt count matches the shipped configuration.
+     */
+    @SuppressWarnings("unchecked")
+    private static DefaultErrorHandler terminalOnFirstFailureErrorHandler() {
+        LedgerProperties properties = new LedgerProperties(
+                new LedgerProperties.Kafka(new LedgerProperties.Kafka.Topics(SOURCE_TOPIC,
+                        "transaction.posted", "transaction.declined", "carddemo.dead-letter",
+                        ".DLT")),
+                new LedgerProperties.Consumer(new LedgerProperties.Consumer.Retry(1, 0L)),
+                new LedgerProperties.Outbox(new LedgerProperties.Outbox.Relay(1000L, 100,
+                        "ledger-relay", Duration.ofMinutes(2L)), 168L),
+                new LedgerProperties.ProcessedEvent(168L),
+                new LedgerProperties.Retention(3_600_000L));
+
+        return new KafkaConsumerConfig().ledgerConsumerErrorHandler(mock(KafkaTemplate.class),
+                properties, new ObservabilityConfig().ledgerMeters(new SimpleMeterRegistry()));
     }
 
     /**

@@ -64,6 +64,24 @@ class ListenerContainerFactoryTest {
                 .isFalse();
     }
 
+    @Test
+    @DisplayName("It applies the bound listener concurrency rather than discarding it")
+    void itAppliesTheBoundListenerConcurrency() {
+        assertThat(containerFrom(factoryFor(true, 2)).getConcurrency())
+                .as("the shipped file declares spring.kafka.listener.concurrency, and a factory that "
+                        + "read the key and did nothing with it left the declaration inert: the "
+                        + "container is where the value takes effect")
+                .isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("It keeps one consumer thread at the shipped value")
+    void itKeepsOneConsumerThreadAtTheShippedValue() {
+        assertThat(containerFrom(factoryFor(true, 1)).getConcurrency())
+                .as("the shipped value is one, so shipped behaviour is unchanged")
+                .isEqualTo(1);
+    }
+
     /** Creates one container from {@code factory}, which is where the setting takes effect. */
     private static ConcurrentMessageListenerContainer<String, TransactionAuthorized> containerFrom(
             ConcurrentKafkaListenerContainerFactory<String, TransactionAuthorized> factory) {
@@ -71,11 +89,26 @@ class ListenerContainerFactoryTest {
     }
 
     /** Builds the shipped factory with {@code autoStartup} bound on the listener block. */
-    @SuppressWarnings("unchecked")
     private static ConcurrentKafkaListenerContainerFactory<String, TransactionAuthorized> factoryFor(
             boolean autoStartup) {
+        return factoryFor(autoStartup, null);
+    }
+
+    /**
+     * Builds the shipped factory with {@code autoStartup} and {@code concurrency} bound on the
+     * listener block.
+     *
+     * @param autoStartup the value bound to {@code spring.kafka.listener.auto-startup}
+     * @param concurrency the value bound to {@code spring.kafka.listener.concurrency}, or
+     *                    {@code null} for an unset key
+     * @return the factory the shipped configuration produces
+     */
+    @SuppressWarnings("unchecked")
+    private static ConcurrentKafkaListenerContainerFactory<String, TransactionAuthorized> factoryFor(
+            boolean autoStartup, Integer concurrency) {
         KafkaProperties properties = new KafkaProperties();
         properties.getListener().setAutoStartup(autoStartup);
+        properties.getListener().setConcurrency(concurrency);
 
         KafkaConsumerConfig config = new KafkaConsumerConfig("kafka:29092", TOPIC,
                 "fraud-detection", DEAD_LETTER_TOPIC, DEAD_LETTER_SUFFIX, 3L, 1000L);
