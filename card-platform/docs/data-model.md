@@ -250,7 +250,7 @@ erDiagram
         char11 account_id PK
         timestamptz window_start PK
         integer authorization_count
-        numeric_11_2 total_amount
+        numeric_15_2 total_amount
         timestamptz updated_at
     }
     OUTBOX_EVENT {
@@ -271,13 +271,14 @@ erDiagram
 
 - Entity boxes are tables in `carddemo_fraud.fraud_service`.
 - No COBOL program defines fraud scoring, verdicts, or velocity windows.
-- Transaction, account, and amount widths come from `CVTRA05Y.cpy` and `CVACT03Y.cpy`.
+- Transaction and account widths come from `CVTRA05Y.cpy` and `CVACT03Y.cpy`, and so does the two-digit
+  amount scale. `velocity_window.total_amount` carries its own width, because it accumulates.
 - `OUTBOX_EVENT` and `PROCESSED_EVENT` provide additive messaging guarantees.
 
 | Table | Columns | Provenance |
 | --- | --- | --- |
 | `fraud_assessment` | Transaction, account, score, verdict, triggered rules, assessment time | Net new; transaction width from `CVTRA05Y:L5`, account width from `CVACT03Y:L7` |
-| `velocity_window` | Account, window start, count, total amount, update time | Net new; amount precision from `CVTRA05Y:L10` |
+| `velocity_window` | Account, window start, count, total amount, update time | Net new; amount **scale** from `CVTRA05Y:L10`. `window_start` is an event time truncated to one hour, so a row spans one whole hour. `total_amount` is `NUMERIC(15,2)`: it accumulates every magnitude in the bucket, so `V3__velocity_total_headroom.sql` gave it accumulator width rather than the width of one amount. Two maximum-magnitude authorizations reach `1999999999.98`, which the original `NUMERIC(11,2)` refused |
 | `outbox_event` | Event envelope, payload, relay state | Additive |
 | `processed_event` | Event identifier, processing time, source topic | Additive |
 

@@ -144,7 +144,9 @@ class EntitySchemaValidationIT {
     private static final int ACCOUNT_ID_WIDTH = 11;
     private static final int TRIGGERED_RULES_WIDTH = 64;
     private static final int CONSUMED_TOPIC_WIDTH = 128;
-    private static final int TOTAL_AMOUNT_PRECISION = 11;
+    // The accumulator width V3__velocity_total_headroom.sql leaves on the column, and the width
+    // VelocityWindowEntity declares. It is not the width of one transaction amount.
+    private static final int TOTAL_AMOUNT_PRECISION = 15;
     private static final int TOTAL_AMOUNT_SCALE = 2;
 
     /** Column names {@code processed_event} carries, in declaration order. */
@@ -328,8 +330,8 @@ class EntitySchemaValidationIT {
     }
 
     @Test
-    @DisplayName("Flyway created the one schema both properties name, and applied version 1 alone")
-    void flywayCreatedTheSchemaAndAppliedVersionOneAlone() {
+    @DisplayName("Flyway created the one schema both properties name, and applied versions 1 and 3")
+    void flywayCreatedTheSchemaAndAppliedItsTwoMigrations() {
         String schema = schema();
         Integer schemaRows = jdbc.queryForObject(
                 "SELECT count(*) FROM pg_namespace WHERE nspname = ?", Integer.class, schema);
@@ -339,6 +341,12 @@ class EntitySchemaValidationIT {
         Integer versionTwoRows = jdbc.queryForObject(
                 "SELECT count(*) FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '2'",
                 Integer.class);
+        Boolean versionThreeApplied = jdbc.queryForObject(
+                "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '3'",
+                Boolean.class);
+        Integer versionRows = jdbc.queryForObject(
+                "SELECT count(*) FROM " + qualified(FLYWAY_HISTORY) + " WHERE version IS NOT NULL",
+                Integer.class);
         assertAll(
                 () -> assertFalse(schema.isBlank(), SCHEMA_PROPERTY + " resolves to nothing"),
                 () -> assertEquals(schema, environment.getProperty(FLYWAY_SCHEMAS_PROPERTY),
@@ -347,7 +355,10 @@ class EntitySchemaValidationIT {
                         () -> "the database holds no schema named " + schema),
                 () -> assertEquals(Boolean.TRUE, versionOneApplied, "migration version 1"),
                 () -> assertEquals(Integer.valueOf(0), versionTwoRows,
-                        "a version 2 migration row exists, and no seed migration ships"));
+                        "a version 2 migration row exists, and no seed migration ships"),
+                () -> assertEquals(Boolean.TRUE, versionThreeApplied, "migration version 3"),
+                () -> assertEquals(Integer.valueOf(2), versionRows,
+                        "the two versioned migrations this service ships"));
     }
 
     @Test
@@ -433,7 +444,7 @@ class EntitySchemaValidationIT {
 
     @Test
     @DisplayName("velocity_window holds an eleven-character account, two instants, an integer "
-            + "count and a numeric total of precision 11 and scale 2")
+            + "count and a numeric total of precision 15 and scale 2")
     void velocityWindowColumnsCarryTheirTypesAndWidths() {
         Map<String, Object> accountId = column(VELOCITY_WINDOW, COLUMN_ACCOUNT_ID);
         Map<String, Object> windowStart = column(VELOCITY_WINDOW, COLUMN_WINDOW_START);
@@ -475,7 +486,7 @@ class EntitySchemaValidationIT {
     }
 
     @Test
-    @DisplayName("the window entity declares precision 11 and scale 2 on its money column")
+    @DisplayName("the window entity declares precision 15 and scale 2 on its money column")
     void windowEntityDeclaresThePrecisionAndScaleOfItsMoneyColumn() {
         Column money = moneyColumn();
         assertAll(

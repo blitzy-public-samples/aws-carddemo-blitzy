@@ -46,7 +46,9 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -578,6 +580,31 @@ final class ShippedConfigurationContractTest {
     }
 
     @Test
+    @DisplayName("one producer send resolves inside the relay pass that issued it")
+    void oneSendResolvesInsideTheRelayPassThatIssuedIt() {
+        long maxBlock = millisecondsAt("spring", "kafka", "producer", "properties", "max.block.ms");
+        long deliveryTimeout =
+                millisecondsAt("spring", "kafka", "producer", "properties", "delivery.timeout.ms");
+        long requestTimeout =
+                millisecondsAt("spring", "kafka", "producer", "properties", "request.timeout.ms");
+        long linger = millisecondsAt("spring", "kafka", "producer", "properties", "linger.ms");
+        long passBudget = millisecondsAt("carddemo", "outbox", "relay", "max-duration-ms");
+        long oneSend = maxBlock + deliveryTimeout;
+
+        assertAll("the producer window against the relay pass budget",
+                () -> assertTrue(oneSend < passBudget,
+                        () -> "max.block.ms + delivery.timeout.ms is " + oneSend
+                                + " and carddemo.outbox.relay.max-duration-ms is " + passBudget
+                                + ". A send the relay abandons can still be delivered, and the "
+                                + "relay's retry then publishes a second copy of the same event"),
+                () -> assertTrue(deliveryTimeout >= linger + requestTimeout,
+                        () -> "delivery.timeout.ms is " + deliveryTimeout
+                                + " and linger.ms plus request.timeout.ms is "
+                                + (linger + requestTimeout)
+                                + ". The producer refuses that combination at construction"));
+    }
+
+    @Test
     @DisplayName("spring.kafka.producer requires every replica and idempotent production")
     void producerRequiresEveryReplicaAndIdempotence() {
         assertAll(
@@ -590,13 +617,16 @@ final class ShippedConfigurationContractTest {
                         textAt("spring", "kafka", "producer", "properties",
                                 "max.in.flight.requests.per.connection"),
                         "max.in.flight.requests.per.connection"),
-                () -> assertEquals("120000",
+                () -> assertEquals("2000",
                         textAt("spring", "kafka", "producer", "properties", "delivery.timeout.ms"),
                         "delivery.timeout.ms"),
-                () -> assertEquals("30000",
+                () -> assertEquals("2000",
                         textAt("spring", "kafka", "producer", "properties", "request.timeout.ms"),
                         "request.timeout.ms"),
-                () -> assertEquals("5000",
+                () -> assertEquals("0",
+                        textAt("spring", "kafka", "producer", "properties", "linger.ms"),
+                        "linger.ms"),
+                () -> assertEquals("2000",
                         textAt("spring", "kafka", "producer", "properties", "max.block.ms"),
                         "max.block.ms"),
                 () -> assertEquals(StringSerializer.class.getName(),
@@ -717,13 +747,15 @@ final class ShippedConfigurationContractTest {
                     () -> assertEquals("5",
                             producer.get(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION),
                             ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION),
-                    () -> assertEquals("120000",
+                    () -> assertEquals("2000",
                             producer.get(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG),
                             ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG),
-                    () -> assertEquals("30000",
+                    () -> assertEquals("2000",
                             producer.get(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG),
                             ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG),
-                    () -> assertEquals("5000", producer.get(ProducerConfig.MAX_BLOCK_MS_CONFIG),
+                    () -> assertEquals("0", producer.get(ProducerConfig.LINGER_MS_CONFIG),
+                            ProducerConfig.LINGER_MS_CONFIG),
+                    () -> assertEquals("2000", producer.get(ProducerConfig.MAX_BLOCK_MS_CONFIG),
                             ProducerConfig.MAX_BLOCK_MS_CONFIG),
                     () -> assertEquals(StringSerializer.class,
                             producer.get(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG),
@@ -919,6 +951,19 @@ final class ShippedConfigurationContractTest {
 
     private static String resolvedAt(String... path) {
         return resolveDefaults(textAt(path));
+    }
+
+    /**
+     * Reads one millisecond setting, taking the default of an environment placeholder where the
+     * shipped file carries one.
+     *
+     * @param path the key path in the shipped document
+     * @return the value in milliseconds
+     */
+    private static long millisecondsAt(String... path) {
+        String text = resolvedAt(path);
+        assertNotNull(text, () -> String.join(".", path) + " is absent from the shipped file");
+        return Long.parseLong(text.strip());
     }
 
     private static List<String> commaSeparated(String value) {

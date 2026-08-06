@@ -122,6 +122,16 @@ spring:
     # to a template built from these keys alone.
     # Why fraud validates on publish while the other services publish text:
     # card-platform/docs/decision-log.md.
+    #
+    # The four timeouts below are one budget, and outbox/OutboxRelay is why. A relay tick bounds
+    # itself with carddemo.outbox.relay.max-duration-ms so a broker that accepts a connection and
+    # never answers cannot hold the scheduled thread. A send the relay gave up on that the producer
+    # still holds is published later, and the relay's own retry publishes it a second time, so one
+    # send has to resolve inside the tick that issued it. The producer takes at most
+    # max.block.ms + delivery.timeout.ms to resolve one send, and that sum must stay below
+    # max-duration-ms. 2000 + 2000 = 4000 against 5000. A test asserts the relationship, so raising
+    # one value without the other fails the build. delivery.timeout.ms must also be at least
+    # linger.ms + request.timeout.ms, which is why linger.ms is declared here rather than inherited.
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -129,9 +139,10 @@ spring:
       properties:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5
-        delivery.timeout.ms: 120000
-        request.timeout.ms: 30000
-        max.block.ms: 5000
+        delivery.timeout.ms: 2000
+        request.timeout.ms: 2000
+        linger.ms: 0
+        max.block.ms: 2000
 
     # messaging/TransactionAuthorizedConsumer reads one topic under a consumer group of
     # this service's own, with automatic commit off. It scores outside the authorization

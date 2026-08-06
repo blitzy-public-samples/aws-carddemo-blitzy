@@ -1,6 +1,7 @@
 package com.carddemo.fraud.outbox;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -176,8 +177,60 @@ class OutboxRelayTest {
         verify(meters).recordPublishFailure();
     }
 
+    @Test
+    void aSendIsGrantedTheWholePassBudgetRatherThanWhatIsLeftOfIt() {
+        long passBudgetMs = 500L;
+        long sendMs = 400L;
+        OutboxEventEntity first = clearedRow();
+        OutboxEventEntity second = clearedRow();
+        OutboxRelay relayUnderBudget = new OutboxRelay(outboxEvents, kafkaTemplate, meters,
+                ASSESSED_TOPIC, DEAD_LETTER_TOPIC, transactionTemplate,
+                propertiesWithPassBudget(passBudgetMs));
+        when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(first, second));
+        when(kafkaTemplate.send(eq(ASSESSED_TOPIC), eq(ACCOUNT_ID), any()))
+                .thenAnswer(call -> CompletableFuture.supplyAsync(() -> acknowledgeAfter(sendMs)));
+
+        relayUnderBudget.publishPendingEvents();
+
+        // The first send consumes 400 of the 500 millisecond budget, so the second is issued with
+        // 100 left. Waiting only that remainder would abandon a record the producer still holds,
+        // which is how one event reached the topic twice.
+        assertAll("both sends were waited out",
+                () -> assertTrue(first.isPublished(), "the first row"),
+                () -> assertTrue(second.isPublished(),
+                        "the second row's send was abandoned with the pass budget nearly spent, so "
+                                + "its record could still reach the broker while a later tick "
+                                + "published another copy of the same event"),
+                () -> assertThat(second.getAttemptCount()).isZero());
+        verify(kafkaTemplate, times(2)).send(eq(ASSESSED_TOPIC), eq(ACCOUNT_ID), any());
+        verify(meters, never()).recordPublishFailure();
+    }
+
+    /** Sleeps for the broker's simulated acknowledgement delay, then answers with no result. */
+    private static Object acknowledgeAfter(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("the simulated acknowledgement was interrupted",
+                    interrupted);
+        }
+        return null;
+    }
+
     private OutboxEventEntity clearedRow() {
         return writer.write(FraudCleared.of(TRANSACTION_ID, ACCOUNT_ID, Instant.now()));
+    }
+
+    /** Builds the shipped settings with one chosen relay pass budget in milliseconds. */
+    private static FraudProperties propertiesWithPassBudget(long passBudgetMs) {
+        FraudProperties shipped = properties();
+        FraudProperties.Outbox.Relay relay = shipped.outbox().relay();
+        return new FraudProperties(shipped.kafka(), shipped.consumer(),
+                new FraudProperties.Outbox(new FraudProperties.Outbox.Relay(relay.fixedDelayMs(),
+                        relay.batchSize(), relay.instanceId(), relay.claimTimeout(), passBudgetMs),
+                        shipped.outbox().publishedRetentionHours()),
+                shipped.processedEvent(), shipped.retention(), shipped.fraud());
     }
 
     private static FraudProperties properties() {

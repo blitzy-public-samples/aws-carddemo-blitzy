@@ -273,6 +273,10 @@ The demo relay checks every 500 milliseconds and claims at most 100 rows. Produc
 
 Kafka delivery is at least once. Rebalances, restarts, or a crash after side effects but before offset commit can deliver the same event again.
 
+**Publication is also at least once, and the producer window is what bounds how often a duplicate occurs.** A relay row is published exactly once in the database — `published` and `published_at` move only after the broker acknowledges the send — but a topic can carry a second copy of one `eventId`. A relay tick bounds itself so a broker that accepts a connection and never answers cannot hold the scheduled thread. A tick that gave up on a send the producer still held left that record to arrive up to two minutes later, while the tick's retry published another copy. The fraud relay closes that window: `max.block.ms` plus `delivery.timeout.ms` stays below `carddemo.outbox.relay.max-duration-ms`, and a send the relay has issued is waited out rather than abandoned.
+
+One duplicate path is not a platform choice. A broker that has already appended a record can lose the acknowledgement, so the producer reports a failure the log does not share and the next attempt appends a second copy. No producer setting removes that, and `enable.idempotence` does not either, because the two copies come from two `send` calls carrying their own sequence numbers. Both copies carry the same `eventId`, so every consumer's `processed_event` marker suppresses the second one. A test asserts the timing relationship, so moving one value without the other fails the build; the [decision log](decision-log.md) records the choice with its measurements, and [suggested next tasks](suggested-next-tasks.md) carries the same relationship for the account service.
+
 Idempotency means a repeated event has no repeated business effect. Each consumer checks or claims `processed_event` by `eventId`, performs its work, and commits the marker with the effect.
 
 Auto-commit is disabled. Manual acknowledgement occurs only after the database transaction commits.

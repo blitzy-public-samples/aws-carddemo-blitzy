@@ -5,6 +5,7 @@ import com.carddemo.cobol.PicClause;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.fraud.config.FraudProperties;
+import com.carddemo.fraud.entity.VelocityWindowEntity;
 import com.carddemo.fraud.repository.VelocityWindowRepository;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -49,8 +50,11 @@ public class RiskScoringService {
     /** Lowest useful threshold: zero would flag a score with no contributing rule. */
     private static final int MINIMUM_FLAG_THRESHOLD = 1;
 
-    /** Width of one window row, and the unit an event time truncates to for its bucket. */
-    private static final ChronoUnit WINDOW_BUCKET = ChronoUnit.HOURS;
+    /**
+     * Width of one window row, and the unit an event time truncates to for its bucket. The row that
+     * holds it declares it, so the rule that reads these rows reads the same unit.
+     */
+    private static final ChronoUnit WINDOW_BUCKET = VelocityWindowEntity.WINDOW_BUCKET;
 
     /** Rows the window statement writes on either of its arms. */
     private static final int ROWS_ONE_UPSERT_WRITES = 1;

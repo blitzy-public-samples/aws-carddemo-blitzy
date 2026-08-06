@@ -85,9 +85,12 @@ class VelocityRuleTest {
     private static final String NEGATIVE_WINDOW_TOTAL = "-919.00";
 
     // Values this test passes to the constructor, the span start they imply, and the column scale.
+    // A stored row spans one whole bucket and carries the start of that span, so the span start the
+    // rule reads with is the configured width taken back and then truncated to the bucket unit.
     private static final int LOOKBACK_MINUTES = 60;
     private static final int COUNT_THRESHOLD = 5;
-    private static final Instant BOUNDARY = OCCURRED_AT.minus(Duration.ofMinutes(LOOKBACK_MINUTES));
+    private static final Instant BOUNDARY = OCCURRED_AT.minus(Duration.ofMinutes(LOOKBACK_MINUTES))
+            .truncatedTo(VelocityWindowEntity.WINDOW_BUCKET);
     private static final int SCALE = PicClause.TRAN_AMT_SCALE;
 
     // Values the rule declares.
@@ -220,10 +223,60 @@ class VelocityRuleTest {
                     () -> assertEquals(ACCOUNT_ID, account.getValue(), "account identifier"),
                     () -> assertEquals(PicClause.XREF_ACCT_ID_WIDTH, account.getValue().length(),
                             "identifier width"),
-                    () -> assertEquals(OCCURRED_AT.minus(Duration.ofMinutes(LOOKBACK_MINUTES)),
+                    () -> assertEquals(OCCURRED_AT.minus(Duration.ofMinutes(LOOKBACK_MINUTES))
+                                    .truncatedTo(VelocityWindowEntity.WINDOW_BUCKET),
                             from.getValue(), "start taken from the event instant"),
-                    () -> assertEquals(Instant.parse("2022-06-10T18:27:53Z"), from.getValue(),
-                            "expected start"));
+                    () -> assertEquals(Instant.parse("2022-06-10T18:00:00Z"), from.getValue(),
+                            "expected start, at the bucket the configured width reaches back into"));
+        }
+
+        @Test
+        @DisplayName("A one-millisecond move of the event instant leaves the span start where it was")
+        void aMillisecondMoveLeavesTheSpanStartWhereItWas() {
+            Instant onTheHour = Instant.parse("2022-06-10T19:00:00Z");
+            Instant oneLater = onTheHour.plusMillis(1L);
+            VelocityWindowEntity priorBucket = new VelocityWindowEntity(ACCOUNT_ID,
+                    Instant.parse("2022-06-10T18:00:00Z"), COUNT_THRESHOLD,
+                    new BigDecimal(SMALL_TOTAL), onTheHour);
+            VelocityWindowRepository repository = returningForAnyStart(List.of(priorBucket));
+            ArgumentCaptor<Instant> from = ArgumentCaptor.forClass(Instant.class);
+            VelocityRule rule = ruleReading(repository);
+
+            RiskRule.Contribution first = rule.evaluate(authorizationAt(onTheHour));
+            RiskRule.Contribution second = rule.evaluate(authorizationAt(oneLater));
+
+            verify(repository, times(2))
+                    .findByAccountIdAndWindowStartGreaterThanEqual(any(), from.capture());
+            List<Instant> captured = from.getAllValues();
+            assertAll("two events one millisecond apart",
+                    () -> assertEquals(Instant.parse("2022-06-10T18:00:00Z"), captured.get(0),
+                            "span start of the earlier event"),
+                    () -> assertEquals(captured.get(0), captured.get(1), "the two span starts"),
+                    () -> assertEquals(first, second, "the two contributions"),
+                    () -> assertTrue(first.triggered(), "the earlier verdict"),
+                    () -> assertTrue(second.triggered(), "the later verdict"));
+        }
+
+        @Test
+        @DisplayName("A width below one bucket still reads the bucket that holds it")
+        void aWidthBelowOneBucketStillReadsTheBucketHoldingIt() {
+            Instant midBucket = Instant.parse("2022-06-10T19:47:00Z");
+            VelocityWindowEntity currentBucket = new VelocityWindowEntity(ACCOUNT_ID,
+                    Instant.parse("2022-06-10T19:00:00Z"), COUNT_THRESHOLD,
+                    new BigDecimal(SMALL_TOTAL), midBucket);
+            VelocityWindowRepository repository = returningForAnyStart(List.of(currentBucket));
+            ArgumentCaptor<Instant> from = ArgumentCaptor.forClass(Instant.class);
+
+            RiskRule.Contribution contribution =
+                    new VelocityRule(repository, 1, COUNT_THRESHOLD).evaluate(
+                            authorizationAt(midBucket));
+
+            verify(repository, times(1))
+                    .findByAccountIdAndWindowStartGreaterThanEqual(any(), from.capture());
+            assertAll("a one-minute width read at 19:47",
+                    () -> assertEquals(Instant.parse("2022-06-10T19:00:00Z"), from.getValue(),
+                            "span start"),
+                    () -> assertTrue(contribution.triggered(), "verdict"));
         }
 
         @Test
@@ -485,11 +538,24 @@ class VelocityRuleTest {
         return repository;
     }
 
+    /** Builds a repository stub whose only finder returns {@code rows} for any span start. */
+    private static VelocityWindowRepository returningForAnyStart(List<VelocityWindowEntity> rows) {
+        VelocityWindowRepository repository = mock(VelocityWindowRepository.class);
+        when(repository.findByAccountIdAndWindowStartGreaterThanEqual(any(), any()))
+                .thenReturn(rows);
+        return repository;
+    }
+
     /** Builds the event under test, carrying the fixed envelope instant and the fixture values. */
     private static TransactionAuthorized authorization() {
+        return authorizationAt(OCCURRED_AT);
+    }
+
+    /** Builds that same event at one chosen envelope instant. */
+    private static TransactionAuthorized authorizationAt(Instant occurredAt) {
         EventEnvelope stamped = EventEnvelope.of(TransactionAuthorized.EVENT_TYPE, ACCOUNT_ID);
         return new TransactionAuthorized(stamped.eventId(), stamped.eventType(),
-                stamped.schemaVersion(), OCCURRED_AT, stamped.aggregateId(), "0000000000683580",
+                stamped.schemaVersion(), occurredAt, stamped.aggregateId(), "0000000000683580",
                 "01", "0001", "POS TERM", "Purchase at Abshire-Lowe", new BigDecimal("504.77"),
                 "800000000", "Abshire-Lowe", "North Enoshaven", "72112", "************7065", null,
                 "2022-06-10 19:27:53.000000", ACCOUNT_ID, TransactionAuthorized.CURRENCY);

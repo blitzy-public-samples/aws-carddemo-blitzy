@@ -151,11 +151,14 @@ public class OutboxRelay {
     private final String instanceId;
 
     /**
-     * Nanoseconds one whole pass may take, from {@code carddemo.outbox.relay.max-duration-ms}.
+     * Nanoseconds one whole pass may take, from {@code carddemo.outbox.relay.max-duration-ms}, and
+     * the ceiling on one send this relay has already issued.
      *
      * <p>A broker that accepts a connection and never answers would otherwise hold the scheduled
-     * thread for the life of the process. A pass stops at this deadline, the rows it did not reach
-     * stay due, and the next tick starts fresh.
+     * thread for the life of the process. A pass issues no new send once this budget is spent, the
+     * rows it did not reach stay due, and the next tick starts fresh. The shipped producer settings
+     * resolve one send well inside this value, and
+     * {@code src/main/resources/application.yml} states that relationship where it declares them.
      */
     private final long maxDurationNanos;
 
@@ -491,15 +494,25 @@ public class OutboxRelay {
     }
 
     /**
-     * Sends one record and waits no longer than the time left in this relay pass.
+     * Sends one record, and waits for that send to resolve.
+     *
+     * <p>The pass deadline is read before the send and not after it. A tick that has run out of
+     * budget issues no further send, and a send that has been issued is waited out: the producer
+     * resolves one send within {@code max.block.ms} plus {@code delivery.timeout.ms}, which
+     * {@code src/main/resources/application.yml} holds below
+     * {@code carddemo.outbox.relay.max-duration-ms}, so the wait below always outlives the
+     * producer's own window. A record the producer still holds is therefore never left to be
+     * delivered after this relay has given up on it and published another copy.
+     *
+     * @throws RelayDeadlineExceededException when the pass has no budget left, or when a send
+     *                                        outlived the whole pass budget
      */
     private void sendWithinDeadline(String topic, String key, Object event, long deadline) {
-        long remaining = remainingNanos(deadline);
-        if (remaining <= 0L) {
+        if (remainingNanos(deadline) <= 0L) {
             throw new RelayDeadlineExceededException();
         }
         try {
-            kafkaTemplate.send(topic, key, event).get(remaining, TimeUnit.NANOSECONDS);
+            kafkaTemplate.send(topic, key, event).get(maxDurationNanos, TimeUnit.NANOSECONDS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new CompletionException(interrupted);

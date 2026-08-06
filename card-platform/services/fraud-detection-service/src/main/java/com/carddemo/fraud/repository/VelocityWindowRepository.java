@@ -37,11 +37,12 @@ public interface VelocityWindowRepository
      * race inside the statement. The counter and the total are raised from the stored values in the
      * same statement that reads them.</p>
      *
-     * <p>Addition happens in the database at {@code NUMERIC(11,2)}, the scale
-     * {@code src/main/resources/db/migration/V1__schema.sql} gives {@code total_amount}, so the sum
-     * needs no rounding and cannot acquire a third fractional digit. The caller supplies an amount
-     * already held to that scale, and supplies its magnitude, so a refund contributes what it is
-     * worth rather than lowering the total.</p>
+     * <p>Addition happens in the database at {@code NUMERIC(15,2)}, the precision and scale
+     * {@code src/main/resources/db/migration/V3__velocity_total_headroom.sql} leaves
+     * {@code total_amount}, so the sum needs no rounding, cannot acquire a third fractional digit,
+     * and holds ten thousand maximum-magnitude authorizations in one bucket. The caller supplies an
+     * amount already held to that scale, and supplies its magnitude, so a refund contributes what
+     * it is worth instead of lowering the total.</p>
      *
      * <p>The statement is written in Structured Query Language (SQL); the Jakarta Persistence Query
      * Language declares no conflict clause. {@code currentSchema} in the datasource Uniform Resource

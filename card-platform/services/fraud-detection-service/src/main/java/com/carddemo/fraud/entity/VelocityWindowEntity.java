@@ -11,6 +11,7 @@ import jakarta.persistence.Table;
 import java.io.Serializable;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 
 /**
@@ -18,10 +19,11 @@ import java.util.Objects;
  * rule in the sibling {@code domain} package reads the two counters the row holds.
  *
  * <p>No COBOL (Common Business Oriented Language) program in {@code app/cbl/} counts authorization
- * velocity or scores risk, so this table has no ancestor there. Two column shapes are
+ * velocity or scores risk, so this table has no ancestor there. One column shape is
  * borrowed, shape only: {@code account_id} from {@code XREF-ACCT-ID PIC 9(11)} at
- * {@code app/cpy/CVACT03Y.cpy:L7}, and {@code total_amount} from {@code TRAN-AMT PIC S9(09)V99} at
- * {@code app/cpy/CVTRA05Y.cpy:L10}. Every other column is additive with no source counterpart.</p>
+ * {@code app/cpy/CVACT03Y.cpy:L7}. {@code total_amount} borrows the two-digit scale of
+ * {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L10} and carries its own width.
+ * Every other column is additive with no source counterpart.</p>
  *
  * <p>{@code velocity_window} is a PostgreSQL table, not a cache. Its five columns, in declaration
  * order:</p>
@@ -30,7 +32,7 @@ import java.util.Objects;
  * account_id          CHAR(11)                    NOT NULL   key part 1
  * window_start        TIMESTAMP(6) WITH TIME ZONE NOT NULL   key part 2
  * authorization_count INTEGER                     NOT NULL
- * total_amount        NUMERIC(11,2)               NOT NULL
+ * total_amount        NUMERIC(15,2)               NOT NULL
  * updated_at          TIMESTAMP(6) WITH TIME ZONE NOT NULL
  * </pre>
  *
@@ -54,6 +56,22 @@ import java.util.Objects;
 public class VelocityWindowEntity {
 
     /**
+     * Width of one row, and the unit {@code window_start} is truncated to. One definition serves
+     * the writer in the sibling {@code domain} package and the rule that reads these rows, so both
+     * treat a stored row as the same span of time. ADDITIVE: net new; no COBOL ancestor.
+     */
+    public static final ChronoUnit WINDOW_BUCKET = ChronoUnit.HOURS;
+
+    /**
+     * Digits {@code total_amount} holds, two of them after the decimal point.
+     *
+     * <p>The column totals magnitudes over a bucket, so its width is that of an accumulator and not
+     * that of one amount. {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L10} gives
+     * the scale and nothing else. {@code card-platform/docs/decision-log.md} records the width.
+     */
+    public static final int TOTAL_AMOUNT_PRECISION = 15;
+
+    /**
      * First part of the key. The column is {@code CHAR(11)}, a width taken from
      * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}, shape only. Eleven digits,
      * leading zeros significant.
@@ -68,8 +86,8 @@ public class VelocityWindowEntity {
     private String accountId;
 
     /**
-     * Second part of the key, and the inclusive lower bound of the bucket. The bucket width
-     * arrives from configuration.
+     * Second part of the key, and the inclusive lower bound of the bucket. The value is an event
+     * time truncated to {@link #WINDOW_BUCKET}, so every stored row spans one whole unit of it.
      */
     @Id
     @Column(name = "window_start", nullable = false, updatable = false)
@@ -83,15 +101,16 @@ public class VelocityWindowEntity {
     private int authorizationCount;
 
     /**
-     * Amount magnitudes totalled over the bucket. The column is {@code NUMERIC(11,2)}, a precision
-     * and a scale taken from {@code TRAN-AMT PIC S9(09)V99} at
-     * {@code app/cpy/CVTRA05Y.cpy:L10}, shape only. Refunds are stored by absolute magnitude.
+     * Amount magnitudes totalled over the bucket. The column is {@code NUMERIC(15,2)}: the scale
+     * comes from {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L10}, shape only,
+     * and {@link #TOTAL_AMOUNT_PRECISION} gives the width one accumulator needs. Refunds are stored
+     * by absolute magnitude.
      *
      * <p>The value totals amounts over one time bucket. It is neither an account balance nor a
      * billing-cycle accumulator.</p>
      */
     @Column(name = "total_amount", nullable = false,
-            precision = PicClause.TRAN_AMT_PRECISION, scale = PicClause.TRAN_AMT_SCALE)
+            precision = TOTAL_AMOUNT_PRECISION, scale = PicClause.TRAN_AMT_SCALE)
     private BigDecimal totalAmount;
 
     /**
@@ -168,13 +187,13 @@ public class VelocityWindowEntity {
     }
 
     /**
-     * Checks one total against the scale and the precision of {@code NUMERIC(11,2)}.
+     * Checks one total against the scale and the precision of {@code NUMERIC(15,2)}.
      *
      * @param value candidate total
      * @return {@code value}
      * @throws NullPointerException     if {@code value} is null
      * @throws IllegalArgumentException if the scale differs from two, or the digit count exceeds
-     *                                  eleven. The failure text names the scale or the digit count,
+     *                                  fifteen. The failure text names the scale or the digit count,
      *                                  never the total
      */
     private static BigDecimal requireTotalAmount(BigDecimal value) {
@@ -183,9 +202,9 @@ public class VelocityWindowEntity {
             throw new IllegalArgumentException("totalAmount holds " + PicClause.TRAN_AMT_SCALE
                     + " digits after the decimal point; the value supplied holds " + value.scale());
         }
-        if (value.precision() > PicClause.TRAN_AMT_PRECISION) {
+        if (value.precision() > TOTAL_AMOUNT_PRECISION) {
             throw new IllegalArgumentException("totalAmount holds at most "
-                    + PicClause.TRAN_AMT_PRECISION + " digits; the value supplied holds "
+                    + TOTAL_AMOUNT_PRECISION + " digits; the value supplied holds "
                     + value.precision());
         }
         if (value.signum() < 0) {

@@ -120,6 +120,32 @@ class VelocityWindowConcurrencyIT {
                 "one amount increment was lost");
     }
 
+    @Test
+    @DisplayName("one bucket accumulates two maximum-magnitude amounts without refusing the second")
+    void oneBucketAccumulatesTwoMaximumMagnitudeAmounts() {
+        BigDecimal maximum = new BigDecimal("999999999.99");
+        TransactionTemplate boundary = new TransactionTemplate(transactionManager);
+
+        boundary.executeWithoutResult(status ->
+                scorer.assess(authorized("MAXMAGNITUDE0001", 11L, maximum)));
+        boundary.executeWithoutResult(status ->
+                scorer.assess(authorized("MAXMAGNITUDE0002", 12L, maximum.negate())));
+
+        Instant bucketStart = OCCURRED_AT.truncatedTo(VelocityWindowEntity.WINDOW_BUCKET);
+        VelocityWindowEntity stored = windows
+                .findById(new VelocityWindowEntity.VelocityWindowId(ACCOUNT_ID, bucketStart))
+                .orElseThrow();
+
+        assertEquals(2, stored.getAuthorizationCount(), "one authorization increment was lost");
+        assertEquals(0, new BigDecimal("1999999999.98").compareTo(stored.getTotalAmount()),
+                "the accumulated magnitude of two maximum amounts");
+        assertEquals(VelocityWindowEntity.TOTAL_AMOUNT_PRECISION,
+                jdbc.queryForObject("SELECT numeric_precision FROM information_schema.columns"
+                        + " WHERE table_schema = ? AND table_name = 'velocity_window'"
+                        + " AND column_name = 'total_amount'", Integer.class, SERVICE_SCHEMA),
+                "the migrated column width and the mapped width disagree");
+    }
+
     private void scoreInsideTransaction(TransactionAuthorized event, CountDownLatch ready,
             CountDownLatch start) {
         new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
@@ -141,6 +167,11 @@ class VelocityWindowConcurrencyIT {
     }
 
     private static TransactionAuthorized authorized(String transactionId, long eventNumber) {
+        return authorized(transactionId, eventNumber, AMOUNT);
+    }
+
+    private static TransactionAuthorized authorized(String transactionId, long eventNumber,
+            BigDecimal amount) {
         return new TransactionAuthorized(
                 new UUID(0L, eventNumber),
                 TransactionAuthorized.EVENT_TYPE,
@@ -152,7 +183,7 @@ class VelocityWindowConcurrencyIT {
                 "0003",
                 "POS TERM",
                 "Velocity concurrency",
-                AMOUNT,
+                amount,
                 "800000000",
                 "Demo Merchant",
                 "Demo City",

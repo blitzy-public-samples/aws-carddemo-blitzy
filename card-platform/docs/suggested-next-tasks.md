@@ -229,6 +229,47 @@ Three items were measured while resolving runtime findings and confirmed rather 
 - **Check:** Publish an event carrying an accented merchant name and confirm the intended outcome, whether that is a dead letter or a transliterated alert.
 - **Behavior change:** Transliteration would put a value in a cardholder-facing alert that no source field held, which is why the decision belongs to a person.
 
+## Work the fraud vertical-slice QA pass surfaced
+
+A runtime pass over the fraud detection service left five decisions a person should confirm. The
+behaviour of each is fixed and tested; what is open is the policy behind it. The [decision
+log](decision-log.md) carries the reasoning for every choice named here.
+
+### Make the velocity bucket unit finer, or accept the stated span
+
+- **Change:** Either derive the bucket unit from `carddemo.fraud.risk.velocity-window-minutes` so a configured width is honoured literally, or confirm that a span covering the configured width and at most one bucket more is the intended reading.
+- **Where:** `VelocityWindowEntity.WINDOW_BUCKET` declares the unit as one hour, `RiskScoringService` truncates an event time to it when it writes a row, and `VelocityRule` truncates the span start to it when it reads. A finer unit means more rows per account and a migration for the rows already stored.
+- **Check:** Publish authorizations across a bucket boundary and confirm that the span the rule reads matches the span the configured width names.
+- **Behavior change:** A finer unit narrows the history every verdict is based on, so a burst that triggers today may not trigger afterwards. That is a scoring-policy change, which is why it belongs to a person.
+
+### Decide whether the velocity accumulator should saturate rather than widen again
+
+- **Change:** Confirm that `NUMERIC(15,2)` is enough headroom for one bucket, or replace the ceiling with a saturating add that reports the ceiling instead of failing the statement.
+- **Where:** `velocity_window.total_amount` after `V3__velocity_total_headroom.sql`, the matching `VelocityWindowEntity.TOTAL_AMOUNT_PRECISION`, and the database-side addition in `VelocityWindowRepository.addAuthorization`. Fifteen digits hold ten thousand maximum-magnitude authorizations in one bucket, and `authorization_count` is an `INTEGER`, so the count reaches its own ceiling first.
+- **Check:** Accumulate past the ceiling in one bucket and confirm the intended outcome, whether that is a refused statement or a saturated total.
+- **Behavior change:** Saturating would report a total that is not the total, which changes what the amount threshold means at the extreme.
+
+### Confirm that a refund raises the velocity total
+
+- **Change:** Confirm that accumulating amount **magnitude** is the intended fraud reading, or accumulate the signed amount so a refund lowers the total.
+- **Where:** `RiskScoringService` records `amount().abs()`, `VelocityRule` and `AmountAnomalyRule` compare magnitudes, and `ck_velocity_window_total_nonnegative` refuses a negative total. Nothing in `app/cbl/` counts velocity, so no source rule is behind either reading. The refund sign convention the **source** carries is a separate item, at `app/cbl/CBTRN02C.cbl:L551`, and is registered under [business-rule flags](business-rule-flags.md).
+- **Check:** Publish a refund after a purchase of the same amount and confirm the intended total: `0.00` for signed accumulation, twice the amount for magnitude.
+- **Behavior change:** Signed accumulation would let a refund cancel a purchase out of the window, so alternating charges and refunds would raise no amount signal at all.
+
+### Bound the outbox publication window in the account service the way fraud now does
+
+- **Change:** Decide whether `account-service` should adopt the relationship fraud now holds between its producer delivery window and its relay pass deadline.
+- **Where:** `services/account-service/src/main/resources/application.yml` sets `delivery.timeout.ms` to 120000 while `carddemo.outbox.relay.max-duration-ms` is 5000, and `services/account-service/.../outbox/OutboxRelay.java` bounds a send by the time left in the pass. That service also carries its own `publish-timeout`, so its timing is not the same shape as fraud's and a copied change would be careless. The fraud finding and its fix are recorded in the [decision log](decision-log.md).
+- **Check:** Freeze the broker while a pending row is relayed, restore it, and count the records that reach the topic for that row.
+- **Behavior change:** A duplicate publication is harmless to a consumer that records processed event identifiers, and every consumer on this platform does. The change lowers how often one occurs.
+
+### Decide whether publication should become exactly once, or stay at least once
+
+- **Change:** Confirm that at-least-once publication with consumer-side suppression is the intended guarantee, or adopt transactional publication with `read_committed` consumers across the platform.
+- **Where:** `services/*/src/main/java/**/outbox/OutboxRelay.java` and every consumer's `processed_event` claim. The fraud relay now resolves a send inside the tick that issued it, which removes the long window a duplicate used to arrive through. What remains belongs to the protocol: a broker that appends a record and loses the acknowledgement leaves the relay to attempt again, and `enable.idempotence` does not span two `send` calls. Measured on a frozen broker, one of three rows reached the topic twice with both copies carrying the same `eventId`; the [decision log](decision-log.md) records the measurement and [event flow](event-flow.md) states the guarantee.
+- **Check:** Freeze the broker mid-send, restore it, and confirm that every extra copy carries an `eventId` already on the topic and that the consuming service holds one `processed_event` marker for it.
+- **Behavior change:** Transactional publication would add a transactional producer to every relay and `read_committed` to every consumer, and it still would not make a database write atomic with a broker write, so both the outbox and the marker transaction would stay.
+
 ## Informational register items
 
 Some register entries explain the source without suggesting a change. Items 18 through 22 document specification conflicts, abandoned menu intent, unreachable role logic, stale identity moves, and over-allocated presentation arrays.

@@ -61,7 +61,12 @@ public class VelocityRule implements RiskRule {
     /** Reads the window rows. This rule holds no other collaborator. */
     private final VelocityWindowRepository velocityWindows;
 
-    /** Width of the span this rule reads, taken back from the moment the event was written. */
+    /**
+     * Configured width of the span this rule reads, taken back from the moment the event was
+     * written. A stored row spans one whole {@link VelocityWindowEntity#WINDOW_BUCKET}, and the row
+     * carries the start of that span, so the span start is truncated to the same unit. The span
+     * this rule evaluates therefore covers the configured width and at most one bucket more.
+     */
     private final Duration lookback;
 
     /** Authorizations in the span at or above which this rule triggers. */
@@ -96,9 +101,11 @@ public class VelocityRule implements RiskRule {
     }
 
     /**
-     * Totals the account's window rows from the lookback boundary onwards, then compares the
-     * authorization count and the amount against their thresholds. The boundary is the moment the
-     * event was written, less the configured width, and a bucket starting exactly there counts.
+     * Totals the account's window rows from the span start onwards, then compares the
+     * authorization count and the amount against their thresholds. The span start is the moment the
+     * event was written, less the configured width, truncated to the bucket unit; a bucket starting
+     * exactly there counts. Truncating keeps the whole bucket that holds the configured width
+     * inside the span, so two events one millisecond apart read the same rows.
      *
      * @param event the authorized transaction to score
      * @return a triggered contribution when either total reaches its threshold, and a contribution
@@ -109,7 +116,8 @@ public class VelocityRule implements RiskRule {
     public Contribution evaluate(TransactionAuthorized event) {
         Objects.requireNonNull(event, "event must be present");
 
-        Instant boundary = event.envelope().occurredAt().minus(lookback);
+        Instant boundary = event.envelope().occurredAt().minus(lookback)
+                .truncatedTo(VelocityWindowEntity.WINDOW_BUCKET);
         List<VelocityWindowEntity> windows = velocityWindows
                 .findByAccountIdAndWindowStartGreaterThanEqual(event.accountId(), boundary);
         if (windows.isEmpty()) {

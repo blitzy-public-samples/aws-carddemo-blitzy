@@ -14,6 +14,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.events.EventEnvelope;
+import com.carddemo.events.FraudFlagged;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.fraud.config.FraudProperties;
 import com.carddemo.fraud.domain.RiskScoringService.RiskAssessment;
@@ -30,7 +31,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
 /**
- * Verifies the configured verdict threshold and the atomic, current-event velocity update.
+ * Verifies the configured verdict threshold, the atomic current-event velocity update, and the
+ * ceiling the event contract puts on a score.
  */
 @DisplayName("RiskScoringService threshold and velocity ordering")
 class RiskScoringServiceTest {
@@ -97,6 +99,25 @@ class RiskScoringServiceTest {
                 () -> new RiskScoringService(List.of(rule), windows,
                         propertiesWithFlagThreshold(50)).assess(event));
         verify(rule, never()).evaluate(event);
+    }
+
+    @Test
+    @DisplayName("a rule set that sums past the contract ceiling scores the ceiling")
+    void accumulatedPointsStopAtTheContractCeiling() {
+        TransactionAuthorized event = authorization("504.77");
+        VelocityWindowRepository windows = acceptingWindowUpdate(event);
+
+        RiskAssessment assessment = new RiskScoringService(
+                List.of(triggeredRule("VELOCITY", 60, event),
+                        triggeredRule("AMOUNT_ANOMALY", 60, event)),
+                windows, propertiesWithFlagThreshold(50)).assess(event);
+
+        assertAll(
+                () -> assertEquals(FraudFlagged.MAXIMUM_RISK_SCORE, assessment.riskScore(),
+                        "score held at the ceiling FraudFlagged declares"),
+                () -> assertTrue(assessment.flagged(), "verdict"),
+                () -> assertEquals(List.of("VELOCITY", "AMOUNT_ANOMALY"),
+                        assessment.triggeredRules(), "contributing rules"));
     }
 
     @Test

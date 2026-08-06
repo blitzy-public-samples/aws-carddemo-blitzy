@@ -168,7 +168,7 @@ Three independent rules contribute to one score.
 
 | Rule | Signal |
 | :--- | :--- |
-| `VelocityRule` | Count and total amount inside the configured account window |
+| `VelocityRule` | Count and total amount magnitude in the account's recent history. A stored window row spans one hour, and the rule reads from the bucket the configured width reaches back into, so the span it evaluates covers that width and at most one hour more |
 | `AmountAnomalyRule` | Transaction amount relative to the configured threshold |
 | `MerchantCategoryRule` | Configured higher-risk merchant categories |
 
@@ -183,7 +183,7 @@ The private database is `carddemo_fraud`, and the schema inside it is `fraud_ser
 | Table | Contents |
 | :--- | :--- |
 | `fraud_assessment` | One verdict per transaction: transaction and account identifiers, risk score, triggered rule identifiers, assessment time |
-| `velocity_window` | The rolling per-account counters `VelocityRule` reads. A PostgreSQL table, not a cache, reached through `VelocityWindowRepository` |
+| `velocity_window` | The per-account, per-hour counters `VelocityRule` reads: an authorization count and an accumulated amount magnitude. A PostgreSQL table, not a cache, reached through `VelocityWindowRepository` |
 | `processed_event` | Event identifier as primary key, with the time the marker was written |
 | `outbox_event` | The verdict event, stored in the same local transaction as the assessment and published later |
 
