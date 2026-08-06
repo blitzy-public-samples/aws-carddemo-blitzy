@@ -20,7 +20,10 @@
 # api/dto/CardDetailResponse both refuse an unmasked value in their own constructors.
 # Lookups and filters run on the full sixteen characters before a response is built,
 # which is what app/cbl/CBTRN02C.cbl:L383-L387 keys its cross-reference read on and what
-# section 0.6.4 of the plan requires.
+# section 0.6.4 of the plan requires. One logical field therefore carries two shapes: a
+# request property admits the sixteen digits and a response property admits the masked
+# form. card-platform/docs/decision-log.md records the reasoning for that asymmetry and
+# for every other deviation this document describes.
 #
 # The card verification value is stored and never returned. app/cpy/CVACT02Y.cpy:L7
 # declares it, column card_verification_value holds it, entity/CardEntity publishes no
@@ -29,12 +32,12 @@
 openapi: 3.1.0
 
 info:
-  title: CardDemo Card Service
+  title: CardDemo Card Service API
   description: >-
     Serves the three card operations of CardDemo. The list route reproduces the
-    card list screen of app/cbl/COCRDLIC.cbl, the read route reproduces the card
-    detail screen of app/cbl/COCRDSLC.cbl, and the update route reproduces the
-    card update screen of app/cbl/COCRDUPC.cbl.
+    card list screen of app/cbl/COCRDLIC.cbl. The read route reproduces the card
+    detail screen of app/cbl/COCRDSLC.cbl. The update route reproduces the card
+    update screen of app/cbl/COCRDUPC.cbl.
 
 
     Every request carries an identity. The scheme is the basicIdentity below, the
@@ -50,10 +53,15 @@ info:
 
 servers:
   - url: http://localhost:8086
-    description: The port docker-compose.yml maps for this service.
+    description: >-
+      Demonstration environment. A caller reaches this service on host port 8086.
+      The container itself listens on 8080, which src/main/resources/application.yml
+      sets, and card-platform/docker-compose.yml republishes that container port
+      under the host number CARD_PORT in card-platform/.env.example holds. The
+      mapping binds the loopback address alone.
 
 tags:
-  - name: card
+  - name: Cards
     description: Listing, reading and updating cards.
 
 security:
@@ -65,7 +73,7 @@ paths:
 
     get:
       tags:
-        - card
+        - Cards
       operationId: listCards
       summary: List one page of the cards belonging to one account.
       description: >-
@@ -83,16 +91,21 @@ paths:
         in a query string.
 
 
+        One account may hold several cards, so this route pages. The alternate
+        index over the account carries NONUNIQUEKEY at
+        app/jcl/CARDFILE.jcl:L83-L88, with KEYS(11 16) at L85 and UPGRADE at L87,
+        and index idx_card_account_id repeats that shape.
+
+
         Paging is by cursor and never by page number, so an insert between two
         requests renumbers nothing. The cursor is exclusive, so no row is
         returned twice, and it continues the browse in the direction it was
-        walking: a forward page hands back the token of its last card number,
-        whose source value
-        app/cbl/COCRDLIC.cbl:L1194-L1195 writes into WS-CA-LAST-CARDKEY, and a
-        backward page hands back the token of its first card number, whose source value
-        app/cbl/COCRDLIC.cbl:L1350-L1353 writes into WS-CA-FIRST-CARDKEY. A
-        request with no cursor asks for the first page going forward and the last
-        page going back.
+        walking. A forward page hands back the token of its last card number,
+        whose source value app/cbl/COCRDLIC.cbl:L1194-L1195 writes into
+        WS-CA-LAST-CARDKEY. A backward page hands back the token of its first
+        card number, whose source value app/cbl/COCRDLIC.cbl:L1350-L1353 writes
+        into WS-CA-FIRST-CARDKEY. A request with no cursor asks for the first page
+        going forward and the last page going back.
 
 
         An account with no card returns 200 with an empty array. A browse that
@@ -172,16 +185,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CardList'
+              examples:
+                oneCardOnOneAccount:
+                  summary: >-
+                    The page GET /cards?accountId=00000000050 returns against the
+                    seeded stack. Each of the fifty accounts in
+                    app/data/ASCII/carddata.txt holds one card, so the page holds
+                    one row, no further page follows and the cursor is absent.
+                  value:
+                    cards:
+                      - cardNumber: '************5740'
+                        accountId: '00000000050'
+                        activeStatus: 'Y'
+                    nextPageExists: false
+                    nextCursor: null
 
         '400':
           description: >-
             A query parameter or the cursor header missed its constraint, or the
             required account parameter did not arrive. The body carries one text
-            and the route template. The account texts are
-            "Account number not provided" for an absent value and
-            "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER" for one that is
-            not eleven digits, both from app/cbl/COCRDLIC.cbl. A malformed cursor
-            reads "Card cursor must be a 64-character lower-case hexadecimal token" and a
+            and the route template. An absent account reads
+            "Account number not provided" and one of another width reads
+            "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER", both from
+            app/cbl/COCRDLIC.cbl. A malformed cursor reads
+            "Card cursor must be a 64-character lower-case hexadecimal token". A
             direction naming neither way reads
             "Direction must be forward or backward", which is additive because a
             terminal cannot deliver a third function key.
@@ -189,6 +216,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+              examples:
+                accountFilterNotElevenDigits:
+                  summary: >-
+                    The answer to an account parameter of fewer than eleven
+                    digits. The route member holds the template and echoes no
+                    submitted value.
+                  value:
+                    status: 400
+                    message: 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER'
+                    route: '/cards'
 
         '401':
           description: >-
@@ -219,7 +256,7 @@ paths:
 
     put:
       tags:
-        - card
+        - Cards
       operationId: updateCard
       summary: Update the name, the expiry date and the active status of one card.
       description: >-
@@ -233,20 +270,20 @@ paths:
         from its three parts, and the active status. app/bms/COCRDUP.bms declares
         exactly five editable fields, CRDNAME at L107, CRDSTCD at L117, EXPMON at
         L127, EXPYEAR at L135 and EXPDAY at L142. The account identifier and the
-        card verification value are never written, and the cross-reference row is
-        never touched: every column of app/cpy/CVACT03Y.cpy is a card number, a
-        customer identifier or an account identifier, and none of the three
-        changes here.
+        card verification value are never written. The cross-reference row is never
+        touched either: every column of app/cpy/CVACT03Y.cpy is a card number, a
+        customer identifier or an account identifier, and none of the three changes
+        here.
 
 
         The checks run in the order app/cbl/COCRDUPC.cbl performs them, because
         the order decides which answer a caller receives. The card number is
-        edited first, the row is read second, the submitted values are compared
-        against the stored ones third, the four field edits run fourth, the row
-        is locked fifth, the locked row is compared against what the caller last
-        saw sixth, and the rewrite runs last. A caller that submits a bad month
-        for a card number that names no row therefore reads the not-found text
-        and not the month text.
+        edited first, the row is read second, and the submitted values are
+        compared against the stored ones third. The four field edits run fourth
+        and the row is locked fifth. The locked row is then compared against what
+        the caller last saw, and the rewrite runs last. A caller that submits a
+        bad month for a card number that names no row therefore reads the
+        not-found text and not the month text.
 
 
         No checksum rule, no card-status test and no account-status test.
@@ -263,14 +300,18 @@ paths:
             schema:
               $ref: '#/components/schemas/CardUpdateRequest'
             examples:
-              activate:
-                summary: Rename the card and leave it active.
+              moveTheExpiryOnAYear:
+                summary: >-
+                  Move the expiry of seeded card 0683586198171516 from 2025-07-13
+                  to 2026-07-13, keeping the name and the status. Record 2 of
+                  app/data/ASCII/carddata.txt holds that card on account
+                  00000000027.
                 value:
-                  cardNumber: '4111111111111111'
-                  embossedName: 'ALEXANDER J MORGAN'
-                  expiryYear: '2028'
-                  expiryMonth: '11'
-                  expiryDay: '30'
+                  cardNumber: '0683586198171516'
+                  embossedName: 'Ward Jones'
+                  expiryYear: '2026'
+                  expiryMonth: '07'
+                  expiryDay: '13'
                   activeStatus: 'Y'
 
       responses:
@@ -284,6 +325,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CardUpdateResponse'
+              examples:
+                rewritten:
+                  summary: >-
+                    The answer to the request example above, which moves the
+                    expiry of seeded card 0683586198171516 on a year. Neither the
+                    message nor the refreshed card is present.
+                  value:
+                    outcome: 'UPDATED'
+                    message: null
+                    refreshedCard: null
 
         '400':
           description: >-
@@ -335,6 +386,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CardUpdateResponse'
+              examples:
+                changedBeforeUpdate:
+                  summary: >-
+                    A caller submitted a new expiry year for seeded card
+                    0683586198171516 against a copy that had gone stale. The
+                    refreshed card carries the five values the row holds at the
+                    refusal, the expiry as three text slices, and no card
+                    verification value.
+                  value:
+                    outcome: 'CHANGED_BEFORE_UPDATE'
+                    message: 'Record changed by some one else. Please review'
+                    refreshedCard:
+                      embossedName: 'Ward Jones                                        '
+                      expiryYear: '2025'
+                      expiryMonth: '07'
+                      expiryDay: '13'
+                      activeStatus: 'Y'
+                lockNotAcquired:
+                  summary: >-
+                    Another writer held the row, so it could not be locked for the
+                    rewrite. Nothing was written and no refreshed card is read.
+                  value:
+                    outcome: 'LOCK_NOT_ACQUIRED'
+                    message: 'Could not lock record for update'
+                    refreshedCard: null
 
         '422':
           description: >-
@@ -363,6 +439,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CardUpdateResponse'
+              examples:
+                statusRefused:
+                  summary: >-
+                    The answer to an activeStatus of X. The message is the text of
+                    the edit that refused it, and no refreshed card is read.
+                  value:
+                    outcome: 'VALIDATION_REJECTED'
+                    message: 'Card Active Status must be Y or N'
+                    refreshedCard: null
+                nothingToWrite:
+                  summary: >-
+                    Every submitted value matched the stored one, so the update
+                    wrote nothing. Sending the request example above a second time
+                    reaches this answer.
+                  value:
+                    outcome: 'NO_CHANGE_DETECTED'
+                    message: 'No change detected with respect to values fetched.'
+                    refreshedCard: null
 
         '500':
           description: >-
@@ -379,12 +473,12 @@ paths:
 
     post:
       tags:
-        - card
+        - Cards
       operationId: readCard
       summary: Read one card, named by the full card number in the request body.
       description: >-
-        Returns one card. The route is a POST and changes nothing: the full card
-        number arrives in the body because a path and a query string reach an
+        Returns one card. The route is a POST and changes nothing. The full card
+        number arrives in the body, because a path and a query string reach an
         access log, a proxy log, a trace and a browser history.
 
 
@@ -399,22 +493,21 @@ paths:
         app/cbl/COCRDSLC.cbl:L740 moves it into the read key and the account move
         above it at app/cbl/COCRDSLC.cbl:L739 is commented out, so the source edits
         the account and then keys on the card. The key is reproduced and the
-        account is compared after the read: a row belonging to another account is
+        account is compared after the read. A row belonging to another account is
         answered as an absent row, with the same status and the same text. The
-        source needed no such comparison because a 3270 signon granted every
-        signed-on user every card; here the account is a caller-supplied key.
+        source needed no such comparison, because a 3270 signon granted every
+        signed-on user every card, and here the account is a caller-supplied key.
 
 
-        Ownership is decided by the handler rather than by the chain, because the
-        identifier sits in the body and a chain that read the body would consume
-        the stream the handler needs. The predicate is the one
-        config/SecurityConfig declares, so the whole of the access control is
-        still stated in that one file. It names the authority by the card token
-        derived from the full number, so one entitlement admits one card and not
-        every card ending in the same four digits. A caller that does not own the
-        card reads 403 with the same text an absent row returns, so the two answers
-        differ in status alone and neither discloses which cards this service
-        holds.
+        The handler decides ownership, and the chain does not: the identifier sits
+        in the body, and a chain that read the body would consume the stream the
+        handler needs. The predicate is the one config/SecurityConfig declares, so
+        the whole of the access control is still stated in that one file. It names
+        the authority by the card token derived from the full number, so one
+        entitlement admits one card and not every card ending in the same four
+        digits. A caller that does not own the card reads 403 with the text an
+        absent row returns. The two answers differ in status alone, and neither
+        discloses which cards this service holds.
       requestBody:
         required: true
         description: The account identifier and the full card number.
@@ -424,10 +517,13 @@ paths:
               $ref: '#/components/schemas/CardDetailRequest'
             examples:
               seeded:
-                summary: Read one seeded card.
+                summary: >-
+                  Read seeded card 0500024453765740 on account 00000000050.
+                  Record 1 of app/data/ASCII/carddata.txt pairs those two, and
+                  V2__seed.sql loads the pair.
                 value:
                   accountId: '00000000050'
-                  cardNumber: '4111111111111111'
+                  cardNumber: '0500024453765740'
 
       responses:
 
@@ -441,6 +537,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CardDetail'
+              examples:
+                seededCard:
+                  summary: >-
+                    The answer to the request example above. Record 1 of
+                    app/data/ASCII/carddata.txt supplies every value: the last
+                    four digits behind the mask, the account, the name padded to
+                    fifty characters, the expiry and the status.
+                  value:
+                    maskedCardNumber: '************5740'
+                    accountId: '00000000050'
+                    embossedName: 'Aniya Von                                         '
+                    expirationDate: '2023-03-09'
+                    activeStatus: 'Y'
 
         '400':
           description: >-
@@ -480,6 +589,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+              examples:
+                absentCard:
+                  summary: >-
+                    The answer to a card number no row carries, and the answer to
+                    a card number whose row belongs to another account. The 403 of
+                    this route carries the same three members and the same text.
+                  value:
+                    status: 404
+                    message: 'Did not find cards for this search condition'
+                    route: '/cards/detail'
 
         '422':
           description: >-
@@ -497,6 +616,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+              examples:
+                cardNumberNotSixteenDigits:
+                  summary: >-
+                    The answer to a card number of another width, submitted with a
+                    well formed account. A request whose account is also malformed
+                    reads the account text, which the order applies first.
+                  value:
+                    status: 422
+                    message: 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'
+                    route: '/cards/detail'
 
         '500':
           description: A fault inside this service. The body names no submitted value.
@@ -528,10 +657,9 @@ components:
       type: object
       description: >-
         A failing response from an endpoint of this service. Three properties.
-        The route property holds the route template with each path variable left
-        as its brace-delimited name, and its constructor refuses a value holding
-        a run of more than four digits, so no resolved card number or account
-        identifier can appear in it.
+        The route property holds the route template, not a resolved path. Its
+        constructor refuses a value holding a run of more than four digits, so no
+        card number and no account identifier can appear in it.
       additionalProperties: false
       required:
         - status
@@ -632,7 +760,7 @@ components:
             Masked card number: twelve asterisks then the last four digits. Width
             from CARD-NUM PIC X(16) at app/cpy/CVACT02Y.cpy:L5.
           examples:
-            - '************1111'
+            - '************5740'
 
         accountId:
           type: string
@@ -721,7 +849,7 @@ components:
           description: >-
             Masked card number: twelve asterisks then the last four digits.
           examples:
-            - '************1111'
+            - '************5740'
 
         accountId:
           type: string
@@ -744,7 +872,7 @@ components:
             arrives padded to that width, and the published CardUpdated event
             carries the same padded value.
           examples:
-            - 'ALEXANDER J MORGAN                                '
+            - 'Aniya Von                                         '
 
         expirationDate:
           type: string
@@ -754,7 +882,7 @@ components:
             app/cpy/CVACT02Y.cpy:L9, whose spelling the target corrects, sliced
             into a year, a month and a day at app/cbl/COCRDUPC.cbl:L117-L121.
           examples:
-            - '2028-11-30'
+            - '2023-03-09'
 
         activeStatus:
           type: string
@@ -803,7 +931,7 @@ components:
             app/cpy/CVCRD01Y.cpy:L37. app/cbl/COCRDSLC.cbl:L706 tests the width
             and the character class and nothing else, so no checksum rule applies.
           examples:
-            - '4111111111111111'
+            - '0500024453765740'
 
     CardUpdateRequest:
       type: object
@@ -833,7 +961,7 @@ components:
             count as absent, from CC-CARD-NUM-N EQUAL ZEROS at
             app/cbl/COCRDUPC.cbl:L770.
           examples:
-            - '4111111111111111'
+            - '0683586198171516'
 
         embossedName:
           type: string
@@ -847,7 +975,7 @@ components:
             app/cbl/COCRDUPC.cbl:L255-L257, which 1230-EDIT-NAME uses at
             app/cbl/COCRDUPC.cbl:L823-L828.
           examples:
-            - 'ALEXANDER J MORGAN'
+            - 'Ward Jones'
 
         expiryYear:
           type: string
@@ -858,7 +986,7 @@ components:
             The four-digit expiry year, 1950 through 2099 from
             88 VALID-YEAR VALUES 1950 THRU 2099 at app/cbl/COCRDUPC.cbl:L99.
           examples:
-            - '2028'
+            - '2026'
 
         expiryMonth:
           type: string
@@ -869,7 +997,7 @@ components:
             The two-digit expiry month, 1 through 12 from
             88 VALID-MONTH VALUES 1 THRU 12 at app/cbl/COCRDUPC.cbl:L95.
           examples:
-            - '11'
+            - '07'
 
         expiryDay:
           type: string
@@ -881,11 +1009,11 @@ components:
             closes the edit chain at app/cbl/COCRDUPC.cbl:L945 and 2000-DECIDE-ACTION
             opens at L948, so no paragraph between them reaches it. This property
             therefore carries a width rule alone. One calendar rule does apply, and
-            it is the one divergence of this route: column expiration_date is a
-            DATE, so a year, month and day that name no day of the calendar are
-            refused where the source would have stored the ten characters as text.
+            it is the one divergence of this route. Column expiration_date is a
+            DATE, so a year, month and day naming no day of the calendar are
+            refused here and were stored there as ten characters of text.
           examples:
-            - '30'
+            - '13'
 
         activeStatus:
           type: string
@@ -949,7 +1077,7 @@ components:
     CardUpdateResponse:
       type: object
       description: >-
-        The outcome of one update. Seven outcomes, each mapped to a status code by
+        The outcome of one update: seven outcomes, each mapped to a status code by
         api/CardController. UPDATED carries no message.
         VALIDATION_REJECTED carries the text of the failing edit. Each of the five
         remaining outcomes carries one fixed text.
@@ -963,13 +1091,14 @@ components:
         outcome:
           type: string
           description: >-
-            Which of the seven answers this is. UPDATED is the rewrite at
-            app/cbl/COCRDUPC.cbl:L1477-L1483, NO_CHANGE_DETECTED the comparison at
-            L680-L682, VALIDATION_REJECTED the guarded edit chain from L730 to
-            L1445, CARD_NOT_FOUND the read at L1394-L1400,
-            CHANGED_BEFORE_UPDATE the comparison at L1503-L1511,
-            LOCK_NOT_ACQUIRED the read for update at L1441-L1446, and
-            UPDATE_FAILED_AFTER_LOCK the rewrite test at L1488-L1491.
+            Which of the seven answers this is, each named for the paragraph of
+            app/cbl/COCRDUPC.cbl that produces it. UPDATED is the rewrite at
+            L1477-L1483 and NO_CHANGE_DETECTED the comparison at L680-L682.
+            VALIDATION_REJECTED is the guarded edit chain from L730 to L1445 and
+            CARD_NOT_FOUND the read at L1394-L1400. CHANGED_BEFORE_UPDATE is the
+            comparison at L1503-L1511 and LOCK_NOT_ACQUIRED the read for update at
+            L1441-L1446. UPDATE_FAILED_AFTER_LOCK is the rewrite test at
+            L1488-L1491.
           enum:
             - UPDATED
             - NO_CHANGE_DETECTED
