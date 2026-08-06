@@ -1,3 +1,32 @@
+# Continuous integration for the CardDemo card platform.
+#
+# Six stages run in order: compile the reactor, run the unit and contract tests,
+# run the service integration suites, run the equivalence suite, check event
+# schema compatibility, then build the six service images. A stage starts only
+# after the stage it depends on has succeeded.
+#
+# Reactor modules, declared by card-platform/pom.xml and listed in build order:
+#   card-platform/libs/event-contracts
+#   card-platform/libs/cobol-compat
+#   card-platform/services/authorization-service
+#   card-platform/services/ledger-posting-service
+#   card-platform/services/fraud-detection-service
+#   card-platform/services/notification-service
+#   card-platform/services/account-service
+#   card-platform/services/card-service
+#   card-platform/equivalence-tests
+#
+# The integration, equivalence and container stages read
+# card-platform/docker-compose.yml, and each copies card-platform/.env.example
+# to the environment file Compose reads its variables from. The two stages that
+# start the database and the broker then generate the fourteen credentials the
+# example file does not carry, using the command it documents. The stack refuses
+# to start without them.
+#
+# Setup on a developer machine, and the local form of every command below:
+# card-platform/docs/onboarding.md
+# Rationale for every choice here: card-platform/docs/decision-log.md
+
 name: Card platform continuous integration
 
 on:
@@ -24,9 +53,11 @@ defaults:
     working-directory: card-platform
 
 jobs:
+  # Stage 1. Compiles all nine modules at Java release 25 and reads back one
+  # class file to confirm the release. Tests run in the stages that follow.
   compile:
     name: Compile all modules
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - name: Check out the repository
@@ -50,19 +81,26 @@ jobs:
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+
       - name: Compile at Java release 25
         run: mvn -B -ntp -DskipTests compile
 
-      - name: Verify Java class-file release
+      - name: Check the class-file release
         run: |
-          class_file="$(find libs services -path '*/target/classes/*.class' -o -path '*/target/classes/**/*.class' | head -n 1)"
+          class_file="$(find libs services -path '*/target/classes/*.class' -print -quit)"
           test -n "${class_file}"
-          javap -verbose "${class_file}" | grep --fixed-strings "major version: 69"
+          javap -verbose "${class_file}" | grep -F "major version: 69"
 
+  # Stage 2. Runs the Surefire tests of every module. The equivalence-tests
+  # module holds its *EquivalenceTest classes back for Failsafe in stage 4.
   unit-tests:
-    name: Unit and contract tests
+    name: Run unit and contract tests
     needs: compile
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Check out the repository
@@ -86,13 +124,20 @@ jobs:
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+
       - name: Run unit and source-contract tests
         run: mvn -B -ntp -pl equivalence-tests -am test
 
+  # Stage 3. Runs the Failsafe suites of the six service modules against a
+  # PostgreSQL and Kafka pair started from the Compose file.
   integration-tests:
-    name: Service integration tests
+    name: Run service integration tests
     needs: compile
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
       - name: Check out the repository
@@ -116,8 +161,25 @@ jobs:
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
-      - name: Prepare non-production CI configuration
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+
+      - name: Copy the example environment file
         run: cp .env.example .env
+
+      - name: Generate the stack credentials
+        run: |
+          for variable in POSTGRES_PASSWORD \
+                          AUTHORIZATION_DB_PASSWORD LEDGER_DB_PASSWORD FRAUD_DB_PASSWORD \
+                          NOTIFICATION_DB_PASSWORD ACCOUNT_DB_PASSWORD CARD_DB_PASSWORD \
+                          KAFKA_ADMIN_PASSWORD \
+                          AUTHORIZATION_KAFKA_PASSWORD LEDGER_KAFKA_PASSWORD \
+                          FRAUD_KAFKA_PASSWORD NOTIFICATION_KAFKA_PASSWORD \
+                          ACCOUNT_KAFKA_PASSWORD CARD_KAFKA_PASSWORD; do
+            sed -i "s|^${variable}=.*|${variable}=$(openssl rand -base64 24 | tr -d '/+=')|" .env
+          done
 
       - name: Start PostgreSQL and Kafka
         run: docker compose up --detach --wait postgres kafka
@@ -127,14 +189,17 @@ jobs:
           modules="services/authorization-service,services/ledger-posting-service,services/fraud-detection-service,services/notification-service,services/account-service,services/card-service"
           mvn -B -ntp -pl "${modules}" -am verify
 
-      - name: Stop integration infrastructure
+      - name: Stop the integration containers
         if: always()
         run: docker compose down --volumes
 
+  # Stage 4. Runs every *EquivalenceTest class in card-platform/equivalence-tests
+  # under Failsafe, comparing service results with the documented source rules
+  # and the fixtures under app/data/ASCII.
   equivalence-tests:
-    name: COBOL behavior equivalence
+    name: Run equivalence tests
     needs: compile
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Check out the repository
@@ -158,23 +223,42 @@ jobs:
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
-      - name: Prepare non-production CI configuration
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+
+      - name: Copy the example environment file
         run: cp .env.example .env
+
+      - name: Generate the stack credentials
+        run: |
+          for variable in POSTGRES_PASSWORD \
+                          AUTHORIZATION_DB_PASSWORD LEDGER_DB_PASSWORD FRAUD_DB_PASSWORD \
+                          NOTIFICATION_DB_PASSWORD ACCOUNT_DB_PASSWORD CARD_DB_PASSWORD \
+                          KAFKA_ADMIN_PASSWORD \
+                          AUTHORIZATION_KAFKA_PASSWORD LEDGER_KAFKA_PASSWORD \
+                          FRAUD_KAFKA_PASSWORD NOTIFICATION_KAFKA_PASSWORD \
+                          ACCOUNT_KAFKA_PASSWORD CARD_KAFKA_PASSWORD; do
+            sed -i "s|^${variable}=.*|${variable}=$(openssl rand -base64 24 | tr -d '/+=')|" .env
+          done
 
       - name: Start PostgreSQL and Kafka
         run: docker compose up --detach --wait postgres kafka
 
-      - name: Run the complete equivalence module
+      - name: Run the equivalence suite
         run: mvn -B -ntp -pl equivalence-tests -am verify
 
-      - name: Stop equivalence infrastructure
+      - name: Stop the equivalence containers
         if: always()
         run: docker compose down --volumes
 
+  # Stage 5. Fails the build when an event schema change would stop a consumer
+  # that reads an earlier version of that schema.
   schema-compatibility:
     name: Event schema compatibility
     needs: compile
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Check out the repository
@@ -198,13 +282,20 @@ jobs:
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
-      - name: Enforce schema compatibility and round trips
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+
+      - name: Check schema compatibility and event round trips
         run: >
           mvn -B -ntp
           -pl libs/event-contracts
           -Dtest=SchemaBackwardCompatibilityTest,EventRoundTripTest
           test
 
+  # Stage 6. Packages each service, then builds its image from the Dockerfile in
+  # card-platform/services. The images stay on the runner.
   container-builds:
     name: Build six service containers
     needs:
@@ -212,7 +303,7 @@ jobs:
       - integration-tests
       - equivalence-tests
       - schema-compatibility
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
       - name: Check out the repository
@@ -236,13 +327,18 @@ jobs:
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
-      - name: Package executable service jars
+      - name: Report the toolchain versions
+        run: |
+          mvn -v
+          java -version
+
+      - name: Package the six service Java Archive files
         run: mvn -B -ntp -DskipTests package
 
-      - name: Prepare non-production CI configuration
+      - name: Copy the example environment file
         run: cp .env.example .env
 
-      - name: Validate Compose interpolation
+      - name: Check the Compose configuration
         run: docker compose config --quiet
 
       - name: Build every service image
