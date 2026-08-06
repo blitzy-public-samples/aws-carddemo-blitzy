@@ -89,7 +89,22 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
-          $ref: '#/components/responses/NotFound'
+          description: >-
+            This service holds no such account row. The detail reproduces the text
+            9300-GETACCTDATA-BYACCT builds at app/cbl/COACTVWC.cbl:L796-L806, which concatenates four
+            literals around the account identifier, a response code and a reason code. The identifier
+            is the one the caller put in the path, and the two codes are the status of this response
+            and its reason phrase. The source carries no space after 'file.' and none after either
+            colon, and the detail keeps that spacing.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: about:blank
+                title: Not found
+                status: 404
+                detail: 'Account:00000000050 not found in Acct Master file.Resp:404 Reas:Not Found'
         '422':
           $ref: '#/components/responses/ValidationFailed'
         '500':
@@ -474,8 +489,11 @@ components:
     ValidationFailed:
       description: >-
         A submitted field failed an edit, from app/cbl/COACTUPC.cbl:L1470-L1676, or a path variable
-        carried the wrong width. The messages member carries the verbatim source texts, one per
-        failing field.
+        carried the wrong width. An edit of the submitted pair produces one text, which travels in
+        the detail: WS-RETURN-MSG PIC X(75) at app/cbl/COACTUPC.cbl:L479 holds one text under the
+        guard at app/cbl/COACTUPC.cbl:L480. A request refused before it reaches the pair can fail
+        more than one parameter, and the messages member then carries one verbatim text per failing
+        parameter.
       content:
         application/problem+json:
           schema:

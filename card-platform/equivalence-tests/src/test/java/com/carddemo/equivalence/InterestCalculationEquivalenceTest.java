@@ -27,6 +27,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -36,7 +37,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -46,221 +48,577 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Verifies the rate rules and fallback of {@code CBACT04C L415-L470}.
- * Interest remains scheduled batch work and no interest service is created.
- * The target reproduces only the cycle-counter reset at {@code CBACT04C L353-L354}.
- * The class runs only under {@code mvn verify}.
+ * Verifies the interest rate rules of {@code app/cbl/CBACT04C.cbl:L415-L460} against
+ * {@code app/data/ASCII/discgrp.txt}, and the cycle-accumulator reset of
+ * {@code app/cbl/CBACT04C.cbl:L350-L358} against {@link BillingCycleService}.
+ *
+ * <p>Resolution C8 verifies the rate rules and migrates no interest computation. No interest
+ * service exists in the target. The divide at {@code app/cbl/CBACT04C.cbl:L462-L470} runs inside
+ * this class to show truncation and the narrowed working precision of
+ * {@code app/cbl/CBACT04C.cbl:L168-L169}. {@code app/cbl/CBACT04C.cbl:L518-L520} is an
+ * unimplemented fee paragraph, and this class asserts no fee.</p>
+ *
+ * <p>Maven Failsafe runs this class at {@code integration-test} and {@code verify}. Surefire
+ * excludes the {@code *EquivalenceTest} name pattern. {@code mvn test} runs none of it.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
-@DisplayName("Interest rule parity from CBACT04C L350-L470")
+@DisplayName("Interest rate parity from CBACT04C L350-L470")
 class InterestCalculationEquivalenceTest {
 
-    private static final String DEFAULT_GROUP = fixedGroup("DEFAULT");
-    private static final String MATCHED_GROUP = fixedGroup("A000000000");
-    private static final String BLANK_GROUP = " ".repeat(PicClause.DIS_ACCT_GROUP_ID_WIDTH);
-    private static final String ZERO_RATE_GROUP = fixedGroup("ZEROAPR");
-    private static final String CRITICAL_TYPE = "03";
-    private static final String CRITICAL_CATEGORY = "0001";
-    private static final String MATCHED_TYPE = "07";
-    private static final String MATCHED_CATEGORY = "0001";
-    private static final String ABSENT_TYPE = "99";
-    private static final String ABSENT_CATEGORY = "9999";
+    /** The literal {@code app/cbl/CBACT04C.cbl:L437} moves into the group identifier. */
+    private static final String DEFAULT_GROUP_LITERAL = "DEFAULT";
+
+    /** The group identifier {@code app/data/ASCII/acctdata.txt} carries in every row. */
+    private static final String BLANK_GROUP = " ".repeat(PicClause.ACCT_GROUP_ID_WIDTH);
+
+    /** Reads performed when the keyed read at {@code app/cbl/CBACT04C.cbl:L416} finds its row. */
+    private static final int LOOKUPS_ON_A_MATCH = 1;
+
+    /** Reads performed when {@code app/cbl/CBACT04C.cbl:L444} re-reads once after a miss. */
+    private static final int LOOKUPS_WITH_THE_DEFAULT_RETRY = LOOKUPS_ON_A_MATCH + 1;
+
+    /** Step between one {@code DIS-TRAN-CAT-CD} value and the next. */
+    private static final int NEXT_CATEGORY_CODE_STEP = 1;
+
+    /** Padding digit of a {@code PIC 9(04)} category code. */
+    private static final String CODE_PAD_DIGIT = "0";
+
+    /** {@code DIS-TRAN-TYPE-CD} of the group {@code app/data/ASCII/discgrp.txt} rates apart. */
+    private static final String DISCRIMINATING_TYPE = "07";
+
+    /** {@code DIS-TRAN-CAT-CD} paired with {@link #DISCRIMINATING_TYPE}. */
+    private static final String DISCRIMINATING_CATEGORY = "0001";
+
+    /** {@code DIS-TRAN-TYPE-CD} of the row every negative fixture transaction reaches. */
+    private static final String ZERO_RATED_TYPE = "03";
+
+    /** {@code DIS-TRAN-CAT-CD} paired with {@link #ZERO_RATED_TYPE}. */
+    private static final String ZERO_RATED_CATEGORY = "0001";
+
+    /** {@code DIS-TRAN-TYPE-CD} of the first row of the {@code DEFAULT} group. */
+    private static final String LEADING_TYPE = "01";
+
+    /** {@code DIS-TRAN-CAT-CD} of the first row of the {@code DEFAULT} group. */
+    private static final String LEADING_CATEGORY = "0001";
+
+    /** {@code DIS-TRAN-CAT-CD} of the second row of the {@code DEFAULT} group. */
+    private static final String SECOND_CATEGORY = "0002";
+
+    /** The rate {@code app/data/ASCII/discgrp.txt} carries on its zero-rated rows. */
     private static final BigDecimal ZERO_RATE = new BigDecimal("0.00");
+
+    /** The rate {@code app/data/ASCII/discgrp.txt} carries on {@code DEFAULT 01/0001}. */
     private static final BigDecimal STANDARD_RATE = new BigDecimal("15.00");
+
+    /** The rate {@code app/data/ASCII/discgrp.txt} carries on {@code DEFAULT 01/0002}. */
     private static final BigDecimal HIGH_RATE = new BigDecimal("25.00");
+
+    /** A {@code TRAN-CAT-BAL} the seeded fixture does not carry, shared with the sibling suite. */
     private static final BigDecimal SAMPLE_CATEGORY_BALANCE = new BigDecimal("1287.09");
+
+    /** {@link #SAMPLE_CATEGORY_BALANCE} at {@link #STANDARD_RATE}, truncated toward zero. */
     private static final BigDecimal SAMPLE_MONTHLY_INTEREST = new BigDecimal("16.08");
+
+    /** A {@code ACCT-CURR-CYC-CREDIT} the cycle-close operation clears. */
     private static final BigDecimal ADDITIVE_CYCLE_CREDIT = new BigDecimal("123.45");
+
+    /** A {@code ACCT-CURR-CYC-DEBIT} the cycle-close operation clears. */
     private static final BigDecimal ADDITIVE_CYCLE_DEBIT = new BigDecimal("-67.89");
 
+    /** {@code KEYS(length offset)} of the cluster definition at {@code app/jcl/DISCGRP.jcl:L40}. */
+    private static final Pattern KEYS_PARAMETER =
+            Pattern.compile("KEYS\\((\\d+)\\s+(\\d+)\\)");
+
+    /** {@code RECORDSIZE(average maximum)} at {@code app/jcl/DISCGRP.jcl:L41}. */
+    private static final Pattern RECORDSIZE_PARAMETER =
+            Pattern.compile("RECORDSIZE\\((\\d+)\\s+(\\d+)\\)");
+
+    /** Offset the cluster definition names for a key that starts at the first byte. */
+    private static final int KEY_OFFSET_AT_RECORD_START = 0;
+
+    /** Group of the first captured value of {@link #KEYS_PARAMETER}. */
+    private static final int FIRST_CAPTURE = 1;
+
+    /** Group of the second captured value of {@link #KEYS_PARAMETER}. */
+    private static final int SECOND_CAPTURE = FIRST_CAPTURE + 1;
+
+    /** The Job Control Language member that defines the disclosure-group cluster. */
+    private static final String DISCGRP_JOB_MEMBER = "app/jcl/DISCGRP.jcl";
+
+    /** The directory holding the six service modules of the target platform. */
+    private static final String SERVICE_MODULE_DIRECTORY = "card-platform/services";
+
+    /** File-name suffix of a Java source file. */
+    private static final String JAVA_SOURCE_SUFFIX = ".java";
+
+    /** Word a migrated interest type would carry in its name. */
+    private static final String INTEREST_TYPE_WORD = "Interest";
+
+    /** Word a migrated type for {@code 1400-COMPUTE-FEES} would carry in its name. */
+    private static final String FEE_TYPE_WORD = "Fee";
+
+    /** Every row of {@code app/data/ASCII/acctdata.txt}, parsed at its declared width. */
     private static final List<AccountRecord> ACCOUNTS = CardDemoFixtureLoader.loadAccounts();
+
+    /** Every row of {@code app/data/ASCII/discgrp.txt}, parsed at its declared width. */
     private static final List<DisclosureGroupRecord> DISCLOSURE_GROUPS =
             CardDemoFixtureLoader.loadDisclosureGroups();
+
+    /** The fixture rows indexed by the three key parts of {@code app/cpy/CVTRA02Y.cpy:L6-L8}. */
     private static final Map<RateKey, BigDecimal> RATES = rateTable();
+
+    /** The distinct {@code DIS-ACCT-GROUP-ID} values the fixture carries, in fixture order. */
+    private static final Set<String> GROUP_IDENTIFIERS = groupIdentifiers();
+
+    /** {@link #DEFAULT_GROUP_LITERAL} padded to the width of {@code app/cpy/CVTRA02Y.cpy:L6}. */
+    private static final String DEFAULT_GROUP = paddedGroupIdentifier(DEFAULT_GROUP_LITERAL);
+
+    /**
+     * A fixture group whose rate at {@link #DISCRIMINATING_TYPE} and
+     * {@link #DISCRIMINATING_CATEGORY} differs from the rate {@code DEFAULT} carries there.
+     */
+    private static final String MATCHED_GROUP = groupThatRatesDifferentlyFromDefault();
 
     @Nested
     @DisplayName("1200-GET-INTEREST-RATE at CBACT04C L415-L440")
     class RateResolution {
 
         @Test
-        @DisplayName("ADDITIVE: a matched fixture group returns its own rate without fallback")
-        void aMatchedGroupReturnsItsOwnRate() {
-            ResolvedRate result = resolveRate(MATCHED_GROUP, MATCHED_TYPE, MATCHED_CATEGORY);
+        @DisplayName("ADDITIVE: a matched primary read at L416 returns its own rate")
+        void aMatchedGroupReturnsItsOwnRateAndReachesNoSubstitution() {
+            BigDecimal matchedRate =
+                    RATES.get(new RateKey(MATCHED_GROUP, DISCRIMINATING_TYPE,
+                            DISCRIMINATING_CATEGORY));
+            BigDecimal defaultRate =
+                    RATES.get(new RateKey(DEFAULT_GROUP, DISCRIMINATING_TYPE,
+                            DISCRIMINATING_CATEGORY));
 
-            assertEquals(STANDARD_RATE, result.rate(),
-                    "A000000000 07/0001 carries 15.00 in discgrp.txt");
-            assertFalse(result.fallbackUsed(),
-                    "a successful primary read reaches no DEFAULT substitution");
-            assertEquals(1, result.lookupCount(),
-                    "CBACT04C L416 performs one successful read");
+            ResolvedRate resolved = resolveRate(MATCHED_GROUP, DISCRIMINATING_TYPE,
+                    DISCRIMINATING_CATEGORY);
+
+            assertEquals(matchedRate, resolved.rate(),
+                    "equals: group " + MATCHED_GROUP.trim() + " type " + DISCRIMINATING_TYPE
+                            + " category " + DISCRIMINATING_CATEGORY + " carries " + matchedRate
+                            + " in discgrp.txt");
+            assertFalse(resolved.fallbackUsed(),
+                    "a matched read at CBACT04C L416 leaves status 00, and L436 tests for 23");
+            assertEquals(LOOKUPS_ON_A_MATCH, resolved.lookupCount(),
+                    "CBACT04C L416 performs the only read when the key matches");
+            assertTrue(matchedRate.compareTo(defaultRate) != 0,
+                    "compareTo: group " + MATCHED_GROUP.trim() + " carries " + matchedRate
+                            + " and DEFAULT carries " + defaultRate + " for type "
+                            + DISCRIMINATING_TYPE + " category " + DISCRIMINATING_CATEGORY);
         }
 
         @Test
-        void aMissSubstitutesDefaultAndKeepsTheTypeAndCategoryKeyParts() {
-            for (DisclosureGroupRecord defaultRow : rowsOf(DEFAULT_GROUP)) {
-                ResolvedRate result = resolveRate(BLANK_GROUP,
-                        defaultRow.transactionTypeCode(),
-                        defaultRow.transactionCategoryCode());
+        @DisplayName("L437 replaces DIS-ACCT-GROUP-ID and holds the other two key parts")
+        void theSubstitutionReplacesTheFirstKeyPartAlone() {
+            String beforeSubstitution = compositeKey(BLANK_GROUP, DISCRIMINATING_TYPE,
+                    DISCRIMINATING_CATEGORY);
+            String afterSubstitution = compositeKey(DEFAULT_GROUP, DISCRIMINATING_TYPE,
+                    DISCRIMINATING_CATEGORY);
 
-                assertEquals(defaultRow.interestRate(), result.rate(),
-                        "DEFAULT must retain type " + defaultRow.transactionTypeCode()
-                                + " and category " + defaultRow.transactionCategoryCode());
-                assertTrue(result.fallbackUsed(),
-                        "CBACT04C L436-L438 performs the DEFAULT retry");
-                assertEquals(2, result.lookupCount(),
-                        "one missed primary read is followed by one retry");
-            }
+            assertEquals(PicClause.DIS_GROUP_KEY_WIDTH, beforeSubstitution.length(),
+                    "equals: DIS-GROUP-KEY at CVTRA02Y L5 spans "
+                            + PicClause.DIS_GROUP_KEY_WIDTH + " bytes");
+            assertEquals(beforeSubstitution.substring(PicClause.DIS_ACCT_GROUP_ID_WIDTH),
+                    afterSubstitution.substring(PicClause.DIS_ACCT_GROUP_ID_WIDTH),
+                    "equals: type " + DISCRIMINATING_TYPE + " and category "
+                            + DISCRIMINATING_CATEGORY + " carry over past byte "
+                            + PicClause.DIS_ACCT_GROUP_ID_WIDTH);
+            assertEquals(DEFAULT_GROUP,
+                    afterSubstitution.substring(0, PicClause.DIS_ACCT_GROUP_ID_WIDTH),
+                    "equals: the first key part holds the L437 literal padded to its width");
         }
 
         @Test
-        void aSecondMissFailsAfterTheSingleRetry() {
-            IllegalStateException failure = assertThrows(IllegalStateException.class,
-                    () -> resolveRate(BLANK_GROUP, ABSENT_TYPE, ABSENT_CATEGORY));
-
-            assertTrue(failure.getMessage().contains("DEFAULT"),
-                    "CBACT04C L446-L458 reports the failed default read");
+        @DisplayName("The L437 literal pads to the DIS-ACCT-GROUP-ID width of CVTRA02Y L6")
+        void theSubstitutedLiteralPadsToTheKeyPartWidth() {
+            assertEquals(PicClause.DIS_ACCT_GROUP_ID_WIDTH, DEFAULT_GROUP.length(),
+                    "equals: the padded literal fills DIS-ACCT-GROUP-ID");
+            assertTrue(DEFAULT_GROUP.startsWith(DEFAULT_GROUP_LITERAL),
+                    "the padded identifier opens with the L437 literal " + DEFAULT_GROUP_LITERAL);
+            assertTrue(GROUP_IDENTIFIERS.contains(DEFAULT_GROUP),
+                    "discgrp.txt carries rows under the padded identifier "
+                            + DEFAULT_GROUP_LITERAL);
         }
 
         @Test
-        void everyFixtureAccountCarriesTheBlankPrimaryGroup() {
-            assertTrue(ACCOUNTS.stream().allMatch(account -> account.groupId().equals(BLANK_GROUP)),
-                    "ACCT-GROUP-ID is ten spaces on every acctdata.txt row");
-            assertTrue(ACCOUNTS.stream().allMatch(account -> RATES.keySet().stream()
-                            .anyMatch(key -> key.groupId().equals(account.addressZip()))),
-                    "the adjacent ACCT-ADDR-ZIP names a real disclosure group");
-        }
+        @DisplayName("DISCGRP.jcl L40-L41 sizes the key and the record the copybook declares")
+        void theClusterDefinitionMatchesTheCopybookKeyAndRecordLength() {
+            String definition = jobControlLanguageMember(DISCGRP_JOB_MEMBER);
+            Matcher keys = requireMatch(KEYS_PARAMETER, definition, "KEYS");
+            Matcher recordSize = requireMatch(RECORDSIZE_PARAMETER, definition, "RECORDSIZE");
 
-        @Test
-        void everyCategoryRowProducedByTheFixtureRunUsesTheFallback() {
-            Set<CategoryKey> categoryKeys = categoryKeysAfterPosting();
-
-            for (CategoryKey key : categoryKeys) {
-                ResolvedRate result =
-                        resolveRate(BLANK_GROUP, key.typeCode(), key.categoryCode());
-                assertTrue(result.fallbackUsed(),
-                        "the blank fixture group must use DEFAULT for "
-                                + key.typeCode() + "/" + key.categoryCode());
-            }
-
-            assertEquals(categoryKeys.size(),
-                    categoryKeys.stream()
-                            .filter(key -> resolveRate(BLANK_GROUP, key.typeCode(),
-                                    key.categoryCode()).fallbackUsed())
-                            .count(),
-                    "the fallback count is derived from every category row reached");
+            assertEquals(PicClause.DIS_GROUP_KEY_WIDTH,
+                    Integer.parseInt(keys.group(FIRST_CAPTURE)),
+                    "equals: DISCGRP.jcl L40 sizes the key as DIS-ACCT-GROUP-ID plus "
+                            + "DIS-TRAN-TYPE-CD plus DIS-TRAN-CAT-CD");
+            assertEquals(KEY_OFFSET_AT_RECORD_START,
+                    Integer.parseInt(keys.group(SECOND_CAPTURE)),
+                    "equals: DISCGRP.jcl L40 starts the key at the first byte of the record");
+            assertEquals(PicClause.DIS_GROUP_RECORD_LENGTH,
+                    Integer.parseInt(recordSize.group(FIRST_CAPTURE)),
+                    "equals: DISCGRP.jcl L41 sizes the record as CVTRA02Y L2 states");
+            assertEquals(Integer.parseInt(recordSize.group(FIRST_CAPTURE)),
+                    Integer.parseInt(recordSize.group(SECOND_CAPTURE)),
+                    "equals: DISCGRP.jcl L41 fixes the record at one length");
         }
     }
 
     @Nested
-    @DisplayName("The disclosure-group fixture and target row shape")
-    class RateTable {
+    @DisplayName("1200-A-GET-DEFAULT-INT-RATE at CBACT04C L443-L460")
+    class DefaultGroupFallback {
 
         @Test
-        void everyGroupCarriesTheSameTypeAndCategoryKeys() {
+        @DisplayName("ACCT-GROUP-ID at CVACT01Y L16 is blank on every acctdata.txt row")
+        void everyFixtureAccountCarriesTheBlankPrimaryGroup() {
+            for (AccountRecord account : ACCOUNTS) {
+                assertEquals(BLANK_GROUP, account.groupId(),
+                        "equals: account " + account.accountId() + " carries "
+                                + PicClause.ACCT_GROUP_ID_WIDTH
+                                + " spaces in ACCT-GROUP-ID at bytes 113 to 122");
+                assertFalse(GROUP_IDENTIFIERS.contains(account.groupId()),
+                        "discgrp.txt carries no rows under the blank group identifier");
+            }
+
+            assertEquals(PicClause.ACCTDATA_FIXTURE_RECORD_COUNT, ACCOUNTS.size(),
+                    "equals: acctdata.txt delivers its declared record count");
+        }
+
+        @Test
+        @DisplayName("ACCT-ADDR-ZIP at CVACT01Y L15 names a group the fixture carries")
+        void theAdjacentFieldNamesARealDisclosureGroup() {
+            for (AccountRecord account : ACCOUNTS) {
+                String adjacent = paddedGroupIdentifier(account.addressZip());
+
+                assertTrue(GROUP_IDENTIFIERS.contains(adjacent),
+                        "account " + account.accountId() + " holds " + adjacent.trim()
+                                + " in ACCT-ADDR-ZIP at bytes 103 to 112, and discgrp.txt carries "
+                                + GROUP_IDENTIFIERS.size() + " group identifiers");
+                assertEquals(PicClause.ACCT_ADDR_ZIP_WIDTH, adjacent.length(),
+                        "equals: the adjacent field spans the width CVACT01Y L15 declares");
+            }
+        }
+
+        @Test
+        @DisplayName("A miss at L436 substitutes DEFAULT and holds the type and category")
+        void aMissResolvesTheDefaultRateForTheSameTypeAndCategory() {
+            List<DisclosureGroupRecord> defaultRows = rowsOf(DEFAULT_GROUP);
+
+            for (DisclosureGroupRecord row : defaultRows) {
+                ResolvedRate resolved = resolveRate(BLANK_GROUP, row.transactionTypeCode(),
+                        row.transactionCategoryCode());
+
+                assertEquals(row.interestRate(), resolved.rate(),
+                        "equals: group " + DEFAULT_GROUP_LITERAL + " type "
+                                + row.transactionTypeCode() + " category "
+                                + row.transactionCategoryCode() + " carries " + row.interestRate()
+                                + " in discgrp.txt");
+                assertTrue(resolved.fallbackUsed(),
+                        "CBACT04C L436 to L438 substitutes DEFAULT for type "
+                                + row.transactionTypeCode() + " category "
+                                + row.transactionCategoryCode());
+            }
+
+            assertFalse(defaultRows.isEmpty(),
+                    "discgrp.txt carries rows under " + DEFAULT_GROUP_LITERAL);
+        }
+
+        @Test
+        @DisplayName("L444 re-reads once, and the retry holds the category the caller supplied")
+        void theRetryIsOneReadAndKeepsTheCallerCategory() {
+            BigDecimal secondRowRate =
+                    RATES.get(new RateKey(DEFAULT_GROUP, LEADING_TYPE, SECOND_CATEGORY));
+            BigDecimal firstRowRate =
+                    RATES.get(new RateKey(DEFAULT_GROUP, LEADING_TYPE, LEADING_CATEGORY));
+
+            ResolvedRate resolved = resolveRate(BLANK_GROUP, LEADING_TYPE, SECOND_CATEGORY);
+
+            assertEquals(LOOKUPS_WITH_THE_DEFAULT_RETRY, resolved.lookupCount(),
+                    "equals: one missed read at CBACT04C L416 and one re-read at L444");
+            assertEquals(secondRowRate, resolved.rate(),
+                    "equals: group " + DEFAULT_GROUP_LITERAL + " type " + LEADING_TYPE
+                            + " category " + SECOND_CATEGORY + " carries " + secondRowRate);
+            assertTrue(resolved.rate().compareTo(firstRowRate) != 0,
+                    "compareTo: category " + SECOND_CATEGORY + " carries " + secondRowRate
+                            + " and category " + LEADING_CATEGORY + " carries " + firstRowRate);
+        }
+
+        @Test
+        @DisplayName("L446 accepts status 00 alone, and a second miss reaches L458")
+        void aSecondMissFailsAndReturnsNoRate() {
+            RateCode absent = codePairAbsentFromEveryGroup();
+
+            assertFalse(RATES.containsKey(new RateKey(DEFAULT_GROUP, absent.typeCode(),
+                            absent.categoryCode())),
+                    "group " + DEFAULT_GROUP_LITERAL + " carries no row for type "
+                            + absent.typeCode() + " category " + absent.categoryCode());
+
+            IllegalStateException failure = assertThrows(IllegalStateException.class,
+                    () -> resolveRate(BLANK_GROUP, absent.typeCode(), absent.categoryCode()),
+                    "CBACT04C L455 to L458 reports the failed read and abends");
+
+            assertTrue(failure.getMessage().contains(DEFAULT_GROUP_LITERAL),
+                    "the failure names group " + DEFAULT_GROUP_LITERAL + ", type "
+                            + absent.typeCode() + " and category " + absent.categoryCode());
+        }
+
+        @Test
+        @DisplayName("Every category row the fixture run reaches resolves through the substitution")
+        void theFallbackFiresOnEveryCategoryRowTheFixtureRunReaches() {
+            Set<CategoryKey> reached = categoryKeysAfterPosting();
+            long throughTheFallback = 0L;
+
+            for (CategoryKey key : reached) {
+                ResolvedRate resolved =
+                        resolveRate(BLANK_GROUP, key.typeCode(), key.categoryCode());
+                assertTrue(resolved.fallbackUsed(),
+                        "account " + key.accountId() + " type " + key.typeCode() + " category "
+                                + key.categoryCode() + " resolves through "
+                                + DEFAULT_GROUP_LITERAL);
+                throughTheFallback++;
+            }
+
+            assertEquals(reached.size(), throughTheFallback,
+                    "equals: the substitution fires on every category row the run reaches");
+            assertTrue(reached.size() > PicClause.TCATBAL_FIXTURE_RECORD_COUNT,
+                    "the run adds category rows beyond the " + PicClause.TCATBAL_FIXTURE_RECORD_COUNT
+                            + " tcatbal.txt seeds");
+        }
+    }
+
+    @Nested
+    @DisplayName("DIS-GROUP-RECORD rows at CVTRA02Y L4-L10")
+    class DisclosureGroupRateTable {
+
+        @Test
+        @DisplayName("discgrp.txt divides its declared record count evenly across its groups")
+        void everyGroupCarriesTheSameKeySetAndRowCount() {
             Map<String, Set<RateCode>> keysByGroup = new LinkedHashMap<>();
             for (DisclosureGroupRecord row : DISCLOSURE_GROUPS) {
-                keysByGroup.computeIfAbsent(row.accountGroupId(), ignored -> new LinkedHashSet<>())
+                keysByGroup.computeIfAbsent(row.accountGroupId(), group -> new LinkedHashSet<>())
                         .add(new RateCode(row.transactionTypeCode(),
                                 row.transactionCategoryCode()));
             }
 
-            Set<RateCode> defaultKeys = keysByGroup.get(DEFAULT_GROUP);
-            assertEquals(defaultKeys, keysByGroup.get(MATCHED_GROUP),
-                    "A000000000 carries the same key set as DEFAULT");
-            assertEquals(defaultKeys, keysByGroup.get(ZERO_RATE_GROUP),
-                    "ZEROAPR carries the same key set as DEFAULT");
+            assertEquals(PicClause.DISCGRP_FIXTURE_RECORD_COUNT, DISCLOSURE_GROUPS.size(),
+                    "equals: discgrp.txt delivers its declared record count");
+            assertEquals(GROUP_IDENTIFIERS, keysByGroup.keySet(),
+                    "equals: every fixture row falls under a known group identifier");
 
             int rowsPerGroup = DISCLOSURE_GROUPS.size() / keysByGroup.size();
-            assertTrue(keysByGroup.values().stream()
-                            .allMatch(keys -> keys.size() == rowsPerGroup),
-                    "each measured group carries the same derived row count");
+            Set<RateCode> defaultKeys = keysByGroup.get(DEFAULT_GROUP);
+            for (Map.Entry<String, Set<RateCode>> group : keysByGroup.entrySet()) {
+                assertEquals(defaultKeys, group.getValue(),
+                        "equals: group " + group.getKey().trim() + " carries the key set group "
+                                + DEFAULT_GROUP_LITERAL + " carries");
+                assertEquals(rowsPerGroup, group.getValue().size(),
+                        "equals: group " + group.getKey().trim() + " carries " + rowsPerGroup
+                                + " type and category rows");
+            }
         }
 
         @Test
-        void theDefaultTableCarriesTheThreeMeasuredRateValues() {
-            Set<BigDecimal> rates = new TreeSet<>();
+        @DisplayName("The DEFAULT table carries the three rate values discgrp.txt encodes")
+        void theDefaultTableCarriesTheThreeMeasuredRates() {
+            Set<BigDecimal> rates = new LinkedHashSet<>();
             for (DisclosureGroupRecord row : rowsOf(DEFAULT_GROUP)) {
                 rates.add(row.interestRate());
+                assertEquals(PicClause.DIS_INT_RATE_SCALE, row.interestRate().scale(),
+                        "equals: group " + DEFAULT_GROUP_LITERAL + " type "
+                                + row.transactionTypeCode() + " category "
+                                + row.transactionCategoryCode()
+                                + " keeps the DIS-INT-RATE scale of CVTRA02Y L9");
             }
 
             assertEquals(Set.of(ZERO_RATE, STANDARD_RATE, HIGH_RATE), rates,
-                    "DEFAULT carries only 0.00, 15.00 and 25.00");
+                    "equals, so scale matches: group " + DEFAULT_GROUP_LITERAL + " carries "
+                            + ZERO_RATE + ", " + STANDARD_RATE + " and " + HIGH_RATE);
         }
 
         @Test
-        void type03Category0001CarriesTheZeroRate() {
-            ResolvedRate result = resolveRate(BLANK_GROUP, CRITICAL_TYPE, CRITICAL_CATEGORY);
+        @DisplayName("DEFAULT 03/0001 resolves to zero, which the L214 gate reads")
+        void theZeroRatedRowResolvesToNumericZero() {
+            ResolvedRate resolved =
+                    resolveRate(BLANK_GROUP, ZERO_RATED_TYPE, ZERO_RATED_CATEGORY);
 
-            assertEquals(0, result.rate().compareTo(BigDecimal.ZERO),
-                    "DEFAULT 03/0001 must be numeric zero");
-            assertEquals(PicClause.DIS_INT_RATE_SCALE, result.rate().scale(),
-                    "the zero rate keeps DIS-INT-RATE scale");
+            assertEquals(0, resolved.rate().compareTo(BigDecimal.ZERO),
+                    "compareTo: group " + DEFAULT_GROUP_LITERAL + " type " + ZERO_RATED_TYPE
+                            + " category " + ZERO_RATED_CATEGORY + " carries " + ZERO_RATE);
+            assertEquals(ZERO_RATE, resolved.rate(),
+                    "equals, so scale matches: the zero rate keeps the DIS-INT-RATE scale of "
+                            + PicClause.DIS_INT_RATE_SCALE);
+            assertEquals(PicClause.DIS_INT_RATE_SCALE, resolved.rate().scale(),
+                    "equals: CVTRA02Y L9 fixes " + PicClause.DIS_INT_RATE_SCALE
+                            + " digits after the point");
+            assertTrue(resolved.fallbackUsed(),
+                    "the blank fixture group reaches this row through group "
+                            + DEFAULT_GROUP_LITERAL);
         }
 
         @Test
-        void everyFixtureRowMapsToTheTargetCompositeKeyAndRate() {
+        @DisplayName("Every fixture row maps onto the target composite key and rate column")
+        void everyFixtureRowMapsToTheTargetRow() {
             for (DisclosureGroupRecord row : DISCLOSURE_GROUPS) {
                 DisclosureGroupEntity entity = new DisclosureGroupEntity(
-                        new DisclosureGroupId(row.accountGroupId(),
-                                row.transactionTypeCode(), row.transactionCategoryCode()),
+                        new DisclosureGroupId(row.accountGroupId(), row.transactionTypeCode(),
+                                row.transactionCategoryCode()),
                         row.interestRate());
 
                 assertEquals(row.accountGroupId(), entity.getId().getAccountGroupId(),
-                        "the first key part matches CVTRA02Y L6");
+                        "equals: DIS-ACCT-GROUP-ID at CVTRA02Y L6 maps to the first key column");
                 assertEquals(row.transactionTypeCode(),
                         entity.getId().getTransactionTypeCode(),
-                        "the second key part matches CVTRA02Y L7");
+                        "equals: DIS-TRAN-TYPE-CD at CVTRA02Y L7 maps to the second key column");
                 assertEquals(row.transactionCategoryCode(),
                         entity.getId().getTransactionCategoryCode(),
-                        "the third key part matches CVTRA02Y L8");
+                        "equals: DIS-TRAN-CAT-CD at CVTRA02Y L8 maps to the third key column");
                 assertEquals(row.interestRate(), entity.getInterestRate(),
-                        "the mapped rate matches CVTRA02Y L9");
+                        "equals, so scale matches: DIS-INT-RATE at CVTRA02Y L9 maps to the rate"
+                                + " column for group " + row.accountGroupId().trim() + " type "
+                                + row.transactionTypeCode() + " category "
+                                + row.transactionCategoryCode());
             }
         }
     }
 
+    /**
+     * Exercises the divide of {@code app/cbl/CBACT04C.cbl:L462-L470} and asserts no fee.
+     *
+     * <p>{@code WS-MONTHLY-INT} and {@code WS-TOTAL-INT} sit in the working-storage block at
+     * {@code app/cbl/CBACT04C.cbl:L143-L169}. The same block declares the timestamp components
+     * ending {@code DB2-MIL} at {@code app/cbl/CBACT04C.cbl:L164} and {@code DB2-REST} at
+     * {@code app/cbl/CBACT04C.cbl:L165}, which this class does not read.</p>
+     */
     @Nested
-    @DisplayName("1300-COMPUTE-INTEREST is verified and not migrated")
-    class VerifiedNotMigrated {
+    @DisplayName("1300-COMPUTE-INTEREST at CBACT04C L462-L470 and 1400-COMPUTE-FEES at L518-L520")
+    class VerifiedAndNotMigrated {
 
         @Test
-        void aResolvedNonZeroRateUsesTheSourceDivideAndTruncation() {
-            BigDecimal rate =
-                    resolveRate(BLANK_GROUP, "01", "0001").rate();
-            BigDecimal monthlyInterest = CobolDecimal.multiplyThenDivide(
-                    SAMPLE_CATEGORY_BALANCE, rate, CobolDecimal.INTEREST_DIVISOR,
-                    PicClause.WS_MONTHLY_INT_SCALE);
+        @DisplayName("L464-L465 divides by the L465 constant and truncates toward zero")
+        void theDivideTruncatesTowardZeroAtTheWorkingScale() {
+            BigDecimal rate = resolveRate(BLANK_GROUP, LEADING_TYPE, LEADING_CATEGORY).rate();
 
+            BigDecimal monthlyInterest = monthlyInterest(SAMPLE_CATEGORY_BALANCE, rate);
+
+            assertEquals(STANDARD_RATE, rate,
+                    "equals, so scale matches: group " + DEFAULT_GROUP_LITERAL + " type "
+                            + LEADING_TYPE + " category " + LEADING_CATEGORY + " carries "
+                            + STANDARD_RATE);
             assertEquals(SAMPLE_MONTHLY_INTEREST, monthlyInterest,
-                    "CBACT04C L464-L465 truncates the monthly interest toward zero");
+                    "equals, so scale matches: balance " + SAMPLE_CATEGORY_BALANCE + " at rate "
+                            + rate + " over " + CobolDecimal.INTEREST_DIVISOR + " truncates to "
+                            + SAMPLE_MONTHLY_INTEREST);
+            assertEquals(PicClause.WS_MONTHLY_INT_SCALE, monthlyInterest.scale(),
+                    "equals: WS-MONTHLY-INT at CBACT04C L168 holds "
+                            + PicClause.WS_MONTHLY_INT_SCALE + " digits after the point");
         }
 
         @Test
-        void theCriticalZeroRateProducesNumericZero() {
-            BigDecimal rate =
-                    resolveRate(BLANK_GROUP, CRITICAL_TYPE, CRITICAL_CATEGORY).rate();
-            BigDecimal monthlyInterest = CobolDecimal.multiplyThenDivide(
-                    SAMPLE_CATEGORY_BALANCE, rate, CobolDecimal.INTEREST_DIVISOR,
+        @DisplayName("ADDITIVE: a store into WS-MONTHLY-INT at L168 drops the high-order digit")
+        void theStoreReproducesTheNarrowedWorkingPrecision() {
+            BigDecimal fieldModulus = pictureFieldModulus(PicClause.WS_MONTHLY_INT_PRECISION,
                     PicClause.WS_MONTHLY_INT_SCALE);
+            BigDecimal beyondTheField = fieldModulus.add(SAMPLE_MONTHLY_INTEREST);
 
-            assertEquals(0, monthlyInterest.compareTo(BigDecimal.ZERO),
-                    "DEFAULT 03/0001 leaves the interest divide at zero");
+            BigDecimal stored = CobolDecimal.truncateToPictureField(beyondTheField,
+                    PicClause.WS_MONTHLY_INT_PRECISION, PicClause.WS_MONTHLY_INT_SCALE);
+
+            assertEquals(SAMPLE_MONTHLY_INTEREST, stored,
+                    "equals, so scale matches: WS-MONTHLY-INT holds "
+                            + (PicClause.WS_MONTHLY_INT_PRECISION
+                                    - PicClause.WS_MONTHLY_INT_SCALE)
+                            + " integer digits, and " + beyondTheField + " stores as " + stored);
+            assertTrue(beyondTheField.compareTo(stored) != 0,
+                    "compareTo: the store at CBACT04C L464 narrows " + beyondTheField
+                            + " into a PIC S9(09)V99 field");
         }
 
         @Test
-        void noServiceSourceDeclaresAnInterestService() {
-            Path services = repositoryRoot().resolve("card-platform/services");
-            List<Path> interestServices = new ArrayList<>();
-            try (Stream<Path> files = Files.walk(services)) {
-                files.filter(Files::isRegularFile)
-                        .filter(path -> path.getFileName().toString().endsWith("Service.java"))
-                        .filter(path -> path.getFileName().toString().contains("Interest"))
-                        .forEach(interestServices::add);
-            } catch (IOException unreadable) {
-                throw new UncheckedIOException("cannot inspect " + services, unreadable);
+        @DisplayName("L467 accumulates into WS-TOTAL-INT at L169 under the same narrowing")
+        void theAccumulateHoldsTheTotalWorkingPrecision() {
+            BigDecimal fieldModulus = pictureFieldModulus(PicClause.WS_TOTAL_INT_PRECISION,
+                    PicClause.WS_TOTAL_INT_SCALE);
+            BigDecimal runningTotal = CobolDecimal.add(SAMPLE_MONTHLY_INTEREST,
+                    SAMPLE_MONTHLY_INTEREST, PicClause.WS_TOTAL_INT_SCALE);
+
+            BigDecimal stored = CobolDecimal.truncateToPictureField(runningTotal,
+                    PicClause.WS_TOTAL_INT_PRECISION, PicClause.WS_TOTAL_INT_SCALE);
+            BigDecimal beyondTheField = CobolDecimal.truncateToPictureField(
+                    fieldModulus.add(runningTotal), PicClause.WS_TOTAL_INT_PRECISION,
+                    PicClause.WS_TOTAL_INT_SCALE);
+
+            assertEquals(runningTotal, stored,
+                    "equals, so scale matches: WS-TOTAL-INT holds " + runningTotal
+                            + " without narrowing");
+            assertEquals(runningTotal, beyondTheField,
+                    "equals, so scale matches: WS-TOTAL-INT at CBACT04C L169 holds "
+                            + (PicClause.WS_TOTAL_INT_PRECISION - PicClause.WS_TOTAL_INT_SCALE)
+                            + " integer digits");
+            assertEquals(PicClause.WS_MONTHLY_INT_PRECISION, PicClause.WS_TOTAL_INT_PRECISION,
+                    "equals: CBACT04C L168 and L169 declare one Picture clause twice");
+        }
+
+        @Test
+        @DisplayName("L214 leaves the divide unreached for the zero-rated DEFAULT rows")
+        void aZeroRateLeavesTheDivideUnreached() {
+            for (DisclosureGroupRecord row : rowsOf(DEFAULT_GROUP)) {
+                BigDecimal rate = row.interestRate();
+                boolean gatePasses = carriesInterest(rate);
+
+                assertEquals(rate.signum() != 0, gatePasses,
+                        "the CBACT04C L214 gate reads rate " + rate + " for group "
+                                + DEFAULT_GROUP_LITERAL + " type " + row.transactionTypeCode()
+                                + " category " + row.transactionCategoryCode());
+                if (!gatePasses) {
+                    assertEquals(0,
+                            monthlyInterest(SAMPLE_CATEGORY_BALANCE, rate)
+                                    .compareTo(BigDecimal.ZERO),
+                            "compareTo: rate " + rate + " for type " + row.transactionTypeCode()
+                                    + " category " + row.transactionCategoryCode()
+                                    + " yields no interest");
+                }
             }
 
-            assertEquals(List.of(), interestServices,
-                    "the C8 carve-out verifies interest without creating a service");
+            assertFalse(carriesInterest(
+                            resolveRate(BLANK_GROUP, ZERO_RATED_TYPE, ZERO_RATED_CATEGORY).rate()),
+                    "group " + DEFAULT_GROUP_LITERAL + " type " + ZERO_RATED_TYPE + " category "
+                            + ZERO_RATED_CATEGORY + " fails the CBACT04C L214 gate");
+        }
+
+        @Test
+        @DisplayName("Every tcatbal.txt TRAN-CAT-BAL at CVTRA01Y L9 is zero as seeded")
+        void theSeededCategoryBalancesYieldNoInterest() {
+            List<TransactionCategoryBalanceRecord> seeded =
+                    CardDemoFixtureLoader.loadTransactionCategoryBalances();
+
+            for (TransactionCategoryBalanceRecord row : seeded) {
+                BigDecimal rate = resolveRate(BLANK_GROUP, row.typeCode(),
+                        row.categoryCode()).rate();
+
+                assertEquals(0, row.balance().compareTo(BigDecimal.ZERO),
+                        "compareTo: account " + row.accountId() + " type " + row.typeCode()
+                                + " category " + row.categoryCode()
+                                + " carries no balance in tcatbal.txt");
+                assertEquals(0, monthlyInterest(row.balance(), rate).compareTo(BigDecimal.ZERO),
+                        "compareTo: balance " + row.balance() + " at rate " + rate
+                                + " yields no interest");
+            }
+
+            assertEquals(PicClause.TCATBAL_FIXTURE_RECORD_COUNT, seeded.size(),
+                    "equals: tcatbal.txt delivers its declared record count");
+        }
+
+        @Test
+        @DisplayName("No service module declares an interest service or a fee type")
+        void noServiceModuleDeclaresAnInterestOrFeeType() {
+            List<String> declared = serviceTypesNamedForInterestOrFees();
+
+            assertEquals(List.of(), declared,
+                    "resolution C8 verifies the rate rules and migrates no computation, and these "
+                            + "service types carry an interest or fee name: " + declared);
         }
     }
 
@@ -269,11 +627,12 @@ class InterestCalculationEquivalenceTest {
     class CycleCloseCarveOut {
 
         @Test
-        void theTargetZeroesBothAccumulatorsAndLeavesTheBalanceUnchanged() {
-            AccountRecord fixture = ACCOUNTS.get(0);
-            AccountEntity account = accountEntity(fixture);
+        @DisplayName("L353 and L354 zero both accumulators, and L352 stays unreproduced")
+        void theCloseZeroesBothAccumulatorsAndHoldsTheBalance() {
+            AccountEntity account = accountEntity(ACCOUNTS.getFirst());
             account.setCurrentCycleCredit(ADDITIVE_CYCLE_CREDIT);
             account.setCurrentCycleDebit(ADDITIVE_CYCLE_DEBIT);
+            BigDecimal openingBalance = account.getCurrentBalance();
             AccountRepository repository = mock(AccountRepository.class);
             when(repository.findForUpdateByAccountId(account.getAccountId()))
                     .thenReturn(Optional.of(account));
@@ -282,115 +641,325 @@ class InterestCalculationEquivalenceTest {
             BillingCycleService service = new BillingCycleService(repository, outbox,
                     immediateTransactions(),
                     new ObservabilityConfig().accountMeters(new SimpleMeterRegistry()));
-            BigDecimal openingBalance = account.getCurrentBalance();
 
             AccountEntity closed = service.closeBillingCycle(account.getAccountId()).orElseThrow();
 
-            assertEquals(openingBalance, closed.getCurrentBalance(),
-                    "BillingCycleService omits the interest add at CBACT04C L352");
             assertEquals(0, closed.getCurrentCycleCredit().compareTo(BigDecimal.ZERO),
-                    "CBACT04C L353 zeroes cycle credit");
+                    "compareTo: account " + closed.getAccountId()
+                            + " opened the close with cycle credit " + ADDITIVE_CYCLE_CREDIT
+                            + ", and CBACT04C L353 zeroes ACCT-CURR-CYC-CREDIT of CVACT01Y L13");
             assertEquals(0, closed.getCurrentCycleDebit().compareTo(BigDecimal.ZERO),
-                    "CBACT04C L354 zeroes cycle debit");
+                    "compareTo: account " + closed.getAccountId()
+                            + " opened the close with cycle debit " + ADDITIVE_CYCLE_DEBIT
+                            + ", and CBACT04C L354 zeroes ACCT-CURR-CYC-DEBIT of CVACT01Y L14");
+            assertEquals(openingBalance, closed.getCurrentBalance(),
+                    "equals, so scale matches: ACCT-CURR-BAL holds " + openingBalance
+                            + ", and CBACT04C L352 is not reproduced");
             assertEquals(PicClause.ACCT_CURR_CYC_CREDIT_SCALE,
                     closed.getCurrentCycleCredit().scale(),
-                    "cycle credit keeps its Picture-clause scale");
+                    "equals: CVACT01Y L13 fixes " + PicClause.ACCT_CURR_CYC_CREDIT_SCALE
+                            + " digits after the point");
             assertEquals(PicClause.ACCT_CURR_CYC_DEBIT_SCALE,
                     closed.getCurrentCycleDebit().scale(),
-                    "cycle debit keeps its Picture-clause scale");
+                    "equals: CVACT01Y L14 fixes " + PicClause.ACCT_CURR_CYC_DEBIT_SCALE
+                            + " digits after the point");
+            assertEquals(PicClause.ACCT_CURR_BAL_SCALE, closed.getCurrentBalance().scale(),
+                    "equals: CVACT01Y L7 fixes " + PicClause.ACCT_CURR_BAL_SCALE
+                            + " digits after the point");
             verify(outbox).write(any());
         }
     }
 
-    /** Runs the cycle-close callback on the calling thread without an external transaction manager. */
-    private static TransactionTemplate immediateTransactions() {
-        return new TransactionTemplate() {
-            @Override
-            public <T> T execute(TransactionCallback<T> action) {
-                return action.doInTransaction(new SimpleTransactionStatus());
-            }
-        };
-    }
-
+    /**
+     * Resolves one rate the way {@code app/cbl/CBACT04C.cbl:L415-L460} resolves it.
+     *
+     * <p>A matched primary read answers with its own row. A missed read substitutes the
+     * {@code app/cbl/CBACT04C.cbl:L437} literal into the first key part and re-reads once. A
+     * missed re-read reaches {@code app/cbl/CBACT04C.cbl:L458}.</p>
+     *
+     * @param groupId      the {@code DIS-ACCT-GROUP-ID} the caller supplies
+     * @param typeCode     the {@code DIS-TRAN-TYPE-CD} the caller supplies
+     * @param categoryCode the {@code DIS-TRAN-CAT-CD} the caller supplies
+     * @return the resolved rate, whether the substitution fired, and the read count
+     * @throws IllegalStateException when the substituted re-read finds no row
+     */
     private static ResolvedRate resolveRate(String groupId, String typeCode, String categoryCode) {
         BigDecimal primary = RATES.get(new RateKey(groupId, typeCode, categoryCode));
         if (primary != null) {
-            return new ResolvedRate(primary, false, 1);
+            return new ResolvedRate(primary, false, LOOKUPS_ON_A_MATCH);
         }
-        BigDecimal fallback = RATES.get(new RateKey(DEFAULT_GROUP, typeCode, categoryCode));
-        if (fallback == null) {
-            throw new IllegalStateException("DEFAULT disclosure group has no row for "
-                    + typeCode + "/" + categoryCode);
+
+        BigDecimal substituted = RATES.get(new RateKey(DEFAULT_GROUP, typeCode, categoryCode));
+        if (substituted == null) {
+            throw new IllegalStateException("group " + DEFAULT_GROUP_LITERAL
+                    + " carries no row for type " + typeCode + " category " + categoryCode);
         }
-        return new ResolvedRate(fallback, true, 2);
+        return new ResolvedRate(substituted, true, LOOKUPS_WITH_THE_DEFAULT_RETRY);
     }
 
+    /**
+     * Divides as {@code app/cbl/CBACT04C.cbl:L464-L465} divides, then stores the result.
+     *
+     * @param categoryBalance the {@code TRAN-CAT-BAL} of {@code app/cpy/CVTRA01Y.cpy:L9}
+     * @param rate            the {@code DIS-INT-RATE} of {@code app/cpy/CVTRA02Y.cpy:L9}
+     * @return the value {@code WS-MONTHLY-INT} at {@code app/cbl/CBACT04C.cbl:L168} would hold
+     */
+    private static BigDecimal monthlyInterest(BigDecimal categoryBalance, BigDecimal rate) {
+        BigDecimal quotient = CobolDecimal.multiplyThenDivide(categoryBalance, rate,
+                CobolDecimal.INTEREST_DIVISOR, PicClause.WS_MONTHLY_INT_SCALE);
+        return CobolDecimal.truncateToPictureField(quotient, PicClause.WS_MONTHLY_INT_PRECISION,
+                PicClause.WS_MONTHLY_INT_SCALE);
+    }
+
+    /**
+     * Reports what the gate at {@code app/cbl/CBACT04C.cbl:L214} reports for one rate.
+     *
+     * @param rate the {@code DIS-INT-RATE} the resolution answered with
+     * @return {@code true} when the rate is not zero
+     */
+    private static boolean carriesInterest(BigDecimal rate) {
+        return rate.signum() != 0;
+    }
+
+    /**
+     * Returns the magnitude one Picture field cannot hold.
+     *
+     * @param precision total digits of the target field, from {@link PicClause}
+     * @param scale     digits after the decimal point, from {@link PicClause}
+     * @return ten raised to the count of integer digits the field holds
+     */
+    private static BigDecimal pictureFieldModulus(int precision, int scale) {
+        return BigDecimal.TEN.pow(precision - scale).setScale(scale);
+    }
+
+    /** Indexes every fixture row by the three key parts of {@code app/cpy/CVTRA02Y.cpy:L6-L8}. */
     private static Map<RateKey, BigDecimal> rateTable() {
         Map<RateKey, BigDecimal> rates = new LinkedHashMap<>();
         for (DisclosureGroupRecord row : DISCLOSURE_GROUPS) {
             RateKey key = new RateKey(row.accountGroupId(), row.transactionTypeCode(),
                     row.transactionCategoryCode());
-            BigDecimal displaced = rates.put(key, row.interestRate());
-            if (displaced != null) {
-                throw new IllegalStateException("discgrp.txt repeats "
-                        + row.transactionTypeCode() + "/" + row.transactionCategoryCode());
+            if (rates.put(key, row.interestRate()) != null) {
+                throw new IllegalStateException("discgrp.txt repeats group "
+                        + row.accountGroupId().trim() + " type " + row.transactionTypeCode()
+                        + " category " + row.transactionCategoryCode());
             }
         }
         return Map.copyOf(rates);
     }
 
+    /** Collects the distinct {@code DIS-ACCT-GROUP-ID} values, in fixture order. */
+    private static Set<String> groupIdentifiers() {
+        Set<String> identifiers = new LinkedHashSet<>();
+        for (DisclosureGroupRecord row : DISCLOSURE_GROUPS) {
+            identifiers.add(row.accountGroupId());
+        }
+        return Set.copyOf(identifiers);
+    }
+
+    /** Returns the fixture rows of one group, in fixture order. */
     private static List<DisclosureGroupRecord> rowsOf(String groupId) {
         return DISCLOSURE_GROUPS.stream()
                 .filter(row -> row.accountGroupId().equals(groupId))
                 .toList();
     }
 
+    /**
+     * Finds a fixture group whose discriminating rate differs from the one {@code DEFAULT} carries.
+     *
+     * @return the group identifier, padded to the width of {@code app/cpy/CVTRA02Y.cpy:L6}
+     * @throws IllegalStateException when every group carries the same discriminating rate
+     */
+    private static String groupThatRatesDifferentlyFromDefault() {
+        BigDecimal defaultRate = RATES.get(new RateKey(DEFAULT_GROUP, DISCRIMINATING_TYPE,
+                DISCRIMINATING_CATEGORY));
+        if (defaultRate == null) {
+            throw new IllegalStateException("group " + DEFAULT_GROUP_LITERAL
+                    + " carries no row for type " + DISCRIMINATING_TYPE + " category "
+                    + DISCRIMINATING_CATEGORY);
+        }
+
+        for (String identifier : GROUP_IDENTIFIERS) {
+            BigDecimal candidate = RATES.get(new RateKey(identifier, DISCRIMINATING_TYPE,
+                    DISCRIMINATING_CATEGORY));
+            if (candidate != null && candidate.compareTo(defaultRate) != 0) {
+                return identifier;
+            }
+        }
+        throw new IllegalStateException("every discgrp.txt group carries " + defaultRate
+                + " for type " + DISCRIMINATING_TYPE + " category " + DISCRIMINATING_CATEGORY);
+    }
+
+    /**
+     * Finds a type and category pair no fixture group carries.
+     *
+     * @return a pair whose category code follows a present one and is itself absent
+     * @throws IllegalStateException when every successor category code is present
+     */
+    private static RateCode codePairAbsentFromEveryGroup() {
+        Set<RateCode> present = new LinkedHashSet<>();
+        for (DisclosureGroupRecord row : DISCLOSURE_GROUPS) {
+            present.add(new RateCode(row.transactionTypeCode(), row.transactionCategoryCode()));
+        }
+
+        for (RateCode carried : present) {
+            RateCode successor = new RateCode(carried.typeCode(),
+                    nextCategoryCode(carried.categoryCode()));
+            if (!present.contains(successor)) {
+                return successor;
+            }
+        }
+        throw new IllegalStateException("discgrp.txt carries every successor category code");
+    }
+
+    /**
+     * Returns the category code that follows one code, padded to its declared width.
+     *
+     * @param categoryCode a {@code DIS-TRAN-CAT-CD} the fixture carries
+     * @return the next code at the width of {@code app/cpy/CVTRA02Y.cpy:L8}
+     * @throws IllegalStateException when the next code exceeds that width
+     */
+    private static String nextCategoryCode(String categoryCode) {
+        String next = Integer.toString(Integer.parseInt(categoryCode) + NEXT_CATEGORY_CODE_STEP);
+        if (next.length() > PicClause.DIS_TRAN_CAT_CD_WIDTH) {
+            throw new IllegalStateException("the code after " + categoryCode + " exceeds the "
+                    + PicClause.DIS_TRAN_CAT_CD_WIDTH + " digits DIS-TRAN-CAT-CD holds");
+        }
+        return CODE_PAD_DIGIT.repeat(PicClause.DIS_TRAN_CAT_CD_WIDTH - next.length()) + next;
+    }
+
+    /**
+     * Pads a group identifier to the width of {@code app/cpy/CVTRA02Y.cpy:L6}.
+     *
+     * @param value a group identifier or the adjacent {@code ACCT-ADDR-ZIP} value
+     * @return the value followed by the spaces the field pads with
+     * @throws IllegalArgumentException when the value exceeds the declared width
+     */
+    private static String paddedGroupIdentifier(String value) {
+        if (value.length() > PicClause.DIS_ACCT_GROUP_ID_WIDTH) {
+            throw new IllegalArgumentException(value + " exceeds the "
+                    + PicClause.DIS_ACCT_GROUP_ID_WIDTH + " bytes DIS-ACCT-GROUP-ID holds");
+        }
+        return value + " ".repeat(PicClause.DIS_ACCT_GROUP_ID_WIDTH - value.length());
+    }
+
+    /** Joins the three key parts into the {@code DIS-GROUP-KEY} of {@code CVTRA02Y.cpy:L5}. */
+    private static String compositeKey(String groupId, String typeCode, String categoryCode) {
+        return paddedGroupIdentifier(groupId) + typeCode + categoryCode;
+    }
+
+    /**
+     * Collects the category keys the fixture run reaches, seeds first and posted rows after.
+     *
+     * <p>The seeds come from {@code app/data/ASCII/tcatbal.txt}. Each posted row of
+     * {@code app/data/ASCII/dailytran.txt} adds the key its type and category name, and
+     * {@code app/cbl/CBTRN02C.cbl:L403-L420} holds the rest back.</p>
+     *
+     * @return the reached keys, in the order the run reaches them
+     */
     private static Set<CategoryKey> categoryKeysAfterPosting() {
-        Map<String, MutableAccount> accounts = mutableAccounts();
-        Map<String, CardCrossReferenceRecord> xrefs =
+        Map<String, CycleAccumulators> accounts = cycleAccumulatorsByAccountId();
+        Map<String, CardCrossReferenceRecord> crossReferences =
                 CardDemoFixtureLoader.cardCrossReferencesByCardNumber();
-        Set<CategoryKey> keys = new LinkedHashSet<>();
-        for (TransactionCategoryBalanceRecord row
+        Set<CategoryKey> reached = new LinkedHashSet<>();
+
+        for (TransactionCategoryBalanceRecord seed
                 : CardDemoFixtureLoader.loadTransactionCategoryBalances()) {
-            keys.add(new CategoryKey(row.accountId(), row.typeCode(), row.categoryCode()));
+            reached.add(new CategoryKey(seed.accountId(), seed.typeCode(), seed.categoryCode()));
         }
 
         for (DailyTransactionRecord transaction : CardDemoFixtureLoader.loadDailyTransactions()) {
-            CardCrossReferenceRecord xref = xrefs.get(transaction.cardNumber());
-            MutableAccount account = xref == null ? null : accounts.get(xref.accountId());
-            if (account == null || declines(account, transaction)) {
+            CardCrossReferenceRecord crossReference =
+                    crossReferences.get(transaction.cardNumber());
+            CycleAccumulators account = crossReference == null
+                    ? null
+                    : accounts.get(crossReference.accountId());
+            if (account == null || account.declines(transaction)) {
                 continue;
             }
-            keys.add(new CategoryKey(xref.accountId(), transaction.typeCode(),
+            reached.add(new CategoryKey(crossReference.accountId(), transaction.typeCode(),
                     transaction.categoryCode()));
             account.apply(transaction.amount());
         }
-        return Set.copyOf(keys);
+        return Set.copyOf(reached);
     }
 
-    private static Map<String, MutableAccount> mutableAccounts() {
-        Map<String, MutableAccount> accounts = new LinkedHashMap<>();
+    /** Indexes the fields the overlimit and expiration tests read, keyed by account identifier. */
+    private static Map<String, CycleAccumulators> cycleAccumulatorsByAccountId() {
+        Map<String, CycleAccumulators> accounts = new LinkedHashMap<>();
         for (AccountRecord account : ACCOUNTS) {
-            accounts.put(account.accountId(), new MutableAccount(account.creditLimit(),
+            accounts.put(account.accountId(), new CycleAccumulators(account.creditLimit(),
                     account.expirationDate(), account.currentCycleCredit(),
                     account.currentCycleDebit()));
         }
         return accounts;
     }
 
-    private static boolean declines(MutableAccount account, DailyTransactionRecord transaction) {
-        BigDecimal difference = CobolDecimal.subtract(account.cycleCredit, account.cycleDebit,
-                PicClause.WS_TEMP_BAL_SCALE);
-        BigDecimal computed = CobolDecimal.add(difference, transaction.amount(),
-                PicClause.WS_TEMP_BAL_SCALE);
-        BigDecimal working = CobolDecimal.truncateToPictureField(computed,
-                PicClause.WS_TEMP_BAL_PRECISION, PicClause.WS_TEMP_BAL_SCALE);
-        boolean overLimit = account.creditLimit.compareTo(working) < 0;
-        boolean expired = account.expirationDate.compareTo(
-                CopybookRecordParser.timestampDatePart(transaction.originTimestamp())) < 0;
-        return overLimit || expired;
+    /**
+     * Names every service type whose file name carries an interest or a fee word.
+     *
+     * @return the file names found under {@code card-platform/services}, in walk order
+     * @throws UncheckedIOException when the service tree cannot be read
+     */
+    private static List<String> serviceTypesNamedForInterestOrFees() {
+        Path services = repositoryRoot().resolve(SERVICE_MODULE_DIRECTORY);
+        List<String> named = new ArrayList<>();
+        try (Stream<Path> files = Files.walk(services)) {
+            files.filter(Files::isRegularFile)
+                    .map(file -> file.getFileName().toString())
+                    .filter(name -> name.endsWith(JAVA_SOURCE_SUFFIX))
+                    .filter(InterestCalculationEquivalenceTest::namedForInterestOrFees)
+                    .forEach(named::add);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot read " + services, unreadable);
+        }
+        return List.copyOf(named);
     }
 
+    /** Reports whether one source file name carries an interest or a fee word. */
+    private static boolean namedForInterestOrFees(String fileName) {
+        return fileName.contains(INTEREST_TYPE_WORD) || fileName.contains(FEE_TYPE_WORD);
+    }
+
+    /**
+     * Reads one Job Control Language member of the read-only source tree.
+     *
+     * @param member the repository-relative path of the member
+     * @return the whole member as text
+     * @throws UncheckedIOException when the member cannot be read
+     */
+    private static String jobControlLanguageMember(String member) {
+        Path path = repositoryRoot().resolve(member);
+        try {
+            return Files.readString(path, StandardCharsets.UTF_8);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot read " + path, unreadable);
+        }
+    }
+
+    /**
+     * Applies one pattern to one member and answers with the match.
+     *
+     * @param pattern   the parameter pattern
+     * @param text      the member text
+     * @param parameter the parameter name, reported when the match fails
+     * @return the match, positioned on its captures
+     * @throws IllegalStateException when the member carries no such parameter
+     */
+    private static Matcher requireMatch(Pattern pattern, String text, String parameter) {
+        Matcher matcher = pattern.matcher(text);
+        if (!matcher.find()) {
+            throw new IllegalStateException(DISCGRP_JOB_MEMBER + " carries no " + parameter
+                    + " parameter");
+        }
+        return matcher;
+    }
+
+    /** Resolves the repository root from the fixture directory the loader reports. */
+    private static Path repositoryRoot() {
+        return CardDemoFixtureLoader.fixtureDirectory().getParent().getParent().getParent();
+    }
+
+    /** Copies one fixture account row into the entity the cycle-close operation stores. */
     private static AccountEntity accountEntity(AccountRecord source) {
         AccountEntity account = new AccountEntity();
         account.setAccountId(source.accountId());
@@ -408,39 +977,50 @@ class InterestCalculationEquivalenceTest {
         return account;
     }
 
-    private static String fixedGroup(String value) {
-        if (value.length() > PicClause.DIS_ACCT_GROUP_ID_WIDTH) {
-            throw new IllegalArgumentException("group identifier exceeds its Picture-clause width");
-        }
-        return value + " ".repeat(PicClause.DIS_ACCT_GROUP_ID_WIDTH - value.length());
+    /** Runs the cycle-close callback on the calling thread with no transaction manager. */
+    private static TransactionTemplate immediateTransactions() {
+        return new TransactionTemplate() {
+            @Override
+            public <T> T execute(TransactionCallback<T> action) {
+                return action.doInTransaction(new SimpleTransactionStatus());
+            }
+        };
     }
 
-    private static Path repositoryRoot() {
-        return CardDemoFixtureLoader.fixtureDirectory()
-                .getParent()
-                .getParent()
-                .getParent();
-    }
+    /** The three key parts of {@code app/cpy/CVTRA02Y.cpy:L6-L8}. */
+    private record RateKey(String groupId, String typeCode, String categoryCode) { }
 
-    private record RateKey(String groupId, String typeCode, String categoryCode) {
-    }
+    /** The two reference codes of {@code app/cpy/CVTRA02Y.cpy:L7-L8}. */
+    private record RateCode(String typeCode, String categoryCode) { }
 
-    private record RateCode(String typeCode, String categoryCode) {
-    }
+    /** The composite key of {@code app/cpy/CVTRA01Y.cpy:L5-L8}. */
+    private record CategoryKey(String accountId, String typeCode, String categoryCode) { }
 
-    private record CategoryKey(String accountId, String typeCode, String categoryCode) {
-    }
+    /** One resolution outcome of {@code app/cbl/CBACT04C.cbl:L415-L460}. */
+    private record ResolvedRate(BigDecimal rate, boolean fallbackUsed, int lookupCount) { }
 
-    private record ResolvedRate(BigDecimal rate, boolean fallbackUsed, int lookupCount) {
-    }
+    /**
+     * Holds the two accumulators of {@code app/cpy/CVACT01Y.cpy:L13-L14} across the fixture run.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L403-L407} reads both into a working balance and compares
+     * that balance with the credit limit. {@code app/cbl/CBTRN02C.cbl:L547-L551} routes a posted
+     * amount into one of the two on its sign.</p>
+     */
+    private static final class CycleAccumulators {
 
-    private static final class MutableAccount {
+        /** {@code ACCT-CREDIT-LIMIT} of {@code app/cpy/CVACT01Y.cpy:L8}. */
         private final BigDecimal creditLimit;
+
+        /** {@code ACCT-EXPIRAION-DATE} of {@code app/cpy/CVACT01Y.cpy:L11}, held as text. */
         private final String expirationDate;
+
+        /** {@code ACCT-CURR-CYC-CREDIT} of {@code app/cpy/CVACT01Y.cpy:L13}. */
         private BigDecimal cycleCredit;
+
+        /** {@code ACCT-CURR-CYC-DEBIT} of {@code app/cpy/CVACT01Y.cpy:L14}. */
         private BigDecimal cycleDebit;
 
-        private MutableAccount(BigDecimal creditLimit, String expirationDate,
+        private CycleAccumulators(BigDecimal creditLimit, String expirationDate,
                 BigDecimal cycleCredit, BigDecimal cycleDebit) {
             this.creditLimit = creditLimit;
             this.expirationDate = expirationDate;
@@ -448,14 +1028,29 @@ class InterestCalculationEquivalenceTest {
             this.cycleDebit = cycleDebit;
         }
 
+        /** Applies the overlimit test of L403-L413 and the expiration test of L414-L420. */
+        private boolean declines(DailyTransactionRecord transaction) {
+            BigDecimal difference = CobolDecimal.subtract(cycleCredit, cycleDebit,
+                    PicClause.WS_TEMP_BAL_SCALE);
+            BigDecimal computed = CobolDecimal.add(difference, transaction.amount(),
+                    PicClause.WS_TEMP_BAL_SCALE);
+            BigDecimal working = CobolDecimal.truncateToPictureField(computed,
+                    PicClause.WS_TEMP_BAL_PRECISION, PicClause.WS_TEMP_BAL_SCALE);
+            boolean overLimit = creditLimit.compareTo(working) < 0;
+            boolean expired = expirationDate.compareTo(
+                    CopybookRecordParser.timestampDatePart(transaction.originTimestamp())) < 0;
+            return overLimit || expired;
+        }
+
+        /** Routes a posted amount into one accumulator on its sign, per L548-L551. */
         private void apply(BigDecimal amount) {
-            if (amount.signum() >= 0) {
-                cycleCredit = CobolDecimal.add(cycleCredit, amount,
-                        PicClause.ACCT_CURR_CYC_CREDIT_SCALE);
-            } else {
+            if (amount.signum() < 0) {
                 cycleDebit = CobolDecimal.add(cycleDebit, amount,
                         PicClause.ACCT_CURR_CYC_DEBIT_SCALE);
+                return;
             }
+            cycleCredit = CobolDecimal.add(cycleCredit, amount,
+                    PicClause.ACCT_CURR_CYC_CREDIT_SCALE);
         }
     }
 }

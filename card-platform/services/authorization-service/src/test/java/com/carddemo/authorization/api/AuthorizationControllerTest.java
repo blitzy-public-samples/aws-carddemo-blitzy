@@ -32,10 +32,11 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
  * capture program {@code app/cbl/COTRN02C.cbl} sends a mapset, receives it back and re-sends it on
  * every failure; this endpoint takes one body and returns one body.
  *
- * <p>Two outcomes share status {@code 200}. A decline is a decision and not a failure.
- * {@code app/cbl/CBTRN02C.cbl:L229-L230} treats a rejection the same way, ending a batch run with
- * return code 4. A request whose fields fail validation answers {@code 422} carrying the verbatim
- * texts {@code app/cbl/COTRN02C.cbl} emits.
+ * <p>An approval answers {@code 200} and a decline answers {@code 422}.
+ * {@code app/cbl/CBTRN02C.cbl:L229} tests the reject count and {@code app/cbl/CBTRN02C.cbl:L230}
+ * moves 4 into the return code of a batch run that rejected records, so no decline reaches
+ * {@code 500} or {@code 503}. A request whose fields fail validation also answers {@code 422},
+ * carrying the verbatim texts {@code app/cbl/COTRN02C.cbl} emits under {@link ApiErrorResponse}.
  *
  * <p>These tests stand the controller and its advice up alone. No database, no broker and no
  * application context takes part, so what they prove is the contract of the endpoint.
@@ -96,10 +97,10 @@ final class AuthorizationControllerTest {
     }
 
     /**
-     * Asserts a decline also answers 200, carrying the reject code under the name the event uses.
+     * Asserts a decline answers 422, carrying the reject code under the name the event uses.
      */
     @Test
-    void aDeclineAnswersTwoHundredCarryingTheRejectCode() throws Exception {
+    void aDeclineAnswersFourTwentyTwoCarryingTheRejectCode() throws Exception {
         when(authorizations.authorize(any(), any())).thenReturn(AuthorizationService.Outcome.declined(
                 DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("00000000077"),
                 "0000001000000002"));
@@ -107,15 +108,18 @@ final class AuthorizationControllerTest {
         mockMvc.perform(post("/authorizations")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(COMPLETE_BODY))
-                .andExpect(status().isOk())
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.approved").value(false))
+                .andExpect(jsonPath("$.accountId").value("00000000077"))
+                .andExpect(jsonPath("$.transactionId").value("0000001000000002"))
                 .andExpect(jsonPath("$.declineReasonCode").value("0102"))
                 .andExpect(jsonPath("$.declineReasonDescription").value("OVERLIMIT TRANSACTION"));
     }
 
-    /** Asserts the one decline naming no account answers 200 with a null account identifier. */
+    /** Asserts the one decline naming no account answers 422 with a null account identifier. */
     @Test
-    void theDeclineNamingNoAccountAnswersTwoHundredWithNoAccountIdentifier() throws Exception {
+    void theDeclineNamingNoAccountAnswersFourTwentyTwoWithNoAccountIdentifier() throws Exception {
         when(authorizations.authorize(any(), any()))
                 .thenReturn(AuthorizationService.Outcome.declined(
                         DeclineReason.INVALID_CARD_NUMBER, null, "0000001000000003"));
@@ -123,10 +127,38 @@ final class AuthorizationControllerTest {
         mockMvc.perform(post("/authorizations")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(COMPLETE_BODY))
-                .andExpect(status().isOk())
+                .andExpect(status().isUnprocessableContent())
                 .andExpect(jsonPath("$.approved").value(false))
                 .andExpect(jsonPath("$.declineReasonCode").value("0100"))
+                .andExpect(jsonPath("$.declineReasonDescription")
+                        .value(DeclineReason.INVALID_CARD_NUMBER.description()))
                 .andExpect(jsonPath("$.accountId").value(Matchers.nullValue()));
+    }
+
+    /**
+     * Asserts a declined body carries the reject code the enum defines and never a second one.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L181} declares one {@code PIC 9(04)} field, so one call reports
+     * one reject code. Each of the three declines that resolve an account is exercised here, and each
+     * reads its text from {@link DeclineReason#description()}.
+     */
+    @Test
+    void everyResolvedDeclineAnswersFourTwentyTwoWithItsOwnEnumText() throws Exception {
+        for (DeclineReason reason : DeclineReason.values()) {
+            if (!reason.resolvesAccount()) {
+                continue;
+            }
+            when(authorizations.authorize(any(), any()))
+                    .thenReturn(AuthorizationService.Outcome.declined(reason,
+                            new BigDecimal("00000000077"), "0000001000000005"));
+
+            mockMvc.perform(post("/authorizations")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(COMPLETE_BODY))
+                    .andExpect(status().isUnprocessableContent())
+                    .andExpect(jsonPath("$.declineReasonCode").value(reason.code()))
+                    .andExpect(jsonPath("$.declineReasonDescription").value(reason.description()));
+        }
     }
 
     /**

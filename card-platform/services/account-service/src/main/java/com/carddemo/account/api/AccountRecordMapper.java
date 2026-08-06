@@ -126,7 +126,9 @@ final class AccountRecordMapper {
      * <p>The identifier arrives at eleven digit characters, matching
      * {@code WS-CARD-RID-ACCT-ID PIC 9(11)} at {@code app/cbl/COACTVWC.cbl:L78}. Each date arrives
      * as eight characters and reaches the column as ten. Each monetary field arrives as text and
-     * reaches the column truncated to the scale of its Picture clause.
+     * reaches the column truncated to the scale of its Picture clause. A component the request
+     * leaves absent stays absent, and {@code app/cbl/COACTUPC.cbl:L2184-L2185} counts spaces and
+     * {@code LOW-VALUES} as absent.
      *
      * @param accountId the account identifier at its declared width
      * @param request   the account section of the request, or {@code null} when the body carries
@@ -147,9 +149,15 @@ final class AccountRecordMapper {
                 amountOf(request.creditLimit(), PicClause.ACCT_CREDIT_LIMIT_SCALE));
         account.setCashCreditLimit(
                 amountOf(request.cashCreditLimit(), PicClause.ACCT_CASH_CREDIT_LIMIT_SCALE));
-        account.setOpenDate(storedDateOf(request.openDate()));
-        account.setExpirationDate(storedDateOf(request.expirationDate()));
-        account.setReissueDate(storedDateOf(request.reissueDate()));
+        if (isSupplied(request.openDate())) {
+            account.setOpenDate(storedDateOf(request.openDate()));
+        }
+        if (isSupplied(request.expirationDate())) {
+            account.setExpirationDate(storedDateOf(request.expirationDate()));
+        }
+        if (isSupplied(request.reissueDate())) {
+            account.setReissueDate(storedDateOf(request.reissueDate()));
+        }
         account.setCurrentCycleCredit(
                 amountOf(request.currentCycleCredit(), PicClause.ACCT_CURR_CYC_CREDIT_SCALE));
         account.setCurrentCycleDebit(
@@ -162,8 +170,9 @@ final class AccountRecordMapper {
      * Builds the customer values a caller submits.
      *
      * <p>The three Social Security Number parts reach one nine-character field, in the order
-     * {@code app/cbl/COACTUPC.cbl:L831} declares. The date of birth arrives as eight characters and
-     * reaches the column as ten.
+     * {@code app/cbl/COACTUPC.cbl:L831} declares, and only when all three are supplied. The date of
+     * birth arrives as eight characters and reaches the column as ten. A component the request
+     * leaves absent stays absent.
      *
      * @param request the customer section of the request, or {@code null} when the body carries none
      * @return the customer values, with a value this class cannot convert left absent
@@ -175,7 +184,10 @@ final class AccountRecordMapper {
             return customer;
         }
 
-        customer.setCustomerId(identifierAtWidth(request.customerId(), PicClause.CUST_ID_WIDTH));
+        if (isSupplied(request.customerId())) {
+            customer.setCustomerId(identifierAtWidth(request.customerId(),
+                    PicClause.CUST_ID_WIDTH));
+        }
         customer.setFirstName(request.firstName());
         customer.setMiddleName(request.middleName());
         customer.setLastName(request.lastName());
@@ -187,9 +199,14 @@ final class AccountRecordMapper {
         customer.setAddressZip(request.addressZip());
         customer.setPhoneNumber1(request.phoneNumber1());
         customer.setPhoneNumber2(request.phoneNumber2());
-        customer.setSocialSecurityNumber(socialSecurityNumberOf(request));
+        if (isSupplied(request.socialSecurityPart1()) && isSupplied(request.socialSecurityPart2())
+                && isSupplied(request.socialSecurityPart3())) {
+            customer.setSocialSecurityNumber(socialSecurityNumberOf(request));
+        }
         customer.setGovernmentIssuedId(request.governmentIssuedId());
-        customer.setDateOfBirth(storedDateOf(request.dateOfBirth()));
+        if (isSupplied(request.dateOfBirth())) {
+            customer.setDateOfBirth(storedDateOf(request.dateOfBirth()));
+        }
         customer.setEftAccountId(request.eftAccountId());
         customer.setPrimaryCardHolderIndicator(request.primaryCardHolderIndicator());
         customer.setFicoCreditScore(creditScoreOf(request.ficoCreditScore()));
@@ -371,7 +388,7 @@ final class AccountRecordMapper {
      * @param text the value a caller supplied, or {@code null}
      * @return {@code true} when the value carries a character other than a space or a null
      */
-    private static boolean isSupplied(String text) {
+    static boolean isSupplied(String text) {
         if (text == null || text.isEmpty()) {
             return false;
         }

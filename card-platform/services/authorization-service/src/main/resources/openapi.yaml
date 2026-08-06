@@ -41,10 +41,10 @@ paths:
         broker.
 
 
-        Both outcomes answer 200. An approval carries approved true; a decline carries approved
-        false plus the reject code and its text. A decline is a decision the service took, and
-        app/cbl/CBTRN02C.cbl:L229-L230 treats a rejection the same way, ending a batch run with
-        return code 4 rather than failing it.
+        An approval answers 200 carrying approved true. A decline answers 422 carrying approved
+        false plus the reject code and its text. A rejection is a normal outcome in the source:
+        app/cbl/CBTRN02C.cbl:L229 tests the reject count and app/cbl/CBTRN02C.cbl:L230 moves 4 into
+        the return code of a batch run that rejected records. No decline answers 500 or 503.
 
 
         A card number travels only in the request body. No path variable and no query parameter
@@ -108,8 +108,9 @@ paths:
       responses:
         '200':
           description: >-
-            The decision. An approval and a decline share this status, and the approved component
-            separates them.
+            An approved decision. Every rule accepted, and the body names the account the card
+            resolved to. app/cbl/CBTRN02C.cbl:L208 clears the reject-code field for each record and
+            app/cbl/CBTRN02C.cbl:L211 posts a record whose field still holds zero.
           content:
             application/json:
               schema:
@@ -123,26 +124,6 @@ paths:
                     approved: true
                     declineReasonCode: null
                     declineReasonDescription: null
-                overCreditLimit:
-                  summary: Declined on the credit limit, from app/cbl/CBTRN02C.cbl:L403-L413.
-                  value:
-                    transactionId: '0000001000000002'
-                    accountId: '00000000077'
-                    approved: false
-                    declineReasonCode: '0102'
-                    declineReasonDescription: OVERLIMIT TRANSACTION
-                unresolvedCard:
-                  summary: >-
-                    Declined because no cross-reference row carries the card number, from
-                    app/cbl/CBTRN02C.cbl:L383-L387. This is the one outcome carrying no account
-                    identifier, because none was resolved. The same local transaction records the
-                    attempt and a schema-version-2 TransactionDeclined event keyed by transaction.
-                  value:
-                    transactionId: '0000001000000003'
-                    accountId: null
-                    approved: false
-                    declineReasonCode: '0100'
-                    declineReasonDescription: INVALID CARD NUMBER FOUND
         '400':
           description: The request body could not be read.
           content:
@@ -157,20 +138,48 @@ paths:
                 timestamp: '2022-06-10T19:27:53.412Z'
         '422':
           description: >-
-            The body was read and its values are not ones the source accepts. Nothing was decided,
-            so no reject code applies. Each message is the verbatim text app/cbl/COTRN02C.cbl moves
-            into WS-MESSAGE for that field.
+            Either a declined decision or a rejected body, and the two are told apart by the
+            component they carry. A decline carries approved, and app/cbl/CBTRN02C.cbl:L229 tests the
+            reject count while app/cbl/CBTRN02C.cbl:L230 moves 4 into the return code of a batch run
+            that rejected records. A rejected body carries status, and each of its messages is the
+            verbatim text app/cbl/COTRN02C.cbl moves into WS-MESSAGE for that field. Nothing was
+            decided on that path, so no reject code applies.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApiErrorResponse'
-              example:
-                status: 422
-                error: Validation failed
-                messages:
-                  - Category CD must be Numeric...
-                  - Merchant Zip can NOT be empty...
-                timestamp: '2022-06-10T19:27:53.412Z'
+                oneOf:
+                  - $ref: '#/components/schemas/AuthorizationResponse'
+                  - $ref: '#/components/schemas/ApiErrorResponse'
+              examples:
+                overCreditLimit:
+                  summary: Declined on the credit limit, from app/cbl/CBTRN02C.cbl:L403-L413.
+                  value:
+                    transactionId: '0000001000000002'
+                    accountId: '00000000077'
+                    approved: false
+                    declineReasonCode: '0102'
+                    declineReasonDescription: OVERLIMIT TRANSACTION
+                unresolvedCard:
+                  summary: >-
+                    Declined where no cross-reference row carries the card number, from
+                    app/cbl/CBTRN02C.cbl:L383-L387. This is the one outcome carrying no account
+                    identifier, since none was resolved. The same local transaction records the
+                    attempt and a schema-version-2 TransactionDeclined event keyed by transaction.
+                  value:
+                    transactionId: '0000001000000003'
+                    accountId: null
+                    approved: false
+                    declineReasonCode: '0100'
+                    declineReasonDescription: INVALID CARD NUMBER FOUND
+                rejectedBody:
+                  summary: The body was read and two of its values are not ones the source accepts.
+                  value:
+                    status: 422
+                    error: Validation failed
+                    messages:
+                      - Category CD must be Numeric...
+                      - Merchant Zip can NOT be empty...
+                    timestamp: '2022-06-10T19:27:53.412Z'
         '413':
           description: >-
             The request declares a body larger than this service reads.

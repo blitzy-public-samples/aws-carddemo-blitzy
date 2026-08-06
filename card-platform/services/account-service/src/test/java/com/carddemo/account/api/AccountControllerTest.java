@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -58,6 +59,15 @@ class AccountControllerTest {
     /** The customer the update names, nine digits. */
     private static final String CUSTOMER_ID = "000000050";
 
+    /** The postal code row one of {@code app/data/ASCII/acctdata.txt} carries. */
+    private static final String STORED_ADDRESS_ZIP = "72112";
+
+    /** The Social Security Number row one of {@code app/data/ASCII/custdata.txt} carries. */
+    private static final String STORED_SOCIAL_SECURITY_NUMBER = "429541163";
+
+    /** The government-issued identifier that same row carries. */
+    private static final String STORED_GOVERNMENT_ISSUED_ID = "AR8829114";
+
     private AccountRepository accounts;
     private CustomerRepository customers;
     private AccountUpdateService accountUpdates;
@@ -97,13 +107,15 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts a read that missed answers 404 with a problem document naming no identifier.
+         * Asserts a read that missed answers 404 carrying the text the source builds.
          *
-         * <p>The detail names nothing, for the reason {@code config/SecurityConfig} gives for its own
-         * 403: a caller probing for another subject's rows should learn nothing from the answer.
+         * <p>{@code 9300-GETACCTDATA-BYACCT} concatenates four literals around the account
+         * identifier, a response code and a reason code at {@code app/cbl/COACTVWC.cbl:L796-L806}.
+         * The identifier is the one the caller put in the path. The source carries no space after
+         * {@code file.} and none after either colon, and the answer keeps that spacing.
          */
         @Test
-        void aReadThatMissedAnswersNotFoundAndNamesNothing() {
+        void aReadThatMissedAnswersNotFoundWithTheSourceText() {
             when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
 
             ResponseEntity<?> response = controller.readAccount(ACCOUNT_ID);
@@ -111,9 +123,38 @@ class AccountControllerTest {
             assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode(), "no row answers 404");
             ApiProblem problem = assertInstanceOf(ApiProblem.class, response.getBody());
             assertEquals(ApiProblem.NOT_FOUND, problem.title(), "one fixed title");
-            assertFalse(problem.detail().contains(ACCOUNT_ID),
-                    "the detail repeats no identifier back to its sender");
-            assertNull(problem.messages(), "no field failed, so no field text is carried");
+            assertEquals(
+                    "Account:00000000050 not found in Acct Master file.Resp:404 Reas:Not Found",
+                    problem.detail(),
+                    "app/cbl/COACTVWC.cbl:L796-L806 character for character");
+            assertNull(problem.messages(),
+                    "one text travels, and the detail is the slot it travels in");
+        }
+
+        /**
+         * Asserts the payload carries the eleven values the source moves to the screen and no other.
+         *
+         * <p>{@code 1200-SETUP-SCREEN-VARS} moves them at {@code app/cbl/COACTVWC.cbl:L468-L490}.
+         * {@code ACCT-ADDR-ZIP} at {@code app/cpy/CVACT01Y.cpy:L15} is not among them, and
+         * {@code ACCOUNT-RECORD} at {@code app/cpy/CVACT01Y.cpy:L4-L17} declares no customer
+         * identifier for a twelfth component to carry.
+         */
+        @Test
+        void thePayloadCarriesElevenValuesAndNeitherTheZipNorACustomer() throws Exception {
+            when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.of(storedAccount()));
+
+            ResponseEntity<?> response = controller.readAccount(ACCOUNT_ID);
+
+            AccountView view = assertInstanceOf(AccountView.class, response.getBody());
+            assertEquals(java.util.List.of("accountId", "activeStatus", "currentBalance",
+                            "creditLimit", "cashCreditLimit", "currentCycleCredit",
+                            "currentCycleDebit", "openDate", "expirationDate", "reissueDate",
+                            "groupId"),
+                    java.util.Arrays.stream(AccountView.class.getRecordComponents())
+                            .map(java.lang.reflect.RecordComponent::getName).toList(),
+                    "the eleven values of app/cbl/COACTVWC.cbl:L468-L490, in source order");
+            assertFalse(renderedValuesOf(view).contains(STORED_ADDRESS_ZIP),
+                    "the postal code the record holds reaches no component");
         }
 
         /** Asserts a read writes nothing at all. */
@@ -225,8 +266,10 @@ class AccountControllerTest {
                     "a field a caller can correct answers 422");
             ApiProblem problem = assertInstanceOf(ApiProblem.class, response.getBody());
             assertEquals(ApiProblem.VALIDATION_FAILED, problem.title(), "one fixed title");
-            assertEquals(java.util.List.of(ficoMessage), problem.messages(),
+            assertEquals(ficoMessage, problem.detail(),
                     "the edit text reaches the caller character for character");
+            assertNull(problem.messages(),
+                    "one edit produced one text, so no list carries it");
         }
 
         /** Asserts an unknown account answers 404 and never reaches the service. */
@@ -267,8 +310,9 @@ class AccountControllerTest {
             assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, response.getStatusCode(),
                     "a caller that names no customer has not made a complete request");
             ApiProblem problem = assertInstanceOf(ApiProblem.class, response.getBody());
-            assertEquals(java.util.List.of(AccountController.CUSTOMER_ID_REQUIRED_MESSAGE),
-                    problem.messages(), "the answer says which component was missing");
+            assertEquals(AccountController.CUSTOMER_ID_REQUIRED_MESSAGE, problem.detail(),
+                    "the answer says which component was missing");
+            assertNull(problem.messages(), "one text travels, and no list carries it");
             verify(accounts, never()).findByAccountId(any());
         }
     }
@@ -337,6 +381,55 @@ class AccountControllerTest {
 
             assertEquals(new BigDecimal("12000.00"), proposedAccount().getCreditLimit(),
                     "a currency sign and separators read as one amount");
+
+            buildController();
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.ok());
+
+            controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
+                    new AccountDataRequest(null, null, "$1,234.56", null, null, null, null, null,
+                            null, null),
+                    customerData()));
+
+            assertEquals(new BigDecimal("1234.56"), proposedAccount().getCreditLimit(),
+                    "the contract refuses neither the sign nor the separator");
+        }
+
+        /**
+         * Asserts a submitted date of eight characters reaches the column as ten.
+         *
+         * <p>{@code ACUP-NEW-OPEN-DATE PIC X(08)} at {@code app/cbl/COACTUPC.cbl:L772} is the shape a
+         * caller submits, and {@code ACCT-UPDATE-RECORD} declares the column {@code PIC X(10)} at
+         * {@code app/cbl/COACTUPC.cbl:L427}. A separated ten-character value is the stored shape and
+         * not the submitted one, so it reaches the column as a value the date edit refuses.
+         */
+        @Test
+        void aSubmittedDateOfEightCharactersReachesTheColumnAsTen() {
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.ok());
+
+            controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
+                    new AccountDataRequest(null, null, null, null, "20150302", null, null, null,
+                            null, null),
+                    customerData()));
+
+            assertEquals("2015-03-02", proposedAccount().getOpenDate(),
+                    "eight characters reach the ten the column holds");
+
+            buildController();
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.ok());
+
+            controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
+                    new AccountDataRequest(null, null, null, null, "2015-03-02", null, null, null,
+                            null, null),
+                    customerData()));
+
+            assertNotEquals("2015-03-02", proposedAccount().getOpenDate(),
+                    "a value already carrying separators is not the shape the request declares");
         }
 
         /**
@@ -420,7 +513,77 @@ class AccountControllerTest {
         }
     }
 
+    /** What no answer carries, whatever the outcome. */
+    @Nested
+    @DisplayName("what no answer carries")
+    class WhatNoAnswerCarries {
+
+        /**
+         * Asserts neither identity document reaches a read payload or an update payload.
+         *
+         * <p>{@code CUST-SSN} at {@code app/cpy/CVCUS01Y.cpy:L17} and
+         * {@code CUST-GOVT-ISSUED-ID} at {@code app/cpy/CVCUS01Y.cpy:L18} are both stored, and the
+         * source moves them to the screen at {@code app/cbl/COACTVWC.cbl:L496-L504} and
+         * {@code app/cbl/COACTVWC.cbl:L519}. No answer of this class carries either value.
+         */
+        @Test
+        void neitherIdentityDocumentReachesAnAnswer() throws Exception {
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.ok());
+
+            String read = renderedValuesOf(controller.readAccount(ACCOUNT_ID).getBody());
+            String updated = renderedValuesOf(
+                    controller.updateAccount(ACCOUNT_ID, requestRaising()).getBody());
+
+            assertAll("neither document travels in either answer",
+                    () -> assertFalse(read.contains(STORED_SOCIAL_SECURITY_NUMBER),
+                            "the read answer carries no Social Security Number"),
+                    () -> assertFalse(read.contains(STORED_GOVERNMENT_ISSUED_ID),
+                            "the read answer carries no government-issued identifier"),
+                    () -> assertFalse(updated.contains(STORED_SOCIAL_SECURITY_NUMBER),
+                            "the update answer carries no Social Security Number"),
+                    () -> assertFalse(updated.contains(STORED_GOVERNMENT_ISSUED_ID),
+                            "the update answer carries no government-issued identifier"));
+        }
+
+        /** Asserts an update reads no row it does not need and writes through no store of its own. */
+        @Test
+        void anUpdateWritesThroughNoStoreOfItsOwn() {
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.ok());
+
+            controller.updateAccount(ACCOUNT_ID, requestRaising());
+
+            verify(accounts, never()).save(any());
+            verify(customers, never()).save(any());
+        }
+    }
+
     // Fixtures and helpers.
+
+    /**
+     * Renders every value one response body carries, walking into a nested record.
+     *
+     * @param body the response body, or {@code null}
+     * @return every value the body carries, separated
+     * @throws Exception when a component accessor cannot be read
+     */
+    private static String renderedValuesOf(Object body) throws Exception {
+        if (body == null) {
+            return "";
+        }
+        if (!body.getClass().isRecord()) {
+            return String.valueOf(body);
+        }
+        StringBuilder rendered = new StringBuilder();
+        for (java.lang.reflect.RecordComponent component
+                : body.getClass().getRecordComponents()) {
+            rendered.append(renderedValuesOf(component.getAccessor().invoke(body))).append('|');
+        }
+        return rendered.toString();
+    }
 
     /** Stubs both stores to resolve their rows. */
     private void resolveBoth() {
@@ -485,7 +648,7 @@ class AccountControllerTest {
         stored.setReissueDate("2020-03-01");
         stored.setCurrentCycleCredit(new BigDecimal("0.00"));
         stored.setCurrentCycleDebit(new BigDecimal("1010.00"));
-        stored.setAddressZip("72112");
+        stored.setAddressZip(STORED_ADDRESS_ZIP);
         stored.setGroupId("ZEROAPR");
         return stored;
     }
@@ -505,8 +668,8 @@ class AccountControllerTest {
         stored.setAddressZip("72112");
         stored.setPhoneNumber1("(501)5551234");
         stored.setPhoneNumber2("(501)5555678");
-        stored.setSocialSecurityNumber("429541163");
-        stored.setGovernmentIssuedId("AR8829114");
+        stored.setSocialSecurityNumber(STORED_SOCIAL_SECURITY_NUMBER);
+        stored.setGovernmentIssuedId(STORED_GOVERNMENT_ISSUED_ID);
         stored.setDateOfBirth("1971-08-14");
         stored.setEftAccountId("4829571130");
         stored.setPrimaryCardHolderIndicator("Y");

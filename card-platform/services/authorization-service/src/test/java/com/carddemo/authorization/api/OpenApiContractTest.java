@@ -69,7 +69,8 @@ final class OpenApiContractTest {
     @Test
     void theDocumentDescribesTheSixStatusCodes() {
         assertEquals(Set.of("200", "400", "413", "422", "500", "503"), responses().keySet(),
-                "an approval and a decline share 200, and the five failure codes follow");
+                "an approval answers 200, a decline and a rejected body share 422, and the four "
+                        + "remaining failure codes follow");
     }
 
     /** Asserts the request schema declares one property per record component, and no other. */

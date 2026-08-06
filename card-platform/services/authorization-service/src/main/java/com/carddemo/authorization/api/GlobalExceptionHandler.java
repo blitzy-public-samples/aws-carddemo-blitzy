@@ -28,7 +28,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * {@code 422}, because the body was read but its values are not ones the source accepts. A request
  * whose body cannot be read at all answers {@code 400}. Anything else answers {@code 500}.
  *
- * <p>A decline is none of these. It is a decision, and the controller answers {@code 200} for it.
+ * <p>A decline is none of these. {@link AuthorizationController} answers {@code 422} for one, from a
+ * value the decision service returned, so no handler below ever sees a decline.
  *
  * <p>No handler below puts a request value into the response. The body carries the verbatim field
  * texts the source emits plus a status code, and never the rejected value, the request path or a
