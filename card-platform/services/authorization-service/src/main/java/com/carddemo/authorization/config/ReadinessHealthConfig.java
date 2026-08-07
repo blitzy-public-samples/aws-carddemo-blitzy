@@ -154,11 +154,35 @@ public class ReadinessHealthConfig {
         return () -> listenersHealth(registries.getIfAvailable());
     }
 
+    /**
+     * Reports whether the outbox holds a row the relay gave up on.
+     *
+     * <p>The read reaches the datastore, so it can fail rather than answer. An indicator that lets a
+     * failure escape takes the whole health endpoint with it: the actuator has no answer to render,
+     * the request leaves through the container error path, and {@code /actuator/health} answers a
+     * framework body with {@code 500}. A container probe reading {@code curl -fsS} fails either way,
+     * but an operator reading the response learns nothing about which dependency is away, and the
+     * document that would have named it is the one thing the failure destroyed.
+     *
+     * <p>{@link #kafkaHealth} already answers this way for the broker, so the datastore now answers
+     * the same way: the dependency is reported down, named by the type of the root cause, and the
+     * endpoint renders its own document with {@code 503}.
+     *
+     * @param outboxEvents the outbox this service relays from
+     * @return the indicator the readiness group polls
+     */
     @Bean
     public HealthIndicator outboxHealthIndicator(OutboxEventRepository outboxEvents) {
-        return () -> outboxEvents.existsByRelayState(OutboxEventEntity.RelayState.ABANDONED)
-                ? Health.down().withDetail("state", "abandoned-row").build()
-                : Health.up().build();
+        return () -> {
+            try {
+                return outboxEvents.existsByRelayState(OutboxEventEntity.RelayState.ABANDONED)
+                        ? Health.down().withDetail("state", "abandoned-row").build()
+                        : Health.up().build();
+            } catch (Exception failure) {
+                return Health.down().withDetail("reason",
+                        rootCause(failure).getClass().getSimpleName()).build();
+            }
+        };
     }
 
     static Health kafkaHealth(Admin admin, int timeoutSeconds) {

@@ -88,7 +88,7 @@ class CardValidationMessagesTest {
     private static final String ADDITIVE_FIELD_PREFIX = "ADDITIVE_";
 
     /** Declarations carrying {@link #ADDITIVE_FIELD_PREFIX}. */
-    private static final int ADDITIVE_FIELD_COUNT = 5;
+    private static final int ADDITIVE_FIELD_COUNT = 7;
 
     /**
      * Count of declarations carrying the {@value #NEVER_EMITTED_FIELD_PREFIX} prefix. Six
@@ -453,8 +453,8 @@ class CardValidationMessagesTest {
      * texts, because lines 190 and 192 of {@code app/cbl/COCRDUPC.cbl} carry the same characters
      * under two condition names.</p>
      *
-     * <p>Fifteen plus five distinct gives the inventory of twenty source texts. The twenty-six
-     * declarations exceed it by six: one repeated never-emitted text and five constants carrying
+     * <p>Fifteen plus five distinct gives the inventory of twenty source texts. The twenty-eight
+     * declarations exceed it by eight: one repeated never-emitted text and seven constants carrying
      * the {@value #ADDITIVE_FIELD_PREFIX} prefix.</p>
      */
     @Test
@@ -468,14 +468,14 @@ class CardValidationMessagesTest {
         assertEquals(NEVER_EMITTED_FIELD_COUNT, neverEmitted.size(),
                 "the never-emitted class names six constants");
         assertEquals(ADDITIVE_FIELD_COUNT, additive.size(),
-                "the additive class names five constants");
+                "the additive class names seven constants");
 
         Set<String> classified = new LinkedHashSet<>();
         classified.addAll(reachable.keySet());
         classified.addAll(neverEmitted.keySet());
         classified.addAll(additive.keySet());
         assertEquals(REACHABLE_TEXT_COUNT + NEVER_EMITTED_FIELD_COUNT + ADDITIVE_FIELD_COUNT,
-                classified.size(), "the three classes name twenty-six distinct constants");
+                classified.size(), "the three classes name twenty-eight distinct constants");
 
         Set<String> declaredNames = new LinkedHashSet<>();
         for (Field field : textFields()) {
@@ -532,22 +532,23 @@ class CardValidationMessagesTest {
                 constantValue("NEVER_EMITTED_SEARCHED_ACCT_NOT_NUMERIC"),
                 "app/cbl/COCRDUPC.cbl lines 190 and 192 carry the same characters");
         assertEquals(SOURCE_TEXT_INVENTORY_SIZE + 1 + ADDITIVE_FIELD_COUNT, declaredNames.size(),
-                "twenty inventory texts, one repeated never-emitted text and two additive texts "
-                        + "give twenty-six declarations");
+                "twenty inventory texts, one repeated never-emitted text and seven additive texts "
+                        + "give twenty-eight declarations");
 
         // The reflection helpers agree with the enumerated classification. The additive text joins
         // the comparison here and not the inventory above, because it transcribes no source literal.
         Set<String> allTexts = new LinkedHashSet<>(sourceTexts);
         allTexts.addAll(additive.values());
         assertEquals(allTexts, messageTexts(),
-                "every declared constant holds one of the twenty source texts or one of the five "
+                "every declared constant holds one of the twenty source texts or one of the seven "
                         + "additive texts");
     }
 
     // Inventory helpers. Each map is typed here, so a text or a name that drifts fails by name.
 
     /**
-     * Returns the five texts that transcribe no source literal, keyed by the constant holding each.
+     * Returns the seven texts that transcribe no source literal, keyed by the constant holding
+     * each.
      *
      * <p>{@code CCUP-NEW-EXPDAY PIC X(2)} at {@code app/cbl/COCRDUPC.cbl:L312} reaches the
      * reassembled date at L1471 and no paragraph between L945 and L948 edits it, so the source
@@ -562,7 +563,13 @@ class CardValidationMessagesTest {
      * refuses it and says why. That is the one behavioural divergence of the update route, and
      * {@code docs/business-rule-flags.md} carries it.
      *
-     * @return the five additive texts, keyed by their constants
+     * <p>The last two answer the two list failures no constraint on a request value can produce. A
+     * row count that is no number reaches no constraint at all, because the row count is the one
+     * request value of this service that is not text and its conversion runs first. A cursor of the
+     * right shape that resolves to no row can only be discovered by a read. Both were {@code 500}
+     * before they were declared, and neither is a fault of this service.
+     *
+     * @return the seven additive texts, keyed by their constants
      */
     private static Map<String, String> additiveTexts() {
         return Map.of(
@@ -574,7 +581,9 @@ class CardValidationMessagesTest {
                 "A request names one browse direction, forward or backward",
                 "ADDITIVE_CARD_EXPIRY_DAY_WIDTH", "Card expiry day must be two digits",
                 "ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE",
-                "Card expiry year, month and day must name a day of the calendar");
+                "Card expiry year, month and day must name a day of the calendar",
+                "ADDITIVE_PAGE_SIZE_NOT_A_NUMBER", "Page size must be a whole number",
+                "ADDITIVE_CARD_CURSOR_UNKNOWN", "Card cursor names no card of this list");
     }
 
     /**

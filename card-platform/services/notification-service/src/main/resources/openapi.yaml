@@ -158,12 +158,49 @@ paths:
 
         '400':
           description: >-
+            A request value this route cannot use. Three refusals answer here, and
+            each carries its own text so a caller reads which value was wrong.
+
             The path value did not match a card token of 64 lower-case
-            hexadecimal characters, or pageSize named a value below one.
+            hexadecimal characters:
+            "Card token must be sixty-four lower-case hexadecimal characters".
+
+            pageSize named a value below one:
+            "Page size must be at least one". Above the maximum nothing is
+            refused, because the maximum applies instead.
+
+            pageSize named a value that is no whole number, whether text such as
+            abc, a fractional value, or a value wider than the type it converts
+            to: "Page size must be a whole number". This one reaches no
+            constraint, because a query string is text and pageSize is the one
+            value of this route that is not, so it converts first. card-service
+            answers the same text for the same failure on GET /cards.
+
+            No text names a value the caller submitted, so nothing a caller sends
+            is copied back into a response body or into a log line built from one.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+              examples:
+                cardToken:
+                  summary: The path value is no card token.
+                  value:
+                    status: 400
+                    message: 'Card token must be sixty-four lower-case hexadecimal characters'
+                    route: '/notifications/{cardToken}'
+                pageSizeBelowFloor:
+                  summary: pageSize named zero or a negative value.
+                  value:
+                    status: 400
+                    message: 'Page size must be at least one'
+                    route: '/notifications/{cardToken}'
+                pageSizeNotANumber:
+                  summary: pageSize named a value that is no whole number.
+                  value:
+                    status: 400
+                    message: 'Page size must be a whole number'
+                    route: '/notifications/{cardToken}'
 
         '401':
           description: >-

@@ -23,7 +23,11 @@
     and fails the build at verify.
   </description>
 
-  <!-- The framework parent defaults the compiler release to 17. These two properties pin release 25. -->
+  <!-- Language level. The build reads maven.compiler.release: the compiler plugin in
+       card-platform/pom.xml configures its release from that property, and the aggregator's
+       enforcer rule requires 25 in every module. java.version carries the framework's
+       conventional name for the same level and no plugin resolves it, because the aggregator
+       imports the Spring Boot bill of materials rather than inheriting the Spring Boot parent. -->
   <properties>
     <java.version>25</java.version>
     <maven.compiler.release>25</maven.compiler.release>

@@ -4,7 +4,9 @@ import com.carddemo.account.entity.AccountEntity;
 import jakarta.persistence.LockModeType;
 import java.util.Optional;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.ListCrudRepository;
+import org.springframework.data.repository.query.Param;
 
 /**
  * Finds and stores the account master record, one row of the {@code account} table in the private
@@ -56,4 +58,27 @@ public interface AccountRepository extends ListCrudRepository<AccountEntity, Str
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     Optional<AccountEntity> findForUpdateByAccountId(String accountId);
+
+    /**
+     * Bounds how long the locked reads of this transaction wait for a row another writer holds.
+     *
+     * <p>PostgreSQL waits forever by default, so a contended update held its request open for as long
+     * as the other writer held the row. The documented lock-failure answer was then unreachable
+     * through contention: the wait ended in a lock or it did not end.
+     *
+     * <p>{@code set_config} with its third argument true is transaction-local, so the bound governs
+     * the locked reads of this one update and is discarded at commit or rollback. That is the reason
+     * for this method rather than a datasource setting: a bound on every connection would also bound a
+     * schema migration and the relay sweep, and a migration that gives up on a lock leaves a
+     * half-applied schema. A parameter is used rather than {@code SET LOCAL} because PostgreSQL admits
+     * no placeholder in a {@code SET} statement.
+     *
+     * <p>Once the bound is in force, a lock the datastore will not grant inside it raises rather than
+     * waiting, and the caller reports the documented lock-failure answer.
+     *
+     * @param milliseconds the bound, as a PostgreSQL interval string such as {@code 3000ms}
+     * @return the value the setting now holds, which the caller reads for nothing
+     */
+    @Query(value = "SELECT set_config('lock_timeout', :milliseconds, true)", nativeQuery = true)
+    String applyLockWaitBound(@Param("milliseconds") String milliseconds);
 }

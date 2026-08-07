@@ -336,18 +336,53 @@ class AccountControllerOutcomeAndMergeTest {
         }
 
         /**
-         * Asserts a component the body omits keeps the stored value.
+         * Asserts a component the body omits and no mandatory edit reads keeps the stored value.
          *
-         * <p>These tests call the controller directly, so bean validation has already run or, here, has
-         * not. Over the Hypertext Transfer Protocol most of these components carry a mandatory-field
-         * edit and a body omitting one is refused before this merge is reached, which
-         * {@code AccountRouteWiringTest} asserts. What this test pins is the merge itself: an absent
-         * value never overwrites a stored one. The property matters for the components that may be
-         * omitted, and it has to hold for all of them, because a merge that guards one field and not its
-         * neighbour is a merge a later change quietly breaks.
+         * <p>Six customer components and one account component carry no mandatory edit, and the
+         * openapi document does not name them in the required list of their block. Those are the ones
+         * a caller may leave out, and leaving one out has to mean the stored value stands. The
+         * property has to hold for every one of them, because a merge that guards one field and not
+         * its neighbour is a merge a later change quietly breaks.
          */
         @Test
-        void anOmittedComponentKeepsTheStoredValue() {
+        void anOmittedOptionalComponentKeepsTheStoredValue() {
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.ok());
+
+            controller.updateAccount(ACCOUNT_ID, requestRaising());
+
+            assertEquals("ZEROAPR", proposedAccount().getGroupId(),
+                    "the disclosure group was not submitted, so it stands as stored");
+
+            CustomerEntity proposed = proposedCustomer();
+            assertEquals("Fay", proposed.getMiddleName(), "and so does the middle name");
+            assertEquals("Suite 407", proposed.getAddressLine2(),
+                    "and so does the second address line");
+            assertEquals("(501)5551234", proposed.getPhoneNumber1(),
+                    "and so does the first telephone number");
+            assertEquals("(501)5555678", proposed.getPhoneNumber2(),
+                    "and so does the second telephone number");
+            assertEquals(STORED_GOVERNMENT_ISSUED_ID, proposed.getGovernmentIssuedId(),
+                    "and so does the government-issued identifier");
+            assertEquals("1971-08-14", proposed.getDateOfBirth(), "and so does the date of birth");
+        }
+
+        /**
+         * Asserts a component the body omits and a mandatory edit reads reaches the service absent.
+         *
+         * <p>This is the whole of the mandatory-field contract. Nine account components and ten
+         * customer components carry a mandatory-field edit in {@code 1200-EDIT-MAP-INPUTS} at
+         * {@code app/cbl/COACTUPC.cbl:L1470-L1676}, and each one refuses an absent value exactly as it
+         * refuses a blank one. That only happens if the merge hands the absent value through. Filling
+         * it from the stored row would answer 200 to a caller that dropped a field and tell it
+         * nothing, and it would write a value the caller never sent.
+         *
+         * <p>These tests call the controller directly, so no bean validation ran. What this test pins
+         * is the merge; {@code AccountRouteWiringTest} pins the refusal the edit then produces.
+         */
+        @Test
+        void anOmittedMandatoryComponentReachesTheServiceAbsent() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
                     .thenReturn(EditResult.ok());
@@ -355,9 +390,60 @@ class AccountControllerOutcomeAndMergeTest {
             controller.updateAccount(ACCOUNT_ID, requestRaising());
 
             AccountEntity proposed = proposedAccount();
+            assertNull(proposed.getCurrentBalance(),
+                    "the balance was not submitted, so the edit that owns it reads an absent value");
+            assertNull(proposed.getActiveStatus(), "and so does the status edit");
+            assertNull(proposed.getOpenDate(), "and so does the open date edit");
+            assertNull(proposed.getExpirationDate(), "and so does the expiry date edit");
+            assertNull(proposed.getReissueDate(), "and so does the reissue date edit");
+            assertNull(proposed.getCashCreditLimit(), "and so does the cash credit limit edit");
+            assertNull(proposed.getCurrentCycleCredit(), "and so does the cycle credit edit");
+            assertNull(proposed.getCurrentCycleDebit(), "and so does the cycle debit edit");
+
+            CustomerEntity proposedCustomer = proposedCustomer();
+            assertNull(proposedCustomer.getFirstName(), "and so does the first name edit");
+            assertNull(proposedCustomer.getLastName(), "and so does the last name edit");
+            assertNull(proposedCustomer.getAddressLine1(), "and so does the first address line edit");
+            assertNull(proposedCustomer.getAddressCity(), "and so does the city edit");
+            assertNull(proposedCustomer.getAddressStateCode(), "and so does the state edit");
+            assertNull(proposedCustomer.getAddressCountryCode(), "and so does the country edit");
+            assertNull(proposedCustomer.getAddressZip(), "and so does the postcode edit");
+            assertNull(proposedCustomer.getEftAccountId(), "and so does the transfer account edit");
+            assertNull(proposedCustomer.getPrimaryCardHolderIndicator(),
+                    "and so does the primary card holder edit");
+            assertNull(proposedCustomer.getFicoCreditScore(), "and so does the credit score edit");
+        }
+
+        /**
+         * Asserts the whole account block being absent leaves every account column as stored.
+         *
+         * <p>Omitting the block is how a caller updates the customer alone, and it is the one omission
+         * the mandatory edits do not refuse. The nine components then reach those edits carrying the
+         * stored values, which is what the source screen sent when the operator touched nothing.
+         */
+        @Test
+        void anAbsentAccountBlockKeepsEveryAccountColumn() {
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.ok());
+
+            controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(null, customerData()));
+
+            AccountEntity proposed = proposedAccount();
+            assertEquals("Y", proposed.getActiveStatus(), "the status stands as stored");
             assertEquals(new BigDecimal("1010.00"), proposed.getCurrentBalance(),
-                    "the balance was not submitted, so it stands as stored");
+                    "and so does the balance");
+            assertEquals(new BigDecimal("10000.00"), proposed.getCreditLimit(),
+                    "and so does the credit limit");
+            assertEquals(new BigDecimal("5000.00"), proposed.getCashCreditLimit(),
+                    "and so does the cash credit limit");
             assertEquals("2015-03-01", proposed.getOpenDate(), "and so does the open date");
+            assertEquals("2025-02-28", proposed.getExpirationDate(), "and so does the expiry date");
+            assertEquals("2020-03-01", proposed.getReissueDate(), "and so does the reissue date");
+            assertEquals(new BigDecimal("0.00"), proposed.getCurrentCycleCredit(),
+                    "and so does the cycle credit");
+            assertEquals(new BigDecimal("1010.00"), proposed.getCurrentCycleDebit(),
+                    "and so does the cycle debit");
             assertEquals("ZEROAPR", proposed.getGroupId(), "and so does the disclosure group");
         }
 
@@ -486,9 +572,10 @@ class AccountControllerOutcomeAndMergeTest {
          * Asserts the three Social Security parts are recombined only when all three arrive.
          *
          * <p>Writing a number two thirds of which came from the stored row is a value no caller asked
-         * for, so a body carrying one part alone leaves the column as stored. Over the Hypertext Transfer
-         * Protocol a cross-field check on the block refuses that body outright, and this is the second
-         * guard behind it.
+         * for. All three parts are required, so a body carrying one part alone leaves the column absent
+         * and the edit at {@code app/cbl/COACTUPC.cbl:L1529-L1531} reads the nine spaces that absence
+         * composes and refuses them. Substituting the stored number would let that body through, and
+         * the caller would never learn it sent one part of three.
          */
         @Test
         void theSocialSecurityPartsAreRecombinedOnlyTogether() {
@@ -498,8 +585,8 @@ class AccountControllerOutcomeAndMergeTest {
 
             controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(null,
                     customerDataWithSocialSecurity("429", null, null)));
-            assertEquals("429541163", proposedCustomer().getSocialSecurityNumber(),
-                    "one part alone leaves the stored number as it stands");
+            assertNull(proposedCustomer().getSocialSecurityNumber(),
+                    "one part alone leaves the column absent, and the stored number is not borrowed");
 
             buildController();
             resolveBoth();
@@ -510,6 +597,28 @@ class AccountControllerOutcomeAndMergeTest {
                     customerDataWithSocialSecurity("111", "22", "3333")));
             assertEquals("111223333", proposedCustomer().getSocialSecurityNumber(),
                     "all three parts together write the column");
+        }
+
+        /**
+         * Asserts the stored number is never the source of a submitted one.
+         *
+         * <p>The guard is the reason the merge cannot hand a partly stored Social Security number to
+         * the writer. The number the store holds is one no part of this body named, and it reaches the
+         * proposed record on no path.
+         */
+        @Test
+        void anAbsentSocialSecurityNumberNeverBorrowsTheStoredOne() {
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.ok());
+
+            controller.updateAccount(ACCOUNT_ID, requestRaising());
+
+            assertNull(proposedCustomer().getSocialSecurityNumber(),
+                    "no part arrived, so the column is absent");
+            assertNotEquals(STORED_SOCIAL_SECURITY_NUMBER,
+                    proposedCustomer().getSocialSecurityNumber(),
+                    "and it is not the number the store holds");
         }
     }
 

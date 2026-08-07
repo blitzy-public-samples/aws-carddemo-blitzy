@@ -121,7 +121,7 @@ The notification listener acknowledges a valid cleared event without rendering a
 
 ### `AccountStateChanged`
 
-The account service publishes `AccountStateChanged` only after an account update or cycle close commits. The event carries the complete authorization credit snapshot.
+The account service publishes `AccountStateChanged` only after an account update or cycle close commits, and an update publishes it only when the account record itself changed. An update that raises a credit limit publishes it; one that changes only an address publishes `CustomerContextChanged` instead. The event carries the complete authorization credit snapshot.
 
 | Field | Authorization target in `account_credit_snapshot` | Ledger target in `account_balance_projection` |
 | --- | --- | --- |
@@ -139,7 +139,9 @@ Authorization then reads its local projection and calls no account service durin
 
 ### `CustomerContextChanged`
 
-The account service publishes `CustomerContextChanged` when the customer record changes beside an account update. It carries the ten name, address, country, postal-code, and credit-score fields the source statement renderer reads.
+The account service publishes `CustomerContextChanged` when the customer record changes beside an account update, and not when the update left it as it stood. It carries the ten name, address, country, postal-code, and credit-score fields the source statement renderer reads.
+
+The comparison that decides both publications is the one `app/cbl/COACTUPC.cbl:L1684-L1768` draws, applied to each record on its own rather than to the pair. The two rewrites at `:L4066` and `:L4086` run unconditionally, each writing back the values the caller submitted, so a record whose submitted values equal its fetched values is rewritten with what it already held and has no change to announce. Reaching those rewrites requires the submitted pair to differ from the fetched pair, so every committed write publishes at least one of the two events.
 
 The `notification-customer` group applies the event to `cardholder_context` and stores the duplicate marker in the same local transaction. A producer timestamp prevents an older or replayed event from moving the projection backwards.
 

@@ -71,17 +71,22 @@ The status codes are the source's own outcome model, restated over HTTP. `app/cb
 A decline answers 422. No decline answers 500 and none answers 503.
 
 ```bash
+CAPTURED_AT="$(date -u +'%Y-%m-%d %H:%M:%S').000000"
+PROCESSED_AT="$(date -u +'%Y-%m-%d-%H.%M.%S').000000"
+
 curl -sS -X POST http://localhost:8081/authorizations \
   -u "admin001:${ADMIN_PASSWORD}" \
   -H 'Content-Type: application/json' \
-  -d '{"cardNumber":"0500024453765740","transactionTypeCode":"01",
-       "transactionCategoryCode":"0001","source":"POS TERM",
-       "description":"Service guide purchase","amount":"+00000504.77",
-       "merchantId":"800000000","merchantName":"Abshire-Lowe",
-       "merchantCity":"North Enoshaven","merchantZip":"72112",
-       "originTimestamp":"2026-08-05 10:30:00.000000",
-       "processingTimestamp":"2026-08-05-10.30.00.000000"}'
+  -d "{\"cardNumber\":\"0500024453765740\",\"transactionTypeCode\":\"01\",
+       \"transactionCategoryCode\":\"0001\",\"source\":\"POS TERM\",
+       \"description\":\"Service guide purchase\",\"amount\":\"+00000504.77\",
+       \"merchantId\":\"800000000\",\"merchantName\":\"Abshire-Lowe\",
+       \"merchantCity\":\"North Enoshaven\",\"merchantZip\":\"72112\",
+       \"originTimestamp\":\"${CAPTURED_AT}\",
+       \"processingTimestamp\":\"${PROCESSED_AT}\"}"
 ```
+
+Both timestamps are derived rather than typed. `carddemo.authorization.origin-timestamp.max-age-minutes` defaults to 1440, so a capture moment more than a day behind the service clock is refused with 422 before any decision is taken, and a literal date in a guide stops working the day after it is written.
 
 The full contract is the hand-written [OpenAPI description](src/main/resources/openapi.yaml). No documentation generator produces it.
 

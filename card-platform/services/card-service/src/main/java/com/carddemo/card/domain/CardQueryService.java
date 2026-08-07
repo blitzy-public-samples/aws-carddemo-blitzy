@@ -1,5 +1,6 @@
 package com.carddemo.card.domain;
 
+import com.carddemo.card.api.dto.CardValidationMessages;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.repository.CardRepository;
 import com.carddemo.cobol.PanMasker;
@@ -38,6 +39,41 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 @Transactional(readOnly = true)
 public class CardQueryService {
+
+    /**
+     * Raised when a list request names a paging position or a row count this class cannot browse
+     * with.
+     *
+     * <p>The two failures this carries are a caller's, not this service's, and the difference decides
+     * the status a caller reads. {@code api/CardApiExceptionHandler} answers this type with
+     * {@code 400} and answers every other fault with {@code 500}, so a row count of zero is reported
+     * as the bad request it is rather than as a fault of this service. Before this type existed both
+     * left the same {@link IllegalArgumentException}, the handler could not tell one from the other,
+     * and a caller reading {@code 500} had no way to learn that correcting its own request would fix
+     * it.
+     *
+     * <p>The message is always one of the texts {@code api/dto/CardValidationMessages} declares and
+     * never a value read from the request, because the handler puts it in the response body. The
+     * submitted value reaches no message here: a row count of six figures would put a run of digits
+     * into a body whose route member exists to keep runs of digits out of it.
+     *
+     * <p>It extends {@link IllegalArgumentException} because that is what an argument this class
+     * cannot use is, and a caller of this service that catches the general type keeps catching it.
+     */
+    public static class UnusableListRequest extends IllegalArgumentException {
+
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * Builds one refusal.
+         *
+         * @param callerText one text of {@code api/dto/CardValidationMessages}, which reaches the
+         *                   caller verbatim
+         */
+        public UnusableListRequest(String callerText) {
+            super(callerText);
+        }
+    }
 
     /**
      * Rows on one page when a caller names no page size.
@@ -422,8 +458,8 @@ public class CardQueryService {
      *
      * @param requestedPageSize the page size a caller named, or {@code null}
      * @return the page size to read with
-     * @throws IllegalArgumentException if the named size falls outside {@value #MIN_PAGE_SIZE}
-     *                                  through {@value #MAX_PAGE_SIZE}
+     * @throws UnusableListRequest if the named size falls outside {@value #MIN_PAGE_SIZE}
+     *                             through {@value #MAX_PAGE_SIZE}
      */
     private static int resolvePageSize(Integer requestedPageSize) {
         if (requestedPageSize == null) {
@@ -432,8 +468,10 @@ public class CardQueryService {
 
         int pageSize = requestedPageSize;
         if (pageSize < MIN_PAGE_SIZE || pageSize > MAX_PAGE_SIZE) {
-            throw new IllegalArgumentException("pageSize holds " + pageSize
-                    + " and a page size runs from " + MIN_PAGE_SIZE + " through " + MAX_PAGE_SIZE);
+            // The submitted count reaches no message. api/CardController constrains the same range
+            // declaratively, so a request over the Hypertext Transfer Protocol is refused before it
+            // arrives here; this guard holds the range for a caller of this class.
+            throw new UnusableListRequest(CardValidationMessages.ADDITIVE_PAGE_SIZE_OUT_OF_RANGE);
         }
         return pageSize;
     }
@@ -453,9 +491,8 @@ public class CardQueryService {
      * @param cardToken the card token the caller paged from, or {@code null}
      * @return the card number the browse positions on, or {@code null} for the first or the last
      *         page
-     * @throws IllegalArgumentException if the value is not
-     *                                  {@value PanMasker#CARD_TOKEN_LENGTH} lower-case
-     *                                  hexadecimal characters, or if it names no card
+     * @throws UnusableListRequest if the value is not {@value PanMasker#CARD_TOKEN_LENGTH}
+     *                             lower-case hexadecimal characters, or if it names no card
      */
     private String resolveCursor(String cardToken) {
         String trimmed = trimToNull(cardToken);
@@ -466,8 +503,8 @@ public class CardQueryService {
         requireCardTokenShape(trimmed);
         return cardRepository.findByCardToken(trimmed)
                 .map(CardEntity::getCardNumber)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        "cursor names no card, so this browse has no position to start from"));
+                .orElseThrow(() -> new UnusableListRequest(
+                        CardValidationMessages.ADDITIVE_CARD_CURSOR_UNKNOWN));
     }
 
     /**
@@ -488,9 +525,10 @@ public class CardQueryService {
      */
     private static void requireCardTokenShape(String value) {
         if (!CARD_TOKEN_SHAPE.matcher(value).matches()) {
-            throw new IllegalArgumentException("cursor holds " + value.length()
-                    + " characters and a card token holds " + PanMasker.CARD_TOKEN_LENGTH
-                    + " lower-case hexadecimal characters");
+            // The submitted length reaches no message. The header constraint of api/CardController
+            // carries the same text, so a request over the Hypertext Transfer Protocol is refused
+            // before it arrives here.
+            throw new UnusableListRequest(CardValidationMessages.ADDITIVE_CARD_CURSOR_MALFORMED);
         }
     }
 

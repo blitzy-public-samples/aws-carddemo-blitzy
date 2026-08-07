@@ -1,6 +1,9 @@
 package com.carddemo.card.api;
 
 import com.carddemo.card.api.dto.ApiErrorResponse;
+import com.carddemo.card.api.dto.CardValidationMessages;
+import com.carddemo.card.domain.CardQueryService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import java.util.TreeSet;
@@ -16,6 +19,8 @@ import org.springframework.web.bind.MissingRequestValueException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.HandlerMapping;
 
 /**
  * Turns a failure of a card endpoint into an {@link ApiErrorResponse}.
@@ -26,13 +31,21 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
  * number in the response and in any log line built from it. Every response this class returns
  * carries a route template and one fixed or validated text, and no value read from the request.
  *
- * <p>Four outcomes.
+ * <p>Six outcomes, and only the last is a fault of this service.
  *
  * <ul>
  * <li>A query parameter or a request header that misses its constraint answers {@code 400} with the
  * text that constraint declares, which is a text of
- * {@code com.carddemo.card.api.dto.CardValidationMessages} for both of the values the list route
+ * {@code com.carddemo.card.api.dto.CardValidationMessages} for each of the values the list route
  * constrains.</li>
+ * <li>A query parameter that could not be converted to the type its route declares answers
+ * {@code 400}. The row count of the list route is the one request value of this service that is not
+ * text, so it is the one value a conversion can fail on, and the conversion runs before any
+ * constraint does.</li>
+ * <li>A paging position or a row count the read cannot browse with answers {@code 400}. That is
+ * {@link CardQueryService.UnusableListRequest}, whose message is always one of the declared texts.
+ * The case a constraint cannot reach is a well-formed cursor naming no row, which only a read
+ * discovers.</li>
  * <li>A missing required parameter answers {@code 400} with a fixed text. The account the list route
  * lists by is required, and the rule that admits the route reads the same parameter, so a request
  * without it is refused before this class sees it in every deployment that runs the filter chain.
@@ -43,12 +56,35 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
  * <li>Any other fault answers {@code 500} with one fixed text.</li>
  * </ul>
  *
- * <p>The route template of a failing request is not read from the request. This service has two
- * templates, the collection and the read below it, and a failure of the kinds above can arise on
- * either. The collection template is reported, because it is the prefix of both and because it
- * carries no path variable to resolve. That keeps the promise
- * {@link ApiErrorResponse} makes in its own documentation: the value is a template, and its
- * constructor refuses anything holding a run of more than four digits.
+ * <p>The route template is the mapping pattern the dispatcher matched, read from the request
+ * attribute {@link HandlerMapping#BEST_MATCHING_PATTERN_ATTRIBUTE}. A pattern is not request content:
+ * it is one of the two templates this service declares, chosen by the dispatcher, and it holds no
+ * value a caller sent. Reporting the collection template for every failure was wrong on the read
+ * route, where a caller reading {@code /cards} for a failure of {@code /cards/detail} is told the
+ * wrong endpoint failed, and the published examples of that route carry {@code /cards/detail}.
+ *
+ * <p>{@link #routeOf} falls back to the collection template when no pattern is available, which is
+ * the case when a failure arises before the dispatcher matched one and the case when this class is
+ * called outside a request. It also falls back when a pattern would not satisfy
+ * {@link ApiErrorResponse}, whose constructor refuses a run of more than four digits. No route of
+ * this service carries a path variable, so no pattern can carry one, and the check is there so that
+ * a route added later cannot turn a handled failure into an unhandled one.
+ *
+ * <p>The advice deliberately names no base package, and {@code config/ReadinessHealthConfig} is why it
+ * does not have to. A poll of {@code /actuator/health} reached this class only because a health
+ * indicator let a failure escape, which left the actuator with no document to render and sent the
+ * request out through the error path. Every indicator that reaches a dependency now catches its own
+ * failure and reports that dependency down, so the endpoint renders its own document with {@code 503}
+ * and no failure of the management port arrives here at all.
+ *
+ * <p>Naming a base package was measured and rejected. Spring selects an advice by the type of the
+ * handler it resolved, and a request that matches no mapping resolves none: a {@code consumes}
+ * condition that the request content type misses is the common case. A scoped advice is therefore
+ * skipped for exactly the failures raised before a handler is chosen, and the documented answers to an
+ * unsupported media type, an unacceptable media type and an unsupported method would each become the
+ * framework body this class exists to replace. Scoping is also neither necessary nor sufficient on its
+ * own: {@code fraud-detection-service} was scoped throughout and still answered a paused datastore
+ * with the framework body, because its indicator threw.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -71,6 +107,12 @@ public class CardApiExceptionHandler {
     static final String SERVICE_FAULT_MESSAGE = "The request could not be completed";
 
     /**
+     * Longest run of digits a route template may hold, matching the bound {@link ApiErrorResponse}
+     * enforces in its constructor.
+     */
+    private static final int MAXIMUM_ROUTE_DIGIT_RUN = 4;
+
+    /**
      * Answers a query parameter or a request header that misses its constraint.
      *
      * <p>A class annotated {@code @Validated} validates through a proxy, which reports every
@@ -88,9 +130,61 @@ public class CardApiExceptionHandler {
      */
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<ApiErrorResponse> onConstraintViolation(
-            ConstraintViolationException violation) {
+            ConstraintViolationException violation, HttpServletRequest request) {
         log.info("A card request carried a value one constraint refused");
-        return badRequest(firstTextOf(violation));
+        return badRequest(firstTextOf(violation), request);
+    }
+
+    /**
+     * Answers a query parameter the framework could not convert to the type its route declares.
+     *
+     * <p>The row count of the list route is the one request value of this service that is not text.
+     * Its conversion runs while the argument is resolved, which is before any constraint on it can
+     * run, so a value that is no number never reaches {@code @Min} or {@code @Max} and never reaches
+     * the read. Before this method existed that conversion failure fell through to
+     * {@link #onFault(Exception, HttpServletRequest)} and a caller sending {@code pageSize=abc} read
+     * {@code 500} with a stack trace logged at error level, so a request a caller could correct was
+     * reported as a fault of this service and raised an alert besides.
+     *
+     * <p>The submitted value reaches no response and no log line. The framework's own message quotes
+     * it, and this method reads the exception for nothing but its type.
+     *
+     * @param mismatch the reported failure, whose message reaches no response body
+     * @param request  the failing request, read for its mapping pattern alone
+     * @return {@code 400} carrying the route template and the declared text
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiErrorResponse> onParameterTypeMismatch(
+            MethodArgumentTypeMismatchException mismatch, HttpServletRequest request) {
+        log.info("A card request carried a parameter that could not be read as a number");
+        return badRequest(CardValidationMessages.ADDITIVE_PAGE_SIZE_NOT_A_NUMBER, request);
+    }
+
+    /**
+     * Answers a paging position or a row count the read cannot browse with.
+     *
+     * <p>{@link CardQueryService.UnusableListRequest} carries one of the texts
+     * {@link CardValidationMessages} declares and never a value read from the request, so its message
+     * reaches the caller verbatim. Two of its three cases are also constrained at the boundary and are
+     * refused before the read runs; the third is a well-formed cursor that resolves to no row, which
+     * no constraint can discover because discovering it takes a read.
+     *
+     * <p>Before this method existed all three left an {@link IllegalArgumentException} that fell
+     * through to {@link #onFault(Exception, HttpServletRequest)}, so a caller paging from a cursor
+     * this service no longer holds read {@code 500} rather than the {@code 400} its own request had
+     * earned.
+     *
+     * @param unusable the refusal, whose message is a declared text
+     * @param request  the failing request, read for its mapping pattern alone
+     * @return {@code 400} carrying the route template and that text
+     */
+    @ExceptionHandler(CardQueryService.UnusableListRequest.class)
+    public ResponseEntity<ApiErrorResponse> onUnusableListRequest(
+            CardQueryService.UnusableListRequest unusable, HttpServletRequest request) {
+        log.info("A card list named a paging position or a row count it could not browse with");
+        String text = unusable.getMessage();
+        return badRequest(text == null || text.isBlank() ? MISSING_REQUEST_VALUE_MESSAGE : text,
+                request);
     }
 
     /**
@@ -102,7 +196,7 @@ public class CardApiExceptionHandler {
      */
     @ExceptionHandler(HandlerMethodValidationException.class)
     public ResponseEntity<ApiErrorResponse> onMethodValidation(
-            HandlerMethodValidationException violation) {
+            HandlerMethodValidationException violation, HttpServletRequest request) {
         log.info("A card request carried a value one constraint refused");
         TreeSet<String> texts = new TreeSet<>();
         for (ParameterValidationResult result : violation.getParameterValidationResults()) {
@@ -113,7 +207,7 @@ public class CardApiExceptionHandler {
                 }
             }
         }
-        return badRequest(texts.isEmpty() ? MISSING_REQUEST_VALUE_MESSAGE : texts.first());
+        return badRequest(texts.isEmpty() ? MISSING_REQUEST_VALUE_MESSAGE : texts.first(), request);
     }
 
     /**
@@ -124,9 +218,9 @@ public class CardApiExceptionHandler {
      */
     @ExceptionHandler(MissingRequestValueException.class)
     public ResponseEntity<ApiErrorResponse> onMissingRequestValue(
-            MissingRequestValueException missing) {
+            MissingRequestValueException missing, HttpServletRequest request) {
         log.info("A card request omitted a required request value");
-        return badRequest(MISSING_REQUEST_VALUE_MESSAGE);
+        return badRequest(MISSING_REQUEST_VALUE_MESSAGE, request);
     }
 
     /**
@@ -137,24 +231,25 @@ public class CardApiExceptionHandler {
      */
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ApiErrorResponse> onUnreadableBody(
-            HttpMessageNotReadableException unreadable) {
+            HttpMessageNotReadableException unreadable, HttpServletRequest request) {
         log.info("A card request carried a body that could not be read");
-        return badRequest(UNREADABLE_BODY_MESSAGE);
+        return badRequest(UNREADABLE_BODY_MESSAGE, request);
     }
 
     /**
      * Answers any other fault.
      *
-     * @param fault the fault, whose message reaches no response body
+     * @param fault   the fault, whose message reaches no response body
+     * @param request the failing request, read for its mapping pattern alone
      * @return {@code 500} carrying the route template and one fixed text
      */
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ApiErrorResponse> onFault(Exception fault) {
+    public ResponseEntity<ApiErrorResponse> onFault(Exception fault, HttpServletRequest request) {
         log.error("A card request failed inside this service", fault);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(new ApiErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(),
-                        SERVICE_FAULT_MESSAGE, CardController.COLLECTION_ROUTE));
+                        SERVICE_FAULT_MESSAGE, routeOf(request)));
     }
 
     /**
@@ -180,12 +275,68 @@ public class CardApiExceptionHandler {
      * Builds one bad-request body.
      *
      * @param message the one text the response carries
+     * @param request the failing request, read for its mapping pattern alone
      * @return {@code 400} carrying the route template and that text
      */
-    private static ResponseEntity<ApiErrorResponse> badRequest(String message) {
+    private static ResponseEntity<ApiErrorResponse> badRequest(String message,
+            HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(new ApiErrorResponse(HttpStatus.BAD_REQUEST.value(), message,
-                        CardController.COLLECTION_ROUTE));
+                        routeOf(request)));
+    }
+
+    /**
+     * Reads the route template of a failing request.
+     *
+     * <p>The value is the mapping pattern the dispatcher matched, which it records in the request
+     * attribute {@link HandlerMapping#BEST_MATCHING_PATTERN_ATTRIBUTE}. A pattern is one of the two
+     * templates this service declares and holds no value a caller sent, so reporting it discloses
+     * nothing. Reporting the collection template for every failure told a caller of
+     * {@code POST /cards/detail} that {@code /cards} had failed.
+     *
+     * <p>Three cases fall back to the collection template, and each is a case where no pattern is
+     * available or usable rather than a case where one is ignored: a null request, which is how this
+     * class is called outside a request; an absent or non-text attribute, which is a failure raised
+     * before the dispatcher matched a pattern; and a pattern {@link ApiErrorResponse} would refuse.
+     * That last check exists because the constructor of that record throws on a run of more than four
+     * digits, and an exception thrown inside an exception handler reaches a caller as an unhandled
+     * failure. No route of this service carries a path variable, so no pattern can carry such a run
+     * today, and the check keeps a route added later from turning a handled failure into one this
+     * class cannot answer.
+     *
+     * @param request the failing request, or {@code null}
+     * @return the mapping pattern the dispatcher matched, otherwise
+     *         {@link CardController#COLLECTION_ROUTE}
+     */
+    private static String routeOf(HttpServletRequest request) {
+        if (request == null) {
+            return CardController.COLLECTION_ROUTE;
+        }
+
+        Object pattern = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+        if (!(pattern instanceof String template) || template.isBlank()) {
+            return CardController.COLLECTION_ROUTE;
+        }
+
+        return holdsALongDigitRun(template) ? CardController.COLLECTION_ROUTE : template;
+    }
+
+    /**
+     * Reports whether a route template holds a run of digits {@link ApiErrorResponse} would refuse.
+     *
+     * @param template the candidate template
+     * @return true when the template holds more than {@value #MAXIMUM_ROUTE_DIGIT_RUN} digits in a row
+     */
+    private static boolean holdsALongDigitRun(String template) {
+        int run = 0;
+        for (int position = 0; position < template.length(); position++) {
+            char character = template.charAt(position);
+            run = character >= '0' && character <= '9' ? run + 1 : 0;
+            if (run > MAXIMUM_ROUTE_DIGIT_RUN) {
+                return true;
+            }
+        }
+        return false;
     }
 }

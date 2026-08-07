@@ -77,6 +77,7 @@ class RequestBodyCeilingFilterTest {
                                 java.time.Duration.ofSeconds(30L), 5000L,
                                 java.time.Duration.ofSeconds(10L)), 168L),
                 new AccountProperties.ProcessedEvent(168L),
-                new AccountProperties.Retention(3_600_000L));
+                new AccountProperties.Retention(3_600_000L),
+                new AccountProperties.Write(3_000L));
     }
 }

@@ -34,7 +34,8 @@ class StreamNameReportTest {
                     "card-relay",
                     Duration.ofMinutes(2L)), 168L),
             new CardProperties.ProcessedEvent(168L),
-            new CardProperties.Retention(3_600_000L));
+            new CardProperties.Retention(3_600_000L),
+                new CardProperties.Write(3_000L));
 
     @Test
     @DisplayName("every topic this module names is reported exactly once")
@@ -55,7 +56,8 @@ class StreamNameReportTest {
                         "carddemo.dead-letter.v2")),
                 SHIPPED.outbox(),
                 SHIPPED.processedEvent(),
-                SHIPPED.retention());
+                SHIPPED.retention(),
+                SHIPPED.write());
 
         StreamNameReport report = new StreamNameReport(new MockEnvironment(), overridden);
 

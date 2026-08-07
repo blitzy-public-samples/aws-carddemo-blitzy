@@ -25,10 +25,14 @@
     packages an executable archive. It subscribes to no topic.
   </description>
 
-  <!-- Language level. The Spring Boot parent sets java.version to 17, and this
-       override raises the compiler release to 25. -->
+  <!-- Language level. The build reads maven.compiler.release: the compiler plugin in
+       card-platform/pom.xml configures its release from that property, and the aggregator's
+       enforcer rule requires 25 in every module. java.version carries the framework's
+       conventional name for the same level and no plugin resolves it, because the aggregator
+       imports the Spring Boot bill of materials rather than inheriting the Spring Boot parent. -->
   <properties>
     <java.version>25</java.version>
+    <maven.compiler.release>25</maven.compiler.release>
   </properties>
 
   <dependencies>
@@ -168,6 +172,17 @@
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+      <!-- Runs the container-backed checks in src/test/java named *IT. Surefire selects *Test and
+           leaves those alone, so without this declaration AccountControllerIT is compiled and
+           never executed, and this module contributes no failsafe-reports directory to the
+           integration stage of .github/workflows/ci.yml that names it. The parent supplies the
+           version, the execution and the classesDirectory in pluginManagement; a module activates
+           it by naming it here, which is how the other five services and equivalence-tests
+           activate the same plugin. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
       </plugin>
     </plugins>
   </build>

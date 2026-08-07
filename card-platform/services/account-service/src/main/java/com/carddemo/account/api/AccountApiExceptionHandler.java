@@ -44,6 +44,22 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
  * <p>Every body is written as {@code application/problem+json}, which is what
  * {@code config/SecurityConfig} already writes for {@code 401} and {@code 403}. One service answering
  * two shapes of error would make a client parse both.
+ *
+ * <p>The advice deliberately names no base package, and {@code config/ReadinessHealthConfig} is why it
+ * does not have to. A poll of {@code /actuator/health} reached this class only because a health
+ * indicator let a failure escape, which left the actuator with no document to render and sent the
+ * request out through the error path. Every indicator that reaches a dependency now catches its own
+ * failure and reports that dependency down, so the endpoint renders its own document with {@code 503}
+ * and no failure of the management port arrives here at all.
+ *
+ * <p>Naming a base package was measured and rejected. Spring selects an advice by the type of the
+ * handler it resolved, and a request that matches no mapping resolves none: a {@code consumes}
+ * condition that the request content type misses is the common case. A scoped advice is therefore
+ * skipped for exactly the failures raised before a handler is chosen, and the documented answers to an
+ * unsupported media type, an unacceptable media type and an unsupported method would each become the
+ * framework body this class exists to replace. Scoping is also neither necessary nor sufficient on its
+ * own: {@code fraud-detection-service} was scoped throughout and still answered a paused datastore
+ * with the framework body, because its indicator threw.
  */
 @RestControllerAdvice
 public class AccountApiExceptionHandler {

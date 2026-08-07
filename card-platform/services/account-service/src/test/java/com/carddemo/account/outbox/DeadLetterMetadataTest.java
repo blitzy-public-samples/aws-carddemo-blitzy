@@ -645,7 +645,8 @@ class DeadLetterMetadataTest {
                                 30_000L, java.time.Duration.ofSeconds(10L)),
                         168L),
                 new AccountProperties.ProcessedEvent(168L),
-                new AccountProperties.Retention(3_600_000L));
+                new AccountProperties.Retention(3_600_000L),
+                new AccountProperties.Write(3_000L));
     }
 
     /** Builds one row whose next failed attempt reaches the terminal state. */

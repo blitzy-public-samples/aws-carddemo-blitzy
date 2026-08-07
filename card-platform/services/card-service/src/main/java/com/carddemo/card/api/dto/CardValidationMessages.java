@@ -316,6 +316,42 @@ public final class CardValidationMessages {
             "Page size falls outside the range this list admits";
 
     /**
+     * ADDITIVE. Reported when a requested row count is not a whole number at all.
+     *
+     * <p>{@link #ADDITIVE_PAGE_SIZE_OUT_OF_RANGE} answers a number the range does not admit. This
+     * text answers a value that is no number, which is a different failure and reaches the framework
+     * earlier: a query string is text, and the row count is the one value of
+     * {@code GET /cards} that is not text, so it is converted before any constraint runs and a
+     * conversion that fails never reaches one.
+     *
+     * <p>No source message corresponds. A 3270 screen delivered its row count as a compile-time
+     * constant, {@code WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7} at
+     * {@code app/cbl/COCRDLIC.cbl:L177-L178}, so no operator could supply a value of any kind for it
+     * and no edit existed to refuse one.
+     */
+    public static final String ADDITIVE_PAGE_SIZE_NOT_A_NUMBER =
+            "Page size must be a whole number";
+
+    /**
+     * ADDITIVE. Reported when a well-formed paging cursor names no card this list can browse from.
+     *
+     * <p>{@link #ADDITIVE_CARD_CURSOR_MALFORMED} answers a value of the wrong shape, which a
+     * constraint on the header refuses. This text answers a value of the right shape that resolves to
+     * no row, which only a read can discover. A cursor this service never issued, or one naming a
+     * card since removed, reaches this text.
+     *
+     * <p>The alternative would be to start the browse over, and that is why this text exists: a
+     * caller asking to continue from page nine would read page one and believe it had reached rows it
+     * already held.
+     *
+     * <p>No source message corresponds. The source kept its browse key in working storage between
+     * screen turns, at {@code app/cbl/COCRDLIC.cbl:L1010} and its neighbours, so its position could
+     * not name a row the file did not hold.
+     */
+    public static final String ADDITIVE_CARD_CURSOR_UNKNOWN =
+            "Card cursor names no card of this list";
+
+    /**
      * ADDITIVE. Reported when one request names both browse directions.
      *
      * <p>The source browses in one direction per screen turn. {@code 9000-READ-FORWARD} at

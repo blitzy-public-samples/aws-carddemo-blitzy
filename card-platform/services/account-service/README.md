@@ -67,7 +67,7 @@ Four routes, and only two of them publish.
 | Method and path | Source | Who may call it | Publishes |
 | :--- | :--- | :--- | :--- |
 | `GET /accounts/{accountId}` | `app/cbl/COACTVWC.cbl` | The account owner or an administrator | Nothing |
-| `PUT /accounts/{accountId}` | `app/cbl/COACTUPC.cbl` | An administrator | `AccountStateChanged` with change kind `ACCOUNT_UPDATED`, and `CustomerContextChanged` when the update moves a cardholder field |
+| `PUT /accounts/{accountId}` | `app/cbl/COACTUPC.cbl` | An administrator | One event per record the update changed: `AccountStateChanged` with change kind `ACCOUNT_UPDATED` when an account column changed, and `CustomerContextChanged` when a customer column did |
 | `GET /customers/{customerId}` | `app/cbl/COACTVWC.cbl` | The customer owner or an administrator | Nothing |
 | `POST /accounts/{accountId}/cycle-close` | `app/cbl/CBACT04C.cbl:L353-L354` | An administrator | `AccountStateChanged` with change kind `BILLING_CYCLE_CLOSED` |
 
@@ -258,6 +258,28 @@ One further detail belongs to the write path. In the Customer Information Contro
 statement `EXEC CICS SYNCPOINT ROLLBACK` at `app/cbl/COACTUPC.cbl:L4100` is the only rollback anywhere
 in the source programs. The source rewrites two files in one unit of work, at L4066 and L4086; the
 target replaces that pair with one database transaction.
+
+### The lock wait is bounded, so the lock refusal is reachable
+
+The compare-and-swap above needs the row held while it compares, so each of the two records is read
+under a lock. PostgreSQL waits for a held row indefinitely, which meant a writer holding a row kept
+this route's request open for as long as it held it, and the refusal the source composes could never
+be answered through contention: `app/cbl/COACTUPC.cbl:L3907`–`L3915` sets that condition whenever a
+`READ UPDATE` comes back with anything other than `DFHRESP(NORMAL)`, and a wait that never ends comes
+back with nothing at all.
+
+`carddemo.write.lock-wait-ms` bounds it, defaulting to three seconds and reading `WRITE_LOCK_WAIT_MS`.
+`AccountRepository.applyLockWaitBound` applies it with `set_config('lock_timeout', ?, true)`, whose
+third argument makes it transaction-local, so it bounds this update and never a schema migration or
+the outbox relay sweep. A bind parameter is used because PostgreSQL admits no placeholder in a `SET`
+statement.
+
+A row this route cannot take answers `409` carrying `Could not lock account record for update` or
+`Could not lock customer record for update`, whichever read gave up. The outcome records the update
+latency and counts as neither a validation refusal nor a failure, because contention is the caller's
+circumstance rather than this service's defect. Ordinary concurrent writes are untouched: they settle
+in milliseconds and still answer `Record changed by some one else. Please review`, which the bound sits
+three orders of magnitude above.
 
 ### Fixed-point arithmetic
 

@@ -366,6 +366,7 @@ class OutboxRelayDeadLetterTest {
                 new CardProperties.Outbox(new CardProperties.Outbox.Relay(
                         500L, 100, "card-relay", Duration.ofMinutes(2L)), 168L),
                 new CardProperties.ProcessedEvent(168L),
-                new CardProperties.Retention(3_600_000L));
+                new CardProperties.Retention(3_600_000L),
+                new CardProperties.Write(3_000L));
     }
 }

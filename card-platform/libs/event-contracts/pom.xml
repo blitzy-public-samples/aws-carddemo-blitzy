@@ -41,7 +41,11 @@
   <name>event-contracts</name>
   <description>Nine versioned JSON Schema documents: six for the authorization, ledger and fraud events, two for the account and card mutation events, and one for the dead-letter envelope. Every document is Draft 2020-12. Every document closes its top-level property set and carries one bounded extensions object, so an undeclared field is refused and evolution stays additive.</description>
 
-  <!-- Compiles this module at Java 25. -->
+  <!-- Language level. The build reads maven.compiler.release: the compiler plugin in
+       card-platform/pom.xml configures its release from that property, and the aggregator's
+       enforcer rule requires 25 in every module. java.version carries the framework's
+       conventional name for the same level and no plugin resolves it, because the aggregator
+       imports the Spring Boot bill of materials rather than inheriting the Spring Boot parent. -->
   <properties>
     <java.version>25</java.version>
     <maven.compiler.release>25</maven.compiler.release>

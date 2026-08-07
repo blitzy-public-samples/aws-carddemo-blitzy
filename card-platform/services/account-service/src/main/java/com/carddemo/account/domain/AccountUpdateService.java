@@ -1,5 +1,6 @@
 package com.carddemo.account.domain;
 
+import com.carddemo.account.config.AccountProperties;
 import com.carddemo.account.config.ObservabilityConfig.AccountMeters;
 import com.carddemo.account.domain.validation.AccountIdValidator;
 import com.carddemo.account.domain.validation.AlphabeticOptionalValidator;
@@ -36,6 +37,8 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -347,6 +350,14 @@ public class AccountUpdateService {
     private final AccountMeters meters;
 
     /**
+     * Bound on how long each locked read of one update waits, as a PostgreSQL interval string.
+     *
+     * <p>Rendered once at construction from {@code carddemo.write.lock-wait-ms}, because it is the
+     * same text on every request.
+     */
+    private final String lockWaitBound;
+
+    /**
      * Takes the three repositories, the concurrency check, the outbox writer and the meter
      * registry.
      *
@@ -357,6 +368,7 @@ public class AccountUpdateService {
      * @param outboxWriter             writer of the one event row, joining this transaction
      * @param transactionTemplate      boundary around one update attempt
      * @param meters                   recording surface used after the transaction completes
+     * @param properties               the bound {@code carddemo} block, read for its lock-wait bound
      * @throws NullPointerException when an argument is {@code null}
      */
     public AccountUpdateService(AccountRepository accountRepository,
@@ -365,7 +377,8 @@ public class AccountUpdateService {
             ConcurrentChangeDetector concurrentChangeDetector,
             OutboxWriter outboxWriter,
             TransactionTemplate transactionTemplate,
-            AccountMeters meters) {
+            AccountMeters meters,
+            AccountProperties properties) {
 
         this.accountRepository =
                 Objects.requireNonNull(accountRepository, "accountRepository must be present");
@@ -379,6 +392,8 @@ public class AccountUpdateService {
         this.transactionTemplate =
                 Objects.requireNonNull(transactionTemplate, "transactionTemplate must be present");
         this.meters = Objects.requireNonNull(meters, "meters must be present");
+        this.lockWaitBound = Objects.requireNonNull(properties, "properties must be present")
+                .write().lockWaitMs() + "ms";
     }
 
     /**
@@ -425,6 +440,17 @@ public class AccountUpdateService {
                     "the account update transaction must answer with a result");
             result.recordCommitted(meters, Duration.ofNanos(System.nanoTime() - startedAt));
             return result.verdict();
+        } catch (LockNotTaken notTaken) {
+            // A datastore that refuses a locking statement leaves a PostgreSQL transaction unusable,
+            // so the outcome cannot be returned across the boundary and is carried out through it.
+            // The row is untouched either way; this decides only what the caller is told.
+            //
+            // Counted exactly as the empty-result arm of writeProcessing is counted, which records
+            // the latency and nothing else. The two arms answer the same message for the same reason,
+            // so counting one of them as a service failure would make an operator read a contended
+            // write as a defect.
+            meters.recordUpdateLatency(Duration.ofNanos(System.nanoTime() - startedAt));
+            return EditResult.failure(notTaken.getMessage());
         } catch (RuntimeException failure) {
             meters.recordUpdateFailure();
             throw failure;
@@ -872,11 +898,17 @@ public class AccountUpdateService {
      * {@code app/cbl/COACTUPC.cbl:L3960-L4059} and the two rewrites at
      * {@code app/cbl/COACTUPC.cbl:L4066} and {@code app/cbl/COACTUPC.cbl:L4086}.
      *
-     * <p>One transaction covers the account row, the customer row and the outbox row. A store
-     * fault raises its exception and rolls all three back. The source sets
+     * <p>One transaction covers the account row, the customer row and the outbox rows. A store
+     * fault raises its exception and rolls them all back. The source sets
      * {@code LOCKED-BUT-UPDATE-FAILED} at {@code app/cbl/COACTUPC.cbl:L4079} with no rollback and
      * again at {@code app/cbl/COACTUPC.cbl:L4098} with the rollback at
      * {@code app/cbl/COACTUPC.cbl:L4099-L4101}.
+     *
+     * <p>An event is written for each record this call changed. A caller who submits a raised credit
+     * limit and resubmits the customer values it was shown changes the account row alone, so one
+     * {@code AccountStateChanged} is written and no {@code CustomerContextChanged}. The reverse case
+     * writes the customer event alone. A caller reaches this paragraph only once the submitted pair
+     * differs from the fetched pair, so at least one event is always written.
      *
      * @param proposedAccount  the account values the caller submits
      * @param proposedCustomer the customer values the caller submits
@@ -890,9 +922,23 @@ public class AccountUpdateService {
             CustomerEntity proposedCustomer, AccountEntity fetchedAccount,
             CustomerEntity fetchedCustomer, String authoritativeCustomerId) {
 
-        // app/cbl/COACTUPC.cbl:L3892-L3903.
-        Optional<AccountEntity> lockedAccount =
-                accountRepository.findForUpdateByAccountId(proposedAccount.getAccountId());
+        // Bound the wait before either locked read runs. PostgreSQL waits forever by default, so a
+        // row another writer held kept this request open for as long as that writer held it, and the
+        // two answers below were unreachable through contention: the wait ended in a lock or it did
+        // not end. Transaction-local, so it governs these two reads and nothing else.
+        accountRepository.applyLockWaitBound(lockWaitBound);
+
+        // app/cbl/COACTUPC.cbl:L3892-L3903. A row that has gone returns empty and a lock the
+        // datastore will not grant inside the bound raises, and app/cbl/COACTUPC.cbl:L3907 draws no
+        // distinction between them: both are a response other than DFHRESP(NORMAL) to a READ UPDATE.
+        Optional<AccountEntity> lockedAccount;
+        try {
+            lockedAccount =
+                    accountRepository.findForUpdateByAccountId(proposedAccount.getAccountId());
+        } catch (PessimisticLockingFailureException | JpaSystemException notTaken) {
+            // app/cbl/COACTUPC.cbl:L3907-L3915.
+            throw new LockNotTaken(COULD_NOT_LOCK_ACCOUNT, notTaken);
+        }
         if (lockedAccount.isEmpty()) {
             // app/cbl/COACTUPC.cbl:L3907-L3915.
             return EditResult.failure(COULD_NOT_LOCK_ACCOUNT);
@@ -900,8 +946,13 @@ public class AccountUpdateService {
 
         // app/cbl/COACTUPC.cbl:L3919-L3930. The source takes this identifier from the
         // cross-reference, and the caller cannot replace it with another customer identifier.
-        Optional<CustomerEntity> lockedCustomer =
-                customerRepository.findForUpdateByCustomerId(authoritativeCustomerId);
+        Optional<CustomerEntity> lockedCustomer;
+        try {
+            lockedCustomer = customerRepository.findForUpdateByCustomerId(authoritativeCustomerId);
+        } catch (PessimisticLockingFailureException | JpaSystemException notTaken) {
+            // app/cbl/COACTUPC.cbl:L3934-L3942.
+            throw new LockNotTaken(COULD_NOT_LOCK_CUSTOMER, notTaken);
+        }
         if (lockedCustomer.isEmpty()) {
             // app/cbl/COACTUPC.cbl:L3934-L3942.
             return EditResult.failure(COULD_NOT_LOCK_CUSTOMER);
@@ -923,19 +974,40 @@ public class AccountUpdateService {
         accountRepository.save(storedAccount);
         customerRepository.save(storedCustomer);
 
-        // One event per rewritten record. app/cbl/COACTUPC.cbl:L4066 rewrites the account and
-        // app/cbl/COACTUPC.cbl:L4086 rewrites the customer, and both rows join this transaction.
-        // The relay publishes them on a later sweep.
-        outboxWriter.write(AccountStateChanged.of(storedAccount.getAccountId(),
-                AccountStateChanged.ChangeKind.ACCOUNT_UPDATED, storedAccount.getCurrentBalance(),
-                storedAccount.getCreditLimit(), storedAccount.getCurrentCycleCredit(),
-                storedAccount.getCurrentCycleDebit(), storedAccount.getExpirationDate()));
-        outboxWriter.writeCustomerContext(CustomerContextChanged.of(storedAccount.getAccountId(),
-                storedCustomer.getFirstName(), storedCustomer.getMiddleName(),
-                storedCustomer.getLastName(), storedCustomer.getAddressLine1(),
-                storedCustomer.getAddressLine2(), storedCustomer.getAddressCity(),
-                storedCustomer.getAddressStateCode(), storedCustomer.getAddressCountryCode(),
-                storedCustomer.getAddressZip(), storedCustomer.getFicoCreditScore()));
+        // One event per record this call changed, and no event for a record it left as it stood.
+        // The two rewrites at app/cbl/COACTUPC.cbl:L4066 and L4086 run unconditionally, and each
+        // one writes back the values the caller submitted, so a record whose submitted values equal
+        // its fetched values is rewritten with what it already held. An event announces a change of
+        // state, and there is none to announce for such a record: a consumer that projected it
+        // would rewrite its own copy with the values already in it, and a reader of the topic would
+        // read a change that never happened.
+        //
+        // The comparison is the one app/cbl/COACTUPC.cbl:L1684-L1768 draws, per record rather than
+        // over the pair. proposedDiffersFromFetched already held for the pair to reach this
+        // paragraph, so at least one of these two writes runs and a committed write is never
+        // silent. The concurrency check above has established that the stored pair still equals the
+        // fetched pair, so a record differing from what the caller was shown is a record whose
+        // columns this transaction changes.
+        boolean accountChanged = !accountMatchesFetched(proposedAccount, fetchedAccount);
+        boolean customerChanged = !customerMatchesFetched(proposedCustomer, fetchedCustomer);
+
+        if (accountChanged) {
+            outboxWriter.write(AccountStateChanged.of(storedAccount.getAccountId(),
+                    AccountStateChanged.ChangeKind.ACCOUNT_UPDATED,
+                    storedAccount.getCurrentBalance(), storedAccount.getCreditLimit(),
+                    storedAccount.getCurrentCycleCredit(), storedAccount.getCurrentCycleDebit(),
+                    storedAccount.getExpirationDate()));
+        }
+        if (customerChanged) {
+            outboxWriter.writeCustomerContext(
+                    CustomerContextChanged.of(storedAccount.getAccountId(),
+                            storedCustomer.getFirstName(), storedCustomer.getMiddleName(),
+                            storedCustomer.getLastName(), storedCustomer.getAddressLine1(),
+                            storedCustomer.getAddressLine2(), storedCustomer.getAddressCity(),
+                            storedCustomer.getAddressStateCode(),
+                            storedCustomer.getAddressCountryCode(), storedCustomer.getAddressZip(),
+                            storedCustomer.getFicoCreditScore()));
+        }
 
         return EditResult.ok();
     }
@@ -1382,6 +1454,35 @@ public class AccountUpdateService {
         private EditResult verdict() {
 
             return inputError ? EditResult.failure(returnMessage) : EditResult.ok();
+        }
+    }
+
+    /**
+     * Reports that a locked read could not take its row, carrying the message that names which row.
+     *
+     * <p>{@code app/cbl/COACTUPC.cbl:L3907} and {@code app/cbl/COACTUPC.cbl:L3934} both test a
+     * {@code READ UPDATE} for a response other than {@code DFHRESP(NORMAL)} and draw no distinction
+     * between the ways one can arrive. A row that has gone reaches this outcome by returning empty,
+     * which needs no exception. A datastore that refuses the locking statement, whether because the
+     * wait ran out, because it broke a deadlock, or because the privilege to lock was withdrawn,
+     * raises instead, and the statement leaves a PostgreSQL transaction unusable, so the outcome
+     * cannot be returned across the transaction boundary.
+     *
+     * <p>The message is one of the two texts {@code app/cbl/COACTUPC.cbl:L517-L520} declares, so a
+     * caller reads which record could not be taken and nothing about why.
+     */
+    static final class LockNotTaken extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * Carries one of the two source texts and the failure the locked read reported.
+         *
+         * @param message the source text naming which record could not be taken
+         * @param cause   the failure, whose own message reaches no response body
+         */
+        LockNotTaken(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 }

@@ -322,10 +322,24 @@ public class AccountController {
      * <p>{@code AccountRecordMapper} converts every submitted value. An amount reaches the scale
      * its column holds from up to fifteen characters of text. A date reaches the ten characters
      * {@code ACCT-UPDATE-RECORD} declares at {@code app/cbl/COACTUPC.cbl:L427-L429} from the eight
-     * of {@code ACUP-NEW-OPEN-DATE} at {@code :L772}. A component the body supplies replaces the
-     * stored value and a component it omits keeps it.
+     * of {@code ACUP-NEW-OPEN-DATE} at {@code :L772}.
      *
-     * <p>A submission of {@code null} answers a copy of the stored row.
+     * <p>A present block has to be complete. Nine of the ten components carry a mandatory-field edit
+     * in {@code 1200-EDIT-MAP-INPUTS} at {@code app/cbl/COACTUPC.cbl:L1470-L1676}, and those edits
+     * refuse an absent value exactly as they refuse a blank one: the map area a 3270 screen sends is
+     * fixed width, so an operator who cleared a field sent spaces and the edit read spaces. This
+     * method therefore hands an absent component through unchanged rather than filling it from the
+     * stored row, and the edit that owns the field reports its own text. Filling it would answer
+     * {@code 200} to a caller that dropped a field and tell it nothing, which is a silent write of
+     * the value the caller never sent.
+     *
+     * <p>{@code groupId} is the one component that may be omitted, and it then keeps its stored
+     * value. No edit of {@code app/cbl/COACTUPC.cbl} reads it and the program moves no label for it,
+     * so there is no refusal to reproduce.
+     *
+     * <p>A submission of {@code null} answers a copy of the stored row. That is how a caller updates
+     * the customer alone, and it is also how {@link #fetchedCopy(String, AccountEntity)} builds the
+     * baseline the concurrency check compares against.
      *
      * <p>The postal code at {@code app/cpy/CVACT01Y.cpy:L15} is carried through from the stored
      * row. {@code AccountDataRequest} declares no component for it, so no submitted value reaches
@@ -341,49 +355,36 @@ public class AccountController {
 
         AccountEntity proposed = new AccountEntity();
         proposed.setAccountId(accountId);
-        proposed.setActiveStatus(stored.getActiveStatus());
-        proposed.setCurrentBalance(stored.getCurrentBalance());
-        proposed.setCreditLimit(stored.getCreditLimit());
-        proposed.setCashCreditLimit(stored.getCashCreditLimit());
-        proposed.setOpenDate(stored.getOpenDate());
-        proposed.setExpirationDate(stored.getExpirationDate());
-        proposed.setReissueDate(stored.getReissueDate());
-        proposed.setCurrentCycleCredit(stored.getCurrentCycleCredit());
-        proposed.setCurrentCycleDebit(stored.getCurrentCycleDebit());
         proposed.setAddressZip(stored.getAddressZip());
         proposed.setGroupId(stored.getGroupId());
         if (submitted == null) {
+            proposed.setActiveStatus(stored.getActiveStatus());
+            proposed.setCurrentBalance(stored.getCurrentBalance());
+            proposed.setCreditLimit(stored.getCreditLimit());
+            proposed.setCashCreditLimit(stored.getCashCreditLimit());
+            proposed.setOpenDate(stored.getOpenDate());
+            proposed.setExpirationDate(stored.getExpirationDate());
+            proposed.setReissueDate(stored.getReissueDate());
+            proposed.setCurrentCycleCredit(stored.getCurrentCycleCredit());
+            proposed.setCurrentCycleDebit(stored.getCurrentCycleDebit());
             return proposed;
         }
 
+        // A present block carries every one of these nine, and an absent one reaches the edit that
+        // owns the field rather than the stored value. app/cbl/COACTUPC.cbl:L1472-L1527 runs those
+        // nine edits, each of which refuses a value that was not supplied.
         AccountEntity converted = AccountRecordMapper.accountOf(accountId, submitted);
-        if (AccountRecordMapper.isSupplied(submitted.activeStatus())) {
-            proposed.setActiveStatus(converted.getActiveStatus());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.currentBalance())) {
-            proposed.setCurrentBalance(converted.getCurrentBalance());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.creditLimit())) {
-            proposed.setCreditLimit(converted.getCreditLimit());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.cashCreditLimit())) {
-            proposed.setCashCreditLimit(converted.getCashCreditLimit());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.openDate())) {
-            proposed.setOpenDate(converted.getOpenDate());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.expirationDate())) {
-            proposed.setExpirationDate(converted.getExpirationDate());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.reissueDate())) {
-            proposed.setReissueDate(converted.getReissueDate());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.currentCycleCredit())) {
-            proposed.setCurrentCycleCredit(converted.getCurrentCycleCredit());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.currentCycleDebit())) {
-            proposed.setCurrentCycleDebit(converted.getCurrentCycleDebit());
-        }
+        proposed.setActiveStatus(converted.getActiveStatus());
+        proposed.setCurrentBalance(converted.getCurrentBalance());
+        proposed.setCreditLimit(converted.getCreditLimit());
+        proposed.setCashCreditLimit(converted.getCashCreditLimit());
+        proposed.setOpenDate(converted.getOpenDate());
+        proposed.setExpirationDate(converted.getExpirationDate());
+        proposed.setReissueDate(converted.getReissueDate());
+        proposed.setCurrentCycleCredit(converted.getCurrentCycleCredit());
+        proposed.setCurrentCycleDebit(converted.getCurrentCycleDebit());
+
+        // app/cbl/COACTUPC.cbl:L796 declares the group identifier and no paragraph edits it.
         if (AccountRecordMapper.isSupplied(submitted.groupId())) {
             proposed.setGroupId(converted.getGroupId());
         }
@@ -393,13 +394,27 @@ public class AccountController {
     /**
      * Builds the customer values a caller submitted over the values stored.
      *
-     * <p>A component the body supplies replaces the stored value and a component it omits keeps it,
-     * as on the account block.
+     * <p>A present block has to be complete, as on the account block. Eleven of its components carry
+     * a mandatory-field edit in {@code 1200-EDIT-MAP-INPUTS} at
+     * {@code app/cbl/COACTUPC.cbl:L1470-L1676}, and those edits refuse an absent value exactly as
+     * they refuse a blank one. An absent component therefore reaches the edit that owns the field
+     * rather than the stored value, and the edit reports its own text.
+     *
+     * <p>Six components carry no mandatory edit and keep their stored value when omitted. The
+     * middle name reaches {@code AlphabeticOptionalValidator} at edit 14. Both telephone numbers
+     * reach the edit at {@code app/cbl/COACTUPC.cbl:L2225-L2244}, whose own comment reads
+     * {@code Not mandatory to enter a phone number} and which accepts a wholly blank value. The date
+     * of birth reaches a calendar edit that treats an absent value as {@code LOW-VALUES}. The second
+     * address line and the government-issued identifier reach no edit at all.
+     *
+     * <p>The identifier reaches no edit either. {@code app/cbl/COACTUPC.cbl:L1222} calls it
+     * {@code actually not editable}, and this service refuses a submitted identifier that is not the
+     * one the fetched row carries, whether it arrives blank or not at all.
      *
      * <p>The three Social Security Number parts are one column, so they replace it only when all
      * three arrive. One part alone would write a number two thirds of which came from the stored
-     * row. The block also carries a cross-field edit that refuses such a body over the Hypertext
-     * Transfer Protocol, and this is the second guard behind it.
+     * row. Because all three are required, a body carrying one part alone leaves the column absent
+     * and the edit at {@code app/cbl/COACTUPC.cbl:L1529-L1531} refuses it.
      *
      * <p>The identifier is the one the body named, which is also the identifier this call read the
      * row by, so the ownership check inside {@link AccountUpdateService} compares two equal values.
@@ -415,55 +430,60 @@ public class AccountController {
 
         CustomerEntity proposed = new CustomerEntity();
         proposed.setCustomerId(stored.getCustomerId());
-        proposed.setFirstName(stored.getFirstName());
         proposed.setMiddleName(stored.getMiddleName());
-        proposed.setLastName(stored.getLastName());
-        proposed.setAddressLine1(stored.getAddressLine1());
         proposed.setAddressLine2(stored.getAddressLine2());
-        proposed.setAddressCity(stored.getAddressCity());
-        proposed.setAddressStateCode(stored.getAddressStateCode());
-        proposed.setAddressCountryCode(stored.getAddressCountryCode());
-        proposed.setAddressZip(stored.getAddressZip());
         proposed.setPhoneNumber1(stored.getPhoneNumber1());
         proposed.setPhoneNumber2(stored.getPhoneNumber2());
-        proposed.setSocialSecurityNumber(stored.getSocialSecurityNumber());
         proposed.setGovernmentIssuedId(stored.getGovernmentIssuedId());
         proposed.setDateOfBirth(stored.getDateOfBirth());
-        proposed.setEftAccountId(stored.getEftAccountId());
-        proposed.setPrimaryCardHolderIndicator(stored.getPrimaryCardHolderIndicator());
-        proposed.setFicoCreditScore(stored.getFicoCreditScore());
         if (submitted == null) {
+            proposed.setFirstName(stored.getFirstName());
+            proposed.setLastName(stored.getLastName());
+            proposed.setAddressLine1(stored.getAddressLine1());
+            proposed.setAddressCity(stored.getAddressCity());
+            proposed.setAddressStateCode(stored.getAddressStateCode());
+            proposed.setAddressCountryCode(stored.getAddressCountryCode());
+            proposed.setAddressZip(stored.getAddressZip());
+            proposed.setSocialSecurityNumber(stored.getSocialSecurityNumber());
+            proposed.setEftAccountId(stored.getEftAccountId());
+            proposed.setPrimaryCardHolderIndicator(stored.getPrimaryCardHolderIndicator());
+            proposed.setFicoCreditScore(stored.getFicoCreditScore());
             return proposed;
         }
 
+        // A present block carries every one of these ten, and an absent one reaches the edit that
+        // owns the field. Edits 13, 15 through 20, 23 and 24 of app/cbl/COACTUPC.cbl:L1560-L1662
+        // each refuse a value that was not supplied, and edit 12 at :L1545-L1556 refuses an absent
+        // credit score.
         CustomerEntity converted = AccountRecordMapper.customerOf(submitted);
         proposed.setCustomerId(submitted.customerId());
-        if (AccountRecordMapper.isSupplied(submitted.firstName())) {
-            proposed.setFirstName(converted.getFirstName());
+        proposed.setFirstName(converted.getFirstName());
+        proposed.setLastName(converted.getLastName());
+        proposed.setAddressLine1(converted.getAddressLine1());
+        proposed.setAddressCity(converted.getAddressCity());
+        proposed.setAddressStateCode(converted.getAddressStateCode());
+        proposed.setAddressCountryCode(converted.getAddressCountryCode());
+        proposed.setAddressZip(converted.getAddressZip());
+        proposed.setEftAccountId(converted.getEftAccountId());
+        proposed.setPrimaryCardHolderIndicator(converted.getPrimaryCardHolderIndicator());
+        proposed.setFicoCreditScore(converted.getFicoCreditScore());
+
+        // All three parts are required, so an incomplete triple leaves the column absent and edit
+        // 10 at app/cbl/COACTUPC.cbl:L1529-L1531 reads the nine spaces that absence composes. The
+        // setter guards the column and refuses an absent number, so the field keeps the absent value
+        // it was constructed with rather than reaching the setter. The stored number is not
+        // substituted: doing so would write a number the caller never sent, and two thirds of it
+        // would come from the row on an incomplete triple.
+        if (converted.getSocialSecurityNumber() != null) {
+            proposed.setSocialSecurityNumber(converted.getSocialSecurityNumber());
         }
+
+        // The five components no mandatory edit reads keep their stored value when omitted.
         if (AccountRecordMapper.isSupplied(submitted.middleName())) {
             proposed.setMiddleName(converted.getMiddleName());
         }
-        if (AccountRecordMapper.isSupplied(submitted.lastName())) {
-            proposed.setLastName(converted.getLastName());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.addressLine1())) {
-            proposed.setAddressLine1(converted.getAddressLine1());
-        }
         if (AccountRecordMapper.isSupplied(submitted.addressLine2())) {
             proposed.setAddressLine2(converted.getAddressLine2());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.addressCity())) {
-            proposed.setAddressCity(converted.getAddressCity());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.addressStateCode())) {
-            proposed.setAddressStateCode(converted.getAddressStateCode());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.addressCountryCode())) {
-            proposed.setAddressCountryCode(converted.getAddressCountryCode());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.addressZip())) {
-            proposed.setAddressZip(converted.getAddressZip());
         }
         if (AccountRecordMapper.isSupplied(submitted.phoneNumber1())) {
             proposed.setPhoneNumber1(converted.getPhoneNumber1());
@@ -471,25 +491,11 @@ public class AccountController {
         if (AccountRecordMapper.isSupplied(submitted.phoneNumber2())) {
             proposed.setPhoneNumber2(converted.getPhoneNumber2());
         }
-        if (AccountRecordMapper.isSupplied(submitted.socialSecurityPart1())
-                && AccountRecordMapper.isSupplied(submitted.socialSecurityPart2())
-                && AccountRecordMapper.isSupplied(submitted.socialSecurityPart3())) {
-            proposed.setSocialSecurityNumber(converted.getSocialSecurityNumber());
-        }
         if (AccountRecordMapper.isSupplied(submitted.governmentIssuedId())) {
             proposed.setGovernmentIssuedId(converted.getGovernmentIssuedId());
         }
         if (AccountRecordMapper.isSupplied(submitted.dateOfBirth())) {
             proposed.setDateOfBirth(converted.getDateOfBirth());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.eftAccountId())) {
-            proposed.setEftAccountId(converted.getEftAccountId());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.primaryCardHolderIndicator())) {
-            proposed.setPrimaryCardHolderIndicator(converted.getPrimaryCardHolderIndicator());
-        }
-        if (AccountRecordMapper.isSupplied(submitted.ficoCreditScore())) {
-            proposed.setFicoCreditScore(converted.getFicoCreditScore());
         }
         return proposed;
     }

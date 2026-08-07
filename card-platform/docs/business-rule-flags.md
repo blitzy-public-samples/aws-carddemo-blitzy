@@ -75,7 +75,7 @@ Every value in the register above was measured in the source. The fraud service 
 
 ## Departures this platform makes from the source
 
-The register records source behaviour. The two entries below record the opposite case: places where the platform answers differently from the source on purpose. Neither is a defect in the source, so neither belongs in the register, and both are here because a reviewer checking parity will look for them here.
+The register records source behaviour. The three entries below record the opposite case: places where the platform answers differently from the source on purpose. None is a defect in the source, so none belongs in the register, and all three are here because a reviewer checking parity will look for them here.
 
 ### D1. Card detail refuses a row that belongs to another account
 
@@ -92,3 +92,13 @@ The source places no character restriction on the text it renders. `app/cbl/CBST
 The platform refuses one. A single pattern constrains every text component of the authorized and posted events. The same pattern constrains the free-text fields of the authorization, account and customer update requests. A synchronous caller sending a value outside it receives a validation refusal, and an event carrying one is dead-lettered rather than rendered out of column.
 
 **What the project owner should decide:** whether refusing an accented merchant name or cardholder description is the intended behaviour, or whether a transliteration step should run ahead of rendering. No shipped fixture reaches the question, because every text value across the nine fixtures under `app/data/ASCII/` is already printable ASCII. [Suggested next tasks](suggested-next-tasks.md) carries the confirmation as a task.
+
+### D3. A card expiry that names no day of the calendar is refused
+
+The source stores one. `app/cbl/COCRDUPC.cbl:L1467-L1474` joins the submitted year, month and day with hyphens into `CARD-UPDATE-EXPIRAION-DATE`, which redefines `CARD-EXPIRAION-DATE PIC X(10)` at `app/cpy/CVACT02Y.cpy:L9`. Ten characters of text hold `2028-02-30` as readily as `2028-02-28`, and no paragraph checks which it is: the edit chain closes at `1260-EDIT-EXPIRY-YEAR-EXIT` at `app/cbl/COCRDUPC.cbl:L945` and `2000-DECIDE-ACTION` opens at `:L948`, with no paragraph between them reaching the day.
+
+Column `expiration_date` is a `DATE`, which cannot hold a day that does not exist. Section 0.3.1 of the plan requires that type for this one field, because the field is positionally a calendar date and the source itself decomposes it into a year, a month and a day at `app/cbl/COCRDUPC.cbl:L117-L121`. So the platform refuses what the source would have stored, and it says so: `Card expiry year, month and day must name a day of the calendar`. The divergence is the column type's rather than a rule this platform added.
+
+The rule reads the three values a caller submitted, which are the three the source writes. `app/cbl/COCRDUPC.cbl:L621` moves the day the screen sent into `CCUP-NEW-EXPDAY` and `:L1471` writes that same item into the record. The day never changed on a 3270 because `app/bms/COCRDUP.bms:L142` declares `EXPDAY` as `DRK`, `FSET` and `PROT` where the four other editable fields declare `UNPROT`, so an operator could not type into it and `app/cbl/COCRDUPC.cbl:L1110`, `:L1123` and `:L1127` sent the stored day back on every path. A request body has no protected field, so a caller can change the day and the column takes what it sends.
+
+**What the project owner should decide:** whether refusing the impossible day is right, or whether the platform should store what the source stored. Storing it is not available at this column type, so the alternative is a `VARCHAR(10)` column and no rule, which would let `2028-02-30` reach a cardholder statement. No shipped fixture reaches the question: every one of the 50 rows in `app/data/ASCII/carddata.txt` carries a real date.

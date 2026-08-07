@@ -137,7 +137,7 @@ import java.math.BigDecimal;
 public record AuthorizationRequest(
 
         @Null(message = TRANSACTION_ID_NOT_ACCEPTED_MESSAGE)
-        @Size(max = PicClause.DALYTRAN_ID_WIDTH)
+        @Size(max = PicClause.DALYTRAN_ID_WIDTH, message = TRANSACTION_ID_WIDTH_MESSAGE)
         @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String transactionId,
 
@@ -150,12 +150,12 @@ public record AuthorizationRequest(
         String transactionCategoryCode,
 
         @NotBlank(message = SOURCE_EMPTY_MESSAGE)
-        @Size(max = PicClause.DALYTRAN_SOURCE_WIDTH)
+        @Size(max = PicClause.DALYTRAN_SOURCE_WIDTH, message = SOURCE_WIDTH_MESSAGE)
         @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String source,
 
         @NotBlank(message = DESCRIPTION_EMPTY_MESSAGE)
-        @Size(max = PicClause.DALYTRAN_DESC_WIDTH)
+        @Size(max = PicClause.DALYTRAN_DESC_WIDTH, message = DESCRIPTION_WIDTH_MESSAGE)
         @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String description,
 
@@ -167,17 +167,17 @@ public record AuthorizationRequest(
         String merchantId,
 
         @NotBlank(message = MERCHANT_NAME_EMPTY_MESSAGE)
-        @Size(max = PicClause.DALYTRAN_MERCHANT_NAME_WIDTH)
+        @Size(max = PicClause.DALYTRAN_MERCHANT_NAME_WIDTH, message = MERCHANT_NAME_WIDTH_MESSAGE)
         @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String merchantName,
 
         @NotBlank(message = MERCHANT_CITY_EMPTY_MESSAGE)
-        @Size(max = PicClause.DALYTRAN_MERCHANT_CITY_WIDTH)
+        @Size(max = PicClause.DALYTRAN_MERCHANT_CITY_WIDTH, message = MERCHANT_CITY_WIDTH_MESSAGE)
         @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String merchantCity,
 
         @NotBlank(message = MERCHANT_ZIP_EMPTY_MESSAGE)
-        @Size(max = PicClause.DALYTRAN_MERCHANT_ZIP_WIDTH)
+        @Size(max = PicClause.DALYTRAN_MERCHANT_ZIP_WIDTH, message = MERCHANT_ZIP_WIDTH_MESSAGE)
         @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
         String merchantZip,
 
@@ -199,7 +199,9 @@ public record AuthorizationRequest(
         String accountId) {
 
     // The twenty-two rejection texts of app/cbl/COTRN02C.cbl, each reproduced character for
-    // character from the paragraph that moves it into WS-MESSAGE.
+    // character from the paragraph that moves it into WS-MESSAGE, and beside them the texts each
+    // marked ADDITIVE, which answer a condition a fixed-width map field cannot raise. Every text of
+    // both kinds fits WS-MESSAGE PIC X(80) at app/cbl/COTRN02C.cbl:L38.
 
     /**
      * Rejection text for an empty transaction type code, from
@@ -271,6 +273,59 @@ public record AuthorizationRequest(
      */
     public static final String TRANSACTION_ID_WIDTH_MESSAGE =
             "Transaction ID must hold sixteen printable characters...";
+
+    /**
+     * ADDITIVE rejection text for a source wider than {@code DALYTRAN-SOURCE PIC X(10)}.
+     *
+     * <p>No source message corresponds, and none could. The field arrives from
+     * {@code app/bms/COTRN2A.bms} as a fixed-width map area, so a longer value cannot reach
+     * {@code app/cbl/COTRN02C.cbl} at all: the terminal stops the operator at the field boundary and
+     * the Basic Mapping Support copy truncates whatever a program moves in. A request body carries no
+     * such boundary, so the width becomes a rule here.
+     *
+     * <p>Five texts of this family replace the reader's own default wording, which named a bound and
+     * no field: {@code "size must be between 0 and 100"} tells a caller nothing about which of the
+     * five it refused. Each text names its field and its width, and each fits
+     * {@code WS-MESSAGE PIC X(80)} at {@code app/cbl/COTRN02C.cbl:L38} like every source text does.
+     */
+    public static final String SOURCE_WIDTH_MESSAGE =
+            "Source must hold at most ten characters...";
+
+    /**
+     * ADDITIVE rejection text for a description wider than {@code DALYTRAN-DESC PIC X(100)}.
+     *
+     * <p>ADDITIVE for the reason {@link #SOURCE_WIDTH_MESSAGE} records. This width carries more
+     * weight than the other four: the value reaches the fixed-width alert record the notification
+     * service renders from {@code app/cpy/COSTM01.CPY}, which lays out its columns by position.
+     */
+    public static final String DESCRIPTION_WIDTH_MESSAGE =
+            "Description must hold at most one hundred characters...";
+
+    /**
+     * ADDITIVE rejection text for a merchant name wider than
+     * {@code DALYTRAN-MERCHANT-NAME PIC X(50)}. ADDITIVE for the reason
+     * {@link #SOURCE_WIDTH_MESSAGE} records.
+     */
+    public static final String MERCHANT_NAME_WIDTH_MESSAGE =
+            "Merchant Name must hold at most fifty characters...";
+
+    /**
+     * ADDITIVE rejection text for a merchant city wider than
+     * {@code DALYTRAN-MERCHANT-CITY PIC X(50)}. ADDITIVE for the reason
+     * {@link #SOURCE_WIDTH_MESSAGE} records.
+     */
+    public static final String MERCHANT_CITY_WIDTH_MESSAGE =
+            "Merchant City must hold at most fifty characters...";
+
+    /**
+     * ADDITIVE rejection text for a merchant postal code wider than
+     * {@code DALYTRAN-MERCHANT-ZIP PIC X(10)}. ADDITIVE for the reason
+     * {@link #SOURCE_WIDTH_MESSAGE} records. Records of
+     * {@code app/data/ASCII/dailytran.txt} hold both the five-digit and the hyphenated nine-digit
+     * form, and both fit the width.
+     */
+    public static final String MERCHANT_ZIP_WIDTH_MESSAGE =
+            "Merchant Zip must hold at most ten characters...";
 
     /**
      * Rejection text for an account identifier that is not all digits, from

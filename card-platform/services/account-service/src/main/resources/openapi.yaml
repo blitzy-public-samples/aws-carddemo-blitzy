@@ -142,11 +142,19 @@ paths:
         record and submitted every field, so a field the operator did not touch still arrived.
 
 
+        A component the required list of its block names is refused when it is absent and refused
+        when
+        it is blank, and the two answer the same text. Omitting creditLimit is refused with
+        'Credit Limit must be supplied.' exactly as sending '' for it is. No omitted component is
+        filled
+        from the stored row, so a caller that drops a field is told which field it dropped.
+
+
         What a caller may omit is a whole block. A body carrying customerData alone leaves every
         account column as stored, and one carrying both replaces both records. Within a block, a
-        component carrying no mandatory edit may be omitted and keeps its stored value. Those are
-        the
-        middle name, the second address line, the second telephone number, the government-issued
+        component the required list does not name may be omitted and keeps its stored value. Those
+        are
+        the middle name, the second address line, both telephone numbers, the government-issued
         identifier, the date of birth and the disclosure group.
 
 
@@ -167,11 +175,24 @@ paths:
         The example below names the two values it had to change and why each one failed.
 
 
-        A write produces one AccountStateChanged event carrying changeKind ACCOUNT_UPDATED, against
-        the contract in src/main/resources/schemas/account-state-changed-v1.json. Request handling
-        publishes nothing. outbox/OutboxWriter writes an outbox_event row in the same transaction as
-        the two record writes, and outbox/OutboxRelay publishes it afterwards on a fixed delay.
-        card-platform/docs/event-flow.md carries the path an event takes from here.
+        A write produces one event per record it changed, and no event for a record it left as it
+        stood.
+        A changed account row produces one AccountStateChanged carrying changeKind ACCOUNT_UPDATED,
+        against the contract in src/main/resources/schemas/account-state-changed-v1.json. A changed
+        customer row produces one CustomerContextChanged, against
+        src/main/resources/schemas/customer-context-changed-v1.json. Raising creditLimit while
+        resubmitting the customer values the caller was shown produces the account event alone, and
+        changing an address while omitting accountData produces the customer event alone. Changing
+        both
+        produces both. The comparison is the one app/cbl/COACTUPC.cbl:L1684-L1768 draws, applied per
+        record, and a body that changes nothing answers 200 with the no-change text and produces
+        none.
+
+
+        Request handling publishes nothing. outbox/OutboxWriter writes each outbox_event row in the
+        same transaction as the two record writes, and outbox/OutboxRelay publishes them afterwards
+        on
+        a fixed delay. card-platform/docs/event-flow.md carries the path an event takes from here.
 
 
         Restricted to the administrator role. One call writes two records and produces one event
@@ -190,7 +211,14 @@ paths:
                 summary: >-
                   Update the customer alone, leaving every account column as stored. The account
                   block
-                  is omitted; the customer block is complete, as a present block has to be.
+                  is omitted; the customer block carries all fourteen of its required components, as
+                  a
+                  present block has to. Both telephone numbers are supplied even though neither is
+                  required, because omitting one hands the stored value to the edit and the stored
+                  phoneNumber2 for this customer carries area code 493, which the general-purpose
+                  band
+                  does not hold. That is the seeded-row point the description above makes, and it
+                  reaches an omitted component as readily as a submitted one.
                 value:
                   customerData:
                     customerId: '000000050'
@@ -201,6 +229,8 @@ paths:
                     addressStateCode: 'OR'
                     addressCountryCode: 'USA'
                     addressZip: '97201'
+                    phoneNumber1: '(325)301-0827'
+                    phoneNumber2: '(503)985-9283'
                     socialSecurityPart1: '111'
                     socialSecurityPart2: '11'
                     socialSecurityPart3: '1111'
@@ -551,9 +581,20 @@ components:
 
     NotFound:
       description: >-
-        This service holds no record for that request. The detail names no identifier, for the
-        reason
-        the 403 detail names none.
+        This service holds no record for that request. The detail this response carries names no
+        identifier, for the reason the 403 detail names none.
+
+
+        The two read routes do not use this response. Each declares its own 404 and each reproduces
+        the
+        miss text its source paragraph composes, which opens with the identifier the caller named:
+        app/cbl/COACTVWC.cbl:L796-L806 for the account read and :L846-L856 for the customer read.
+        Those
+        texts are the contract of those two routes, and this description does not govern them. A
+        caller
+        probing for another subject's rows learns nothing from either one that the path it sent did
+        not
+        already tell it, since the identifier in the text is the identifier in the path.
       content:
         application/problem+json:
           schema:
@@ -828,8 +869,10 @@ components:
       description: >-
         The submitted account values. The block itself is optional and, when present, has to be
         complete: nine of its ten components carry a mandatory-field edit that refuses an absent
-        value.
-        groupId is the one component that may be omitted, and it then keeps its stored value.
+        value
+        with the same text it refuses a blank one. groupId is the one component that may be omitted,
+        and
+        it then keeps its stored value, because no edit of app/cbl/COACTUPC.cbl reads it.
 
 
         Omitting the whole block is how a caller updates the customer alone.
@@ -898,20 +941,38 @@ components:
         The submitted customer values. The block is required: an account record names no customer
         and
         this service owns no cross-reference table to resolve one from. A present block has to be
-        complete, and ten of its components carry a mandatory-field edit that refuses an absent
-        value.
+        complete: every component the required list names carries a mandatory-field edit that
+        refuses an
+        absent value with the same text it refuses a blank one, and no absent component is filled
+        from
+        the stored row.
 
 
         The three Social Security parts are one column, and a cross-field check on this block
         requires
-        all three together. A body carrying one part alone is refused and not merged. Each part is
-        numeric and non-zero; app/cbl/COACTUPC.cbl:L121-L123 also excludes 000, 666 and 900 through
-        999 from the first part.
+        all three together. A body carrying one part alone leaves the column absent and is refused,
+        not
+        merged. Each part is numeric and non-zero; app/cbl/COACTUPC.cbl:L121-L123 also excludes 000,
+        666
+        and 900 through 999 from the first part.
 
 
-        Six components carry no mandatory edit and may be omitted, keeping their stored value. Those
-        are the middle name, the second address line, both telephone numbers, the government-issued
-        identifier and the date of birth.
+        Six components may be omitted, keeping their stored value. Those are the middle name, the
+        second
+        address line, both telephone numbers, the government-issued identifier and the date of birth.
+        Five of them carry no mandatory edit: the middle name reaches an optional alphabetic edit,
+        both
+        telephone numbers reach the edit at app/cbl/COACTUPC.cbl:L2225-L2244 whose own comment reads
+        'Not mandatory to enter a phone number', and the second address line and the
+        government-issued
+        identifier reach no edit at all. The date of birth does carry a calendar edit that refuses a
+        blank value, and omitting it hands the stored date to that edit rather than a blank.
+
+
+        customerId carries no edit either. app/cbl/COACTUPC.cbl:L1222 calls it 'actually not
+        editable'.
+        An absent one is refused with 'Customer Id must be supplied. An account record carries none',
+        and one that names a customer other than the row this account resolves to is refused as well.
       required:
         - customerId
         - firstName

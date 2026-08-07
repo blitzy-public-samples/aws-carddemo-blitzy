@@ -34,6 +34,7 @@ import org.springframework.validation.annotation.Validated;
  * @param api    the request-body ceiling of the web surface
  * @param kafka  the topic names this service publishes to
  * @param outbox the relay sweep settings
+ * @param write  the bound on how long one locked read waits
  */
 @ConfigurationProperties(prefix = "carddemo")
 @Validated
@@ -47,7 +48,27 @@ public record CardProperties(
 
         @NotNull @Valid ProcessedEvent processedEvent,
 
-        @NotNull @Valid Retention retention) {
+        @NotNull @Valid Retention retention,
+
+        @NotNull @Valid Write write) {
+
+    /**
+     * Bounds how long one locked read waits for a row another writer holds.
+     *
+     * <p>PostgreSQL waits forever by default, so a contended update held the request open for as long
+     * as the other writer held the row, and the documented lock-failure answer was unreachable through
+     * contention: the wait either ended in a lock or never ended at all.
+     *
+     * <p>The bound is applied as a transaction-local {@code lock_timeout}, so it governs the locked
+     * reads of one update and nothing else. A datasource-wide setting would also bound a schema
+     * migration and the relay sweep, and a migration that gives up on a lock leaves a half-applied
+     * schema.
+     *
+     * @param lockWaitMs longest one locked read waits, in milliseconds, before the datastore refuses
+     *                   the lock and the documented lock-failure answer is returned
+     */
+    public record Write(@Positive long lockWaitMs) {
+    }
 
     /**
      * Bounds the request parser before card validation begins.

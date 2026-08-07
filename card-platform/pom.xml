@@ -43,8 +43,12 @@
   </modules>
 
   <properties>
-    <!-- Language level. Every module compiles at release 25. The enforcer checks
-         the running JDK, and every module descriptor repeats java.version. -->
+    <!-- Language level. Every module compiles at release 25. maven.compiler.release is
+         the property the compiler plugin reads, the enforcer rule below requires it to be
+         25 in every module, and every module descriptor repeats it. java.version
+         carries the framework's conventional name for the same level; no plugin resolves
+         it, because this aggregator imports the Spring Boot bill of materials rather than
+         inheriting the Spring Boot parent. -->
     <java.version>25</java.version>
     <maven.compiler.release>25</maven.compiler.release>
     <maven.compiler.source>25</maven.compiler.source>
@@ -326,6 +330,20 @@
                   <version>[25,)</version>
                   <message>This build runs on JDK 25 or later. Every module compiles at release 25.</message>
                 </requireJavaVersion>
+                <!--
+                  The compile release of the module being built. requireJavaVersion above
+                  checks the running JDK, which says nothing about the release a module
+                  compiles at: a module that lowers maven.compiler.release compiles
+                  silently on JDK 25 and writes class files at the lower version. This
+                  rule reads the effective property, so a module that overrides or clears
+                  it fails at validate rather than shipping mixed bytecode.
+                -->
+                <requireProperty>
+                  <property>maven.compiler.release</property>
+                  <regex>^25$</regex>
+                  <message>Every module of this build compiles at release 25, and this module resolves maven.compiler.release to nothing. Declare it in the module descriptor, or inherit it from card-platform/pom.xml.</message>
+                  <regexMessage>Every module of this build compiles at release 25. This module resolves maven.compiler.release to another release, which would leave class files at a version the rest of the build does not carry.</regexMessage>
+                </requireProperty>
                 <bannedDependencies>
                   <!-- Checked against the dependencies a module declares, not
                        against the transitive graph. -->

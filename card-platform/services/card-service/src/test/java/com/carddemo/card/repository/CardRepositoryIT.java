@@ -1,5 +1,6 @@
 package com.carddemo.card.repository;
 
+import com.carddemo.card.api.dto.CardValidationMessages;
 import com.carddemo.card.domain.CardQueryService.CardListRow;
 import com.carddemo.card.domain.CardQueryService;
 import com.carddemo.card.entity.CardEntity;
@@ -20,6 +21,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -27,18 +35,25 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Limit;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -315,6 +330,10 @@ class CardRepositoryIT {
     /** Forces a pending insert to the database, so a constraint answers where a test asserts. */
     @PersistenceContext
     private EntityManager entityManager;
+
+    /** Opens the two independent transactions the bounded-wait test contends between. */
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     /**
      * The schema Flyway created and Hibernate qualifies with, from
@@ -1555,6 +1574,136 @@ class CardRepositoryIT {
             jdbcTemplate.update(
                     "INSERT INTO processed_event (event_id, processed_at) VALUES (?, ?)",
                     eventId, java.sql.Timestamp.from(processedAt));
+        }
+    }
+
+    @Nested
+    @DisplayName("The transaction-local lock wait bound, over the migrated schema")
+    class BoundedLockWait {
+
+        /** How long the second reader below is allowed to wait, short so the test is quick. */
+        private static final String TEST_BOUND = "250ms";
+
+        /** Ceiling the measured wait must stay under for the bound to have been honoured. */
+        private static final long GENEROUS_CEILING_MS = 5_000L;
+
+        /**
+         * A bounded wait gives up on a held card lock instead of waiting for it.
+         *
+         * <p>Without a bound PostgreSQL waits, and it waits for as long as the other writer holds
+         * the row. That is why {@code COULD-NOT-LOCK-FOR-UPDATE} was unreachable through
+         * contention: the source set it whenever its {@code READ UPDATE} came back with anything
+         * other than {@code DFHRESP(NORMAL)}, at {@code app/cbl/COCRDUPC.cbl:L1445-L1446}, and a
+         * wait that never ends comes back with nothing at all.
+         *
+         * <p>{@link CardRepository#applyLockWaitBound(String)} bounds it. The bound is
+         * transaction-local, so the first transaction below is unaffected and only the second gives
+         * up. {@code src/main/resources/application.yml} ships three seconds through
+         * {@code carddemo.write.lock-wait-ms}.
+         *
+         * <p>The give-up arrives as a {@link CannotAcquireLockException}, which is a
+         * {@code PessimisticLockingFailureException}, and that is the type
+         * {@code domain/CardUpdateService} turns into {@code CardUpdateService.LockNotTaken} and
+         * then into {@link CardValidationMessages#COULD_NOT_LOCK_FOR_UPDATE}. The elapsed time is
+         * asserted too, because a bound that is set but not honoured would still raise eventually
+         * and the assertion on the type alone would pass on a wait of any length.
+         *
+         * <p>The give-up leaves its transaction unusable, so it is carried out through the
+         * transaction boundary rather than caught inside it. {@code domain/CardUpdateService} does
+         * the same, and for the same reason: returning normally across a rollback-only transaction
+         * answers with a rollback report instead of the outcome.
+         *
+         * @throws Exception when a worker cannot be run
+         */
+        @Test
+        @DisplayName("a bounded wait gives up on a held card lock instead of waiting for it")
+        void aBoundedWaitGivesUpOnAHeldCardLock() throws Exception {
+            String heldCardNumber = cardRepository.findFirstPage(Limit.of(1)).getFirst()
+                    .getCardNumber();
+            CountDownLatch firstLocked = new CountDownLatch(1);
+            CountDownLatch releaseFirst = new CountDownLatch(1);
+            ExecutorService workers = Executors.newFixedThreadPool(2);
+
+            try {
+                Future<?> first = workers.submit(() -> inNewTransaction(() -> {
+                    cardRepository.findForUpdateByCardNumber(heldCardNumber).orElseThrow();
+                    firstLocked.countDown();
+                    awaitLatch(releaseFirst, "the held card lock was not released");
+                    return null;
+                }));
+                assertTrue(firstLocked.await(5, TimeUnit.SECONDS),
+                        "the first transaction never took the card lock");
+
+                Future<?> second = workers.submit(() -> inNewTransaction(() -> {
+                    cardRepository.applyLockWaitBound(TEST_BOUND);
+                    return cardRepository.findForUpdateByCardNumber(heldCardNumber);
+                }));
+
+                long startedAt = System.nanoTime();
+                ExecutionException thrown = assertThrows(ExecutionException.class,
+                        () -> second.get(10, TimeUnit.SECONDS),
+                        "the bounded read returned a row it could not have locked");
+                long waitedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+
+                assertAll(
+                        () -> assertInstanceOf(CannotAcquireLockException.class,
+                                rootCauseOf(thrown),
+                                "the give-up is the type domain/CardUpdateService maps onto "
+                                        + CardValidationMessages.COULD_NOT_LOCK_FOR_UPDATE),
+                        () -> assertTrue(waitedMs < GENEROUS_CEILING_MS,
+                                "the bound was honoured, so the wait ended near it rather than at "
+                                        + "the release of the other writer, but it took "
+                                        + waitedMs + "ms"));
+
+                releaseFirst.countDown();
+                first.get(5, TimeUnit.SECONDS);
+            } finally {
+                releaseFirst.countDown();
+                workers.shutdownNow();
+            }
+        }
+
+        /**
+         * Runs one callback inside a transaction of its own.
+         *
+         * <p>This nested class carries no {@code @Transactional} annotation, unlike every other
+         * nested class in this file. Two transactions have to exist at once for one to contend with
+         * the other, and a test-managed transaction would hold both callbacks.
+         *
+         * @param callback the work to run
+         * @param <T>      what the work answers
+         * @return whatever the callback answered
+         */
+        private <T> T inNewTransaction(Supplier<T> callback) {
+            TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+            transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            return transaction.execute(status -> callback.get());
+        }
+
+        /** Waits for one test latch and preserves interruption. */
+        private void awaitLatch(CountDownLatch latch, String failureMessage) {
+            try {
+                if (!latch.await(5, TimeUnit.SECONDS)) {
+                    throw new AssertionError(failureMessage);
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("the card lock wait was interrupted", interrupted);
+            }
+        }
+
+        /**
+         * Walks a throwable to the first cause the datastore layer produced.
+         *
+         * @param thrown the throwable a worker reported
+         * @return the deepest cause carrying a distinct type from the datastore layer
+         */
+        private Throwable rootCauseOf(Throwable thrown) {
+            Throwable walked = thrown;
+            while (walked.getCause() != null && !(walked instanceof DataAccessException)) {
+                walked = walked.getCause();
+            }
+            return walked;
         }
     }
 }

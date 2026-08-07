@@ -46,6 +46,11 @@ env:
   JAVA_VERSION: "25"
   MAVEN_VERSION: "3.9.16"
   MAVEN_OPTS: "-Xmx2g"
+  # Tag every service image is built under. It is the Maven project version, which is
+  # also the tag card-platform/docker-compose.yml runs and card-platform/deploy/k8s names.
+  IMAGE_TAG: "1.0.0-SNAPSHOT"
+  # Days a test report stays downloadable after a run.
+  REPORT_RETENTION_DAYS: "14"
 
 defaults:
   run:
@@ -77,7 +82,11 @@ jobs:
           base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
           curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
           curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          (cd /tmp && sha512sum --check "${archive}.sha512")
+          # Apache publishes the digest on its own, with no file name and no closing
+          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
+          # so the line is assembled here and --strict refuses any other shape.
+          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
+          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
@@ -89,11 +98,24 @@ jobs:
       - name: Compile at Java release 25
         run: mvn -B -ntp -DskipTests compile
 
-      - name: Check the class-file release
+      - name: Check the class-file release of every compiled class
         run: |
-          class_file="$(find libs services -path '*/target/classes/*.class' -print -quit)"
-          test -n "${class_file}"
-          javap -verbose "${class_file}" | grep -F "major version: 69"
+          # Every class file the reactor wrote, not a sample of one. javap takes all of
+          # them in a single invocation, so the sweep costs one JVM start. A pipeline is
+          # avoided here: a step declared as shell bash runs under -eo pipefail, where a
+          # reader closing the pipe early fails the step on the shell's exit status
+          # rather than on the class files.
+          mapfile -t class_files < <(find libs services -path '*/target/classes/*.class' | sort)
+          test "${#class_files[@]}" -gt 0
+          javap -verbose "${class_files[@]}" > /tmp/class-file-releases.txt
+          reported="$(grep -c 'major version:' /tmp/class-file-releases.txt)"
+          releases="$(awk '/major version:/ {print $3}' /tmp/class-file-releases.txt | sort -u)"
+          echo "Inspected ${#class_files[@]} class files; javap reported ${reported} of them"
+          echo "Class-file releases present: $(echo "${releases}" | tr '\n' ' ')"
+          test "${reported}" -eq "${#class_files[@]}"
+          # 69 is the class-file version of Java release 25, and the only one this build
+          # may produce. A second value here means a module compiled at another release.
+          test "${releases}" = "69"
 
   # Stage 2. Runs the Surefire tests of every module. The equivalence-tests
   # module holds its *EquivalenceTest classes back for Failsafe in stage 4.
@@ -120,7 +142,11 @@ jobs:
           base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
           curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
           curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          (cd /tmp && sha512sum --check "${archive}.sha512")
+          # Apache publishes the digest on its own, with no file name and no closing
+          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
+          # so the line is assembled here and --strict refuses any other shape.
+          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
+          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
@@ -131,6 +157,15 @@ jobs:
 
       - name: Run unit and source-contract tests
         run: mvn -B -ntp -pl equivalence-tests -am test
+
+      - name: Keep the unit test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: card-platform/**/target/surefire-reports/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
 
   # Stage 3. Runs the Failsafe suites of the six service modules against a
   # PostgreSQL and Kafka pair started from the Compose file.
@@ -157,7 +192,11 @@ jobs:
           base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
           curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
           curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          (cd /tmp && sha512sum --check "${archive}.sha512")
+          # Apache publishes the digest on its own, with no file name and no closing
+          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
+          # so the line is assembled here and --strict refuses any other shape.
+          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
+          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
@@ -189,6 +228,17 @@ jobs:
           modules="services/authorization-service,services/ledger-posting-service,services/fraud-detection-service,services/notification-service,services/account-service,services/card-service"
           mvn -B -ntp -pl "${modules}" -am verify
 
+      - name: Keep the integration test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-reports
+          path: |
+            card-platform/**/target/failsafe-reports/**
+            card-platform/**/target/surefire-reports/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
       - name: Stop the integration containers
         if: always()
         run: docker compose down --volumes
@@ -219,7 +269,11 @@ jobs:
           base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
           curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
           curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          (cd /tmp && sha512sum --check "${archive}.sha512")
+          # Apache publishes the digest on its own, with no file name and no closing
+          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
+          # so the line is assembled here and --strict refuses any other shape.
+          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
+          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
@@ -248,6 +302,15 @@ jobs:
 
       - name: Run the equivalence suite
         run: mvn -B -ntp -pl equivalence-tests -am verify
+
+      - name: Keep the equivalence reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: equivalence-test-reports
+          path: card-platform/equivalence-tests/target/failsafe-reports/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
 
       - name: Stop the equivalence containers
         if: always()
@@ -278,7 +341,11 @@ jobs:
           base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
           curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
           curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          (cd /tmp && sha512sum --check "${archive}.sha512")
+          # Apache publishes the digest on its own, with no file name and no closing
+          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
+          # so the line is assembled here and --strict refuses any other shape.
+          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
+          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
@@ -294,8 +361,20 @@ jobs:
           -Dtest=SchemaBackwardCompatibilityTest,EventRoundTripTest
           test
 
-  # Stage 6. Packages each service, then builds its image from the Dockerfile in
-  # card-platform/services. The images stay on the runner.
+      - name: Keep the schema compatibility reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-compatibility-reports
+          path: card-platform/libs/event-contracts/target/surefire-reports/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  # Stage 6. Packages each service, builds its image from the Dockerfile in
+  # card-platform/services, then starts all six through card-platform/docker-compose.yml
+  # and reads /actuator/health on each. The images stay on the runner: nothing is pushed,
+  # and the tag they carry is the one Compose runs and deploy/k8s names, so the stage
+  # consumes what it builds. The stack is always removed, whether the check passed or not.
   container-builds:
     name: Build six service containers
     needs:
@@ -323,7 +402,11 @@ jobs:
           base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
           curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
           curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          (cd /tmp && sha512sum --check "${archive}.sha512")
+          # Apache publishes the digest on its own, with no file name and no closing
+          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
+          # so the line is assembled here and --strict refuses any other shape.
+          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
+          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
           sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
           echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
 
@@ -354,6 +437,57 @@ jobs:
           for service in "${services[@]}"; do
             docker build \
               --file "services/${service}/Dockerfile" \
-              --tag "carddemo/${service}:ci" \
+              --tag "carddemo/${service}:${IMAGE_TAG}" \
               "services/${service}"
           done
+
+      - name: Generate the stack credentials
+        run: |
+          for variable in POSTGRES_PASSWORD \
+                          AUTHORIZATION_DB_PASSWORD LEDGER_DB_PASSWORD FRAUD_DB_PASSWORD \
+                          NOTIFICATION_DB_PASSWORD ACCOUNT_DB_PASSWORD CARD_DB_PASSWORD \
+                          KAFKA_ADMIN_PASSWORD \
+                          AUTHORIZATION_KAFKA_PASSWORD LEDGER_KAFKA_PASSWORD \
+                          FRAUD_KAFKA_PASSWORD NOTIFICATION_KAFKA_PASSWORD \
+                          ACCOUNT_KAFKA_PASSWORD CARD_KAFKA_PASSWORD; do
+            sed -i "s|^${variable}=.*|${variable}=$(openssl rand -base64 24 | tr -d '/+=')|" .env
+          done
+          # The three identity passwords are stored already encoded, and every service
+          # refuses to start on a value carrying no encoding prefix. The recipe is the one
+          # card-platform/docs/onboarding.md documents, and the jars it reads are in the
+          # local repository because the packaging step above resolved them. No password
+          # below is echoed, and each exists only for this run.
+          crypto_classpath="$(find ~/.m2/repository/org/springframework/security/spring-security-crypto -name 'spring-security-crypto-*.jar' | sort | tail -1)"
+          crypto_classpath="${crypto_classpath}:$(find ~/.m2/repository/commons-logging/commons-logging -name 'commons-logging-*.jar' | sort | tail -1)"
+          crypto_classpath="${crypto_classpath}:$(find ~/.m2/repository/org/springframework/spring-core -name 'spring-core-*.jar' | sort | tail -1)"
+          for variable in ADMIN_PASSWORD_HASH USER_PASSWORD_HASH MONITORING_PASSWORD_HASH; do
+            export SMOKE_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=')"
+            hash="$(printf 'System.out.println(org.springframework.security.crypto.factory.PasswordEncoderFactories.createDelegatingPasswordEncoder().encode(System.getenv("SMOKE_PASSWORD")));\n/exit\n' | jshell --class-path "${crypto_classpath}" 2>/dev/null | sed -n 's/^jshell> //p' | grep '^{bcrypt}' | head -1)"
+            unset SMOKE_PASSWORD
+            test -n "${hash}"
+            sed -i "s|^${variable}=.*|${variable}='${hash}'|" .env
+          done
+          test "$(grep -c 'REPLACE-WITH\|REPLACE-THIS' .env)" -eq 0
+
+      - name: Start the six images that were just built
+        run: docker compose up --detach --wait
+
+      - name: Check that every service answers on its management port
+        run: |
+          ports=(9081 9082 9083 9084 9085 9086)
+          for port in "${ports[@]}"; do
+            status="$(curl --fail --silent --show-error "http://127.0.0.1:${port}/actuator/health")"
+            echo "${port}: ${status}"
+            case "${status}" in
+              *'"status":"UP"'*) ;;
+              *) echo "::error::the service on port ${port} did not report UP"; exit 1 ;;
+            esac
+          done
+
+      - name: Report the container states
+        if: always()
+        run: docker compose ps --all
+
+      - name: Stop the smoke containers
+        if: always()
+        run: docker compose down --volumes

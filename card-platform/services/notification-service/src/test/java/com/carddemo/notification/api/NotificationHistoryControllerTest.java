@@ -50,6 +50,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -106,10 +108,12 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  *
- * <p>{@code NotificationApiExceptionHandler.INVALID_REQUEST_MESSAGE} names an account identifier of
- * eleven digits, and this route takes a card token and a page size. Every assertion below reads the
- * status and the withheld request value, never that text. The correction is filed under
- * {@code card-platform/docs/suggested-next-tasks.md}.
+ * <p>A refusal of this route carries the text of the constraint that refused, so a caller reads which
+ * of the two values was wrong: {@code NotificationHistoryController.CARD_TOKEN_MESSAGE} for the path
+ * value, {@code PAGE_SIZE_MESSAGE} for a page size below its floor, and
+ * {@code PAGE_SIZE_NOT_A_NUMBER_MESSAGE} for one that is no whole number. Each names its value by
+ * name and never by the characters submitted, and {@code ApiErrorResponseTest} holds all of them to
+ * letters and punctuation so none can carry a digit run.
  */
 final class NotificationHistoryControllerTest {
 
@@ -687,6 +691,12 @@ final class NotificationHistoryControllerTest {
             }
             assertFalse(body.contains(pathValue), "a refusal echoes the value the caller sent");
             assertTrue(body.contains(ROUTE), "a refusal carries the route template");
+            assertTrue(body.contains(NotificationHistoryController.CARD_TOKEN_MESSAGE),
+                    "the path value was refused, so the card-token text answers: " + body);
+            assertFalse(body.contains(NotificationHistoryController.PAGE_SIZE_MESSAGE),
+                    "no page size was named, so its text has no place here");
+            assertFalse(body.contains("Account identifier"),
+                    "this route carries a card token and no account identifier");
             verifyNoInteractions(statementTransactions);
             verifyNoInteractions(notifications);
         }
@@ -950,6 +960,96 @@ final class NotificationHistoryControllerTest {
                     .andExpect(status().isBadRequest());
 
             verifyNoInteractions(statementTransactions);
+        }
+
+        /**
+         * Asserts a page size below the floor answers the page-size text and not the token text.
+         *
+         * <p>One text answered every refusal of this route before, and it named an account
+         * identifier of eleven digits, which this route does not carry. Each refusal now carries the
+         * text of the constraint that refused it, so a caller learns which of the two values to
+         * change.
+         *
+         * @param submitted the page size the caller sends, each below the floor
+         * @throws Exception when the request cannot be performed
+         */
+        @ParameterizedTest
+        @ValueSource(strings = {"0", "-1", "-4096"})
+        void aPageSizeBelowTheFloorNamesThePageSizeAndNotTheCardToken(String submitted)
+                throws Exception {
+            String body = mockMvc.perform(get(ROUTE, CARD_TOKEN)
+                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER, submitted))
+                    .andExpect(status().isBadRequest())
+                    .andReturn().getResponse().getContentAsString();
+
+            assertTrue(body.contains(NotificationHistoryController.PAGE_SIZE_MESSAGE),
+                    "the page-size text, and this body reads: " + body);
+            assertFalse(body.contains(NotificationHistoryController.CARD_TOKEN_MESSAGE),
+                    "the card token was well formed, so its text has no place here");
+            assertFalse(body.contains("Account identifier"),
+                    "this route carries no account identifier");
+            assertTrue(body.contains(ROUTE), "a refusal carries the route template");
+            verifyNoInteractions(statementTransactions);
+            verifyNoInteractions(notifications);
+        }
+
+        /**
+         * Asserts a refusal leaves one INFO line and no ERROR line, and names no value.
+         *
+         * <p>A mistyped page size used to reach the catch-all, which answers {@code 500} and writes
+         * one {@code ERROR} line with a stack trace. That put a caller's typing mistake in the same
+         * record as a fault of this service, so a reader could not tell the two apart. The level is
+         * the difference: a refusal is traffic.
+         *
+         * @param output the captured console
+         * @throws Exception when the request cannot be performed
+         */
+        @Test
+        @ExtendWith(OutputCaptureExtension.class)
+        void aRefusedPageSizeLeavesAnInformationLineAndNoErrorLine(CapturedOutput output)
+                throws Exception {
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)
+                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER, "abc"))
+                    .andExpect(status().isBadRequest());
+
+            String logged = output.getOut() + output.getErr();
+            assertTrue(logged.contains("A notification request carried a page size that is no"
+                    + " whole number"), "the refusal leaves its own line");
+            assertFalse(logged.contains("ERROR"), "a caller's mistake is no fault of this service");
+            assertFalse(logged.contains(CARD_TOKEN), "no line names the card token");
+        }
+
+        /**
+         * Asserts a page size that is no whole number answers 400 and its own text.
+         *
+         * <p>A query string is text and the page size is the one value of this route that is not, so
+         * it converts before any constraint runs and a conversion that fails reaches none. With no
+         * handler for that conversion failure it fell to the catch-all, and a caller who mistyped a
+         * page size read {@code 500} with the fault text and left an {@code ERROR} line on the
+         * server. Three shapes arrive the same way: text, a fractional value, and a value wider than
+         * the type it converts to.
+         *
+         * @param submitted the page size the caller sends, each no whole number
+         * @throws Exception when the request cannot be performed
+         */
+        @ParameterizedTest
+        @ValueSource(strings = {"abc", "7.5", "99999999999999", "1e3", "seven"})
+        void aPageSizeThatIsNoWholeNumberIsRefusedRatherThanFaulting(String submitted)
+                throws Exception {
+            String body = mockMvc.perform(get(ROUTE, CARD_TOKEN)
+                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER, submitted))
+                    .andExpect(status().isBadRequest())
+                    .andReturn().getResponse().getContentAsString();
+
+            assertTrue(body.contains(
+                            NotificationHistoryController.PAGE_SIZE_NOT_A_NUMBER_MESSAGE),
+                    "the not-a-number text, and this body reads: " + body);
+            assertFalse(body.contains(
+                            NotificationApiExceptionHandler.SERVICE_FAULT_MESSAGE),
+                    "a mistyped page size is no fault of this service");
+            assertTrue(body.contains(ROUTE), "a refusal carries the route template");
+            verifyNoInteractions(statementTransactions);
+            verifyNoInteractions(notifications);
         }
 
         /** Asserts no lookup names an unbounded read. */

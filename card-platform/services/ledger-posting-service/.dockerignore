@@ -1,0 +1,36 @@
+# Paths this module's image build excludes from its own context. Each
+# services/*/Dockerfile builds from this directory, and a context has no ignore
+# file unless it carries one, so the ignore file at the card-platform root governs
+# a root-context build and this one governs this module.
+#
+# The build reads exactly one path: the archive Maven wrote under target/. Every
+# entry below is something the build does not read, and every byte excluded is a
+# byte not sent to the daemon.
+
+# Sources. No stage compiles anything: both stages run the Java Runtime
+# Environment image, and the archive arrives already built.
+src/
+
+# Build files and documentation. The image build resolves no dependency and reads
+# no guide.
+pom.xml
+README.md
+
+# Everything under target/ other than the archive. The pre-repackage archive, the
+# class files, the generated sources and the test reports are all build by-products
+# the image never carries.
+target/*.original
+target/classes/
+target/test-classes/
+target/generated-sources/
+target/generated-test-sources/
+target/maven-status/
+target/maven-archiver/
+target/surefire-reports/
+target/failsafe-reports/
+target/site/
+
+# Editor and operating-system artefacts.
+*.swp
+*~
+.DS_Store

@@ -16,6 +16,8 @@ import com.carddemo.card.domain.CardUpdateService;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import java.util.ArrayList;
@@ -172,6 +174,25 @@ public class CardController {
      */
     public static final String DIRECTION_MESSAGE = "Direction must be forward or backward";
 
+    /** Query parameter carrying the rows a caller wants on the page. */
+    public static final String PAGE_SIZE_PARAMETER = "pageSize";
+
+    /**
+     * Smallest row count the list admits, matching the floor {@link CardQueryService} holds.
+     *
+     * <p>Declared here as well so the range is refused at the boundary rather than inside the read.
+     * A range enforced only in the domain leaves the framework nothing to refuse, and the domain's
+     * own refusal then arrives as a fault of this service rather than as a bad request.
+     */
+    public static final int MIN_PAGE_SIZE = 1;
+
+    /** Largest row count the list admits, matching the ceiling {@link CardQueryService} holds. */
+    public static final int MAX_PAGE_SIZE = 100;
+
+    /** Text a caller reads when the row count falls outside {@value #MIN_PAGE_SIZE} through 100. */
+    public static final String PAGE_SIZE_MESSAGE =
+            CardValidationMessages.ADDITIVE_PAGE_SIZE_OUT_OF_RANGE;
+
     /** Reads pages and single cards. */
     private final CardQueryService cardQueries;
 
@@ -214,12 +235,20 @@ public class CardController {
      * filter of the source screen is absent here. A card filter in a query string would carry a
      * Primary Account Number.
      *
+     * <p>All four request values are constrained here, so a value that misses its constraint is
+     * refused by the framework and answered {@code 400} by {@code api/CardApiExceptionHandler}. The
+     * row count carries {@value #MIN_PAGE_SIZE} through {@value #MAX_PAGE_SIZE}, the range
+     * {@link CardQueryService} reads with. That range is held in both places on purpose: a range
+     * enforced only in the read leaves the framework nothing to refuse, and the read's own refusal
+     * then reaches a caller as a fault of this service rather than as the bad request it is.
+     *
      * @param accountId the eleven-digit account whose cards to list
      * @param cursor    the paging position from a previous response, or {@code null} for the first
      *                  or last page
      * @param direction {@value #FORWARD_DIRECTION} or {@value #BACKWARD_DIRECTION}, defaulting to
      *                  forward
-     * @param pageSize  rows on the page, or {@code null} for the seven the source screen holds
+     * @param pageSize  rows on the page, {@value #MIN_PAGE_SIZE} through {@value #MAX_PAGE_SIZE}, or
+     *                  {@code null} for the seven the source screen holds
      * @return the page, empty when the account has no card
      */
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
@@ -238,7 +267,9 @@ public class CardController {
             @Pattern(regexp = DIRECTION_PATTERN, message = DIRECTION_MESSAGE)
             String direction,
 
-            @RequestParam(name = "pageSize", required = false)
+            @RequestParam(name = PAGE_SIZE_PARAMETER, required = false)
+            @Min(value = MIN_PAGE_SIZE, message = PAGE_SIZE_MESSAGE)
+            @Max(value = MAX_PAGE_SIZE, message = PAGE_SIZE_MESSAGE)
             Integer pageSize) {
 
         boolean backward = BACKWARD_DIRECTION.equals(direction);

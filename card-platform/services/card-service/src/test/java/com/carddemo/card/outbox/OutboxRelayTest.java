@@ -658,7 +658,7 @@ class OutboxRelayTest {
                     shipped.outbox().relay().instanceId(), shipped.outbox().relay().claimTimeout());
             return new CardProperties(shipped.api(), shipped.kafka(),
                     new CardProperties.Outbox(tuned, shipped.outbox().publishedRetentionHours()),
-                    shipped.processedEvent(), shipped.retention());
+                    shipped.processedEvent(), shipped.retention(), shipped.write());
         }
     }
 

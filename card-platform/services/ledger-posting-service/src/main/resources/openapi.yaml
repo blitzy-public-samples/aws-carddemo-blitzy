@@ -30,6 +30,12 @@ tags:
   - name: balance-query
     description: Read access to the account balance projection.
 
+# Every operation below inherits this rule, so none of them restates it. config/SecurityConfig
+# refuses a request carrying no usable credential with 401 and an identity that does not hold the
+# account with 403, and both answer the same ApiProblem shape the failures below answer.
+security:
+  - basicIdentity: []
+
 paths:
 
   /balances/{accountId}:
@@ -99,17 +105,164 @@ paths:
 
         '400':
           description: >-
-            The path value missed the eleven-digit pattern. The framework writes
-            the body, and this file declares no schema for it.
+            The path value missed the eleven-digit pattern
+            ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5 declares. The detail
+            reads "Account identifier must be eleven digits." and names no value
+            the caller submitted.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Bad Request'
+                status: 400
+                detail: 'Account identifier must be eleven digits.'
+
+        '401':
+          description: >-
+            The request carried no usable credential. config/SecurityConfig
+            answers this, and the response also carries
+            WWW-Authenticate: Basic realm="carddemo" because a 401 has to name
+            the scheme a caller should retry with.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Unauthorized'
+                status: 401
+                detail: 'This request carried no usable credential.'
+
+        '403':
+          description: >-
+            The caller authenticated but does not hold this account. An identity
+            carrying the USER role reaches only the accounts its
+            SCOPE_ACCOUNT_ authorities name, and the detail names neither the
+            operation nor the identifier: a 404 would reveal that the row
+            exists, and a detailed 403 would copy the identifier back into the
+            caller's own log.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Forbidden'
+                status: 403
+                detail: 'This identity may not use this operation.'
 
         '404':
           description: >-
             The projection table holds no row for this account identifier. The
-            response carries no body.
+            response carries no body. The identifier passed the pattern and the
+            caller holds the account, so the row simply is not there: no
+            transaction has posted to it yet.
+
+        '503':
+          description: >-
+            The projection table could not be reached, so the read was never
+            attempted. The request was well formed and this service holds no
+            defect, so the detail invites a retry rather than reporting a fault.
+            api/LedgerApiExceptionHandler answers this for a connection that
+            cannot be opened, a transaction that cannot be begun and a statement
+            that ran out of time, and for nothing else: a broken query is a fault
+            of this service and answers 500, where a retry would only repeat it.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Service Unavailable'
+                status: 503
+                detail: 'The balance store is unavailable. Retry shortly.'
+
+        '500':
+          description: >-
+            A fault inside this service. The detail is fixed and names no
+            identifier, no route, no table, no column and no exception class, so
+            the log line api/LedgerApiExceptionHandler writes is the only record
+            of what failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Internal Server Error'
+                status: 500
+                detail: 'The balance could not be read.'
 
 components:
 
+  securitySchemes:
+
+    basicIdentity:
+      type: http
+      scheme: basic
+      description: >-
+        HTTP Basic authentication over the realm carddemo. An identity
+        configured under carddemo.security.users, carrying one of the roles
+        ADMIN or USER and, for USER, one SCOPE_ACCOUNT_ authority per account it
+        holds; config/SecurityConfig admits ADMIN to every account. The password
+        is stored already encoded, so no plaintext password is compared:
+        config/SecurityConfig declines to reproduce the plaintext comparison at
+        app/cbl/COSGN00C.cbl:L223. Basic sends a credential as base-64 text,
+        which is encoding and not encryption, so this scheme requires an
+        encrypted transport. card-platform/.env.example documents the variables
+        each entry reads.
+
   schemas:
+
+    ApiProblem:
+      type: object
+      description: >-
+        Error body of every failed call to this service, as the problem document
+        RFC 9457 defines. Four members and no others, spelled as
+        config/SecurityConfig spells them when it answers 401 and 403, so one
+        client parses one shape of error for every failing path.
+
+        No member echoes a request value. Nothing carries the rejected value, the
+        resolved path, the query string or a header, which is the difference
+        between this body and the framework default one this service answered
+        before: that body carries the resolved path, so a caller naming an account
+        identifier read it back and copied it into its own access log.
+      additionalProperties: false
+      required:
+        - type
+        - title
+        - status
+        - detail
+      properties:
+        type:
+          type: string
+          description: >-
+            Always about:blank. The status code and the title carry the whole
+            meaning, and a dereferenceable type would be a promise to serve a
+            document at it.
+          enum: ['about:blank']
+        title:
+          type: string
+          description: >-
+            A short, fixed phrase naming the class of failure. Every value comes
+            from a constant of api/ApiProblem and never from caller-supplied text.
+          enum: ['Bad Request', 'Unauthorized', 'Forbidden', 'Service Unavailable',
+                 'Internal Server Error']
+        status:
+          type: integer
+          description: The status code of the response, repeated in the body.
+          enum: [400, 401, 403, 500, 503]
+        detail:
+          type: string
+          description: >-
+            The explanation. Fixed text, naming no identifier, no route, no table,
+            no column and no exception class.
+          examples:
+            - 'Account identifier must be eleven digits.'
+            - 'The balance store is unavailable. Retry shortly.'
+            - 'The balance could not be read.'
 
     AccountBalance:
       type: object

@@ -153,6 +153,8 @@ Submit `POST /authorizations` with the first card in the checked-in fixture:
 
 ```bash
 CARD_NUMBER=$(sed -n '1s/^\(.\{16\}\).*/\1/p' ../app/data/ASCII/cardxref.txt)
+CAPTURED_AT="$(date -u +'%Y-%m-%d %H:%M:%S').000000"
+PROCESSED_AT="$(date -u +'%Y-%m-%d-%H.%M.%S').000000"
 
 curl -sS -X POST http://localhost:8081/authorizations \
   -u "admin001:${ADMIN_PASSWORD}" \
@@ -167,11 +169,13 @@ curl -sS -X POST http://localhost:8081/authorizations \
        \"merchantName\":\"Abshire-Lowe\",
        \"merchantCity\":\"North Enoshaven\",
        \"merchantZip\":\"72112\",
-       \"originTimestamp\":\"2026-08-04 10:30:00.000000\",
-       \"processingTimestamp\":\"2026-08-04-10.30.00.000000\"}"
+       \"originTimestamp\":\"${CAPTURED_AT}\",
+       \"processingTimestamp\":\"${PROCESSED_AT}\"}"
 ```
 
 The response returns HTTP 200 for an approval and HTTP 422 for a source-equivalent decline. `approved` separates the two outcomes.
+
+Both timestamps are derived from the current time on purpose. `carddemo.authorization.origin-timestamp.max-age-minutes` defaults to 1440, so a capture moment more than a day old is refused before any decision is taken, and a typed-in date silently stops working the day after it is typed. The refusal answers 422 with one fixed text, `This request was refused before any decision was taken...`, which is deliberately the same text for every pre-decision refusal.
 
 Watch the asynchronous path from inside the broker container:
 
@@ -269,7 +273,9 @@ Kafka publication sits behind a publisher port. Other internal layers remain con
 
 ### 1. Java defaults silently to release 17
 
-Every module must declare `<java.version>25</java.version>`. Omitting it can compile without a warning at class-file major version 61 instead of Java 25’s major version 69.
+`<maven.compiler.release>25</maven.compiler.release>` is the property this build compiles from, and every module descriptor declares it beside `<java.version>25</java.version>`. A module that lowers or drops it compiles without a warning at a lower class-file version — major version 61 for release 17 — while the build still succeeds. Two guards catch that: the aggregator's enforcer requires the property to resolve to 25 in every module, and the compile stage of `.github/workflows/ci.yml` reads the release of every class file the reactor wrote and fails on any value other than Java 25's major version 69.
+
+`<java.version>` alone changes nothing here. No plugin resolves it, because `card-platform/pom.xml` imports the Spring Boot bill of materials rather than inheriting the Spring Boot parent.
 
 ### 2. Money truncates toward zero
 
@@ -297,9 +303,23 @@ Call `POST /accounts/{accountId}/cycle-close` before the counters make every lat
 
 A card token is a keyed hash, so it is a function of `CARD_TOKEN_SECRET` and `CARD_TOKEN_VERSION` as much as of the card number. Change either and the 50 seeded `card_token` literals, the `SCOPE_CARD_` authority in `USER_SCOPES`, and every token a read model already stored all become unreachable at once. The failure is quiet on the authority: a card detail request simply answers 403 for a card the caller does own. [The card-token key](#the-card-token-key) gives the rotation procedure and a command that derives a token under a candidate key.
 
-### 7. A replica needs an event before it holds a row
+### 7. The first start needs the network, even though the build does not
+
+`mvn -o … compile` works offline once `~/.m2` is warm, so the build has no undocumented network dependency. Starting the stack does. `docker-compose.yml` pins `postgres:18.4` and `apache/kafka:4.2.1` to a digest as well as a tag, and a digest is what Docker resolves. A machine holding only the `18.4` **tag** — a tag its registry may have moved since — still pulls, so the first `docker compose up` on a fresh host needs a reachable registry. Pull both images once and every later start is local:
+
+```bash
+docker compose pull postgres kafka
+```
+
+The six service images are never pulled. Each is built locally as `carddemo/<service>:1.0.0-SNAPSHOT`, the Maven project version, which is the same tag `deploy/k8s` names with `imagePullPolicy: Never` and the same tag the container stage of `.github/workflows/ci.yml` builds.
+
+### 8. A replica needs an event before it holds a row
 
 Authorization's credit snapshot, the ledger's balance projection, notification's cardholder context, and card's cross-reference copy are all replicas of data another service owns. Each is seeded from a repository fixture so the first request is correct, and each is then refreshed only when its owner publishes a change. An account created after deployment therefore has no replica row until its first `AccountStateChanged` arrives, and a consumer that cannot find a required row fails and retries rather than inventing a blank one. Do not read a missing replica row as a decision: the ledger deliberately does not decline a transaction whose projection row is absent, because that would reverse an approval another service already made.
+
+### 9. A contended write gives up after three seconds instead of waiting
+
+The account and card updates read the row they rewrite under a lock, and PostgreSQL waits for a held row indefinitely. `carddemo.write.lock-wait-ms` bounds that wait, reading `WRITE_LOCK_WAIT_MS` and defaulting to three seconds. Hold a row in `psql` with `BEGIN; SELECT ... FOR UPDATE;` and the next update of that row answers 409 rather than blocking, which is deliberate and not a defect: the refusal is the outcome the source composes for a read that does not come back held, and it was unreachable while the wait had no end. The bound is applied per update transaction with `set_config('lock_timeout', ?, true)`, so it never bounds a schema migration or the outbox relay sweep. Ordinary concurrent writes are unaffected — they settle in milliseconds and still answer `Record changed by some one else. Please review` — so if you meet a 409 lock refusal in a demonstration, something is genuinely holding the row.
 
 ## Where to go next
 

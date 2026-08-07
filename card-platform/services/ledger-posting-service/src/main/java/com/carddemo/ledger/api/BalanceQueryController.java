@@ -32,9 +32,14 @@ import org.springframework.web.bind.annotation.RestController;
  *     {@code app/cpy/CVACT01Y.cpy:L14}, moved at {@code app/cbl/COACTVWC.cbl:L485}</li>
  * </ul>
  *
- * <p>Three answers. A stored account answers {@code 200}. An account the table does not hold
- * answers {@code 404}. A path variable that misses the eleven-digit pattern answers {@code 400}
- * through the framework's default problem detail.
+ * <p>Five answers, and {@link LedgerApiExceptionHandler} shapes the last three. A stored account
+ * answers {@code 200}. An account the table does not hold answers {@code 404} with no body. A path
+ * variable that misses the eleven-digit pattern answers {@code 400}. A projection table this service
+ * cannot reach answers {@code 503}, and anything else answers {@code 500}.
+ *
+ * <p>The three failing answers used to be one framework default body, which carried the resolved
+ * request path. A caller naming an account identifier read that identifier back and copied it into its
+ * own access log, and a paused datastore answered {@code 500} with nothing an operator could act on.
  *
  * <p>The operation reads and changes no row. An event drives the balance update at
  * {@code app/cbl/CBTRN02C.cbl:L545-L560}, and no route here reaches it.

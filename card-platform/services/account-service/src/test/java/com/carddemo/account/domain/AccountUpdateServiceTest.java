@@ -5,6 +5,7 @@ import com.carddemo.account.entity.AccountEntity;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.account.entity.OutboxEventEntity;
 import com.carddemo.account.messaging.AccountStateChanged;
+import com.carddemo.account.messaging.CustomerContextChanged;
 import com.carddemo.account.repository.AbstractAccountPostgresTest;
 import com.carddemo.account.repository.AccountRepository;
 import com.carddemo.account.repository.CustomerRepository;
@@ -416,7 +417,354 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             assertThat(verdict.valid()).isTrue();
             assertThat(verdict.hasMessage()).isFalse();
             assertThat(storedCustomer(keys).getAddressLine2()).isEqualTo("12345 67890");
+            assertThat(customerContextChangedRows(keys)).hasSize(1);
+            assertThat(accountStateChangedRows(keys)).isEmpty();
+        }
+    }
+
+    // =============================================================================================
+    // An absent value is refused exactly as a blank one, from app/cbl/COACTUPC.cbl:L1470-L1676.
+    // =============================================================================================
+
+    /**
+     * Every mandatory edit refuses an absent value, and says which field it was.
+     *
+     * <p>The source read its input from a fixed-width 3270 map area, so a field the operator cleared
+     * arrived as spaces and the edit read spaces. A caller over the Hypertext Transfer Protocol can
+     * leave a component out altogether, which the map area had no way to express, and the edit reads
+     * an absent value instead. The two have to answer the same text: the alternative is a caller that
+     * drops a field, reads 200, and never learns the value it meant to send did not arrive.
+     *
+     * <p>Each test below leaves one component absent and asserts the text the edit that owns it
+     * composes. The refusals run in the order {@code 1200-EDIT-MAP-INPUTS} declares, so a body
+     * missing two components reports the earlier one, which the last test pins.
+     */
+    @Nested
+    @DisplayName("an absent mandatory value is refused as a blank one is")
+    class AnAbsentMandatoryValueIsRefused {
+
+        @Test
+        @Transactional
+        @DisplayName("Edit 1 at L1472 refuses an absent status, and says it was not supplied")
+        void anAbsentStatusIsRefused() {
+            Keys keys = persistedPair();
+            AccountEntity submitted = account(keys);
+            submitted.setActiveStatus(null);
+
+            EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
+                    customer(keys));
+
+            assertThat(verdict.valid()).isFalse();
+            assertThat(verdict.message())
+                    .isEqualTo(AccountUpdateService.ACCOUNT_STATUS_LABEL + MUST_BE_SUPPLIED);
+            assertThat(verdict.message())
+                    .describedAs("the arm at app/cbl/COACTUPC.cbl:L1861-L1863 runs before the one at "
+                            + "L1866, so a value that was not supplied is not reported as a value "
+                            + "that is neither Y nor N")
+                    .doesNotContain(MUST_BE_YES_OR_NO);
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("Edit 2 at L1478 refuses an absent open date")
+        void anAbsentOpenDateIsRefused() {
+            Keys keys = persistedPair();
+            AccountEntity submitted = account(keys);
+            submitted.setOpenDate(null);
+
+            EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
+                    customer(keys));
+
+            assertThat(verdict.valid()).isFalse();
+            assertThat(verdict.message())
+                    .startsWith(AccountUpdateService.OPEN_DATE_LABEL.trim())
+                    .contains("must be supplied.");
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("Edit 3 at L1484 refuses an absent credit limit")
+        void anAbsentCreditLimitIsRefused() {
+            Keys keys = persistedPair();
+            AccountEntity submitted = account(keys);
+            submitted.setCreditLimit(null);
+
+            EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
+                    customer(keys));
+
+            assertThat(verdict.valid()).isFalse();
+            assertThat(verdict.message())
+                    .isEqualTo(AccountUpdateService.CREDIT_LIMIT_LABEL.trim()
+                            + " must be supplied.");
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("Edit 7 at L1509 refuses an absent balance")
+        void anAbsentBalanceIsRefused() {
+            Keys keys = persistedPair();
+            AccountEntity submitted = account(keys);
+            submitted.setCurrentBalance(null);
+
+            EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
+                    customer(keys));
+
+            assertThat(verdict.valid()).isFalse();
+            assertThat(verdict.message()).contains("must be supplied.");
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("Edit 10 at L1529 refuses an absent Social Security number")
+        void anAbsentSocialSecurityNumberIsRefused() {
+            Keys keys = persistedPair();
+            CustomerEntity submitted = customer(keys);
+            submitted.setAddressLine2("A change so the gate opens");
+
+            EditResult verdict = service.updateAccount(account(keys),
+                    withoutSocialSecurityNumber(submitted), account(keys), customer(keys));
+
+            assertThat(verdict.valid()).isFalse();
+            assertThat(verdict.message()).contains("must be supplied.");
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("Edit 12 at L1545 refuses an absent credit score")
+        void anAbsentCreditScoreIsRefused() {
+            Keys keys = persistedPair();
+            CustomerEntity submitted = customer(keys);
+            submitted.setFicoCreditScore(null);
+
+            EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
+                    customer(keys));
+
+            assertThat(verdict.valid()).isFalse();
+            assertThat(verdict.message())
+                    .isEqualTo(AccountUpdateService.FICO_SCORE_LABEL.trim() + " must be supplied.");
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("Edit 13 at L1560 refuses an absent first name")
+        void anAbsentFirstNameIsRefused() {
+            Keys keys = persistedPair();
+            CustomerEntity submitted = customer(keys);
+            submitted.setFirstName(null);
+
+            EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
+                    customer(keys));
+
+            assertThat(verdict.valid()).isFalse();
+            assertThat(verdict.message())
+                    .isEqualTo(AccountUpdateService.FIRST_NAME_LABEL.trim() + " must be supplied.");
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("Edit 16 at L1584 refuses an absent first address line")
+        void anAbsentAddressLineOneIsRefused() {
+            Keys keys = persistedPair();
+            CustomerEntity submitted = customer(keys);
+            submitted.setAddressLine1(null);
+
+            EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
+                    customer(keys));
+
+            assertThat(verdict.valid()).isFalse();
+            assertThat(verdict.message()).isEqualTo("Address Line 1 must be supplied.");
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("Edit 24 at L1657 refuses an absent primary card holder indicator")
+        void anAbsentPrimaryCardHolderIndicatorIsRefused() {
+            Keys keys = persistedPair();
+            CustomerEntity submitted = customer(keys);
+            submitted.setPrimaryCardHolderIndicator(null);
+
+            EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
+                    customer(keys));
+
+            assertThat(verdict.valid()).isFalse();
+            assertThat(verdict.message()).contains("must be supplied.");
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("An absent value and a blank one answer the same text")
+        void anAbsentValueAndABlankOneAnswerTheSameText() {
+            Keys absentKeys = persistedPair();
+            AccountEntity absent = account(absentKeys);
+            absent.setActiveStatus(null);
+            EditResult absentVerdict = service.updateAccount(absent, customer(absentKeys),
+                    account(absentKeys), customer(absentKeys));
+
+            Keys blankKeys = persistedPair();
+            AccountEntity blank = account(blankKeys);
+            blank.setActiveStatus(" ");
+            EditResult blankVerdict = service.updateAccount(blank, customer(blankKeys),
+                    account(blankKeys), customer(blankKeys));
+
+            assertThat(absentVerdict.message()).isEqualTo(blankVerdict.message());
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("Two absent components report the one the source edits first")
+        void twoAbsentComponentsReportTheEarlierEdit() {
+            Keys keys = persistedPair();
+            AccountEntity submitted = account(keys);
+            submitted.setActiveStatus(null);
+            CustomerEntity submittedCustomer = customer(keys);
+            submittedCustomer.setFirstName(null);
+
+            EditResult verdict = service.updateAccount(submitted, submittedCustomer, account(keys),
+                    customer(keys));
+
+            assertThat(verdict.message())
+                    .isEqualTo(AccountUpdateService.ACCOUNT_STATUS_LABEL + MUST_BE_SUPPLIED);
+        }
+
+        /**
+         * Asserts a blank value clears the five edits that read one without refusing it.
+         *
+         * <p>These are the components {@code api/AccountController} lets a caller omit, and omitting
+         * one keeps the stored value, so the edit reads the stored value rather than a blank. A blank
+         * still reaches these edits when the stored value is itself blank, which every seeded row with
+         * no second address line demonstrates, and the edits have to accept it. The telephone edit
+         * says so in its own comment at {@code app/cbl/COACTUPC.cbl:L2233}:
+         * {@code Not mandatory to enter a phone number}.
+         *
+         * <p>A blank rather than an absent value is what this test submits, because the five columns
+         * are declared {@code NOT NULL} in {@code db/migration/V1__schema.sql} and
+         * {@code CustomerContextChanged} refuses to carry an absent one.
+         */
+        @Test
+        @Transactional
+        @DisplayName("A blank component no mandatory edit reads is accepted")
+        void aBlankOptionalComponentIsAccepted() {
+            Keys keys = persistedPair();
+            CustomerEntity submitted = customer(keys);
+            submitted.setMiddleName("");
+            submitted.setAddressLine2("");
+            submitted.setPhoneNumber1("");
+            submitted.setPhoneNumber2("");
+            submitted.setGovernmentIssuedId("");
+
+            EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
+                    customer(keys));
+
+            assertThat(verdict.valid()).isTrue();
+            assertThat(verdict.hasMessage()).isFalse();
+        }
+    }
+
+    // =============================================================================================
+    // Which record changed decides which event is written. app/cbl/COACTUPC.cbl:L1684-L1768 draws
+    // the comparison, and this service applies it per record rather than over the pair.
+    // =============================================================================================
+
+    /**
+     * One event per record this call changed, and none for a record it left as it stood.
+     *
+     * <p>The two rewrites at {@code app/cbl/COACTUPC.cbl:L4066} and {@code :L4086} run
+     * unconditionally, each writing back the values the caller submitted, so a record whose
+     * submitted values equal its fetched values is rewritten with what it already held. An event
+     * announces a change of state, and such a record has none to announce.
+     *
+     * <p>Reaching this paragraph at all requires the submitted pair to differ from the fetched pair,
+     * so at least one event is always written and a committed write is never silent.
+     */
+    @Nested
+    @DisplayName("which record changed decides which event is written")
+    class WhichRecordChangedDecidesWhichEvent {
+
+        @Test
+        @Transactional
+        @DisplayName("An account-only change writes the account event alone")
+        void anAccountOnlyChangeWritesTheAccountEventAlone() {
+            Keys keys = persistedPair();
+            AccountEntity submitted = account(keys);
+            submitted.setCreditLimit(new BigDecimal("20300.00"));
+
+            EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
+                    customer(keys));
+            flushAndDetach();
+
+            assertThat(verdict.valid()).isTrue();
             assertThat(accountStateChangedRows(keys)).hasSize(1);
+            assertThat(customerContextChangedRows(keys)).isEmpty();
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("A customer-only change writes the customer event alone")
+        void aCustomerOnlyChangeWritesTheCustomerEventAlone() {
+            Keys keys = persistedPair();
+            CustomerEntity submitted = customer(keys);
+            submitted.setFirstName("Renamed");
+
+            EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
+                    customer(keys));
+            flushAndDetach();
+
+            assertThat(verdict.valid()).isTrue();
+            assertThat(customerContextChangedRows(keys)).hasSize(1);
+            assertThat(accountStateChangedRows(keys)).isEmpty();
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("A change to both records writes both events")
+        void aChangeToBothRecordsWritesBothEvents() {
+            Keys keys = persistedPair();
+            AccountEntity submittedAccount = account(keys);
+            submittedAccount.setCreditLimit(new BigDecimal("20300.00"));
+            CustomerEntity submittedCustomer = customer(keys);
+            submittedCustomer.setFirstName("Renamed");
+
+            EditResult verdict = service.updateAccount(submittedAccount, submittedCustomer,
+                    account(keys), customer(keys));
+            flushAndDetach();
+
+            assertThat(verdict.valid()).isTrue();
+            assertThat(accountStateChangedRows(keys)).hasSize(1);
+            assertThat(customerContextChangedRows(keys)).hasSize(1);
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("An unchanged pair returns the L1466 no-change text and writes no event")
+        void anUnchangedPairWritesNoEvent() {
+            Keys keys = persistedPair();
+
+            EditResult verdict = service.updateAccount(account(keys), customer(keys), account(keys),
+                    customer(keys));
+            flushAndDetach();
+
+            assertThat(verdict.valid()).isTrue();
+            assertThat(verdict.message()).isEqualTo(AccountUpdateService.NO_CHANGE_DETECTED);
+            assertThat(accountStateChangedRows(keys)).isEmpty();
+            assertThat(customerContextChangedRows(keys)).isEmpty();
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("Every committed write produces at least one event")
+        void everyCommittedWriteProducesAtLeastOneEvent() {
+            Keys keys = persistedPair();
+            CustomerEntity submitted = customer(keys);
+            submitted.setAddressLine2("A second line no edit reads");
+
+            EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
+                    customer(keys));
+            flushAndDetach();
+
+            assertThat(verdict.valid()).isTrue();
+            assertThat(verdict.hasMessage()).isFalse();
+            assertThat(accountStateChangedRows(keys).size()
+                    + customerContextChangedRows(keys).size()).isGreaterThanOrEqualTo(1);
         }
     }
 
@@ -1221,6 +1569,23 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
     }
 
     /**
+     * Reads every stored customer-detail event for one account.
+     *
+     * <p>The companion of {@link #accountStateChangedRows(Keys)}. Both events carry the account
+     * identifier as their aggregate, since the account is what a consumer of either one keys on, so
+     * the event type is what separates them.
+     *
+     * @param keys the keys the update carried
+     * @return the customer-detail rows, in the order the store returns them
+     */
+    private List<OutboxEventEntity> customerContextChangedRows(Keys keys) {
+        return outboxEvents.findAll().stream()
+                .filter(row -> keys.accountId().equals(row.getAggregateId()))
+                .filter(row -> CustomerContextChanged.EVENT_TYPE.equals(row.getEventType()))
+                .toList();
+    }
+
+    /**
      * Reads the payload of the one account-state event row.
      *
      * @param keys the keys the update carried
@@ -1312,6 +1677,39 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
      */
     private static CustomerEntity customer(Keys keys) {
         return customer(keys, "0053581756");
+    }
+
+    /**
+     * Copies one customer, leaving the Social Security number absent.
+     *
+     * <p>{@code CustomerEntity} guards that column and refuses an absent number, so the state a
+     * caller reaches by submitting one part of three cannot be built by clearing the field. It is
+     * built by never setting it, which is what {@code api/AccountController} does for an incomplete
+     * triple.
+     *
+     * @param source the customer to copy
+     * @return a copy carrying every value but the Social Security number
+     */
+    private static CustomerEntity withoutSocialSecurityNumber(CustomerEntity source) {
+        CustomerEntity copy = new CustomerEntity();
+        copy.setCustomerId(source.getCustomerId());
+        copy.setFirstName(source.getFirstName());
+        copy.setMiddleName(source.getMiddleName());
+        copy.setLastName(source.getLastName());
+        copy.setAddressLine1(source.getAddressLine1());
+        copy.setAddressLine2(source.getAddressLine2());
+        copy.setAddressCity(source.getAddressCity());
+        copy.setAddressStateCode(source.getAddressStateCode());
+        copy.setAddressCountryCode(source.getAddressCountryCode());
+        copy.setAddressZip(source.getAddressZip());
+        copy.setPhoneNumber1(source.getPhoneNumber1());
+        copy.setPhoneNumber2(source.getPhoneNumber2());
+        copy.setGovernmentIssuedId(source.getGovernmentIssuedId());
+        copy.setDateOfBirth(source.getDateOfBirth());
+        copy.setEftAccountId(source.getEftAccountId());
+        copy.setPrimaryCardHolderIndicator(source.getPrimaryCardHolderIndicator());
+        copy.setFicoCreditScore(source.getFicoCreditScore());
+        return copy;
     }
 
     /**

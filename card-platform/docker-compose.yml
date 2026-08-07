@@ -35,30 +35,40 @@ x-database-and-broker: &database-and-broker
   kafka:
     condition: service_healthy
 
-# Readiness probe. It reads the readiness health group on the management port
-# with curl, wget or bash, whichever the runtime image carries. That group checks
-# the database, Kafka, listener containers and outbox relay state. /bin/sh cannot
-# open /dev/tcp, so the bash form names bash. Actuator answers on the management
-# port alone, so the probe does not name the service port.
+# Readiness probe. It reads the readiness health group on the management port with
+# curl, and falls back to bash if a runtime image ever ships without curl. That group
+# checks the database, Kafka, listener containers and outbox relay state. /bin/sh cannot
+# open /dev/tcp, so the fallback names bash. Actuator answers on the management port
+# alone, so the probe does not name the service port. A wget form once sat between the
+# two and was removed: bellsoft/liberica-openjre-debian:25.0.4-9, the image every
+# services/*/Dockerfile pins, carries curl and bash and no wget, so that branch could
+# never run.
 #
 # HEALTHCHECK_SCHEME follows MANAGEMENT_SSL_ENABLED, and both default to the unencrypted
 # form this stack runs. Set both together or neither: a probe speaking http to an encrypted
 # port reports a container unhealthy that is answering perfectly. The certificate is not
 # verified, because the probe reaches the process inside its own container and a name to
-# verify against would be 127.0.0.1. Only the first form speaks https at all; the bash
+# verify against would be 127.0.0.1. Only the curl form speaks https at all; the bash
 # fallback opens a plain socket and cannot.
+#
+# The budget below decides how long a broken service keeps reporting healthy. Failures
+# inside start_period do not count, so a cold start, measured at 45 to 47 seconds, sits
+# inside the 60-second grace. After that the window is retries multiplied by the interval
+# plus however long each failing probe takes: twelve attempts reported unhealthy 176
+# seconds after the database was stopped, where twenty-four attempts took about twice
+# that. restart: unless-stopped does not restart on a health failure, so this budget
+# governs what an operator sees rather than recovery.
 x-actuator-healthcheck: &actuator-healthcheck
   test:
     - CMD-SHELL
     - >-
       curl -fsS -k ${HEALTHCHECK_SCHEME:-http}://127.0.0.1:${MANAGEMENT_PORT:-9080}/actuator/health/readiness >/dev/null 2>&1
-      || wget -q --no-check-certificate -O /dev/null ${HEALTHCHECK_SCHEME:-http}://127.0.0.1:${MANAGEMENT_PORT:-9080}/actuator/health/readiness 2>/dev/null
       || bash -c 'exec 3<>/dev/tcp/127.0.0.1/${MANAGEMENT_PORT:-9080}
       && printf "GET /actuator/health/readiness HTTP/1.0\r\n\r\n" >&3
       && head -1 <&3 | grep -q 200'
   interval: 10s
   timeout: 10s
-  retries: 24
+  retries: 12
   start_period: 60s
 
 # Settings every service reads. Inside this network the database always answers
@@ -655,6 +665,12 @@ services:
   # synchronous endpoint, two replica listeners and relay all read this
   # configuration.
   authorization-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/authorization-service:1.0.0-SNAPSHOT
     build:
       # The module directory. Its Dockerfile copies the archive Maven wrote into
       # target, so mvn clean package runs before docker compose up.
@@ -749,6 +765,12 @@ services:
   # arithmetic, the balance query and the outbox relay are active; the listener
   # invokes the posting arithmetic for every newly claimed authorization event.
   ledger-posting-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/ledger-posting-service:1.0.0-SNAPSHOT
     build:
       # The module directory. Its Dockerfile copies the archive Maven wrote into
       # target, so mvn clean package runs before docker compose up.
@@ -825,6 +847,12 @@ services:
   # fraud-detection group and writes fraud.assessed. It serves a read-only
   # assessment query and no port another service calls.
   fraud-detection-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/fraud-detection-service:1.0.0-SNAPSHOT
     build:
       # The module directory. Its Dockerfile copies the archive Maven wrote into
       # target, so mvn clean package runs before docker compose up.
@@ -896,6 +924,12 @@ services:
   # and calls no other service.
   # ------------------------------------------------------------------------- #
   notification-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/notification-service:1.0.0-SNAPSHOT
     build:
       # The module directory. Its Dockerfile copies the archive Maven wrote into
       # target, so mvn clean package runs before docker compose up.
@@ -972,6 +1006,12 @@ services:
   # and the outbox relay settings. It subscribes to no topic; its endpoints write
   # account changes and its relay publishes them.
   account-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/account-service:1.0.0-SNAPSHOT
     build:
       # The module directory. Its Dockerfile copies the archive Maven wrote into
       # target, so mvn clean package runs before docker compose up.
@@ -1022,6 +1062,8 @@ services:
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
       PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-168}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
+      # Bound on how long a locked read of one update waits for a row another writer holds.
+      WRITE_LOCK_WAIT_MS: ${WRITE_LOCK_WAIT_MS:-3000}
     ports:
       # Both mappings bind the loopback address. The service port carries the
       # Representational State Transfer (REST) surface; the management port
@@ -1049,6 +1091,12 @@ services:
   # CardUpdateService, OutboxWriter and OutboxRelay are present; the service
   # carries no controller, so no route reaches them yet.
   card-service:
+    # The tag this image carries once built. One tag serves the three places that name
+    # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
+    # with imagePullPolicy Never. The version is the Maven project version, so an image
+    # built from another version is never mistaken for this one. Compose builds the image
+    # from the context below when the tag is absent locally, and no registry holds it.
+    image: carddemo/card-service:1.0.0-SNAPSHOT
     build:
       # The module directory. Its Dockerfile copies the archive Maven wrote into
       # target, so mvn clean package runs before docker compose up.
@@ -1111,6 +1159,8 @@ services:
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
       PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-168}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
+      # Bound on how long a locked read of one update waits for a row another writer holds.
+      WRITE_LOCK_WAIT_MS: ${WRITE_LOCK_WAIT_MS:-3000}
     ports:
       # Both mappings bind the loopback address. The service port carries the
       # Representational State Transfer (REST) surface; the management port

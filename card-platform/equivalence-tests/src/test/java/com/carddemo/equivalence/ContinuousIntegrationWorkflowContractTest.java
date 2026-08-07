@@ -39,6 +39,37 @@ class ContinuousIntegrationWorkflowContractTest {
                     "account-service",
                     "card-service");
 
+    /**
+     * The statement each job uses to assemble the checksum line from the digest Apache publishes.
+     *
+     * <p>{@code apache-maven-3.9.16-bin.tar.gz.sha512} holds 128 hexadecimal characters, no file
+     * name and no closing newline. GNU coreutils reads a checksum line as digest, two spaces, file
+     * name, so the digest alone is not a checksum file. {@code awk} takes the first field, which
+     * also tolerates the two-field form other projects publish.
+     */
+    private static final String ARCHIVE_CHECKSUM_LINE =
+            "printf '%s  %s\\n' \"$(awk '{print $1}' \"/tmp/${archive}.sha512\")\" \"${archive}\"";
+
+    /** The verification each job runs over the assembled line. */
+    private static final String ARCHIVE_CHECKSUM_VERIFICATION =
+            "sha512sum --check --strict \"${archive}.sha512sum\"";
+
+    /**
+     * The form that reads the published file as if it were a checksum file. It exits 1 with "no
+     * properly formatted checksum lines found", and no job may carry it.
+     */
+    private static final String BARE_DIGEST_VERIFICATION =
+            "sha512sum --check \"${archive}.sha512\"";
+
+    /**
+     * The statement the compile stage collects class files with.
+     *
+     * <p>Every class file the reactor wrote is read, because a single sampled file always
+     * resolves inside the first module and says nothing about the other eight.
+     */
+    private static final String CLASS_FILE_DISCOVERY =
+            "mapfile -t class_files < <(find libs services -path '*/target/classes/*.class' | sort)";
+
     private static Path platformRoot;
     private static String workflow;
     private static Map<?, ?> document;
@@ -80,8 +111,27 @@ class ContinuousIntegrationWorkflowContractTest {
         assertEquals(6, occurrences(workflow, "distribution: temurin"));
         assertEquals(6, occurrences(workflow, "cache-dependency-path: card-platform/**/pom.xml"));
         assertEquals(6, occurrences(workflow, "archive.apache.org/dist/maven/maven-3/"));
-        assertEquals(6, occurrences(workflow, "sha512sum --check"));
-        assertTrue(workflow.contains("major version: 69"));
+        assertEquals(6, occurrences(workflow, ARCHIVE_CHECKSUM_LINE));
+        assertEquals(6, occurrences(workflow, ARCHIVE_CHECKSUM_VERIFICATION));
+        assertFalse(workflow.contains(BARE_DIGEST_VERIFICATION),
+                "the published file holds a digest with no file name, which GNU coreutils"
+                        + " refuses; verifying it directly fails every job at its second step");
+    }
+
+    @Test
+    @DisplayName("the compile stage reads the release of every class file, not one sample")
+    void theCompileStageReadsEveryClassFile() {
+        assertTrue(workflow.contains(CLASS_FILE_DISCOVERY),
+                "the check has to collect every class file the reactor wrote");
+        assertTrue(workflow.contains("javap -verbose \"${class_files[@]}\""),
+                "one javap invocation reads the whole collection");
+        assertTrue(workflow.contains("test \"${reported}\" -eq \"${#class_files[@]}\""),
+                "javap has to report a release for every file collected");
+        assertTrue(workflow.contains("test \"${releases}\" = \"69\""),
+                "69 is the class-file version of release 25, and the only value permitted");
+        assertFalse(workflow.contains("-print -quit"),
+                "a single sampled class file passes while another module is drifted, which is"
+                        + " what this step exists to catch");
     }
 
     @Test
@@ -92,10 +142,10 @@ class ContinuousIntegrationWorkflowContractTest {
         while (action.find()) {
             actionCount++;
             assertTrue(
-                    action.group(1).matches("actions/(?:checkout|setup-java)@v4"),
+                    action.group(1).matches("actions/(?:checkout|setup-java|upload-artifact)@v4"),
                     "Unexpected or unversioned action: " + action.group(1));
         }
-        assertEquals(12, actionCount);
+        assertEquals(16, actionCount);
         assertFalse(workflow.contains("@main"));
         assertFalse(workflow.contains("@master"));
         assertFalse(workflow.contains("@latest"));
@@ -116,8 +166,11 @@ class ContinuousIntegrationWorkflowContractTest {
     void integrationAndEquivalenceStagesManageTheirInfrastructure() {
         assertEquals(3, occurrences(workflow, "run: cp .env.example .env"));
         assertEquals(2, occurrences(workflow, "docker compose up --detach --wait postgres kafka"));
-        assertEquals(2, occurrences(workflow, "docker compose down --volumes"));
-        assertEquals(2, occurrences(workflow, "if: always()"));
+        assertEquals(3, occurrences(workflow, "docker compose down --volumes"),
+                "the integration, equivalence and container stages each remove their own stack");
+        assertEquals(8, occurrences(workflow, "if: always()"),
+                "the four report uploads, the container-state report and the three teardowns run"
+                        + " whether the stage passed or failed");
         assertTrue(workflow.contains("mvn -B -ntp -pl \"${modules}\" -am verify"));
         assertTrue(workflow.contains("mvn -B -ntp -pl equivalence-tests -am verify"));
         SERVICES.forEach(
@@ -170,6 +223,67 @@ class ContinuousIntegrationWorkflowContractTest {
                             workflow.contains("\n            " + service + "\n"),
                             "Container array omits " + service);
                 });
+    }
+
+    @Test
+    @DisplayName("every stage that writes a test report keeps it as a downloadable artifact")
+    void everyStageThatWritesAReportKeepsIt() {
+        assertEquals(4, occurrences(workflow, "uses: actions/upload-artifact@v4"),
+                "the unit, integration, equivalence and schema stages each write reports; a run"
+                        + " that fails has to leave them downloadable");
+        assertEquals(4, occurrences(workflow, "if-no-files-found: error"),
+                "an upload that finds nothing means the stage did not run its tests, which is a"
+                        + " failure rather than an empty artifact");
+        assertEquals(4, occurrences(workflow,
+                        "retention-days: ${{ env.REPORT_RETENTION_DAYS }}"),
+                "one retention period governs every upload");
+        assertTrue(workflow.contains("REPORT_RETENTION_DAYS: \"14\""));
+        for (String artifact : List.of("unit-test-reports", "integration-test-reports",
+                "equivalence-test-reports", "schema-compatibility-reports")) {
+            assertTrue(workflow.contains("name: " + artifact),
+                    "the run summary needs a distinct name per artifact: " + artifact);
+        }
+        assertTrue(workflow.contains("card-platform/**/target/surefire-reports/**"));
+        assertTrue(workflow.contains("card-platform/**/target/failsafe-reports/**"));
+    }
+
+    @Test
+    @DisplayName("one image tag serves the workflow, Compose and Kubernetes")
+    void oneImageTagServesEveryConsumer() throws IOException {
+        String platformPom = Files.readString(platformRoot.resolve("pom.xml"));
+        Matcher version = Pattern.compile("<version>([^<]+)</version>").matcher(platformPom);
+        assertTrue(version.find(), "the aggregator declares its version");
+        String projectVersion = version.group(1);
+
+        assertTrue(workflow.contains("IMAGE_TAG: \"" + projectVersion + "\""),
+                "the workflow builds under the project version, not a floating tag");
+        assertTrue(workflow.contains("--tag \"carddemo/${service}:${IMAGE_TAG}\""),
+                "and every image build reads that variable");
+        assertFalse(workflow.contains(":ci\""),
+                "a tag no other file names leaves the built images consumed by nothing");
+
+        String compose = Files.readString(platformRoot.resolve("docker-compose.yml"));
+        SERVICES.forEach(service ->
+                assertTrue(compose.contains("image: carddemo/" + service + ":" + projectVersion),
+                        "Compose has to run the image the workflow built: " + service));
+    }
+
+    @Test
+    @DisplayName("the container stage starts the images it built and always removes them")
+    void theContainerStageStartsWhatItBuilt() {
+        assertTrue(workflow.contains("docker compose up --detach --wait\n"),
+                "the whole stack starts, not only the database and the broker");
+        assertTrue(workflow.contains("/actuator/health"),
+                "a started service has to be asked whether it is up");
+        assertTrue(workflow.contains("'\"status\":\"UP\"'"),
+                "a 200 carrying a down status is not a passing check");
+        assertTrue(workflow.contains("PasswordEncoderFactories"),
+                "the three identity secrets are generated already encoded, because a service"
+                        + " refuses a value carrying no encoding prefix");
+        assertTrue(workflow.contains("test \"$(grep -c 'REPLACE-WITH\\|REPLACE-THIS' .env)\" -eq 0"),
+                "the stage proves no published placeholder survived before it starts anything");
+        assertFalse(workflow.contains("{noop}"),
+                "a plaintext identity password has no place in a pipeline");
     }
 
     @Test

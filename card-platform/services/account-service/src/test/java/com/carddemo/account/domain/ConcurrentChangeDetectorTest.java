@@ -1,5 +1,6 @@
 package com.carddemo.account.domain;
 
+import com.carddemo.account.config.AccountProperties;
 import com.carddemo.account.config.ObservabilityConfig;
 import com.carddemo.account.entity.AccountEntity;
 import com.carddemo.account.entity.CustomerEntity;
@@ -455,7 +456,7 @@ class ConcurrentChangeDetectorTest {
                 CustomerRepository customers, OutboxWriter outbox) {
             return new AccountUpdateService(accounts, customers,
                     mock(CardCrossReferenceRepository.class), DETECTOR, outbox,
-                    immediateTransactions(), accountMeters());
+                    immediateTransactions(), accountMeters(), accountProperties());
         }
     }
 
@@ -967,4 +968,27 @@ class ConcurrentChangeDetectorTest {
         return new ObservabilityConfig().accountMeters(new SimpleMeterRegistry());
     }
 
+
+    /**
+     * Builds the bound configuration this service reads, with the shipped lock-wait bound.
+     *
+     * <p>{@code AccountUpdateService} reads one value from it, {@code carddemo.write.lock-wait-ms},
+     * which it renders once into the PostgreSQL interval string its locked reads are bounded by. The
+     * value below is the one {@code src/main/resources/application.yml} ships.
+     *
+     * @return the configuration record
+     */
+    private static AccountProperties accountProperties() {
+        return new AccountProperties(
+                new AccountProperties.Api(65_536L),
+                new AccountProperties.Kafka(new AccountProperties.Kafka.Topics(
+                        "account.state-changed", "customer.context-changed",
+                        "carddemo.dead-letter")),
+                new AccountProperties.Outbox(new AccountProperties.Outbox.Relay(500L, 100,
+                        "account-relay", java.time.Duration.ofMinutes(2L), 1_000L,
+                        java.time.Duration.ofSeconds(10L)), 168L),
+                new AccountProperties.ProcessedEvent(168L),
+                new AccountProperties.Retention(3_600_000L),
+                new AccountProperties.Write(3_000L));
+    }
 }

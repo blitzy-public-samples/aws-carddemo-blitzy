@@ -20,6 +20,7 @@ import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.boot.health.contributor.Status;
 import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.KafkaAdmin;
 import org.springframework.kafka.listener.MessageListenerContainer;
@@ -229,5 +230,31 @@ class ReadinessHealthConfigTest {
         assertThat(new AdminClientConfig(bounded).values())
                 .as("every pinned key is one the administrator declares, so none is discarded")
                 .isNotEmpty();
+    }
+
+    /**
+     * A datastore the outbox read cannot reach reports the dependency down, and does not throw.
+     *
+     * <p>An indicator that throws leaves the actuator with no document to render. The request then
+     * leaves through the error path, and whatever advice this service declares answers the health poll
+     * instead: a paused datastore answered a probe with a business error body, and one service answered
+     * {@code 500} where a probe reads a status. Both hide which dependency stopped.
+     *
+     * <p>Reporting down instead is what {@code kafkaHealth} of the same class already did for the
+     * broker. The reason names the type of the root cause, so a reader of the document learns which
+     * dependency is away without the document being destroyed to say so.
+     */
+    @Test
+    @DisplayName("a datastore the outbox read cannot reach reports down rather than throwing")
+    void anUnreachableDatastoreReportsDownRatherThanThrowing() {
+        OutboxEventRepository repository = mock(OutboxEventRepository.class);
+        when(repository.existsByRelayState(OutboxEventEntity.RelayState.ABANDONED))
+                .thenThrow(new DataAccessResourceFailureException("connection refused",
+                        new java.net.ConnectException("Connection refused")));
+
+        Health health = config.outboxHealthIndicator(repository).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails()).containsEntry("reason", "ConnectException");
     }
 }

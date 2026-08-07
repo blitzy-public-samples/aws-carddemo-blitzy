@@ -145,6 +145,28 @@ The following tasks modify the read-only legacy tree. They belong to the source 
 - **Check:** Compile every program referencing either field.
 - **Behavior change:** No.
 
+### Reconcile the customer sample data with the area-code table
+
+- **Change:** Decide whether the shipped customer sample data or the area-code reference table is
+  authoritative, then move one of them. This is a decision, not a defect: both sides are reproduced
+  faithfully and they disagree with each other in the source.
+- **Where:** `app/data/ASCII/custdata.txt` carries 100 telephone numbers across 50 customers, and 45
+  of them name an area code that `app/cpy/CSLKPCDY.cpy` does not admit under
+  `88 VALID-GENERAL-PURP-CODE` at L521 — 43 distinct codes, among them `002`, `034`, `050`, `075` and
+  `493`. `1260-EDIT-US-PHONE-NUM` at `app/cbl/COACTUPC.cbl:L2225` is the edit that reads that
+  condition, and `UsPhoneAreaCodes` holds all 490 distinct literals of the copybook with none missing
+  and none added.
+- **Why it matters:** The account update requires a present block to be complete, so a caller that
+  reads a seeded customer, changes one field and echoes the rest back is refused on a telephone number
+  it never touched, with `Phone Number 2: Not valid North America general purpose area code`. Customer
+  `000000050` is one such row. The refusal is correct on both counts and still surprises anyone driving
+  a round-trip update against the shipped data.
+- **Check:** Whichever side moves, re-run the account validation equivalence tests and drive a
+  round-trip update of every seeded customer.
+- **Behavior change:** Editing the reference table would admit area codes the source refuses, which
+  breaks equivalence. Editing the sample data changes fixture content the equivalence suite reads.
+  Either way the decision belongs to the source owner.
+
 ## Test and fixture depth
 
 ### Add a source fixture that reaches the precision boundary
@@ -269,17 +291,6 @@ log](decision-log.md) carries the reasoning for every choice named here.
 - **Where:** `services/*/src/main/java/**/outbox/OutboxRelay.java` and every consumer's `processed_event` claim. The fraud relay now resolves a send inside the tick that issued it, which removes the long window a duplicate used to arrive through. What remains belongs to the protocol: a broker that appends a record and loses the acknowledgement leaves the relay to attempt again, and `enable.idempotence` does not span two `send` calls. Measured on a frozen broker, one of three rows reached the topic twice with both copies carrying the same `eventId`; the [decision log](decision-log.md) records the measurement and [event flow](event-flow.md) states the guarantee.
 - **Check:** Freeze the broker mid-send, restore it, and confirm that every extra copy carries an `eventId` already on the topic and that the consuming service holds one `processed_event` marker for it.
 - **Behavior change:** Transactional publication would add a transactional producer to every relay and `read_committed` to every consumer, and it still would not make a database write atomic with a broker write, so both the outbox and the marker transaction would stay.
-
-## Work the notification endpoint pass surfaced
-
-One text was measured while proving the notification history endpoint and left as it stands.
-
-### Name the notification route's own constraints in its bad-request text
-
-- **Change:** Rewrite `INVALID_REQUEST_MESSAGE` so it names the two constraints this route declares: a sixty-four character card token, and a page size of at least one.
-- **Where:** `INVALID_REQUEST_MESSAGE` in `services/notification-service/src/main/java/com/carddemo/notification/api/NotificationApiExceptionHandler.java` reads `Account identifier must be eleven digits, and limit must be at least one.` The path variable of `GET /notifications/{cardToken}` is a card token matching `PanMasker.CARD_TOKEN_PATTERN`, and the one query parameter is `pageSize`. Both texts name no value read from a request, so the shipped one discloses nothing; it describes another service's route.
-- **Check:** Send a path value outside the token shape, then a page size of zero, and confirm each message names the constraint it broke. `ApiErrorResponseTest` holds both texts to letters and punctuation, so a rewrite stays inside that character set. `NotificationHistoryControllerTest` asserts the status, the route template and the withheld request value, and asserts nothing about the text.
-- **Behavior change:** A changed message string. No status, no route and no body shape moves.
 
 ## Informational register items
 

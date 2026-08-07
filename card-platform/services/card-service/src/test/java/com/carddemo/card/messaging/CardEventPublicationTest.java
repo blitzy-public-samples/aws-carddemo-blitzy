@@ -1063,13 +1063,43 @@ class CardEventPublicationTest {
             List<String> lines = recorder.list.stream().map(ILoggingEvent::getFormattedMessage)
                     .toList();
             List<String> leaking = lines.stream()
-                    .filter(line -> line.contains(SEEDED_VERIFICATION_VALUE)).toList();
+                    .filter(line -> withoutOpaqueIdentifiers(line)
+                            .contains(SEEDED_VERIFICATION_VALUE))
+                    .toList();
 
             assertAll(
                     () -> assertFalse(lines.isEmpty(),
                             "the three requests wrote log lines, so the search had text to read"),
                     () -> assertTrue(leaking.isEmpty(),
-                            "no log line holds a card verification value"));
+                            "no log line holds a card verification value, and these do: "
+                                    + leaking));
+        }
+
+        /**
+         * Removes the two opaque identifiers this service logs on purpose.
+         *
+         * <p>A card verification value is three decimal digits, and three digits land inside a
+         * randomly generated identifier often. {@code outbox/OutboxWriter} logs the event
+         * identifier, and one run of this method read
+         * {@code Stored card event 034996bf-df74-4017-b255-115782747004 of type CardUpdated}, whose
+         * last group ends in the three digits the seeded row holds. That is a coincidence of
+         * randomness and not a leak, and left in the text it fails this assertion on roughly one
+         * run in five.
+         *
+         * <p>Two shapes come out: the identifier as a Universally Unique Identifier (UUID), and the
+         * sixty-four hexadecimal characters of a card token. Both are values this service is
+         * documented to log and neither is a place a card verification value could hide, because a
+         * leak reaches a log line as a field of the row rather than as a run of an identifier. A run
+         * of decimal digits is left where it is, so a line carrying a whole record still fails.
+         *
+         * @param line one formatted log line
+         * @return the line with those two shapes removed
+         */
+        private String withoutOpaqueIdentifiers(String line) {
+            return line.replaceAll(
+                            "\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b",
+                            "<event-id>")
+                    .replaceAll("\\b[0-9a-f]{64}\\b", "<card-token>");
         }
 
         /**

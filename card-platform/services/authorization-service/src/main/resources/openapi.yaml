@@ -143,10 +143,19 @@ paths:
                     declineReasonDescription: null
         '400':
           description: >-
-            The request body does not read as JavaScript Object Notation (JSON). ADDITIVE: a 3270
-            terminal sends fixed-width map fields, which cannot arrive unparseable, so the source
-            holds no matching condition. The body carries one fixed text and no value read from the
-            request.
+            The request body does not read as this schema. Three conditions reach this status: the
+            body is not JavaScript Object Notation (JSON) at all, it carries a property the schema
+            does not declare, or it sends a property declared as text with a JSON number or a boolean
+            in its place. The last of those is how the money rule is enforced rather than merely
+            documented, since amount is a decimal string and never a JSON number.
+
+
+            ADDITIVE: a 3270 terminal sends fixed-width map fields, which can neither arrive
+            unparseable, nor name a field the mapset does not declare, nor carry a type other than
+            the characters of the field, so the source holds no matching condition. The body carries
+            one fixed text and no value read from the request: a parser message names the position it
+            stopped at and quotes the characters around it, and those characters can be a card
+            number.
           content:
             application/json:
               schema:
@@ -407,16 +416,32 @@ components:
           examples: ['Purchase at Abshire-Lowe']
         amount:
           type: string
-          pattern: '^-?\d{1,9}\.\d{2}$'
+          pattern: '^ *(?:[+-] *)?(?:\$ *)?(?:\.[0-9]+|[0-9]+(?:,[0-9]+)*(?:\.[0-9]*)?) *(?:\$ *)?(?:[+-]|CR|DB)? *$'
           description: >-
-            Amount, from DALYTRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA06Y.cpy:L10. A decimal string
-            with two fractional digits, and never a JSON number. Nine digits sit before the point,
-            and a leading minus is valid: 50 of the 300 records in app/data/ASCII/dailytran.txt hold
-            a negative amount, ranging from -998.33 to 999.77. app/cbl/COTRN02C.cbl:L339-L351 tests
-            the same value positionally and app/cbl/COTRN02C.cbl:L345 writes "Amount should be in
-            format -99999999.99" when that test fails. Each arithmetic step on the value truncates
-            toward zero, and the ROUNDED phrase appears in no program under app/cbl.
-          examples: ['504.77', '-125.00']
+            Amount, from DALYTRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA06Y.cpy:L10. A decimal string,
+            and never a JSON number: a JSON number binds through a binary floating-point type, and
+            every arithmetic step of this platform is fixed point with truncation toward zero pinned.
+            A body sending this property as a number is refused with 400. 50 of the 300 records in
+            app/data/ASCII/dailytran.txt hold a negative amount, ranging from -998.33 to 999.77.
+
+
+            The accepted grammar is the one FUNCTION NUMVAL-C reads, which
+            app/cbl/COTRN02C.cbl:L383 and app/cbl/COTRN02C.cbl:L456 apply to this field. It is wider
+            than the twelve-character screen form app/cbl/COTRN02C.cbl:L339-L351 tests positionally:
+            leading and trailing spaces, a sign before or after the digits, one currency sign before
+            or after them, grouping commas inside the integer part, and CR or DB in place of a
+            trailing minus. So 504.77, 504.7, 504, $1,234.56, +00000504.77 and 125.00CR are each
+            accepted and carry the value their digits name. Two rules the pattern above cannot state:
+            a sign appears either before or after the digits and never in both places, and at most
+            one currency sign appears.
+
+
+            Two bounds sit behind the grammar. The value holds at most nine digits before the point,
+            the width of the record field, so 1000000000.00 is refused; and the store fixes the scale
+            at two digits, truncating toward zero, so 0.145 becomes 0.14. Either refusal writes
+            "Amount should be in format -99999999.99", the text app/cbl/COTRN02C.cbl:L345 writes. The
+            ROUNDED phrase appears in no program under app/cbl.
+          examples: ['504.77', '-125.00', '$1,234.56', '+00000504.77']
         merchantId:
           type: string
           pattern: '^[0-9]{9}$'
@@ -608,10 +633,13 @@ components:
             type: string
             maxLength: 80
             description: >-
-              One rejection text, bounded by WS-MESSAGE PIC X(80) at app/cbl/COTRN02C.cbl:L38. The
-              twenty-two below are reproduced character for character from the paragraph that writes
-              each one. Nineteen close with an ellipsis and the three shape texts do not, and the
-              four marked ADDITIVE have no source ancestor.
+              One rejection text, bounded by WS-MESSAGE PIC X(80) at app/cbl/COTRN02C.cbl:L38.
+              Twenty-three of the texts below are reproduced character for character from the
+              paragraph that writes each one; twenty of those close with an ellipsis and the three
+              shape texts do not. The ten marked ADDITIVE have no source ancestor, because a
+              fixed-width map field cannot raise the condition each answers. No text of either kind is
+              a reader default: a default names a bound and no field, which tells a caller nothing
+              about which property it refused, and api/OpenApiContractTest fails when one appears.
             examples:
               # Evaluation order, app/cbl/COTRN02C.cbl: the eleven emptiness tests at L251-L320, the
               # two class tests at L322-L337, the amount shape at L339-L351, the origin date shape at
@@ -647,11 +675,23 @@ components:
               - 'Account ID must be Numeric...'                  # :L199
               - 'Card Number must be Numeric...'                 # :L213
               - 'Account or Card Number must be entered...'      # :L226
-              # ADDITIVE. No source paragraph writes these four.
+              # The account branch reads the cross-reference by the account identifier the caller
+              # supplied, and an account with no row there is refused at the capture stage.
+              - 'Account ID NOT found...'                        # :L591-L592
+              # ADDITIVE. No source paragraph writes these ten.
               - 'Transaction ID is allocated by this service and must not be supplied...'
               - 'Text fields must hold printable characters only...'
               - 'This request was refused before any decision was taken...'
               - 'Unable to authorize this transaction...'
+              # The five width texts. A map field is fixed width, so the terminal stops an operator
+              # at the boundary and no source paragraph has a longer value to refuse. Each text
+              # names its field and its width.
+              - 'Transaction ID must hold sixteen printable characters...'
+              - 'Source must hold at most ten characters...'
+              - 'Description must hold at most one hundred characters...'
+              - 'Merchant Name must hold at most fifty characters...'
+              - 'Merchant City must hold at most fifty characters...'
+              - 'Merchant Zip must hold at most ten characters...'
         timestamp:
           type: string
           pattern: '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$'

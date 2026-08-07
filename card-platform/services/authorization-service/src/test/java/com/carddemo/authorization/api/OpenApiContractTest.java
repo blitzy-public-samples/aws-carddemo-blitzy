@@ -5,8 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.authorization.api.GlobalExceptionHandler.ApiErrorResponse;
+import com.carddemo.cobol.NumvalParser;
 import com.carddemo.events.DeclineReason;
 import java.io.InputStream;
+import java.lang.reflect.Field;
 import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -229,6 +231,81 @@ final class OpenApiContractTest {
                 "an account identifier travels as text, so a leading zero survives");
         assertTrue(nullableTypeOf("AuthorizationRequest", "cardNumber").contains("string"),
                 "a card number travels as text, so a leading zero survives");
+    }
+
+    /**
+     * Asserts the documented amount pattern admits every form the runtime admits.
+     *
+     * <p>The runtime reads the amount with the grammar of {@code FUNCTION NUMVAL-C}, which
+     * {@code app/cbl/COTRN02C.cbl:L383} and {@code app/cbl/COTRN02C.cbl:L456} apply to the same
+     * field. A published pattern narrower than that grammar tells a caller a body is invalid while
+     * the service accepts it, which is the drift this test exists to stop. Each form below is
+     * asserted against the pattern and against
+     * {@link com.carddemo.cobol.NumvalParser#isValidNumvalCurrency(String)} together, so neither
+     * side can move alone.
+     *
+     * <p>The two forms at the end are refused by both, which keeps the pattern from being widened
+     * into meaninglessness: a value carrying two decimal points names no amount, and scientific
+     * notation is outside the grammar.
+     */
+    @Test
+    void theDocumentedAmountPatternAdmitsEveryFormTheRuntimeAdmits() {
+        String documented = String.valueOf(propertyOf("AuthorizationRequest", "amount")
+                .get("pattern"));
+
+        for (String accepted : List.of("504.77", "-125.00", "504.7", "504", "504.777",
+                "$1,234.56", "1,234.56", "+00000504.77", "-000000504.77", " 504.77", "504.77 ",
+                "504.77-", "125.00CR", "125.00DB", "504.77$", ".77", "504.")) {
+            assertTrue(NumvalParser.isValidNumvalCurrency(accepted),
+                    "the runtime reads " + accepted + " through FUNCTION NUMVAL-C");
+            assertTrue(accepted.matches(documented),
+                    "the published pattern admits " + accepted + ", which the runtime accepts");
+        }
+
+        for (String refused : List.of("504.7.7", "1e3", "504,,77", "abc", "")) {
+            assertFalse(NumvalParser.isValidNumvalCurrency(refused),
+                    "the runtime refuses " + refused);
+            assertFalse(refused.matches(documented),
+                    "the published pattern refuses " + refused + " too");
+        }
+    }
+
+    /**
+     * Asserts every rejection text the request record declares is documented, and no reader default
+     * is.
+     *
+     * <p>{@code messages} carries one text per failing field, and the document enumerates the set a
+     * caller can read. A constraint added without a message of its own reports the reader's own
+     * wording, which names a bound and no field: {@code "size must be between 0 and 100"} tells a
+     * caller nothing about which of five text properties it refused. Such a text is absent from the
+     * document by construction, so this test fails when one appears.
+     */
+    @Test
+    void everyRejectionTextTheRecordDeclaresIsDocumented() {
+        String documentedTexts = String.valueOf(propertyOf("ApiErrorResponse", "messages"));
+
+        for (Field declared : AuthorizationRequest.class.getDeclaredFields()) {
+            if (!declared.getName().endsWith("_MESSAGE") || declared.getType() != String.class) {
+                continue;
+            }
+            String text = readText(declared);
+            assertTrue(documentedTexts.contains(text),
+                    declared.getName() + " carries a text the document does not enumerate: " + text);
+        }
+    }
+
+    /**
+     * Reads one declared text constant of the request record.
+     *
+     * @param declared the field to read, which the caller has checked is a text constant
+     * @return the text the constant holds
+     */
+    private static String readText(Field declared) {
+        try {
+            return String.valueOf(declared.get(null));
+        } catch (IllegalAccessException unreachable) {
+            throw new AssertionError(declared.getName() + " is public and static", unreachable);
+        }
     }
 
     /**

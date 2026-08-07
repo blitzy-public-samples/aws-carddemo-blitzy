@@ -328,6 +328,7 @@ class OutboxWriterTest {
                         new AccountProperties.Outbox.Relay(500L, 1, "writer-test",
                                 Duration.ofSeconds(30L), 1_000L, Duration.ofSeconds(10L)), 168L),
                 new AccountProperties.ProcessedEvent(168L),
-                new AccountProperties.Retention(3_600_000L));
+                new AccountProperties.Retention(3_600_000L),
+                new AccountProperties.Write(3_000L));
     }
 }

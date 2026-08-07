@@ -373,6 +373,61 @@ final class AuthorizationRequestTest {
                 () -> "the character class must be among them: " + messagesOf(reported));
     }
 
+    /**
+     * Asserts each width bound reports a text that names its own field.
+     *
+     * <p>Every one of these five texts is ADDITIVE, for the reason
+     * {@value AuthorizationRequest#SOURCE_WIDTH_MESSAGE} records: a Basic Mapping Support field is
+     * fixed width, so a terminal stops the operator at the boundary and no paragraph of
+     * {@code app/cbl/COTRN02C.cbl} has a longer value to refuse.
+     *
+     * <p>The bound alone was reported before, in the wording the validation reader supplies for a
+     * constraint that declares no message of its own. That wording names a bound and no field, so a
+     * caller reading {@code "size must be between 0 and 50"} could not tell the merchant name from
+     * the merchant city. Each text below names its field and its width, and each fits
+     * {@code WS-MESSAGE PIC X(80)}.
+     */
+    @Test
+    void everyWidthBoundReportsATextNamingItsOwnField() {
+        assertSingleViolation(withSource("A".repeat(11)),
+                AuthorizationRequest.SOURCE_WIDTH_MESSAGE,
+                "DALYTRAN-SOURCE PIC X(10) holds ten characters");
+        assertSingleViolation(withDescription("A".repeat(101)),
+                AuthorizationRequest.DESCRIPTION_WIDTH_MESSAGE,
+                "DALYTRAN-DESC PIC X(100) holds one hundred characters");
+        assertSingleViolation(withMerchantName("A".repeat(51)),
+                AuthorizationRequest.MERCHANT_NAME_WIDTH_MESSAGE,
+                "DALYTRAN-MERCHANT-NAME PIC X(50) holds fifty characters");
+        assertSingleViolation(withMerchantCity("A".repeat(51)),
+                AuthorizationRequest.MERCHANT_CITY_WIDTH_MESSAGE,
+                "DALYTRAN-MERCHANT-CITY PIC X(50) holds fifty characters");
+        assertSingleViolation(withMerchantZip("A".repeat(11)),
+                AuthorizationRequest.MERCHANT_ZIP_WIDTH_MESSAGE,
+                "DALYTRAN-MERCHANT-ZIP PIC X(10) holds ten characters");
+
+        for (String reported : messages(withSource("A".repeat(11)))) {
+            assertFalse(reported.startsWith("size must be"),
+                    "no reader default reaches a caller: " + reported);
+        }
+    }
+
+    /**
+     * Asserts a supplied transaction identifier wider than its field reports both refusals.
+     *
+     * <p>The component is refused whatever it holds, because this service allocates every identifier
+     * from a database sequence. A value of another width breaks the width bound as well, and a caller
+     * learns both at once.
+     */
+    @Test
+    void aWideTransactionIdentifierReportsItsWidthAndItsRefusal() {
+        Set<String> reported = messages(withTransactionId("0".repeat(17)));
+
+        assertTrue(reported.contains(AuthorizationRequest.TRANSACTION_ID_WIDTH_MESSAGE),
+                () -> "the width names DALYTRAN-ID PIC X(16): " + reported);
+        assertTrue(reported.contains(AuthorizationRequest.TRANSACTION_ID_NOT_ACCEPTED_MESSAGE),
+                () -> "a supplied identifier is refused at any width: " + reported);
+    }
+
     /** Asserts the printable punctuation the fixtures do hold is accepted. */
     @Test
     void theFixturePunctuationIsAccepted() {

@@ -4,6 +4,7 @@ import com.carddemo.card.api.dto.CardUpdateRequest;
 import com.carddemo.card.api.dto.CardUpdateResponse;
 import com.carddemo.card.api.dto.CardUpdateResponse.RefreshedCard;
 import com.carddemo.card.api.dto.CardValidationMessages;
+import com.carddemo.card.config.CardProperties;
 import com.carddemo.card.config.ObservabilityConfig.CardLatencyTimers;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.outbox.OutboxWriter;
@@ -12,6 +13,7 @@ import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Timer;
+import jakarta.persistence.EntityManager;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validator;
 import jakarta.validation.constraints.NotBlank;
@@ -28,6 +30,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -93,9 +97,19 @@ import org.springframework.transaction.annotation.Transactional;
  * {@code app/jcl/POSTTRAN.jcl:L23} allocates nine data definitions to the posting program and names
  * no card file, so no posting decision reads the status this class stores.
  *
- * <p>No expiry-day edit and no calendar-validity edit. The paragraph sequence runs 1230, 1240,
- * 1250, 1260 and then {@code 2000-DECIDE-ACTION.} at {@code app/cbl/COCRDUPC.cbl:L948}, with no
- * 1270 paragraph anywhere in the program.
+ * <p>The source performs no expiry-day edit and no calendar-validity edit. The paragraph sequence
+ * runs 1230, 1240, 1250, 1260 and then {@code 2000-DECIDE-ACTION.} at
+ * {@code app/cbl/COCRDUPC.cbl:L948}, with no 1270 paragraph anywhere in the program. It writes the
+ * day it read back: {@code app/cbl/COCRDUPC.cbl:L621} moves the screen field into
+ * {@code CCUP-NEW-EXPDAY} and {@code app/cbl/COCRDUPC.cbl:L1471} writes that item into the record.
+ *
+ * <p>Two additions follow from the transport and the column rather than from a rule. The day carries
+ * a width constraint, because a two-character 3270 field could not deliver a third character and a
+ * request body can. The assembled triple carries a calendar check, because
+ * {@code CARD-EXPIRAION-DATE PIC X(10)} held {@code 2028-02-30} as ten characters of text and column
+ * {@code expiration_date} is a {@code DATE} that cannot hold it. Both are marked ADDITIVE by
+ * {@link CardValidationMessages}, and {@code card-platform/docs/business-rule-flags.md} carries the
+ * second as this route's one behavioural divergence.
  *
  * <p>No version column. The concurrency comparison is field level, over the values
  * {@code app/cbl/COCRDUPC.cbl:L1503-L1508} names.
@@ -238,6 +252,25 @@ public class CardUpdateService {
     /** Reads and writes table {@code card}. */
     private final CardRepository cards;
 
+    /**
+     * Sends the queued statements to the database inside {@link #applyUpdate}.
+     *
+     * <p>{@link CardRepository} extends {@code ListCrudRepository}, which publishes no {@code flush},
+     * so the flush cannot be reached through the repository. Without it the statements of
+     * {@code save} and of the outbox write leave for the database at commit, which is after
+     * {@link #applyUpdate} has returned, and a database refusing either one raises its exception where
+     * that method's own {@code catch} cannot see it.
+     */
+    private final EntityManager entityManager;
+
+    /**
+     * Bound on how long the locked read of one update waits, as a PostgreSQL interval string.
+     *
+     * <p>Rendered once at construction from {@code carddemo.write.lock-wait-ms}, because it is the
+     * same text on every request.
+     */
+    private final String lockWaitBound;
+
     /** Reads the stored card in a transaction of its own, before the lock is taken. */
     private final CardQueryService cardQueries;
 
@@ -274,20 +307,24 @@ public class CardUpdateService {
      * @param cardQueries            the read side, which fetches the stored card
      * @param outboxWriter           the writer of the event row
      * @param validator              the validator that applies the request constraints
+     * @param entityManager          the unit of work whose flush sends the queued statements
      * @param updatesApplied         counter of updates that committed
      * @param updateConflicts        counter of updates refused after a concurrent change
      * @param infrastructureFailures counter of updates that failed after the lock was held
      * @param timers                 the latency timers of this service
+     * @param properties             the bound {@code carddemo} block, read for its lock-wait bound
      * @param self                   provider of this bean through its own proxy
      * @throws NullPointerException if any argument is {@code null}
      */
     public CardUpdateService(CardRepository cards, CardQueryService cardQueries,
-            OutboxWriter outboxWriter, Validator validator,
+            OutboxWriter outboxWriter, Validator validator, EntityManager entityManager,
             @Qualifier("cardUpdatesAppliedCounter") Counter updatesApplied,
             @Qualifier("cardUpdateConflictCounter") Counter updateConflicts,
             @Qualifier("cardInfrastructureFailureCounter") Counter infrastructureFailures,
-            CardLatencyTimers timers, ObjectProvider<CardUpdateService> self) {
+            CardLatencyTimers timers, CardProperties properties,
+            ObjectProvider<CardUpdateService> self) {
         this.cards = Objects.requireNonNull(cards, "cards is required");
+        this.entityManager = Objects.requireNonNull(entityManager, "entityManager is required");
         this.cardQueries = Objects.requireNonNull(cardQueries, "cardQueries is required");
         this.outboxWriter = Objects.requireNonNull(outboxWriter, "outboxWriter is required");
         this.validator = Objects.requireNonNull(validator, "validator is required");
@@ -297,6 +334,8 @@ public class CardUpdateService {
         this.infrastructureFailures = Objects.requireNonNull(infrastructureFailures,
                 "infrastructureFailures is required");
         this.updateLatency = Objects.requireNonNull(timers, "timers is required").cardUpdate();
+        this.lockWaitBound = Objects.requireNonNull(properties, "properties is required")
+                .write().lockWaitMs() + "ms";
         this.self = Objects.requireNonNull(self, "self is required");
     }
 
@@ -363,15 +402,20 @@ public class CardUpdateService {
             return CardUpdateResponse.validationRejected(dataFailure);
         }
 
-        LocalDate expiration = expirationDateOf(request, fetched.expiryDay());
+        LocalDate expiration = expirationDateOf(request);
         if (expiration == null) {
-            log.info("A card update named a month the stored day does not reach, {}", masked);
+            log.info("A card update named a year, month and day that are no calendar day, {}",
+                    masked);
             return CardUpdateResponse.validationRejected(
                     CardValidationMessages.ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE);
         }
 
         try {
             return self.getObject().applyUpdate(request, fetched, expiration);
+        } catch (LockNotTaken notTaken) {
+            updateConflicts.increment();
+            log.warn("A card update could not take the row for update, {}", masked, notTaken);
+            return CardUpdateResponse.lockNotAcquired();
         } catch (UpdateFailedAfterLock failed) {
             infrastructureFailures.increment();
             log.warn("A card update failed after its row was locked, {}", masked, failed);
@@ -396,12 +440,21 @@ public class CardUpdateService {
      * three values the map admits. The card number, the account identifier and the card verification
      * value are carried through, as {@code app/cbl/COCRDUPC.cbl:L1462-L1465} carries them.
      *
+     * <p>Two answers read the row this method locked, and each reads a different snapshot of it. The
+     * comparison reads {@link #snapshotOf}, whose name is folded on both sides. A refusal answers with
+     * {@link #storedValuesOf}, whose name is not, so the caller reads what the column holds.
+     *
+     * <p>{@link EntityManager#flush()} closes the guarded block, so the statements of the row write
+     * and the event write reach the database while this method can still see a refusal of either one.
+     *
      * @param request    the submitted update, whose components have passed every edit
      * @param fetched    the five values the caller last saw, read before this transaction opened
-     * @param expiration the expiry date the submitted year and month and the stored day name
+     * @param expiration the expiry date the three submitted parts name
      * @return the outcome: applied, refused for a concurrent change, or refused for a lock this
      *         method could not take
      * @throws NullPointerException  if any argument is {@code null}
+     * @throws LockNotTaken          when the database refuses the locking statement, which leaves
+     *                               this transaction unusable and rolls it back
      * @throws UpdateFailedAfterLock when the rewrite or the event row fails once the row is held,
      *                               which rolls this transaction back
      */
@@ -413,8 +466,24 @@ public class CardUpdateService {
         Objects.requireNonNull(expiration, "expiration is required");
 
         String masked = PanMasker.maskCardNumber(request.cardNumber());
-        Optional<CardEntity> locked =
-                cards.findForUpdateByCardNumber(padKey(request.cardNumber()));
+        // Bound the wait before the locked read runs. PostgreSQL waits forever by default, so a row
+        // another writer held kept this request open for as long as that writer held it, and the
+        // outcome below was unreachable through contention: the wait ended in a lock or it did not
+        // end. Transaction-local, so it governs this one read and nothing else.
+        cards.applyLockWaitBound(lockWaitBound);
+
+        Optional<CardEntity> locked;
+        try {
+            locked = cards.findForUpdateByCardNumber(padKey(request.cardNumber()));
+        } catch (PessimisticLockingFailureException | JpaSystemException notTaken) {
+            // A row the database will not hand over for update is the same outcome to a caller as a
+            // row that is no longer there: the lock was not taken. PostgreSQL raises here on a lock
+            // it cannot grant, on a deadlock it breaks, and on a SELECT ... FOR NO KEY UPDATE it
+            // refuses outright, which is what a revoked UPDATE privilege produces. Reaching the
+            // database at all fails elsewhere and stays a dependency failure, so this catch is the
+            // two families above and no wider.
+            throw new LockNotTaken(notTaken);
+        }
         if (locked.isEmpty()) {
             log.info("A card update could not lock the row it had just read, {}", masked);
             return CardUpdateResponse.lockNotAcquired();
@@ -425,7 +494,9 @@ public class CardUpdateService {
         if (!current.equals(fetched)) {
             updateConflicts.increment();
             log.info("A card update lost a race against another writer, {}", masked);
-            return CardUpdateResponse.changedBeforeUpdate(current);
+            // The comparison reads the folded snapshot and the answer carries the unfolded one, so
+            // the caller reads the name the row holds rather than the name the comparison needed.
+            return CardUpdateResponse.changedBeforeUpdate(storedValuesOf(card));
         }
 
         try {
@@ -433,6 +504,13 @@ public class CardUpdateService {
                     request.activeStatus());
             cards.save(card);
             outboxWriter.writeCardUpdated(card);
+            // Both statements reach the database here rather than at commit. save() and the outbox
+            // write only queue their statements, so a database refusing either one raised its
+            // exception after this block had been left and after the catch below could see it: the
+            // documented outcome was unreachable and a caller read the fault body of
+            // api/CardApiExceptionHandler instead. The transaction still rolls back either way, so
+            // this changes what a caller is told and not what the database holds.
+            entityManager.flush();
         } catch (RuntimeException failure) {
             throw new UpdateFailedAfterLock(failure);
         }
@@ -508,7 +586,11 @@ public class CardUpdateService {
     }
 
     /**
-     * Reads the five values the concurrency comparison and the refresh both use, name folded.
+     * Reads the five values the concurrency comparison uses, name folded.
+     *
+     * <p>This snapshot is for comparing and not for answering. {@link #storedValuesOf} is the one a
+     * refusal carries, and the two differ in exactly one value: the name this one folds to upper case
+     * and that one leaves as the row holds it.
      *
      * <p>{@code app/cbl/COCRDUPC.cbl:L1512-L1517} refreshes exactly these once the comparison at
      * {@code app/cbl/COCRDUPC.cbl:L1503-L1508} fails. Every value is carried as text, matching the
@@ -543,6 +625,37 @@ public class CardUpdateService {
     }
 
     /**
+     * Reads the five values a refusal answers with, exactly as the row holds them.
+     *
+     * <p>The same five values as {@link #snapshotOf}, and the name is not folded. A caller that lost a
+     * race reads what the row holds, so that resubmitting the body it is given is a body the
+     * comparison accepts. {@code app/data/ASCII/carddata.txt} carries mixed-case names such as
+     * {@code Aniya Von}, and answering {@code ANIYA VON} told a caller the row held a value it did
+     * not: {@code POST /cards/detail} returns the mixed-case name for the same row, so two routes of
+     * one service disagreed about one column.
+     *
+     * <p>The fold belongs to the comparison alone. {@code 9300-CHECK-CHANGE-IN-REC.} at
+     * {@code app/cbl/COCRDUPC.cbl:L1499-L1501} runs {@code INSPECT ... CONVERTING} over the record
+     * area in place, so the {@code MOVE} at {@code app/cbl/COCRDUPC.cbl:L1513} carries the folded name
+     * into the refreshed field and the source's own screen shows the folded value. That is an artifact
+     * of folding a record area rather than a copy of it, and it is not a rule: the refreshed values
+     * exist for a human to review before resubmitting, and the openapi document of this route declares
+     * the member as the values the row holds and publishes {@code Ward Jones} for it.
+     *
+     * @param card the locked card row
+     * @return the snapshot, name unfolded
+     */
+    private static RefreshedCard storedValuesOf(CardEntity card) {
+        LocalDate expiration = card.getExpirationDate();
+        return new RefreshedCard(
+                padded(card.getEmbossedName(), EMBOSSED_NAME_WIDTH),
+                digits(expiration.getYear(), EXPIRY_YEAR_WIDTH),
+                digits(expiration.getMonthValue(), EXPIRY_MONTH_WIDTH),
+                digits(expiration.getDayOfMonth(), EXPIRY_DAY_WIDTH),
+                padded(card.getActiveStatus(), ACTIVE_STATUS_WIDTH));
+    }
+
+    /**
      * Reports whether the submitted values match the stored ones, upper-cased on both sides.
      *
      * <p>Reproduces {@code app/cbl/COCRDUPC.cbl:L680-L683}, which compares
@@ -556,20 +669,28 @@ public class CardUpdateService {
      * <p>Both sides are padded to those widths, so a name of four letters matches the same four
      * letters stored in a fifty-character field.
      *
-     * <p>The day of the submitted group is the stored day. {@code app/bms/COCRDUP.bms:L142}
-     * declares {@code EXPDAY DFHMDF ATTRB=(DRK,FSET,PROT)} while the four editable fields at L107,
-     * L117, L127 and L135 declare {@code UNPROT}, and
-     * {@code app/cbl/COCRDUPC.cbl:L1110}, {@code :L1123} and {@code :L1127} send
-     * {@code CCUP-OLD-EXPDAY} to that field on every path. {@code CCUP-NEW-EXPDAY} read back at
-     * {@code app/cbl/COCRDUPC.cbl:L621} is an echo of the stored day.
+     * <p>The day of the submitted group is the submitted day, which is the day
+     * {@code CCUP-NEW-EXPDAY} carries. {@code app/cbl/COCRDUPC.cbl:L621} moves the screen field into
+     * that item and {@code app/cbl/COCRDUPC.cbl:L1471} writes that same item into the record, so the
+     * day the program stores is the day it read back.
+     *
+     * <p>On a 3270 the day read back was always the stored day, and that is a property of the map
+     * rather than of the program: {@code app/bms/COCRDUP.bms:L142} declares
+     * {@code EXPDAY DFHMDF ATTRB=(DRK,FSET,PROT)} where the four editable fields at L107, L117, L127
+     * and L135 declare {@code UNPROT}, so an operator could not type into it, and
+     * {@code app/cbl/COCRDUPC.cbl:L1110}, {@code :L1123} and {@code :L1127} sent
+     * {@code CCUP-OLD-EXPDAY} to it on every path. A request body has no protected field. Reading the
+     * stored day here instead of the submitted one would put the submitted day in no comparison and
+     * in no column, so a caller changing the day alone would read the no-change text for ever and a
+     * caller changing the day beside the month would read success while its day was dropped.
      *
      * @param request the submitted update
-     * @param fetched the stored values, whose day is the effective submitted day
+     * @param fetched the stored values
      * @return {@code true} when the two groups are equal
      */
     private static boolean submittedMatches(CardUpdateRequest request, RefreshedCard fetched) {
         String submitted = groupOf(request.embossedName(), request.expiryYear(),
-                request.expiryMonth(), fetched.expiryDay(), request.activeStatus());
+                request.expiryMonth(), request.expiryDay(), request.activeStatus());
         String storedGroup = groupOf(fetched.embossedName(), fetched.expiryYear(),
                 fetched.expiryMonth(), fetched.expiryDay(), fetched.activeStatus());
         return submitted.equals(storedGroup);
@@ -595,25 +716,34 @@ public class CardUpdateService {
     }
 
     /**
-     * Joins the submitted year and month with the stored day into one date.
+     * Joins the three submitted parts into one date.
      *
-     * <p>{@code app/cbl/COCRDUPC.cbl:L1467-L1474} joins the three parts with hyphens into
-     * {@code CARD-UPDATE-EXPIRAION-DATE}, which is ten characters of text and holds an impossible
-     * day as readily as a real one. Column {@code expiration_date} is a {@code DATE}, so a month
-     * the stored day does not reach has no value to store, and
-     * {@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE} carries that outcome
-     * as ADDITIVE.
+     * <p>{@code app/cbl/COCRDUPC.cbl:L1467-L1474} joins {@code CCUP-NEW-EXPYEAR},
+     * {@code CCUP-NEW-EXPMON} and {@code CCUP-NEW-EXPDAY} with hyphens into
+     * {@code CARD-UPDATE-EXPIRAION-DATE} and rewrites the record with it. All three are the submitted
+     * values: {@code app/cbl/COCRDUPC.cbl:L621} moves the day the screen sent into the third of them.
+     * This method assembles the same three.
      *
-     * <p>The day is the stored one, so no submitted day reaches the column.
+     * <p>{@code CARD-UPDATE-EXPIRAION-DATE} is ten characters of text and holds an impossible day as
+     * readily as a real one, so the source stored {@code 2028-02-30} and reported nothing. Column
+     * {@code expiration_date} is a {@code DATE} and cannot hold one, so a triple naming no day of the
+     * calendar has no value to store and
+     * {@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE} carries that outcome as
+     * ADDITIVE. That divergence is the column type's, not this platform's, and
+     * {@code card-platform/docs/business-rule-flags.md} carries it.
      *
-     * @param request  the submitted update, whose year and month have passed their constraints
-     * @param storedDay the two-character day slice of the stored expiry
-     * @return the date, or {@code null} when the submitted month does not reach the stored day
+     * <p>The rule now reads the triple a caller submitted rather than the submitted year and month
+     * beside the stored day. Reading the stored day made the refusal fire on a combination no caller
+     * had sent and stay silent on one it had: a caller submitting the thirtieth of February read
+     * success, and the column took the stored day instead.
+     *
+     * @param request the submitted update, whose three parts have passed their constraints
+     * @return the date, or {@code null} when the three submitted parts name no day of the calendar
      */
-    private static LocalDate expirationDateOf(CardUpdateRequest request, String storedDay) {
+    private static LocalDate expirationDateOf(CardUpdateRequest request) {
         try {
             return LocalDate.of(Integer.parseInt(request.expiryYear()),
-                    Integer.parseInt(request.expiryMonth()), Integer.parseInt(storedDay));
+                    Integer.parseInt(request.expiryMonth()), Integer.parseInt(request.expiryDay()));
         } catch (DateTimeException | NumberFormatException notADate) {
             return null;
         }
@@ -666,6 +796,33 @@ public class CardUpdateService {
      */
     private static String upperCased(String value) {
         return value.toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * Reports that the row could not be taken for update at all.
+     *
+     * <p>Carries the same outcome as the branch {@code app/cbl/COCRDUPC.cbl:L1441} reports, which
+     * sets {@code COULD-NOT-LOCK-FOR-UPDATE}, the text {@code 'Could not lock record for update'}
+     * at {@code app/cbl/COCRDUPC.cbl:L209}. The source reached it on a {@code READ UPDATE} that
+     * came back with anything other than a normal response.
+     *
+     * <p>{@link #applyUpdate} reaches that branch two ways. A row no longer present is the empty
+     * result, answered in place. A database that refuses the locking statement raises instead, and
+     * the statement leaves a PostgreSQL transaction unusable, so this exception carries the outcome
+     * out through the transaction boundary rather than returning across it.
+     */
+    public static final class LockNotTaken extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * Wraps the failure the locking read reported.
+         *
+         * @param cause the failure, whose message reaches no response body
+         */
+        LockNotTaken(Throwable cause) {
+            super("the card row could not be taken for update", cause);
+        }
     }
 
     /**

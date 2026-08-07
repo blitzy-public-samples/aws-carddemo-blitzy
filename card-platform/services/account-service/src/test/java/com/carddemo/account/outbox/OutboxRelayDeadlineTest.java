@@ -71,7 +71,8 @@ class OutboxRelayDeadlineTest {
                                 500L, 1, "deadline-test", Duration.ofSeconds(30L),
                                 PASS_DEADLINE_MS, Duration.ofSeconds(10L)), 168L),
                 new AccountProperties.ProcessedEvent(168L),
-                new AccountProperties.Retention(3_600_000L));
+                new AccountProperties.Retention(3_600_000L),
+                new AccountProperties.Write(3_000L));
     }
 
     /** Runs a transaction callback directly, so no transaction manager takes part. */

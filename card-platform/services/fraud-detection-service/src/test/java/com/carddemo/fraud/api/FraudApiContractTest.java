@@ -144,6 +144,18 @@ final class FraudApiContractTest {
     /** File name of the one controller type this service declares. */
     private static final String CONTROLLER_FILE_NAME = "FraudAssessmentController.java";
 
+    /**
+     * Marker of an advice type, spelled in halves for the same reason.
+     *
+     * <p>{@value #REST_CONTROLLER_MARKER} is a prefix of this marker, so a source carrying an advice
+     * matches both. The controller count therefore excludes the advice file by name, and this marker
+     * counts the advice on its own.
+     */
+    private static final String ADVICE_MARKER = "@" + "RestControllerAdvice";
+
+    /** File name of the one advice type this service declares. */
+    private static final String ADVICE_FILE_NAME = "FraudApiExceptionHandler.java";
+
     /** Operations no path item may declare. */
     private static final List<String> BANNED_OPERATIONS =
             List.of("post", "put", "patch", "delete", "head", "options", "trace");
@@ -693,14 +705,54 @@ final class FraudApiContractTest {
     @DisplayName("One source declares a controller type, and it is the assessment controller")
     void oneSourceDeclaresAControllerType() {
         List<String> restControllers = distinctFiles(occurrencesInFraudSources(
-                REST_CONTROLLER_MARKER));
+                REST_CONTROLLER_MARKER).stream()
+                .filter(occurrence -> !occurrence.contains(ADVICE_FILE_NAME))
+                .toList());
         List<String> plainControllers = distinctFiles(occurrencesInFraudSources(
-                CONTROLLER_MARKER));
+                CONTROLLER_MARKER).stream()
+                .filter(occurrence -> !occurrence.contains(ADVICE_FILE_NAME))
+                .toList());
         assertAll(
                 () -> assertEquals(List.of(CONTROLLER_FILE_NAME), restControllers,
                         "sources declaring a REST controller type"),
                 () -> assertEquals(List.of(), plainControllers,
                         "sources declaring a plain controller type"));
+    }
+
+    /**
+     * Asserts this service declares one advice, and that it names no base package.
+     *
+     * <p>The advice shapes the error body of the two read routes, which is why the marker it carries
+     * reads like the controller marker and is excluded from the count above: an advice serves no
+     * route of its own.
+     *
+     * <p>It named {@code com.carddemo.fraud.api} until a paused datastore was measured against all six
+     * services. Scoping was neither what broke the health poll nor what fixed it. This service was
+     * scoped throughout and still answered a paused datastore with the framework body, because
+     * {@code config/ReadinessHealthConfig} let its outbox read throw: the actuator then had no document
+     * to render and the request left through the error path. The guarded indicator is the fix, and with
+     * it no failure of the management port reaches an advice at all.
+     *
+     * <p>Scoping also costs something. Spring selects an advice by the type of the handler it resolved,
+     * and a request matching no mapping resolves none, so a scoped advice is skipped for exactly the
+     * failures raised before a handler is chosen. On a route declaring {@code consumes} that turns the
+     * documented answer to an unsupported media type back into the framework body, which is what the
+     * authorization service measured. Every one of the six now names no base package, and
+     * {@code equivalence-tests} {@code ApiSurfaceSecurityContractTest} holds the indicators to
+     * catching instead.
+     */
+    @Test
+    @DisplayName("The one advice of this service names no base package")
+    void theOneAdviceNamesNoBasePackage() {
+        List<String> advices = distinctFiles(occurrencesInFraudSources(ADVICE_MARKER));
+
+        assertEquals(List.of(ADVICE_FILE_NAME), advices, "sources declaring an advice type");
+        assertEquals(List.of(),
+                List.of(FraudApiExceptionHandler.class.getAnnotation(
+                                org.springframework.web.bind.annotation.RestControllerAdvice.class)
+                        .basePackages()),
+                "the advice names no package, so it shapes a failure raised before a handler is "
+                        + "resolved as well as one raised inside it");
     }
 
     @Test

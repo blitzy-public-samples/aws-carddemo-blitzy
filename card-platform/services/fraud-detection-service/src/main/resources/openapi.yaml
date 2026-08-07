@@ -233,9 +233,15 @@ components:
     BadRequest:
       description: >-
         A path or query value missed the constraint declared for it: an identifier of the wrong width
-        or shape, a page below zero, or a page size outside one through 200. A sort parameter on the
-        collection route answers this status too, and that route applies assessment-time descending
-        order only.
+        or shape, a page below zero, a page size outside one through 200, a page or page size that is
+        not a whole number, or the required account parameter not arriving at all. A sort parameter on
+        the collection route answers this status too, and that route applies assessment-time
+        descending order only.
+
+
+        Every one of those is a client error and none of them is a fault of this service, so none
+        answers 5xx. api/FraudApiExceptionHandler writes the document below for all of them, and the
+        detail names no value read from the request.
       content:
         application/problem+json:
           schema:

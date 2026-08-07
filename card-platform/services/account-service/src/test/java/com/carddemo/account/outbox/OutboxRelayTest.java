@@ -895,7 +895,8 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
                                 java.time.Duration.ofSeconds(10L)),
                         retentionHours),
                 new AccountProperties.ProcessedEvent(168L),
-                new AccountProperties.Retention(3_600_000L));
+                new AccountProperties.Retention(3_600_000L),
+                new AccountProperties.Write(3_000L));
     }
 
     /** Builds a manually driven relay on the fixed concurrency-test clock. */

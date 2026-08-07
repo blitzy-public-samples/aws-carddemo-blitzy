@@ -61,6 +61,18 @@ The 430-byte reject width is corroborated outside the program: `app/jcl/POSTTRAN
 
 The response carries the account identifier, the current balance, the cycle credit accumulator and the cycle debit accumulator. `app/cbl/COACTVWC.cbl:L468`–`L490` fills ten account fields on the view screen, but this service owns only the balance and the two accumulators, so the answer exposes that subset and nothing else. Each amount is a decimal string with two places.
 
+Every other answer is a problem document, the same four members `config/SecurityConfig` writes for a security refusal, under `application/problem+json`. `api/LedgerApiExceptionHandler` shapes three of them and the security configuration the other two.
+
+| Status | When | Detail |
+| :--- | :--- | :--- |
+| `400` | The path value missed the eleven-digit shape `ACCT-ID PIC 9(11)` declares | `Account identifier must be eleven digits.` |
+| `401` | The request carried no usable credential. The response also carries `WWW-Authenticate` | `This request carried no usable credential.` |
+| `403` | The caller authenticated but does not hold this account | `This identity may not use this operation.` |
+| `503` | The projection table could not be reached, so the read was never attempted | `The balance store is unavailable. Retry shortly.` |
+| `500` | A fault inside this service | `The balance could not be read.` |
+
+No member of that document echoes anything the caller sent — no rejected value, no resolved path, no query string and no header. The framework default body this replaced carried the resolved path, so a caller naming an account identifier read that identifier back and copied it into its own log. That body also answered `500` for a datastore that was merely away, which invites no retry and names no dependency; the `503` arm above names a connection that cannot be opened, a transaction that cannot be begun and a statement that ran out of time, and nothing wider. A broken query is a fault of this service and answers `500`, where a retry would only repeat it.
+
 ```bash
 curl -fsS -u user0001:"$USER_PASSWORD" http://localhost:8082/balances/00000000001
 ```

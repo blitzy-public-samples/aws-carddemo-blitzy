@@ -16,9 +16,23 @@ FROM ${RUNTIME_IMAGE} AS archive
 
 WORKDIR /staging
 
-# target/ holds one file ending in .jar. The Spring Boot plugin leaves a second
-# file ending in .jar.original, and this pattern does not match it.
-COPY target/*.jar app.jar
+# The archive the host build left under target/. The Spring Boot plugin leaves a
+# second file ending in .jar.original, and this pattern does not match it. The
+# pattern is copied into the directory rather than onto a name, because a name
+# would take whichever match sorted last and ship it in silence: a stale archive
+# from an earlier version, or a sources archive, would then become the image.
+COPY target/*.jar ./
+
+# Exactly one archive, or no image. The check below is the only thing standing
+# between an un-cleaned target/ and an image running the wrong code.
+RUN set -eu; \
+    set -- /staging/*.jar; \
+    if [ "$#" -ne 1 ]; then \
+      echo "Expected one archive under target/, found $#: $*" >&2; \
+      echo "Run mvn -f card-platform/pom.xml clean package and build again." >&2; \
+      exit 1; \
+    fi; \
+    mv "$1" /staging/app.jar
 
 # Stage 2. The shipped image. It carries the archive and a Java Runtime
 # Environment, and nothing else.

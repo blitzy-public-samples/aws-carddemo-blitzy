@@ -210,6 +210,12 @@ class CardUpdateServiceTest {
     /** Card number of seeded record six, written by the reassembly test. Expiry 2024-01-17. */
     private static final String REASSEMBLY_CARD = "1014086565224350";
 
+    /**
+     * Card number of seeded record nineteen, written by the day-only test. Expiry 2025-07-23, name
+     * {@code Hadley Hamill}, status {@code Y}. No other test reads or writes this row.
+     */
+    private static final String DAY_ONLY_CARD = "3940246016141489";
+
     /** Expiry date of {@link #REASSEMBLY_CARD}. */
     private static final LocalDate REASSEMBLY_EXPIRY = LocalDate.of(2024, 1, 17);
 
@@ -681,24 +687,28 @@ class CardUpdateServiceTest {
          * {@code app/cbl/COCRDUPC.cbl:L692}. No field edit runs after that exit, so the no-change
          * text cannot arrive beside a status, month or year text.
          *
-         * <p>The request below carries three characters of expiry day, a value the width constraint
-         * refuses. The comparison excludes the submitted day, so the request is still unchanged and
-         * the day is never edited. The submitted values also differ from the stored ones in letter
-         * case, which the comparison folds away.
+         * <p>The request below resubmits all five values this card holds and differs from the stored
+         * ones in letter case alone, which both sides of the comparison fold away. The status it
+         * carries is a lower-case {@code y}, a value {@code 1240-EDIT-CARDSTATUS.} at
+         * {@code app/cbl/COCRDUPC.cbl:L845-L873} refuses at
+         * {@code app/cbl/COCRDUPC.cbl:L863}, because
+         * {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at {@code app/cbl/COCRDUPC.cbl:L91} admits
+         * those two characters alone. The no-change exit reaches that refusal never, so the answer
+         * carries the no-change text and not the status text.
          */
         @Test
         @DisplayName("an unchanged resubmission answers the no-change text and skips every edit")
         void anUnchangedResubmissionAnswersTheNoChangeTextAlone() {
             CardUpdateResponse answer = cardUpdateService.updateCard(
                     request(WITNESS_CARD, WITNESS_NAME.toUpperCase(Locale.ROOT), WITNESS_YEAR,
-                            WITNESS_MONTH, "999", STATUS_YES));
+                            WITNESS_MONTH, WITNESS_DAY, STATUS_YES.toLowerCase(Locale.ROOT)));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.NO_CHANGE_DETECTED, answer.outcome(),
                             "the comparison at L680 reported no change"),
                     () -> assertEquals(CardValidationMessages.NO_CHANGES_DETECTED,
                             answer.message(), "the text L682 sets"),
-                    () -> assertNotEquals(CardValidationMessages.ADDITIVE_CARD_EXPIRY_DAY_WIDTH,
+                    () -> assertNotEquals(CardValidationMessages.CARD_STATUS_MUST_BE_YES_NO,
                             answer.message(), "the exit at L692 skipped every field edit"),
                     () -> assertEquals(WITNESS_NAME, storedText(WITNESS_CARD, "embossed_name"),
                             "an unchanged resubmission writes nothing"));
@@ -843,30 +853,75 @@ class CardUpdateServiceTest {
         }
 
         /**
-         * Asserts a submitted day the calendar does not hold passes every edit.
+         * Asserts a submitted triple naming no day of the calendar is refused, row untouched.
          *
-         * <p>No day edit exists. The edit chain runs 1230, 1240, 1250 and 1260, closing at
-         * {@code app/cbl/COCRDUPC.cbl:L945}, and {@code 2000-DECIDE-ACTION.} opens at
+         * <p>The source performs no day edit. The edit chain runs 1230, 1240, 1250 and 1260,
+         * closing at {@code app/cbl/COCRDUPC.cbl:L945}, and {@code 2000-DECIDE-ACTION.} opens at
          * {@code app/cbl/COCRDUPC.cbl:L948}, so no paragraph between them reaches the day. The
-         * program carries the day straight into the reassembled date at
-         * {@code app/cbl/COCRDUPC.cbl:L1471}.
+         * program then joins the submitted year, month and day at
+         * {@code app/cbl/COCRDUPC.cbl:L1467-L1474} into {@code CARD-UPDATE-EXPIRAION-DATE PIC
+         * X(10)} at {@code app/cbl/COCRDUPC.cbl:L319}, which is ten characters of text and holds
+         * {@code 2023-02-31} as readily as a real date.
          *
-         * <p>The request below submits day {@code 31} with a February expiry and the update is
-         * applied. The stored date takes the day the read carried, which is {@code 07} for this
-         * card, so no submitted day reaches the column.
+         * <p>Column {@code expiration_date} is a {@code DATE} and cannot, so the triple has no
+         * value to store and {@link CardValidationMessages#ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE}
+         * carries that outcome as ADDITIVE. The divergence belongs to the column type and
+         * {@code card-platform/docs/business-rule-flags.md} carries it as departure D3.
+         *
+         * <p>The request below submits day {@code 31} with a February expiry. The rule reads the
+         * triple the caller sent, so the refusal names the combination the caller actually
+         * submitted, and the row keeps the {@code 2023-07-07} the seed loaded.
          */
         @Test
-        @DisplayName("day 31 with a February expiry is admitted and never reaches the column")
-        void aSubmittedDayTheCalendarDoesNotHoldIsAdmitted() {
+        @DisplayName("day 31 with a February expiry is refused and the stored date is left alone")
+        void aSubmittedDayTheCalendarDoesNotHoldIsRefused() {
             CardUpdateResponse answer = cardUpdateService.updateCard(
                     request(EXPIRY_DAY_CARD, "Maci Robel", "2023", "02", "31", STATUS_YES));
 
             assertAll(
+                    () -> assertEquals(UpdateOutcome.VALIDATION_REJECTED, answer.outcome(),
+                            "a DATE column holds no thirtieth of February"),
+                    () -> assertEquals(
+                            CardValidationMessages.ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE,
+                            answer.message(), "the ADDITIVE calendar text"),
+                    () -> assertEquals(LocalDate.of(2023, 7, 7), storedExpiry(EXPIRY_DAY_CARD),
+                            "the refusal wrote nothing, so the seeded date stands"));
+        }
+
+        /**
+         * Asserts a change to the day alone reaches the column.
+         *
+         * <p>{@code app/cbl/COCRDUPC.cbl:L621} moves the submitted day into
+         * {@code CCUP-NEW-EXPDAY} and {@code app/cbl/COCRDUPC.cbl:L1471} writes that same item into
+         * the record, so the day the program stores is the day it was handed. The comparison at
+         * {@code app/cbl/COCRDUPC.cbl:L680-L681} reads the group opening at
+         * {@code app/cbl/COCRDUPC.cbl:L307}, which holds two characters of that same day, so a day
+         * that differs from the stored one is a change.
+         *
+         * <p>On a 3270 the day handed back was always the stored day, and that is a property of the
+         * map rather than of the program: {@code app/bms/COCRDUP.bms:L142} declares
+         * {@code EXPDAY DFHMDF ATTRB=(DRK,FSET,PROT)} where the four editable fields at L107, L117,
+         * L127 and L135 declare {@code UNPROT}. A request body has no protected field, so a caller
+         * can name a day, and the day it names is the day that lands.
+         *
+         * <p>The request below resubmits the name, year, month and status this card holds and moves
+         * the day from {@code 23} to {@code 24}. Nothing but the day differs, so an outcome of
+         * {@code NO_CHANGE_DETECTED} here would leave a day-only change unreachable for ever.
+         */
+        @Test
+        @DisplayName("moving the day from 23 to 24 and nothing else is a change and lands")
+        void aChangeToTheDayAloneReachesTheColumn() {
+            CardUpdateResponse answer = cardUpdateService.updateCard(
+                    request(DAY_ONLY_CARD, "Hadley Hamill", "2025", "07", "24", STATUS_YES));
+
+            assertAll(
                     () -> assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
-                            "no edit refuses a day the calendar does not hold"),
+                            "the day is inside the group the comparison reads"),
                     () -> assertNull(answer.message(), "an applied update carries no text"),
-                    () -> assertEquals(LocalDate.of(2023, 2, 7), storedExpiry(EXPIRY_DAY_CARD),
-                            "the stored day 07 joined the submitted month"));
+                    () -> assertEquals(LocalDate.of(2025, 7, 24), storedExpiry(DAY_ONLY_CARD),
+                            "the submitted day reached expiration_date"),
+                    () -> assertEquals("2025-07-24", storedRow(DAY_ONLY_CARD).get(4),
+                            "the ten characters read YYYY-MM-DD"));
         }
     }
 

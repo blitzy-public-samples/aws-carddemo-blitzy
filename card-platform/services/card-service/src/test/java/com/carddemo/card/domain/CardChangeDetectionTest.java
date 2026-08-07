@@ -30,8 +30,11 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
@@ -83,6 +86,11 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * case and pads each value to the width its Picture clause declares.
  * {@link #snapshotOf(String, LocalDate, String)} below repeats those two conventions, so a
  * snapshot a test builds matches one the service builds.
+ *
+ * <p>That folded snapshot is what the comparison reads. It is not what a refusal answers with: the
+ * private {@code storedValuesOf} beside it pads without folding, so the five values a caller reads
+ * back are the five the columns hold. The assertions on a refused name below therefore expect the
+ * letter case the other writer stored.
  *
  * <h2>How this class runs</h2>
  *
@@ -247,7 +255,7 @@ class CardChangeDetectionTest {
      *
      * @param cardNumber   the sixteen-digit card number the update names
      * @param embossedName the submitted embossed cardholder name
-     * @param expiration   the submitted expiry date, whose day the stored row supplies
+     * @param expiration   the submitted expiry date, all three slices of which are submitted
      * @param activeStatus the submitted active status flag
      * @return the request
      */
@@ -347,6 +355,11 @@ class CardChangeDetectionTest {
          * <p>{@code app/cbl/COCRDUPC.cbl:L1504} compares the name. The change below replaces
          * letters and not their case: the fold at {@code app/cbl/COCRDUPC.cbl:L1499-L1501}
          * absorbs a change of case alone.
+         *
+         * <p>The fold serves that comparison and reaches no answer. The name the refusal carries is
+         * the name column {@code embossed_name} holds, in the letter case the other writer stored,
+         * because {@code card-platform/services/card-service/src/main/resources/openapi.yaml}
+         * publishes the refreshed name as the value a caller would resubmit.
          */
         @Test
         @DisplayName("a changed embossed name is refused with the L208 text")
@@ -365,8 +378,9 @@ class CardChangeDetectionTest {
                     () -> assertEquals(UpdateOutcome.CHANGED_BEFORE_UPDATE, response.outcome()),
                     () -> assertEquals(CardValidationMessages.DATA_WAS_CHANGED_BEFORE_UPDATE,
                             response.message()),
-                    () -> assertEquals("MARLENE KUHN",
-                            response.refreshedCard().embossedName().strip()));
+                    () -> assertEquals("Marlene Kuhn",
+                            response.refreshedCard().embossedName().strip(),
+                            "the letter case column embossed_name holds"));
         }
 
         /**
@@ -613,9 +627,12 @@ class CardChangeDetectionTest {
          * A refusal returns every one of the five values as the row now holds them.
          *
          * <p>The other writer below changes the name, the expiry date and the active status
-         * together, so all five components of the returned snapshot carry a refreshed value. The
-         * name arrives folded, from the fold at {@code app/cbl/COCRDUPC.cbl:L1499-L1501} and the
-         * move at {@code app/cbl/COCRDUPC.cbl:L1513}.
+         * together, so all five components of the returned snapshot carry a refreshed value. Each
+         * arrives as the column holds it, the name included. The fold at
+         * {@code app/cbl/COCRDUPC.cbl:L1499-L1501} runs ahead of the comparison at
+         * {@code app/cbl/COCRDUPC.cbl:L1504} and serves it alone; a caller reading this answer to
+         * resubmit needs the stored value rather than a raised copy of it, which is the value
+         * {@code card-platform/services/card-service/src/main/resources/openapi.yaml} publishes.
          */
         @Test
         @DisplayName("a refusal returns the five values the row now holds")
@@ -637,7 +654,8 @@ class CardChangeDetectionTest {
                     () -> assertEquals(UpdateOutcome.CHANGED_BEFORE_UPDATE, response.outcome()),
                     () -> assertTrue(response.hasRefreshedCard()),
                     () -> assertNotNull(refreshed),
-                    () -> assertEquals("ODETTE KILBACK", refreshed.embossedName().strip()),
+                    () -> assertEquals("Odette Kilback", refreshed.embossedName().strip(),
+                            "the letter case column embossed_name holds"),
                     () -> assertEquals("2027", refreshed.expiryYear()),
                     () -> assertEquals("04", refreshed.expiryMonth()),
                     () -> assertEquals("02", refreshed.expiryDay()),
@@ -718,21 +736,28 @@ class CardChangeDetectionTest {
         }
 
         /**
-         * The column keeps the submitted letter case and the snapshot returns the folded form.
+         * The column keeps the submitted letter case and the answer reports that same case.
          *
          * <p>{@code app/cbl/COCRDUPC.cbl:L1466} moves the unfolded {@code CCUP-NEW-CRDNAME} into
          * {@code CARD-UPDATE-EMBOSSED-NAME}. That field is declared at
          * {@code app/cbl/COCRDUPC.cbl:L318}, inside the record {@code app/cbl/COCRDUPC.cbl:L314}
-         * opens, so the rewritten row carries the letter case the caller submitted. The fold at
-         * {@code app/cbl/COCRDUPC.cbl:L1499-L1501} and the move at
-         * {@code app/cbl/COCRDUPC.cbl:L1513} then present that same name in upper case.
+         * opens, so the rewritten row carries the letter case the caller submitted.
+         *
+         * <p>The fold at {@code app/cbl/COCRDUPC.cbl:L1499-L1501} mutates the record area in place
+         * ahead of the comparison at {@code app/cbl/COCRDUPC.cbl:L1504}, so the move at
+         * {@code app/cbl/COCRDUPC.cbl:L1513} carried a raised copy onto the screen. The two methods
+         * of {@code TheUpperCaseFold} assert what that fold is for, which is that a difference of
+         * letter case alone is no change. It reaches no answer of this service:
+         * {@code card-platform/services/card-service/src/main/resources/openapi.yaml} publishes the
+         * refreshed name as the value a caller would resubmit, and a raised copy is a value the
+         * caller never stored.
          *
          * <p>This test submits a lower-case name, reads the column back, then stages a change and
-         * asserts the returned snapshot carries the folded form of what it just stored.
+         * asserts the returned snapshot carries the very characters it just stored.
          */
         @Test
-        @DisplayName("the column keeps the submitted case and the snapshot presents it folded")
-        void theColumnKeepsTheSubmittedCaseAndTheSnapshotFolds() {
+        @DisplayName("the column keeps the submitted case and the answer reports that same case")
+        void theColumnKeepsTheSubmittedCaseAndSoDoesTheAnswer() {
             String cardNumber = "2940139362300449";
             LocalDate seededExpiration = LocalDate.of(2025, 12, 28);
             RefreshedCard seededSnapshot = snapshotOf("Allene Brown", seededExpiration, "Y");
@@ -753,8 +778,9 @@ class CardChangeDetectionTest {
                     () -> assertEquals(UpdateOutcome.UPDATED, applied.outcome()),
                     () -> assertEquals("allene brown", storedAfterUpdate),
                     () -> assertEquals(UpdateOutcome.CHANGED_BEFORE_UPDATE, refused.outcome()),
-                    () -> assertEquals("ALLENE BROWN",
-                            refused.refreshedCard().embossedName().strip()));
+                    () -> assertEquals("allene brown",
+                            refused.refreshedCard().embossedName().strip(),
+                            "the answer carries the characters the column holds"));
         }
     }
 
@@ -870,6 +896,58 @@ class CardChangeDetectionTest {
         }
 
         /**
+         * A lock the database will not grant answers the lock text, not a fault.
+         *
+         * <p>{@code app/cbl/COCRDUPC.cbl:L1441} reports on a {@code READ UPDATE} that came back
+         * with anything other than a normal response, and it draws no distinction between a row
+         * that has gone and a row the dataset would not hand over. Both are a lock not taken.
+         *
+         * <p>PostgreSQL raises rather than returning empty in three cases: a lock it will not grant
+         * inside the wait it was given, a deadlock it breaks, and a
+         * {@code SELECT ... FOR NO KEY UPDATE} it refuses outright, which is what a revoked
+         * {@code UPDATE} privilege produces. The first two arrive as
+         * {@link PessimisticLockingFailureException} and the third as {@link JpaSystemException}.
+         *
+         * <p>The two stubs below stand for those two families. Without the catch at the locking read
+         * each left {@link CardUpdateService#applyUpdate} unhandled, and a caller read the fault
+         * body of {@code api/CardApiExceptionHandler} in place of the outcome
+         * {@code src/main/resources/openapi.yaml} documents for exactly this condition.
+         */
+        @Test
+        @DisplayName("a lock PostgreSQL refuses answers the L206 text through both families")
+        void aLockTheDatabaseRefusesAnswersTheDocumentedOutcome() {
+            String cardNumber = "4385271476627819";
+            LocalDate seededExpiration = LocalDate.of(2025, 10, 6);
+            CardUpdateRequest submitted =
+                    requestFor(cardNumber, "Faustino Schmidty", seededExpiration, "Y");
+
+            Mockito.doThrow(new CannotAcquireLockException("canceling statement due to lock timeout"))
+                    .when(cards).findForUpdateByCardNumber(cardNumber);
+            CardUpdateResponse afterTimeout = cardUpdateService.updateCard(submitted);
+
+            Mockito.doThrow(new JpaSystemException(
+                            new RuntimeException("ERROR: permission denied for table card")))
+                    .when(cards).findForUpdateByCardNumber(cardNumber);
+            CardUpdateResponse afterRefusal = cardUpdateService.updateCard(submitted);
+
+            verify(cards, never()).save(any(CardEntity.class));
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.LOCK_NOT_ACQUIRED, afterTimeout.outcome(),
+                            "a lock the wait ran out on is a lock not taken"),
+                    () -> assertEquals(CardValidationMessages.COULD_NOT_LOCK_FOR_UPDATE,
+                            afterTimeout.message(), "the text L209 sets"),
+                    () -> assertFalse(afterTimeout.hasRefreshedCard()),
+                    () -> assertEquals(UpdateOutcome.LOCK_NOT_ACQUIRED, afterRefusal.outcome(),
+                            "a statement the database refuses is a lock not taken"),
+                    () -> assertEquals(CardValidationMessages.COULD_NOT_LOCK_FOR_UPDATE,
+                            afterRefusal.message(), "the text L209 sets"),
+                    () -> assertFalse(afterRefusal.hasRefreshedCard()),
+                    () -> assertEquals("Faustino Schmidt",
+                            storedText("embossed_name", cardNumber),
+                            "neither attempt wrote anything"));
+        }
+
+        /**
          * A row another writer removed cannot be locked, and no stub takes part.
          *
          * <p>The row is gone, so the locking read misses. That is the same condition
@@ -930,6 +1008,53 @@ class CardChangeDetectionTest {
                     () -> assertFalse(response.hasRefreshedCard()),
                     () -> assertEquals("Maybell Mann", storedText("embossed_name", cardNumber)));
         }
+
+        /**
+         * A refusal the database raises only when the statements run answers the same text.
+         *
+         * <p>The method above stubs the repository, so its failure arrives while the guarded block
+         * is still open. A real database refusal does not: {@code save} on a row already under
+         * management records a state change and the outbox write records an insert, and both reach
+         * PostgreSQL when the persistence context is flushed. Left to the transaction boundary that
+         * flush ran after the guarded block had been left, so the refusal reached no {@code catch}
+         * here, {@code api/CardApiExceptionHandler} answered with its fault body, and
+         * {@code UPDATE_FAILED_AFTER_LOCK} was unreachable through every real cause it names.
+         * {@link CardUpdateService#applyUpdate} now flushes as the last statement inside that block.
+         *
+         * <p>The check constraint below stands for any refusal the database raises on the rewrite:
+         * a constraint, a trigger, or a privilege the service no longer holds.
+         * {@code app/cbl/COCRDUPC.cbl:L1488} tests the rewrite and
+         * {@code app/cbl/COCRDUPC.cbl:L1491} sets {@code LOCKED-BUT-UPDATE-FAILED}, so a rewrite
+         * PostgreSQL refuses takes the same answer as one the repository refuses.
+         *
+         * <p>The transaction rolls back either way. This asserts what the caller is told, and that
+         * the row still holds {@code Mariane Fadel}.
+         */
+        @Test
+        @DisplayName("a rewrite PostgreSQL refuses at flush answers the L210 text, not a fault")
+        void aRewriteTheDatabaseRefusesAtFlushAnswersTheDocumentedOutcome() {
+            String cardNumber = "4011500891777367";
+            jdbc.execute("ALTER TABLE " + CARD_TABLE + " ADD CONSTRAINT card_name_not_refused"
+                    + " CHECK (embossed_name NOT LIKE 'Refused%')");
+            try {
+                CardUpdateResponse response = cardUpdateService.updateCard(
+                        requestFor(cardNumber, "Refused Writer", LocalDate.of(2024, 8, 4), "Y"));
+
+                assertAll(
+                        () -> assertEquals(UpdateOutcome.UPDATE_FAILED_AFTER_LOCK,
+                                response.outcome(),
+                                "the refusal reached the catch inside the guarded block"),
+                        () -> assertEquals(CardValidationMessages.LOCKED_BUT_UPDATE_FAILED,
+                                response.message(), "the text L1491 sets"),
+                        () -> assertFalse(response.hasRefreshedCard()),
+                        () -> assertEquals("Mariane Fadel",
+                                storedText("embossed_name", cardNumber),
+                                "the rolled-back row holds the value V2__seed.sql loaded"));
+            } finally {
+                jdbc.execute("ALTER TABLE " + CARD_TABLE
+                        + " DROP CONSTRAINT IF EXISTS card_name_not_refused");
+            }
+        }
     }
 
     /**
@@ -982,8 +1107,9 @@ class CardChangeDetectionTest {
                     () -> assertEquals(UpdateOutcome.CHANGED_BEFORE_UPDATE, refused.outcome()),
                     () -> assertEquals(CardValidationMessages.DATA_WAS_CHANGED_BEFORE_UPDATE,
                             refused.message()),
-                    () -> assertEquals("ROSELYN BOYER",
-                            refused.refreshedCard().embossedName().strip()),
+                    () -> assertEquals("Roselyn Boyer",
+                            refused.refreshedCard().embossedName().strip(),
+                            "the letter case column embossed_name holds"),
                     () -> assertEquals("N", refused.refreshedCard().activeStatus()));
         }
     }

@@ -209,6 +209,23 @@ class ApiSurfaceSecurityContractTest {
     private static final List<String> ALL_LIBRARIES = List.of("event-contracts", "cobol-compat");
 
     /**
+     * The one exception handler each service declares, by module.
+     *
+     * <p>Every service declares exactly one, so no route of any service can answer a failure with the
+     * framework default body. The ledger handler was the last to arrive: that service answered every
+     * failure with the framework body, which carries the resolved request path, so a caller naming an
+     * account identifier read it back.
+     */
+    private static final Map<String, String> API_EXCEPTION_HANDLERS = Map.of(
+            "authorization-service", "GlobalExceptionHandler.java",
+            "ledger-posting-service", "LedgerApiExceptionHandler.java",
+            "fraud-detection-service", "FraudApiExceptionHandler.java",
+            "notification-service", "NotificationApiExceptionHandler.java",
+            "account-service", "AccountApiExceptionHandler.java",
+            "card-service", "CardApiExceptionHandler.java");
+
+
+    /**
      * A sixteen-digit card number in the shape {@code CARD-NUM PIC X(16)} declares at
      * {@code app/cpy/CVACT02Y.cpy:L6}. It is a shape and not a fixture row, so nothing real is
      * masked here.
@@ -414,7 +431,7 @@ class ApiSurfaceSecurityContractTest {
             "@ResponseStatus");
 
     /**
-     * Files declaring a web-endpoint annotation. Eight carry a controller and four carry the handler
+     * Files declaring a web-endpoint annotation. Eight carry a controller and five carry the handler
      * that answers a rejected request. Keys take the form {@code module/FileName.java}, which is how
      * {@link #MAIN_SOURCES} keys a source.
      *
@@ -427,9 +444,26 @@ class ApiSurfaceSecurityContractTest {
      * {@code app/cbl/COCRDLIC.cbl}, {@code app/cbl/COCRDSLC.cbl} and {@code app/cbl/COCRDUPC.cbl}
      * all address one collection of cards. One handler sits beside it.</p>
      *
-     * <p>The ledger controller and the fraud controller carry no handler beside them. Each
-     * constrains the identifier its route accepts, and the framework answers a miss with its own
-     * problem document.</p>
+     * <p>The ledger controller carries one too, and it was the last of the six to arrive. That
+     * service answered every failure with the framework default body, which carries the resolved
+     * request path, so a caller naming an account identifier read that identifier back. The same body
+     * also answered {@code 500} for a datastore that was merely away, which invites no retry and
+     * names no dependency.</p>
+     *
+     * <p>The fraud controller carries one. The framework's own handling answered a refused query
+     * parameter with a body shaped unlike every other refusal this platform returns, so the module
+     * declares a handler that answers the media type and the four members its
+     * {@code openapi.yaml} publishes, and {@code ErrorBodyExposure} measures the body it returns.</p>
+     *
+     * <p>None of the six names a base package, and that is deliberate rather than an omission. Spring
+     * selects an advice by the type of the handler it resolved, so a request that matches no mapping
+     * resolves none and a scoped advice is skipped for exactly the failures raised before a handler is
+     * chosen: an unsupported media type, an unacceptable one and an unsupported method. Scoping was
+     * measured across all six and reverted. What keeps a handler away from the management port is
+     * {@code config/ReadinessHealthConfig} in each service, which
+     * {@link #noReadinessIndicatorLetsADependencyFailureEscape} measures: every indicator that
+     * reaches a dependency catches its own failure, so the actuator always has a document to render
+     * and no health poll leaves through the error path at all.</p>
      */
     private static final Set<String> ENDPOINT_SOURCE_FILES = Set.of(
             "account-service/AccountController.java",
@@ -441,9 +475,11 @@ class ApiSurfaceSecurityContractTest {
             "card-service/CardController.java",
             "card-service/CardApiExceptionHandler.java",
             "ledger-posting-service/BalanceQueryController.java",
+            "ledger-posting-service/LedgerApiExceptionHandler.java",
             "notification-service/NotificationHistoryController.java",
             "notification-service/NotificationApiExceptionHandler.java",
-            "fraud-detection-service/FraudAssessmentController.java");
+            "fraud-detection-service/FraudAssessmentController.java",
+            "fraud-detection-service/FraudApiExceptionHandler.java");
 
     /**
      * Annotations and types every service declares to configure a filter chain. Each of the six
@@ -2035,10 +2071,27 @@ class ApiSurfaceSecurityContractTest {
          * {@link #anAuthenticatedCallerWithoutTheAuthorityReceivesARefusalNamingNothing} measures
          * the refusal body, and both measure the headers the response carries. Each runs over
          * {@link #ALL_MODULES}, so the fraud detection service was already among them.</p>
+         *
+         * <p>Six of the fourteen are exception handlers, one per service, and
+         * {@link #API_EXCEPTION_HANDLERS} names them. Each answers a failure with the media type and
+         * the members its module's {@code openapi.yaml} publishes, in place of the differently shaped
+         * body the framework returns. The same three assertions cover every one of them, and each
+         * already ran over every module: the two above measure the anonymous status, the refusal body
+         * and the headers, and {@code ErrorBodyExposure} measures the body a failure the chain
+         * admitted returns. What the handlers do not do is exclude the management port, and
+         * {@link #noReadinessIndicatorLetsADependencyFailureEscape} is what makes that safe: a health
+         * poll never reaches a handler at all, because no readiness indicator lets a dependency
+         * failure escape and leave the actuator with no document to render.</p>
+         *
+         * <p>The ledger handler is the fourteenth file and the last to arrive. That service answered
+         * every failure with the framework default body, which carries the resolved request path, so a
+         * caller naming an account identifier read that identifier back and copied it into its own
+         * access log, and a paused datastore answered {@code 500} where {@code 503} is what a caller
+         * can act on.</p>
          */
         @Test
-        @DisplayName("the web endpoints are the twelve files six services declare")
-        void theWebEndpointsAreTheTwelveFilesSixServicesDeclare() {
+        @DisplayName("the web endpoints are the fourteen files six services declare")
+        void theWebEndpointsAreTheFourteenFilesSixServicesDeclare() {
             assertTrue(MAIN_SOURCES.get().size() >= MAIN_SOURCE_FILE_FLOOR,
                     "the scan reached " + MAIN_SOURCES.get().size() + " main sources of the six "
                             + "services and the two libraries, under the "
@@ -2051,6 +2104,16 @@ class ApiSurfaceSecurityContractTest {
                 declaring.add(file);
                 modules.add(file.substring(0, file.indexOf('/')));
             }
+
+            for (Map.Entry<String, String> handler : API_EXCEPTION_HANDLERS.entrySet()) {
+                String file = handler.getKey() + "/" + handler.getValue();
+                assertTrue(declaring.contains(file),
+                        handler.getKey() + " no longer declares " + handler.getValue()
+                                + ", so one service answers a failure with the framework body "
+                                + "rather than the shape its openapi.yaml publishes");
+            }
+            assertEquals(ALL_MODULES.size(), API_EXCEPTION_HANDLERS.size(),
+                    "every service declares one handler: " + API_EXCEPTION_HANDLERS.keySet());
 
             assertEquals(ENDPOINT_SOURCE_FILES, declaring,
                     "a file now declares a web endpoint this contract does not name, so the "
@@ -2067,6 +2130,75 @@ class ApiSurfaceSecurityContractTest {
                             + "and cycle-close routes, the card list, read and update, the balance "
                             + "query, the notification history and the fraud assessment query, and "
                             + "no other module answers a request: " + modules);
+        }
+
+        /**
+         * No readiness indicator lets a failure of its dependency escape, so a health poll always has
+         * a document to render.
+         *
+         * <p>This is what a paused datastore measured, and it is the property an exception handler
+         * cannot supply. An indicator that throws leaves the actuator with nothing to render, the
+         * request leaves through the error path, and whatever advice the module declares answers the
+         * poll instead. The six services answered a paused datastore six ways: a business envelope
+         * with 503, two framework bodies with 500, a problem document with 500, an error envelope with
+         * 500, and one health document with 503. Only the sixth was right, and it was right because it
+         * was the one service whose indicators touched no datastore.
+         *
+         * <p>An operator reading any of the other five learns nothing about which dependency stopped,
+         * and an orchestrator reading the status makes the wrong decision about the container. The
+         * remedy is in the indicator: catch, and report the dependency down by the type of the root
+         * cause. {@code kafkaHealth} of the same file already answered that way for the broker, and the
+         * outbox indicator now answers that way for the datastore.
+         *
+         * <p>Scoping the advice was measured as an alternative and rejected. Spring selects an advice
+         * by the type of the handler it resolved, and a request matching no mapping resolves none, so a
+         * scoped advice is skipped for exactly the failures raised before a handler is chosen: a
+         * {@code consumes} condition the content type misses is the common case, and the documented
+         * answer to an unsupported media type became the framework body. It is also not sufficient, as
+         * the fraud service proved by being scoped throughout and still answering the framework
+         * body.</p>
+         */
+        @Test
+        @DisplayName("no readiness indicator lets a failure of its dependency escape")
+        void noReadinessIndicatorLetsADependencyFailureEscape() {
+            for (String module : ALL_MODULES) {
+                String indicators = MAIN_SOURCES.get().get(module + "/ReadinessHealthConfig.java");
+                assertNotNull(indicators, module + " declares the readiness indicators this "
+                        + "assertion measures");
+
+                int reads = countOccurrences(indicators, "outboxEvents.");
+                if (reads == 0) {
+                    assertTrue(indicators.contains("\"not-applicable\""),
+                            module + " neither reads an outbox nor says it has none, so this "
+                                    + "assertion cannot tell a guarded indicator from a missing one");
+                    continue;
+                }
+                assertTrue(indicators.contains("} catch (Exception failure) {"),
+                        module + " reads its outbox inside an indicator that catches nothing, so a "
+                                + "datastore outage destroys the health document instead of being "
+                                + "reported in it");
+                assertTrue(countOccurrences(indicators,
+                                "Health.down().withDetail(\"reason\",") >= 2,
+                        module + " reports fewer than two dependencies down by root cause, so one of "
+                                + "the broker and the datastore still escapes its indicator");
+            }
+        }
+
+        /**
+         * Counts non-overlapping occurrences of one fragment.
+         *
+         * @param text     the text to search
+         * @param fragment the fragment to count
+         * @return the number of occurrences
+         */
+        private int countOccurrences(String text, String fragment) {
+            int count = 0;
+            int at = text.indexOf(fragment);
+            while (at >= 0) {
+                count++;
+                at = text.indexOf(fragment, at + fragment.length());
+            }
+            return count;
         }
 
         /**

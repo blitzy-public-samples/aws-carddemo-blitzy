@@ -1,6 +1,7 @@
 package com.carddemo.account.repository;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
 
 import com.carddemo.account.domain.ConcurrentChangeDetector;
 import com.carddemo.account.entity.AccountEntity;
@@ -12,6 +13,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -21,6 +23,7 @@ import java.util.function.Supplier;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -261,6 +264,79 @@ class AccountRepositoryTest extends AbstractAccountPostgresTest {
         }
     }
 
+    /**
+     * A bounded wait gives up on a held lock instead of waiting for it, and the give-up is a refusal
+     * the caller can answer.
+     *
+     * <p>The method above measures the default: PostgreSQL waits, and it waits for as long as the
+     * other writer holds the row. That is why {@code app/cbl/COACTUPC.cbl:L3907-L3915} was unreachable
+     * through contention. The source reached it whenever a {@code READ UPDATE} came back with anything
+     * other than {@code DFHRESP(NORMAL)}, and a wait that never ends comes back with nothing at all.
+     *
+     * <p>{@link AccountRepository#applyLockWaitBound(String)} bounds it. The bound is transaction-local,
+     * so the first transaction below is unaffected and only the second gives up. The value used here is
+     * short so the test is quick; {@code src/main/resources/application.yml} ships three seconds.
+     *
+     * <p>The give-up arrives as a {@link CannotAcquireLockException}, which is a
+     * {@code PessimisticLockingFailureException}, and that is the type
+     * {@code domain/AccountUpdateService} turns into
+     * {@code AccountUpdateService.COULD_NOT_LOCK_ACCOUNT}. The elapsed time is asserted too, because a
+     * bound that is set but not honoured would still raise eventually and the test would pass on a
+     * wait of any length.
+     *
+     * @throws Exception when a worker cannot be run
+     */
+    @Test
+    @DisplayName("a bounded wait gives up on a held account lock instead of waiting for it")
+    void aBoundedWaitGivesUpOnAHeldAccountLock() throws Exception {
+        CountDownLatch firstLocked = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        ExecutorService workers = Executors.newFixedThreadPool(2);
+
+        try {
+            Future<?> first = workers.submit(() -> inTransaction(() -> {
+                repository.findForUpdateByAccountId(SEEDED_ACCOUNT_ID).orElseThrow();
+                firstLocked.countDown();
+                await(releaseFirst, "the held account lock was not released");
+                return null;
+            }));
+            assertThat(firstLocked.await(5, TimeUnit.SECONDS)).isTrue();
+
+            // The give-up leaves the transaction unusable, so it is carried out through the boundary
+            // rather than caught inside it. domain/AccountUpdateService does the same, and for the
+            // same reason: returning across a rollback-only transaction answers with a rollback
+            // report instead of the outcome.
+            Future<?> second = workers.submit(() -> inTransaction(() -> {
+                repository.applyLockWaitBound("250ms");
+                return repository.findForUpdateByAccountId(SEEDED_ACCOUNT_ID);
+            }));
+
+            long startedAt = System.nanoTime();
+            ExecutionException thrown =
+                    catchThrowableOfType(ExecutionException.class,
+                            () -> second.get(10, TimeUnit.SECONDS));
+            long waitedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+
+            assertThat(thrown)
+                    .as("the bounded read gave up rather than returning a row it could not lock")
+                    .isNotNull();
+            assertThat(rootCauseOf(thrown))
+                    .as("the give-up is the type domain/AccountUpdateService maps onto "
+                            + "COULD_NOT_LOCK_ACCOUNT")
+                    .isInstanceOf(CannotAcquireLockException.class);
+            assertThat(waitedMs)
+                    .as("the bound was honoured, so the wait ended near it rather than at the "
+                            + "release of the other writer")
+                    .isLessThan(5_000L);
+
+            releaseFirst.countDown();
+            first.get(5, TimeUnit.SECONDS);
+        } finally {
+            releaseFirst.countDown();
+            workers.shutdownNow();
+        }
+    }
+
     @Test
     @DisplayName("the waiting transaction re-reads the winner and refuses its stale write")
     void theWaitingTransactionDetectsTheCommittedChange() throws Exception {
@@ -487,5 +563,20 @@ class AccountRepositoryTest extends AbstractAccountPostgresTest {
             Thread.currentThread().interrupt();
             throw new AssertionError("the account lock wait was interrupted", interrupted);
         }
+    }
+
+    /**
+     * Walks a throwable to the first cause that is not a wrapper.
+     *
+     * @param thrown the throwable a worker reported
+     * @return the deepest cause carrying a distinct type from the datastore layer
+     */
+    private static Throwable rootCauseOf(Throwable thrown) {
+        Throwable walked = thrown;
+        while (walked.getCause() != null
+                && !(walked instanceof org.springframework.dao.DataAccessException)) {
+            walked = walked.getCause();
+        }
+        return walked;
     }
 }

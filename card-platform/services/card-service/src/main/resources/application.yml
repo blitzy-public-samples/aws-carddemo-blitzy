@@ -193,6 +193,13 @@ carddemo:
     marker-retention-hours: ${PROCESSED_EVENT_RETENTION_HOURS:168}
   retention:
     sweep-interval-ms: ${RETENTION_SWEEP_INTERVAL_MS:3600000}
+  # Bound on how long each locked read of one update waits for a row another writer holds.
+  # PostgreSQL waits forever by default, so a contended update held its request open for as long as
+  # the other writer held the row and the documented lock-failure answer was unreachable through
+  # contention. Applied as a transaction-local lock_timeout, so it governs the locked reads of one
+  # update and never a schema migration or the relay sweep.
+  write:
+    lock-wait-ms: ${WRITE_LOCK_WAIT_MS:3000}
 
 # /actuator answers on this port and never on the service port above. The Dockerfile
 # health check and docker-compose.yml both read /actuator/health on it, and

@@ -61,6 +61,50 @@ public class NotificationHistoryController {
     /** The one query parameter, named for the bound it carries. */
     static final String PAGE_SIZE_PARAMETER = "pageSize";
 
+    /** Smallest page size this route admits, the bound {@code @Min} carries. */
+    static final int MINIMUM_PAGE_SIZE = 1;
+
+    /**
+     * Text a refusal of the path variable carries.
+     *
+     * <p>The route carries a card token and no account identifier, so the text names the card token.
+     * It names the shape and not the value submitted: a value read back into a response body is a
+     * value copied into every log line built from that body, and this route exists precisely to keep
+     * a card number of either form out of both.
+     *
+     * <p>ADDITIVE. No source message corresponds, because the statement job read its key from a
+     * sorted dataset rather than from an operator. {@code KEYS(32 0)} at
+     * {@code app/jcl/CREASTMT.JCL:L30} declares that key and no program edited it.
+     */
+    static final String CARD_TOKEN_MESSAGE =
+            "Card token must be sixty-four lower-case hexadecimal characters";
+
+    /**
+     * Text a refusal of the page size below its floor carries.
+     *
+     * <p>Above the ceiling nothing is refused: {@code NotificationProperties.History} clamps a page
+     * size larger than the ceiling down to it, so only a value below {@value #MINIMUM_PAGE_SIZE}
+     * reaches this text.
+     *
+     * <p>ADDITIVE. A 3270 screen delivered its row count as a compile-time constant, so no operator
+     * could supply one and no edit existed to refuse one.
+     */
+    static final String PAGE_SIZE_MESSAGE = "Page size must be at least one";
+
+    /**
+     * Text a refusal of a page size that is no whole number carries.
+     *
+     * <p>{@link #PAGE_SIZE_MESSAGE} answers a number the floor does not admit. This text answers a
+     * value that is no number at all, which is a different failure and reaches the framework
+     * earlier: a query string is text, and the page size is the one value of this route that is not
+     * text, so it is converted before any constraint runs and a conversion that fails never reaches
+     * one. A value too large for the type it converts to fails the same way.
+     *
+     * <p>ADDITIVE, and the same text {@code card-service} answers for the same failure on
+     * {@code GET /cards}, so a caller of either list reads one wording.
+     */
+    static final String PAGE_SIZE_NOT_A_NUMBER_MESSAGE = "Page size must be a whole number";
+
     /** Reads the card-keyed read model. */
     private final StatementTransactionRepository statementTransactions;
 
@@ -107,11 +151,11 @@ public class NotificationHistoryController {
     @GetMapping(path = CARD_TOKEN_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     public NotificationHistoryResponse historyOfCard(
             @PathVariable
-            @NotBlank
-            @Pattern(regexp = CARD_TOKEN_PATTERN)
+            @NotBlank(message = CARD_TOKEN_MESSAGE)
+            @Pattern(regexp = CARD_TOKEN_PATTERN, message = CARD_TOKEN_MESSAGE)
             String cardToken,
             @RequestParam(name = PAGE_SIZE_PARAMETER, required = false)
-            @Min(1)
+            @Min(value = MINIMUM_PAGE_SIZE, message = PAGE_SIZE_MESSAGE)
             Integer pageSize) {
         List<StatementTransactionEntity> rows = statementTransactions
                 .findByIdCardTokenOrderByIdTransactionIdAsc(cardToken,
