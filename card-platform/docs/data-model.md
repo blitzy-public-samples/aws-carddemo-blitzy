@@ -1,6 +1,6 @@
 # Data Model
 
-Each service owns a private PostgreSQL database and schema. No service reads another service’s tables. Column widths and scales derive from source Picture clauses and dataset keys. Paired system views live in [Architecture, Before and After](architecture-before-after.md), while storage rationale lives in the [decision log](decision-log.md).
+Every column below names the copybook field and dataset key it came from, with one entity-relationship view per service. Each service owns a private PostgreSQL database and schema, and no service reads another service’s tables. Column widths and scales derive from source Picture clauses and dataset keys. The paired before-and-after system views live in [Architecture, Before and After](architecture-before-after.md); this document is the target-state model and carries the source side in every mapping table. Why a column has the type it has lives in the [decision log](decision-log.md).
 
 ## Derivation rules
 
@@ -12,7 +12,7 @@ Each service owns a private PostgreSQL database and schema. No service reads ano
 | `PIC S9(09)V99` | `NUMERIC(11,2)` | Nine integer digits plus sign and two fractional digits |
 | `PIC S9(04)V99` | `NUMERIC(6,2)` | Disclosure-group interest rate |
 
-Primary keys derive from the corresponding IDCAMS `KEYS` parameter. The transaction-identifier sequence is the single exception because both source browse-and-increment paths race.
+Primary keys derive from the corresponding IDCAMS `KEYS` parameter, so a fixture row loads and compares without an identifier translation layer. Transaction-identifier generation is the single exception. `app/cbl/COTRN02C.cbl:L444` browses the transaction file backwards from high values and `app/cbl/COTRN02C.cbl:L449` adds one; `app/cbl/COBIL00C.cbl:L212` and `app/cbl/COBIL00C.cbl:L217` do the same. A `transaction_id_seq` sequence in the authorization schema replaces that read-modify-write race, recorded as [business-rule flag 15](business-rule-flags.md).
 
 Trailing filler fields are dropped rather than modeled. The [traceability matrix](traceability-matrix.md) records every omitted filler and navigation field.
 
@@ -94,7 +94,7 @@ erDiagram
 | `FILLER` | `PIC X(14)`, line 8 | — | — | Dropped |
 | No source field | — | `source_event_id`, `source_occurred_at`, `observed_at` | UUID and timestamps | Additive projection provenance |
 
-The populated fields total 36 bytes, matching `app/data/ASCII/cardxref.txt`. The declared 50-byte layout includes the omitted 14-byte filler.
+The populated fields total 36 bytes, matching `app/data/ASCII/cardxref.txt`. The declared 50-byte layout includes the omitted 14-byte filler. [Business-rule flag 25](business-rule-flags.md) records the width disagreement between the two shipped data sets.
 
 #### `account_credit_snapshot`
 
@@ -109,7 +109,7 @@ The populated fields total 36 bytes, matching `app/data/ASCII/cardxref.txt`. The
 
 `AccountStateChanged` refreshes every source-derived column. The event marker and projection update commit together.
 
-The two accumulator columns are what reason code 102 reads, and they reach this table along a chain of three asynchronous hops: the ledger posts and publishes `TransactionPosted`, the account service adds the amount to the record it owns and publishes `AccountStateChanged`, and this projection applies it. No hop is a synchronous call.
+Reason code 102 reads the two accumulator columns. They reach this table along three asynchronous hops. The ledger posts and publishes `TransactionPosted`; the account service adds the amount to the record it owns and publishes `AccountStateChanged`; this projection applies it. No hop is a synchronous call.
 
 #### Outcome infrastructure
 
@@ -210,6 +210,8 @@ erDiagram
 
 The target stores a masked card value rather than the full source card field.
 
+`app/cpy/CVTRA06Y.cpy` declares the inbound daily feed. Its thirteen fields, picture clauses and 20-byte filler match the posted layout under a `DALYTRAN-` prefix, and `app/cpy/CVTRA06Y.cpy:L10` holds `DALYTRAN-AMT PIC S9(09)V99`. That byte-for-byte identity is why the feed layout maps onto the inbound event instead of a second table.
+
 #### Balance and lookup tables
 
 | Source layout | Fields | Target table and key |
@@ -272,7 +274,7 @@ erDiagram
 **Legend**
 
 - Entity boxes are tables in `carddemo_fraud.fraud_service`.
-- No COBOL program defines fraud scoring, verdicts, or velocity windows.
+- No Common Business Oriented Language (COBOL) program defines fraud scoring, verdicts, or velocity windows.
 - Transaction and account widths come from `CVTRA05Y.cpy` and `CVACT03Y.cpy`, and so does the two-digit
   amount scale. `velocity_window.total_amount` carries its own width, because it accumulates.
 - `OUTBOX_EVENT` and `PROCESSED_EVENT` provide additive messaging guarantees.
@@ -335,7 +337,7 @@ erDiagram
 **Legend**
 
 - Entity boxes are tables in `carddemo_notification.notification_service`.
-- `STATEMENT_TRANSACTION` derives from the re-keyed statement layout, replacing the source PAN key with an irreversible card token.
+- `STATEMENT_TRANSACTION` derives from the re-keyed statement layout, replacing the source Primary Account Number (PAN) key with an irreversible card token.
 - `CARDHOLDER_CONTEXT` is private, is seeded with fifty rows from `app/data/ASCII/custdata.txt` by `V2__seed.sql`, and is refreshed by `CustomerContextChanged`.
 - Relationship lines are domain associations rather than declared foreign keys.
 
@@ -366,7 +368,7 @@ The source composite key is 32 bytes. `app/jcl/CREASTMT.JCL:L30` defines `KEYS(3
 | `app/cpy/CVCUS01Y.cpy:L22` | `fico_score` | Three-character display value |
 | No source field | `source_occurred_at`, `observed_at` | Additive last-writer-wins provenance |
 
-`V2__seed.sql` bootstraps the table with one row per fixture account, resolved from customer to account through `XREF-CUST-ID` and `XREF-ACCT-ID`. Each seeded row carries the Unix epoch in both timestamp columns, which is before any instant a producer can report, so the first real event always supersedes it and a bootstrap row reads as maximally stale. `CustomerContextChangedConsumer` then refreshes the table, applying no event older than the row's `source_occurred_at`. Without the seed a first alert for an account whose customer record never changed would render with no name, no address, and no credit score.
+`V2__seed.sql` bootstraps the table with one row per fixture account, resolved from customer to account through `XREF-CUST-ID` and `XREF-ACCT-ID`. Each seeded row carries the Unix epoch in both timestamp columns. That instant precedes anything a producer can report, so the first real event always supersedes it and a bootstrap row reads as maximally stale. `CustomerContextChangedConsumer` then refreshes the table, applying no event older than the row's `source_occurred_at`. Without the seed a first alert for an account whose customer record never changed would render with no name, no address, and no credit score.
 
 #### Attempt and marker tables
 
@@ -483,9 +485,22 @@ Three of these columns move without a request behind them. `app/cbl/CBTRN02C.cbl
 
 #### Disclosure and validation references
 
-| Source | Target | Key or count |
+`disclosure_group` comes from `app/cpy/CVTRA02Y.cpy`, record length 50.
+
+| Copybook field | Picture clause and locator | Target column | Type |
+| --- | --- | --- | --- |
+| `DIS-ACCT-GROUP-ID` | `PIC X(10)`, `app/cpy/CVTRA02Y.cpy:L6` | `account_group_id` | `VARCHAR(10)` |
+| `DIS-TRAN-TYPE-CD` | `PIC X(02)`, line 7 | `transaction_type_code` | `CHAR(2)` |
+| `DIS-TRAN-CAT-CD` | `PIC 9(04)`, line 8 | `transaction_category_code` | `CHAR(4)` |
+| `DIS-INT-RATE` | `PIC S9(04)V99`, line 9 | `interest_rate` | `NUMERIC(6,2)` |
+| `FILLER` | `PIC X(28)`, line 10 | — | — |
+
+The first three columns form the composite primary key, in the order `DIS-GROUP-KEY` declares them at `app/cpy/CVTRA02Y.cpy:L5-L8`. The table is retained for the interest equivalence test.
+
+The three validation lists seed one table each.
+
+| Source | Target | Count |
 | --- | --- | --- |
-| `app/cpy/CVTRA02Y.cpy:L6-L9` | `disclosure_group` | Group, type, category composite key; `NUMERIC(6,2)` rate |
 | `CSLKPCDY.cpy` area codes | `us_phone_area_code` | 980 codes |
 | `CSLKPCDY.cpy` state codes | `us_state_code` | 56 codes |
 | `CSLKPCDY.cpy` state-ZIP combinations | `us_state_zip_prefix` | 240 combinations |
@@ -548,7 +563,7 @@ erDiagram
 | `CARD-CVV-CD` | `PIC 9(03)`, line 7 | `card_verification_value` | `CHAR(3)` | Never serialized |
 | `CARD-EMBOSSED-NAME` | `PIC X(50)`, line 8 | `embossed_name` | `CHAR(50)` | Updated by card service |
 | `CARD-EXPIRAION-DATE` | `PIC X(10)`, line 9 | `expiration_date` | `DATE` | Source spelling corrected |
-| `CARD-ACTIVE-STATUS` | `PIC X(01)`, line 10 | `active_status` | `CHAR(1)` | Posting never reads it |
+| `CARD-ACTIVE-STATUS` | `PIC X(01)`, line 10 | `active_status` | `CHAR(1)` | Posting never reads it; [business-rule flag 3](business-rule-flags.md) |
 | `FILLER` | `PIC X(59)`, line 11 | — | — | Dropped |
 
 #### `card_xref`
@@ -564,17 +579,17 @@ Card update cannot repair a missing cross-reference row because the card record 
 | `ACCTFILE.jcl` | `KEYS(11 0)` and `RECORDSIZE(300 300)` | Lines 40-41 | Account primary key and row width |
 | `CARDFILE.jcl` | `KEYS(16 0)` and `RECORDSIZE(150 150)` | Lines 54-55 | Card primary key and row width |
 | `CARDFILE.jcl` alternate index | `KEYS(11 16)` | Line 85 | Card account index |
-| `CUSTFILE.jcl` | Customer key and 500-byte record | Dataset definition | Customer primary key and row width |
+| `CUSTFILE.jcl` | `KEYS(9 0)` and `RECORDSIZE(500 500)` | Lines 50-51 | Customer primary key and row width |
 | `XREFFILE.jcl` | `KEYS(16 0)` and `RECORDSIZE(50 50)` | Lines 43-44 | Card-number primary key and declared row width |
 | `XREFFILE.jcl` alternate index | `KEYS(11,25)` | Line 74 | Account secondary index |
 | `TRANFILE.jcl` | `KEYS(16 0)` and `RECORDSIZE(350 350)` | Lines 53-54 | Transaction primary key and row width |
 | `TCATBALF.jcl` | `KEYS(17 0)` | Line 40 | Account, type, category composite key |
-| `DISCGRP.jcl` | Composite disclosure key | Dataset definition | Group, type, category composite key |
+| `DISCGRP.jcl` | `KEYS(16 0)` and `RECORDSIZE(50 50)` | Lines 40-41 | Group, type, category composite key; 10 plus 2 plus 4 characters make the 16-byte key |
 | `TRANTYPE.jcl` | `KEYS(2 0)` | Line 40 | Transaction-type key |
 | `TRANCATG.jcl` | `KEYS(6 0)` | Line 40 | Type and category key |
 | `CREASTMT.JCL` | `KEYS(32 0)` and card-then-transaction sort | Lines 30 and 53 | Notification statement composite key |
 
-`CARDAIX` and `CXACAIX` are alternate-index paths in the CICS resource file. `TCATBALF` and `DISCGRP` are batch-only and absent from that file.
+`app/csd/CARDDEMO.CSD` carries eight `DEFINE FILE` entries, and two of them are alternate-index paths rather than base clusters: `CARDAIX` at `app/csd/CARDDEMO.CSD:L13` and `CXACAIX` at `app/csd/CARDDEMO.CSD:L63`. The Customer Information Control System (CICS) region therefore sees six base datasets plus two paths. `TCATBALF` and `DISCGRP` are absent from that file because they are batch-only, allocated by `app/jcl/POSTTRAN.jcl:L41-L42` and `app/jcl/INTCALC.jcl:L35-L36`.
 
 ## Dropped fields and recorded renames
 
@@ -586,10 +601,14 @@ Card update cannot repair a missing cross-reference row because the card record 
 | Cross-reference filler, 14 bytes | Dropped |
 | Category-balance filler, 22 bytes | Dropped |
 | Card filler, 59 bytes | Dropped |
+| Disclosure-group filler, 28 bytes | Dropped |
+| Statement read-model filler, 20 bytes | Dropped |
 | Communication Area navigation fields | Dropped with the terminal presentation |
 | No source construct | `card.card_token` added, because the source named a card by its full number on a screen only a signed-on terminal user could reach |
 | `ACCT-EXPIRAION-DATE` | Renamed to `expiration_date`, stored as `VARCHAR(10)` |
 | `CARD-EXPIRAION-DATE` | Renamed to `expiration_date`, stored as `DATE` |
+
+The [traceability matrix](traceability-matrix.md) records each omission above, so dropping a field costs no coverage.
 
 ## Reference data
 
