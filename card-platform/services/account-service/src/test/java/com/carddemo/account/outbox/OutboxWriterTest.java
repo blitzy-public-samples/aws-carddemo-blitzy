@@ -323,7 +323,10 @@ class OutboxWriterTest {
                 new AccountProperties.Api(65536L),
                 new AccountProperties.Kafka(
                         new AccountProperties.Kafka.Topics("account.state-changed",
-                                "customer.context-changed", "carddemo.dead-letter")),
+                                "customer.context-changed", "transaction.posted",
+                                "carddemo.dead-letter"),
+                        new AccountProperties.Kafka.Groups("account-posted")),
+                new AccountProperties.Consumer(new AccountProperties.Consumer.Retry(3, 1_000L)),
                 new AccountProperties.Outbox(
                         new AccountProperties.Outbox.Relay(500L, 1, "writer-test",
                                 Duration.ofSeconds(30L), 1_000L, Duration.ofSeconds(10L)), 168L),

@@ -157,7 +157,13 @@ class SchemaValidationTest {
     /** The one module whose {@code aggregate_id} holds an unresolved-decline key. */
     private static final String UNRESOLVED_KEY_MODULE = "authorization-service";
 
-    /** The one service whose marker key names the consumed topic as well as the event. */
+    /**
+     * The service whose four listener groups exposed the cross-topic marker collision, and the first
+     * to re-key its marker on the event and the topic together.
+     *
+     * <p>The other five services followed. This constant survives only to name the module whose
+     * migration carries the reasoning at length, which a divergence message points a reader at.
+     */
     private static final String MULTI_TOPIC_MARKER_MODULE = "notification-service";
 
     /**
@@ -182,13 +188,16 @@ class SchemaValidationTest {
      * created nullable because a marker written before the column existed carries none; every marker
      * written since names the topic its delivery arrived on.
      *
-     * <p>The notification service narrows the column and widens the key afterwards, in
-     * {@code services/notification-service/src/main/resources/db/migration/}
-     * {@code V3__processed_event_topic_key.sql}. It is the one service whose four listener groups
-     * consume four topics whose identifiers three producing services assign independently, so it is
-     * the one service for which the identifier alone does not identify a delivery. That divergence
-     * is asserted below rather than folded into this shared shape, so it stays a stated exception
-     * instead of drift.
+     * <p>Every service then narrows the column and widens the key in a later migration, named
+     * {@code V*__processed_event_topic_key.sql} in each. The columns are the shape this constant
+     * describes; the key is asserted separately in {@link #markerKeyDivergences}, because a
+     * {@code CREATE TABLE} cannot state a key a later {@code ALTER} installs.
+     *
+     * <p>The notification service made that change first, for the service whose four listener groups
+     * consume four topics whose identifiers three producing services assign independently. The other
+     * five followed, because the identifier alone stops identifying a delivery the moment a service
+     * reads two topics, and a service reads two topics eventually: the account service declared this
+     * table with no listener at all and then acquired one.
      */
     private static final Map<String, String> CANONICAL_MARKER_COLUMNS = canonicalMarkerColumns();
 
@@ -418,23 +427,25 @@ class SchemaValidationTest {
         boolean composite = migration.contains("PRIMARY KEY (event_id, consumed_topic)");
         boolean mandatoryTopic =
                 migration.contains("ALTER COLUMN consumed_topic SET NOT NULL");
+        boolean blankTopicRefused =
+                migration.contains("ck_processed_event_consumed_topic");
         List<String> divergences = new ArrayList<>();
 
-        if (MULTI_TOPIC_MARKER_MODULE.equals(module)) {
-            if (!composite) {
-                divergences.add(module + " reads four topics whose identifiers three services "
-                        + "assign independently and keys its marker on the identifier alone, so a "
-                        + "cross-topic collision would suppress a legitimate read-model write");
-            }
-            if (!mandatoryTopic) {
-                divergences.add(module + " keys its marker on consumed_topic and leaves the column "
-                        + "nullable, and a key column holds no null");
-            }
-            return divergences;
+        if (!composite) {
+            divergences.add(module + " keys its marker on the event identifier alone, and an "
+                    + "identifier does not identify a delivery: producing services assign them "
+                    + "independently, so a second topic's event carrying the same identifier "
+                    + "silently loses its claim and its effect. See "
+                    + MULTI_TOPIC_MARKER_MODULE + "/src/main/resources/db/migration/"
+                    + "V3__processed_event_topic_key.sql");
         }
-        if (composite || mandatoryTopic) {
-            divergences.add(module + " widened its marker key without this contract being widened "
-                    + "with it, so the shared shape above no longer describes it");
+        if (!mandatoryTopic) {
+            divergences.add(module + " keys its marker on consumed_topic and leaves the column "
+                    + "nullable, and a key column holds no null");
+        }
+        if (!blankTopicRefused) {
+            divergences.add(module + " keys its marker on consumed_topic and accepts a blank one, "
+                    + "which names no topic and keys a row nothing finds again");
         }
         return divergences;
     }

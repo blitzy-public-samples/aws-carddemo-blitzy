@@ -31,9 +31,11 @@ import org.springframework.stereotype.Component;
  *
  * <h2>What is reported, and what is not</h2>
  *
- * <p>Stream names only. The relay sweep and the retry counts arrive the same way, and a wrong value
- * there costs throughput; a wrong stream name costs the event. Those numbers stay in the bound
- * {@link AccountProperties} record, which fails start-up when one of them is invalid.
+ * <p>Stream names only, and the consumer group is one of them. The relay sweep and the retry counts
+ * arrive the same way, and a wrong value there costs throughput; a wrong stream name costs the event,
+ * and a wrong group name costs every record published before the group was created. Those numbers
+ * stay in the bound {@link AccountProperties} record, which fails start-up when one of them is
+ * invalid.
  *
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else.
@@ -65,8 +67,9 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
      * The names this service resolved, in the order they are reported.
      *
      * <p>Package-private and returned rather than logged so a test can assert the list without
-     * capturing log output. One entry per topic this module binds: an entry missing here would be a
-     * stream whose resolution is unreported, which is the defect this class exists to prevent.
+     * capturing log output. One entry per topic this module binds, plus the group it reads under: an
+     * entry missing here would be a stream whose resolution is unreported, which is the defect this
+     * class exists to prevent.
      *
      * @return one entry per stream name, never empty
      */
@@ -81,6 +84,14 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
                         "topic a change to a cardholder field travels on",
                         "TOPIC_CUSTOMER_CONTEXT_CHANGED",
                         topics.customerContextChanged()),
+                new ReportedName(
+                        "topic the posted transactions this service applies arrive on",
+                        "TOPIC_TRANSACTION_POSTED",
+                        topics.transactionPosted()),
+                new ReportedName(
+                        "consumer group the posted-transaction listener joins",
+                        "GROUP_ACCOUNT_POSTED",
+                        properties.kafka().groups().transactionPosted()),
                 new ReportedName(
                         "topic an unprocessable record is routed to",
                         "TOPIC_DEAD_LETTER",

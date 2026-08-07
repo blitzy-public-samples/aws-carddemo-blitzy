@@ -55,6 +55,19 @@ spring:
     enabled: true
     schemas: ${SPRING_FLYWAY_SCHEMAS:${ACCOUNT_DB_SCHEMA:account_service}}
     default-schema: ${SPRING_FLYWAY_DEFAULT_SCHEMA:${ACCOUNT_DB_SCHEMA:account_service}}
+    # The default names db/migration alone, which reproduces app/data/ASCII/acctdata.txt
+    # value for value and is what the equivalence suite measures against.
+    #
+    # db/demo holds one further migration that extends every seeded account expiry to
+    # 2099-12-31 and changes nothing else. It matters because this service publishes its
+    # expiry on every state change and the authorization replica applies it: with the
+    # replica extended and this record left in 2025, the first posted transaction would
+    # write a past expiry into that replica and reason code 103 at
+    # app/cbl/CBTRN02C.cbl:L414-L420 would decline every later call on the account. The two
+    # copies of one record therefore carry one demo overlay or neither.
+    # docker-compose.yml and deploy/k8s/30-configmap.yaml name both locations; nothing else
+    # does.
+    locations: ${SPRING_FLYWAY_LOCATIONS:classpath:db/migration}
     create-schemas: true
     baseline-on-migrate: false
     validate-on-migrate: true
@@ -89,8 +102,9 @@ spring:
   # String by then, and that serializer writes a JSON string literal, not the object the
   # string already holds.
   #
-  # This module registers no listener. The spring.kafka.consumer and spring.kafka.listener
-  # blocks below carry the platform acknowledgement discipline alone, and no group name.
+  # This module registers one listener, messaging/TransactionPostedConsumer. The
+  # spring.kafka.consumer and spring.kafka.listener blocks below carry the platform
+  # acknowledgement discipline it runs under.
   kafka:
     bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:${KAFKA_BOOTSTRAP_SERVERS:kafka:29092}}
     admin:
@@ -131,12 +145,24 @@ spring:
         delivery.timeout.ms: 120000
         request.timeout.ms: 30000
         max.block.ms: 5000
-    # These consumer defaults are unused because no listener is registered. They are
-    # kept so a listener added here inherits the platform discipline rather than the
-    # framework default: an offset is committed by hand, immediately after the side
-    # effects of its record commit.
+    # The one listener of this module reads carddemo.kafka.topics.transaction-posted under
+    # the group named below. An offset is committed by hand, immediately after the side
+    # effects of its record commit, which is what makes the processed-event marker a real
+    # guarantee rather than a decoration.
+    #
+    # The value deserializer validates each record against the document its eventType names
+    # and hands over the bound record, because libs/event-contracts holds both the document
+    # and the class for TransactionPosted. ErrorHandlingDeserializer keeps a refused payload
+    # from killing the container, and config/KafkaConsumerConfig routes it to the
+    # dead-letter topic instead.
     consumer:
+      group-id: "${SPRING_KAFKA_CONSUMER_GROUP_ID:${GROUP_ACCOUNT_POSTED:account-posted}}"
       enable-auto-commit: false
+      auto-offset-reset: ${SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET:earliest}
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: com.carddemo.events.serde.JsonSchemaValidatingDeserializer
     listener:
       ack-mode: manual_immediate
 
@@ -151,14 +177,26 @@ carddemo:
   kafka:
     topics:
       # The two topics this module publishes, created by docker-compose.yml. An account
-      # update writes one AccountStateChanged row, and a customer update that changes a
-      # cardholder field writes one CustomerContextChanged row beside it.
+      # update writes one AccountStateChanged row, a posted transaction writes another, and
+      # a customer update that changes a cardholder field writes one
+      # CustomerContextChanged row beside it.
       account-state-changed: ${TOPIC_ACCOUNT_STATE_CHANGED:account.state-changed}
       customer-context-changed: ${TOPIC_CUSTOMER_CONTEXT_CHANGED:customer.context-changed}
-      # The one shared dead-letter topic. This module registers no listener, and
-      # messaging/DeadLetterMetadata.java still needs a destination for a record the
-      # relay could not publish.
+      # The one topic this module reads. messaging/TransactionPostedConsumer adds each
+      # posted amount to the account record, reproducing app/cbl/CBTRN02C.cbl:L545-L560,
+      # and the state change it queues is what carries the two billing-cycle accumulators
+      # to the authorization replica the credit-limit rule reads. Without this stream those
+      # accumulators never move and reason code 102 tests one amount against the limit.
+      transaction-posted: ${TOPIC_TRANSACTION_POSTED:transaction.posted}
+      # The one shared dead-letter topic. Two paths reach it: outbox/OutboxRelay for a row
+      # it gave up on, and config/KafkaConsumerConfig for a delivery no attempt could
+      # apply. Both send a governed DeadLetterEnvelope and neither sends the record itself.
       dead-letter: ${TOPIC_DEAD_LETTER:carddemo.dead-letter}
+    # The consumer group the one listener joins. It is this service's own, so the
+    # notification service reading the same topic under notification-posted receives every
+    # record too.
+    groups:
+      transaction-posted: ${GROUP_ACCOUNT_POSTED:account-posted}
   outbox:
     relay:
       # outbox/OutboxRelay reads every value below through config/AccountProperties, which
@@ -195,12 +233,16 @@ carddemo:
   # update and never a schema migration or the relay sweep.
   write:
     lock-wait-ms: ${WRITE_LOCK_WAIT_MS:3000}
+  # Delivery attempts the one listener makes on a record, and the wait between two of them.
+  # config/AccountProperties validates both at start-up and config/KafkaConsumerConfig
+  # builds the backoff from them. A record still failing after the last attempt reaches the
+  # dead-letter topic as a governed envelope.
   consumer:
     retry:
       max-attempts: ${CONSUMER_MAX_RETRY_ATTEMPTS:3}
       backoff-ms: ${CONSUMER_RETRY_BACKOFF_MS:1000}
 
-# config/ObservabilityConfig.java names this endpoint list and registers seven meters, which it
+# config/ObservabilityConfig.java names this endpoint list and registers the meters it
 # publishes as the single AccountMeters bean every measured path records through. Every
 # meter name opens with carddemo.account., the namespace the other services use.
 

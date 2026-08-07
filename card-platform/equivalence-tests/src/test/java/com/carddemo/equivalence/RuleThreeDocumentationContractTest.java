@@ -320,6 +320,68 @@ class RuleThreeDocumentationContractTest {
                 "HTTP 200 for an approval and HTTP 422 for a source-equivalent decline"));
     }
 
+    /**
+     * Holds the account round-trip guidance the onboarding guide owes a new developer.
+     *
+     * <p>{@code GET /accounts/{accountId}} and {@code GET /customers/{customerId}} answer a shape
+     * {@code PUT /accounts/{accountId}} does not accept, and every seeded row fails at least one
+     * edit of {@code app/cbl/COACTUPC.cbl:L1470-L1676}. Without a worked body a reader has no route
+     * from the two reads to an accepted write, so this test pins the body, each refusal text it
+     * exists to avoid, and the pitfall that a resubmitted fixture expiry declines the account.</p>
+     */
+    @Test
+    void onboardingCarriesAWorkingAccountUpdateAndTheDemoExpiryPitfall() {
+        String onboarding = read(platformDirectory().resolve("docs/onboarding.md"));
+
+        assertTrue(onboarding.contains("### Update an account and a customer"));
+        assertTrue(onboarding.contains("PUT http://localhost:8085/accounts/00000000050"));
+        for (String component : List.of(
+                "\"activeStatus\": \"Y\"",
+                "\"openDate\": \"20110422\"",
+                "\"expirationDate\": \"20991231\"",
+                "\"customerId\": \"000000050\"",
+                "\"addressZip\": \"97201\"",
+                "\"phoneNumber2\": \"(503)985-9283\"",
+                "\"socialSecurityPart1\": \"111\"",
+                "\"ficoCreditScore\": \"623\"")) {
+            assertTrue(onboarding.contains(component),
+                    "onboarding must carry the accepted request component " + component);
+        }
+
+        for (String refusal : List.of(
+                "Open Date: Month must be a number between 1 and 12.",
+                "Expiry Date: Month must be a number between 1 and 12.",
+                "Reissue Date: Month must be a number between 1 and 12.",
+                "Date of Birth: Month must be a number between 1 and 12.",
+                "FICO Score: should be between 300 and 850",
+                "SSN: First 3 chars must be supplied.",
+                "Invalid zip code for state",
+                "Phone Number 2: Not valid North America general purpose area code",
+                "Changes committed to database",
+                "No change detected with respect to values fetched.")) {
+            assertTrue(onboarding.contains(refusal),
+                    "onboarding must quote the outcome text " + refusal);
+        }
+
+        int pitfall =
+                onboarding.indexOf("### 10. Resubmitting the fixture expiry declines the account");
+        assertTrue(pitfall > 0, "onboarding must carry the demo expiry pitfall");
+        String section = onboarding.substring(pitfall);
+        assertTrue(section.contains("classpath:db/demo"));
+        assertTrue(section.contains("AccountStateChanged"));
+        assertTrue(section.contains("0103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION"));
+        assertTrue(section.contains("ACCOUNT_FLYWAY_LOCATIONS")
+                && section.contains("AUTHORIZATION_FLYWAY_LOCATIONS"));
+        assertTrue(onboarding.contains(
+                "#10-resubmitting-the-fixture-expiry-declines-the-account-you-just-updated"),
+                "the update section must link the pitfall it depends on");
+
+        String description = read(platformDirectory().resolve(
+                "services/account-service/src/main/resources/openapi.yaml"));
+        assertTrue(description.contains("classpath:db/demo overlay reads 2099-12-31"),
+                "the request example carrying the fixture expiry must warn about the overlay");
+    }
+
     private static List<Path> allGuides() {
         return List.of(
                 repositoryRoot().resolve("README.md"),

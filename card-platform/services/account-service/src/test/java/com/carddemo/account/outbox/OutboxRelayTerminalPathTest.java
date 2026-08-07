@@ -349,7 +349,9 @@ class OutboxRelayTerminalPathTest {
         return new AccountProperties(
                 new AccountProperties.Api(65536L),
                 new AccountProperties.Kafka(new AccountProperties.Kafka.Topics(STATE_TOPIC,
-                        CONTEXT_TOPIC, DEAD_LETTER_TOPIC)),
+                        CONTEXT_TOPIC, "transaction.posted", DEAD_LETTER_TOPIC),
+                        new AccountProperties.Kafka.Groups("account-posted")),
+                new AccountProperties.Consumer(new AccountProperties.Consumer.Retry(3, 1_000L)),
                 new AccountProperties.Outbox(
                         new AccountProperties.Outbox.Relay(500L, 4, "terminal-path-test",
                                 Duration.ofSeconds(30L), 5_000L, Duration.ofSeconds(10L)), 168L),

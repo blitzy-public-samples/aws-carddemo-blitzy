@@ -103,6 +103,66 @@ class KubernetesDeploymentContractTest {
                 "GROUP_NOTIFICATION_CUSTOMER");
     }
 
+    /**
+     * The account service reads {@code transaction.posted}, so three things have to line up.
+     *
+     * <p>An access control entry the authorizer can match, a group of its own, and the same group
+     * name bound into the workload that joins it. Miss the entry and every delivery is refused; miss
+     * the group and the listener either fails to start or silently shares another service's offsets.
+     *
+     * <p>The group must be the account service's own rather than the notification group already
+     * reading this topic. Two services in one group split the partitions between them, so each would
+     * see roughly half the postings and neither would raise anything.
+     *
+     * <p>What the chain carries is the amount the account record is missing. The balance the account
+     * service reports and the accumulators the credit-limit rule reads both move only when a posting
+     * reaches this listener.
+     */
+    @Test
+    @DisplayName("account posted-transaction routing has a group, a consumer ACL and the same group "
+            + "on the workload")
+    void accountPostedTransactionRoutingHasAGroupConsumerAclAndWorkloadBinding() {
+        Map<String, Object> kafka = resource("10-kafka.yaml", "Deployment", "kafka");
+        Map<String, Object> broker = container(kafka, "kafka");
+        Map<String, Map<String, Object>> brokerEnvironment = environmentOf(broker);
+        String command = String.valueOf(list(broker.get("command")).get(2));
+
+        assertConfigMapBinding(brokerEnvironment.get("GROUP_ACCOUNT_POSTED"),
+                "GROUP_ACCOUNT_POSTED");
+        assertThat(command)
+                .contains(
+                        "grant_consumer \"${ACCOUNT_KAFKA_USER}\" \"${TOPIC_TRANSACTION_POSTED}\"",
+                        "\"${GROUP_ACCOUNT_POSTED}\" || return 1",
+                        "grant_producer \"${ACCOUNT_KAFKA_USER}\" \"${TOPIC_DEAD_LETTER}\"");
+
+        Map<String, Object> account =
+                resource("44-account-service.yaml", "Deployment", "account-service");
+        Map<String, Object> accountContainer = container(account, "account-service");
+        Map<String, Map<String, Object>> accountEnvironment = environmentOf(accountContainer);
+        assertConfigMapBinding(accountEnvironment.get("GROUP_ACCOUNT_POSTED"),
+                "GROUP_ACCOUNT_POSTED");
+        assertConfigMapBinding(accountEnvironment.get("SPRING_KAFKA_CONSUMER_GROUP_ID"),
+                "GROUP_ACCOUNT_POSTED");
+        assertThat(list(accountContainer.get("envFrom")).stream()
+                .map(KubernetesDeploymentContractTest::map)
+                .filter(source -> source.containsKey("configMapRef"))
+                .map(source -> at(source, "configMapRef", "name"))
+                .toList())
+                .as("the topic name reaches this container through the whole-ConfigMap pull, which "
+                        + "is how every service reads a renamed topic")
+                .contains("carddemo-config");
+
+        Map<String, Object> notification =
+                resource("43-notification-service.yaml", "Deployment", "notification-service");
+        Map<String, Map<String, Object>> notificationEnvironment =
+                environmentOf(container(notification, "notification-service"));
+        assertThat(at(notificationEnvironment.get("GROUP_NOTIFICATION_POSTED"),
+                "valueFrom", "configMapKeyRef", "key"))
+                .as("the notification service must keep its own group on this topic, or the two "
+                        + "consumers split the partitions and each sees half the postings")
+                .isEqualTo("GROUP_NOTIFICATION_POSTED");
+    }
+
     @Test
     @DisplayName("Kafka data is backed by a persistent claim")
     void kafkaDataIsBackedByAPersistentClaim() {

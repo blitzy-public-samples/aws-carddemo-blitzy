@@ -191,6 +191,75 @@ An approval produces `TransactionAuthorized`. Ledger and fraud consume it indepe
 
 Structured logs use JSON. Service packages log at the configured application level, while management metrics are available to the monitoring identity on ports 9081 through 9086.
 
+### Update an account and a customer
+
+`GET /accounts/{accountId}` and `GET /customers/{customerId}` read the pair, and `PUT /accounts/{accountId}` replaces it. The read shape and the write shape differ on purpose, so a body assembled by echoing the two reads is refused, one field at a time, with the text the source edit carries. The account read names no customer, because `app/cpy/CVACT01Y.cpy` holds no customer identifier; in the fixture account `00000000050` pairs with customer `000000050`.
+
+Six differences separate a read from a write, and each answers 422 with one text:
+
+| The read returns | The write requires | Text when the read value is submitted |
+| :--- | :--- | :--- |
+| `"openDate": "2011-04-22"` | eight digits, `20110422` | `Open Date: Month must be a number between 1 and 12.` |
+| `"expirationDate": "2099-12-31"` | `20991231` | `Expiry Date: Month must be a number between 1 and 12.` |
+| `"reissueDate": "2023-03-09"` | `20230309` | `Reissue Date: Month must be a number between 1 and 12.` |
+| `"dateOfBirth": "1960-12-01"` | `19601201` | `Date of Birth: Month must be a number between 1 and 12.` |
+| `"ficoCreditScore": 623` | a value from 300 through 850 | `FICO Score: should be between 300 and 850`, which refuses the 21 seeded rows below 300 |
+| no Social Security Number in either read | all three parts together | `SSN: First 3 chars must be supplied.` |
+
+Space padding is not one of the differences. Every edit reads its field at the width the copybook declares, so a name padded to 25 characters and a postal code padded to 10 both pass.
+
+A block that is present has to be complete: nine components of `accountData`, ten of `customerData`, and the three Social Security parts together. A component no edit requires may be omitted and keeps its stored value, but that stored value still reaches the edit, so an omitted telephone number whose area code the reference table does not list is refused exactly as a submitted one would be.
+
+The checked-in fixture is read data and it fails the write edits by design: those edits ran on 3270 screen input and never on stored records. All 50 seeded customers fail at least one, and only two carry a state whose postal prefix is among the 240 combinations `app/cpy/CSLKPCDY.cpy` lists. Account `00000000050` needs the fewest corrections, and this body is accepted:
+
+```bash
+curl -sS -X PUT http://localhost:8085/accounts/00000000050 \
+  -u "admin001:${ADMIN_PASSWORD}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "accountData": {
+      "activeStatus": "Y",
+      "currentBalance": "492.00",
+      "creditLimit": "6169.00",
+      "cashCreditLimit": "4587.00",
+      "openDate": "20110422",
+      "expirationDate": "20991231",
+      "reissueDate": "20230309",
+      "currentCycleCredit": "0.00",
+      "currentCycleDebit": "0.00",
+      "groupId": ""
+    },
+    "customerData": {
+      "customerId": "000000050",
+      "firstName": "Aniya",
+      "middleName": "Alba",
+      "lastName": "Von",
+      "addressLine1": "1588 Nienow Cape",
+      "addressLine2": "Suite 187",
+      "addressCity": "New Aricchester",
+      "addressStateCode": "OR",
+      "addressCountryCode": "USA",
+      "addressZip": "97201",
+      "phoneNumber1": "(325)301-0827",
+      "phoneNumber2": "(503)985-9283",
+      "socialSecurityPart1": "111",
+      "socialSecurityPart2": "11",
+      "socialSecurityPart3": "1111",
+      "governmentIssuedId": "SPECIMEN-0000000001",
+      "dateOfBirth": "19601201",
+      "eftAccountId": "0074883577",
+      "primaryCardHolderIndicator": "Y",
+      "ficoCreditScore": "623"
+    }
+  }'
+```
+
+Four values in it are not the seeded ones. `addressZip` is `97201` rather than `04257`, because `OR97` is the only Oregon prefix in that list, and the seeded pair answers `Invalid zip code for state`. `phoneNumber2` carries area code `503` rather than the seeded `493`, which answers `Phone Number 2: Not valid North America general purpose area code`. The Social Security Number is a specimen, because no read returns the stored one. `expirationDate` is the value the read returned rather than the fixture's, for the reason [pitfall 10](#10-resubmitting-the-fixture-expiry-declines-the-account-you-just-updated) gives.
+
+A write answers 200 with `Changes committed to database` and produces one event per record it changed: `AccountStateChanged` for the account row and `CustomerContextChanged` for the customer row. Run the same body twice and the second call answers 200 with `No change detected with respect to values fetched.` and produces neither. `services/account-service/src/main/resources/openapi.yaml` carries this body as a request example beside a customer-only variant.
+
+One more consequence of replacing the whole record: `currentBalance` and the two cycle counters are components of the request, so a body carrying the figures the caller was shown writes those figures back, and a transaction posted between the read and the write is overwritten. Read the account again before updating it, or send `customerData` alone and leave every account column as stored.
+
 ## Domain context
 
 A card authorization asks whether one transaction may proceed. Authorization resolves a card to an account and applies four source rules. An approval emits `TransactionAuthorized`; a decline emits `TransactionDeclined`.
@@ -299,6 +368,8 @@ Authorization reads counters that posting grows. Only `app/cbl/CBACT04C.cbl:L353
 
 Call `POST /accounts/{accountId}/cycle-close` before the counters make every later authorization decline. The endpoint resets only the two counters and does not calculate interest.
 
+Three services hold part of one `ACCTDAT` record, and the counters move along a chain rather than in one place: the ledger posts and publishes `TransactionPosted`, the account service adds the amount to its own copy and publishes `AccountStateChanged`, and authorization writes that into the snapshot reason code 102 reads. Every link is asynchronous, so a second authorization issued within a few hundred milliseconds of the first can still read the older snapshot. Space repeated calls by a second or two when demonstrating the limit, or read `carddemo.account.posting.applied` on the account service's metrics endpoint to see the amount land before issuing the next call.
+
 ### 6. Rotating the card-token key invalidates checked-in values
 
 A card token is a keyed hash, so it is a function of `CARD_TOKEN_SECRET` and `CARD_TOKEN_VERSION` as much as of the card number. Change either and the 50 seeded `card_token` literals, the `SCOPE_CARD_` authority in `USER_SCOPES`, and every token a read model already stored all become unreachable at once. The failure is quiet on the authority: a card detail request simply answers 403 for a card the caller does own. [The card-token key](#the-card-token-key) gives the rotation procedure and a command that derives a token under a candidate key.
@@ -320,6 +391,16 @@ Authorization's credit snapshot, the ledger's balance projection, notification's
 ### 9. A contended write gives up after three seconds instead of waiting
 
 The account and card updates read the row they rewrite under a lock, and PostgreSQL waits for a held row indefinitely. `carddemo.write.lock-wait-ms` bounds that wait, reading `WRITE_LOCK_WAIT_MS` and defaulting to three seconds. Hold a row in `psql` with `BEGIN; SELECT ... FOR UPDATE;` and the next update of that row answers 409 rather than blocking, which is deliberate and not a defect: the refusal is the outcome the source composes for a read that does not come back held, and it was unreachable while the wait had no end. The bound is applied per update transaction with `set_config('lock_timeout', ?, true)`, so it never bounds a schema migration or the outbox relay sweep. Ordinary concurrent writes are unaffected — they settle in milliseconds and still answer `Record changed by some one else. Please review` — so if you meet a 409 lock refusal in a demonstration, something is genuinely holding the row.
+
+### 10. Resubmitting the fixture expiry declines the account you just updated
+
+The demo stack applies `classpath:db/demo` in the account service and in the authorization service, which extends all 50 account expiries to 2099-12-31 so a live request is not declined by reason code 103 before anything else happens. `GET /accounts/{accountId}` therefore returns `2099-12-31`, while `app/data/ASCII/acctdata.txt` and the request example in `services/account-service/src/main/resources/openapi.yaml` both carry the fixture value `20230309`.
+
+Submit that fixture value and the extension is gone. The account service writes it, publishes `AccountStateChanged` carrying it, the authorization service applies it to the credit snapshot reason code 103 reads, and every later authorization on that account answers 422 with `0103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION`. Nothing failed: one write moved the expiry into the past and the rule read what the write left.
+
+Send back the expiry the read returned, in the eight-character write form — `20991231` on a demo stack, and the fixture value on a run whose output is compared against the fixture. A second write is the repair: resubmit with `"expirationDate": "20991231"` and the next authorization is approved again.
+
+`ACCOUNT_FLYWAY_LOCATIONS` and `AUTHORIZATION_FLYWAY_LOCATIONS` carry the overlay together or not at all, which is why the two copies of that expiry agree until a request changes one of them. [Update an account and a customer](#update-an-account-and-a-customer) gives a body that keeps them in step.
 
 ## Where to go next
 

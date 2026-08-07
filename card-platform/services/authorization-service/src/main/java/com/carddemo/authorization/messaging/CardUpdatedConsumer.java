@@ -1,6 +1,7 @@
 package com.carddemo.authorization.messaging;
 
 import com.carddemo.authorization.entity.ProcessedEventEntity;
+import com.carddemo.authorization.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.ProcessedEventRepository;
 
@@ -111,7 +112,7 @@ public class CardUpdatedConsumer {
         try {
             transactionTemplate.executeWithoutResult(status -> applyOneEvent(event, consumedTopic));
         } catch (DataIntegrityViolationException integrityFailure) {
-            if (!isCommittedDuplicate(event.eventId())) {
+            if (!isCommittedDuplicate(event.eventId(), consumedTopic)) {
                 throw integrityFailure;
             }
             LOG.debug("Event {} gained a marker from a delivery running alongside this one, so this"
@@ -135,9 +136,9 @@ public class CardUpdatedConsumer {
      * @param consumedTopic the topic the delivery arrived on
      */
     private void applyOneEvent(CardUpdated event, String consumedTopic) {
-        if (processedEvents.existsById(event.eventId())) {
-            LOG.debug("Event {} already carries a marker, so this delivery refreshed nothing.",
-                    event.eventId());
+        if (processedEvents.existsById(markerKey(event.eventId(), consumedTopic))) {
+            LOG.debug("Event {} already carries a marker for the topic it arrived on, so this"
+                    + " delivery refreshed nothing.", event.eventId());
             return;
         }
 
@@ -154,29 +155,61 @@ public class CardUpdatedConsumer {
     }
 
     /**
-     * Builds the marker this delivery records, naming the topic it arrived on.
+     * Builds the marker this delivery records, keyed on the event and the topic it arrived on.
+     *
+     * <p>A delivery that reached this listener with no topic header records
+     * {@link ProcessedEventEntity#NO_CONSUMED_TOPIC} rather than nothing, because the topic is half
+     * of the key and a key column holds no null.
+     * {@code src/main/resources/db/migration/V6__processed_event_topic_key.sql} declares the same
+     * sentinel and carries the reasoning.</p>
      *
      * @param eventId       the identifier of the applied event
-     * @param consumedTopic the topic the delivery arrived on
+     * @param consumedTopic the topic the delivery arrived on, possibly absent
      * @return the marker to store
      */
     private ProcessedEventEntity marker(UUID eventId, String consumedTopic) {
-        ProcessedEventEntity marker = new ProcessedEventEntity(eventId, clock.instant());
-        marker.setConsumedTopic(
-                consumedTopic == null || consumedTopic.isBlank() ? null : consumedTopic);
-        return marker;
+        return new ProcessedEventEntity(eventId, clock.instant(), recordedTopic(consumedTopic));
+    }
+
+    /**
+     * Returns the topic a marker records for this delivery.
+     *
+     * @param consumedTopic the {@code RECEIVED_TOPIC} header, possibly absent or blank
+     * @return the header when it names a topic, and
+     *         {@link ProcessedEventEntity#NO_CONSUMED_TOPIC} when it does not
+     */
+    private static String recordedTopic(String consumedTopic) {
+        return consumedTopic == null || consumedTopic.isBlank()
+                ? ProcessedEventEntity.NO_CONSUMED_TOPIC
+                : consumedTopic;
+    }
+
+    /**
+     * Builds the key this delivery claims, which is its event and the topic it arrived on.
+     *
+     * @param eventId       the identifier of the event this delivery carries
+     * @param consumedTopic the topic the delivery arrived on, possibly absent
+     * @return the whole marker key
+     */
+    private static ProcessedEventId markerKey(UUID eventId, String consumedTopic) {
+        return new ProcessedEventId(eventId, recordedTopic(consumedTopic));
     }
 
     /**
      * Reports whether {@code eventId} carries a committed marker, which is the one condition under
      * which a rolled-back delivery may acknowledge.
      *
-     * @param eventId the identifier of the event this delivery carries
+     * <p>The read names the topic as well as the event. A marker written by a delivery on another
+     * topic is not this delivery's, so answering on the identifier alone would acknowledge a record
+     * whose own work never committed.
+     *
+     * @param eventId       the identifier of the event this delivery carries
+     * @param consumedTopic the topic the delivery arrived on
      * @return {@code true} only when a committed marker was observed
      */
-    private boolean isCommittedDuplicate(UUID eventId) {
+    private boolean isCommittedDuplicate(UUID eventId, String consumedTopic) {
         try {
-            return processedEvents.existsById(eventId);
+            return processedEvents.existsById(markerKey(eventId, consumedTopic));
         } catch (DataAccessException unreadable) {
             LOG.warn("Whether event {} already carries a marker could not be established after a {},"
                             + " so this delivery stays unacknowledged.", eventId,

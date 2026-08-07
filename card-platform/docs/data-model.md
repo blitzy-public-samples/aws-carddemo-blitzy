@@ -109,6 +109,8 @@ The populated fields total 36 bytes, matching `app/data/ASCII/cardxref.txt`. The
 
 `AccountStateChanged` refreshes every source-derived column. The event marker and projection update commit together.
 
+The two accumulator columns are what reason code 102 reads, and they reach this table along a chain of three asynchronous hops: the ledger posts and publishes `TransactionPosted`, the account service adds the amount to the record it owns and publishes `AccountStateChanged`, and this projection applies it. No hop is a synchronous call.
+
 #### Outcome infrastructure
 
 | Table | Provenance | Key point |
@@ -432,7 +434,8 @@ erDiagram
 - Entity boxes are tables in `carddemo_account.account_service`.
 - No direct account-to-customer relationship exists because `CVACT01Y.cpy` carries no customer identifier.
 - Customer resolution uses private cross-reference data in authorization and card services, not a cross-database foreign key.
-- `OUTBOX_EVENT` publishes account state changes; `PROCESSED_EVENT` is additive infrastructure.
+- `OUTBOX_EVENT` publishes account state changes; `PROCESSED_EVENT` guards duplicate delivery of the posted-transaction events this service consumes.
+- `ACCOUNT` has two writers, and they write different columns for different reasons. A request writes the submitted values after the field-level comparison passes. `messaging/TransactionPostedConsumer` writes only `current_balance` and one of the two accumulators, adding the amount a `TransactionPosted` event carries. Both queue one outbox row, so both reach the authorization credit snapshot by the same path.
 - `dead_letter_state`, added by `V5__outbox_dead_letter_state.sql`, is the durable record of whether an abandoned row still owes a dead-letter diagnostic. It holds `NOT_REQUIRED`, `REQUIRED`, or `PUBLISHED`, and only a broker acknowledgement moves it to the last value.
 
 #### `account`
@@ -454,6 +457,8 @@ erDiagram
 | `FILLER` | `PIC X(178)`, line 17 | — | — |
 
 The active-status column exists, but source posting never tests it. [Business-rule flag 4](business-rule-flags.md) records that deliberate non-addition.
+
+Three of these columns move without a request behind them. `app/cbl/CBTRN02C.cbl:L547` adds the transaction amount to `current_balance`, and `:L549-L551` adds the same amount to `current_cycle_credit` when it is not negative and to `current_cycle_debit` when it is. The source did that inside the posting program because `ACCTDAT` was one dataset; here the amount arrives as a `TransactionPosted` event and `messaging/TransactionPostedConsumer` applies it. The accumulators are cleared by `POST /accounts/{id}/cycle-close`, which reproduces `app/cbl/CBACT04C.cbl:L353-L354`, so one operation accumulates and the other resets and both write this table.
 
 #### `customer`
 

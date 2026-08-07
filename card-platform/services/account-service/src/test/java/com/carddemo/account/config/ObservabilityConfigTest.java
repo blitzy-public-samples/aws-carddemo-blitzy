@@ -35,11 +35,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * taken before the first request lists each one at zero. And each recording method moves its own
  * meter alone.
  *
- * <p>The events-consumed counter has a test of its own. It stays at zero, and no method on the
- * facade increments it, because the account service publishes on a state change and reads no topic.
+ * <p>The events-consumed counter has a test of its own, and what that test asserts changed with the
+ * listener this service now runs. It previously held the counter at zero and refused a recording
+ * method for it, because the account service read no topic at all. It reads
+ * {@code transaction.posted} now, so the counter moves once per delivery and the two posting
+ * outcomes are separable: an applied posting and a duplicate the marker suppressed are
+ * indistinguishable on a consumed count and mean opposite things.
  *
- * <p>The update service, the cycle-close service and the outbox relay that call these methods arrive
- * with {@code domain/AccountUpdateService.java}, {@code domain/BillingCycleService.java} and
+ * <p>The update service, the cycle-close service, the posted-amount listener and the outbox relay
+ * that call these methods arrive with {@code domain/AccountUpdateService.java},
+ * {@code domain/BillingCycleService.java}, {@code messaging/TransactionPostedConsumer.java} and
  * {@code outbox/OutboxRelay.java}.
  */
 @DisplayName("ObservabilityConfig, the account-service meter set")
@@ -48,8 +53,17 @@ class ObservabilityConfigTest {
     /** Prefix every meter name carries. */
     private static final String PREFIX = "carddemo.account.";
 
-    /** Events this service consumed, which stays at zero. */
+    /** Events this service consumed, one per delivery of a posted transaction. */
     private static final String EVENTS_CONSUMED = PREFIX + "events.consumed";
+
+    /** Wall time of one posted-transaction delivery, whether it committed or failed. */
+    private static final String POSTING_LATENCY = PREFIX + "posting.latency";
+
+    /** Posted amounts this service added to an account record. */
+    private static final String POSTING_APPLIED = PREFIX + "posting.applied";
+
+    /** Repeat deliveries the processed-event marker suppressed. */
+    private static final String POSTING_DUPLICATES_SKIPPED = PREFIX + "posting.duplicates.skipped";
 
     /** Wall time of one account update. */
     private static final String UPDATE_LATENCY = PREFIX + "update.latency";
@@ -81,15 +95,23 @@ class ObservabilityConfigTest {
     /** Transaction rollback and commit failures, separated by operation. */
     private static final String TRANSACTION_FAILURES = PREFIX + "transaction.failures";
 
-    /** Every meter name this service reports. */
-    private static final Set<String> DECLARED_METER_NAMES = Set.of(EVENTS_CONSUMED, UPDATE_LATENCY,
-            UPDATE_APPLIED, VALIDATION_FAILED, CYCLE_CLOSED, OUTBOX_PUBLISHED, PUBLISH_FAILED,
-            OUTBOX_ABANDONED, DEAD_LETTERS_PUBLISHED, DEAD_LETTERS_FAILED, TRANSACTION_FAILURES);
-
-    /** The nine counter names. {@link #UPDATE_LATENCY} is the one timer. */
-    private static final List<String> COUNTER_NAMES = List.of(EVENTS_CONSUMED, UPDATE_APPLIED,
+    /** Every meter name this service reports, fourteen of them. */
+    private static final Set<String> DECLARED_METER_NAMES = Set.of(EVENTS_CONSUMED, POSTING_LATENCY,
+            POSTING_APPLIED, POSTING_DUPLICATES_SKIPPED, UPDATE_LATENCY, UPDATE_APPLIED,
             VALIDATION_FAILED, CYCLE_CLOSED, OUTBOX_PUBLISHED, PUBLISH_FAILED, OUTBOX_ABANDONED,
-            DEAD_LETTERS_PUBLISHED, DEAD_LETTERS_FAILED);
+            DEAD_LETTERS_PUBLISHED, DEAD_LETTERS_FAILED, TRANSACTION_FAILURES);
+
+    /**
+     * The eleven untagged counter names.
+     *
+     * <p>{@link #POSTING_LATENCY} and {@link #UPDATE_LATENCY} are the two timers, and
+     * {@link #TRANSACTION_FAILURES} is the one counter carrying a tag, so none of the three appears
+     * here.
+     */
+    private static final List<String> COUNTER_NAMES = List.of(EVENTS_CONSUMED, POSTING_APPLIED,
+            POSTING_DUPLICATES_SKIPPED, UPDATE_APPLIED, VALIDATION_FAILED, CYCLE_CLOSED,
+            OUTBOX_PUBLISHED, PUBLISH_FAILED, OUTBOX_ABANDONED, DEAD_LETTERS_PUBLISHED,
+            DEAD_LETTERS_FAILED);
 
     /** Starts the configuration class over one registry that holds nothing else. */
     private static final ApplicationContextRunner RUNNER = new ApplicationContextRunner()
@@ -113,8 +135,8 @@ class ObservabilityConfigTest {
                     .withFailMessage("meter %s left the carddemo.account namespace", name)
                     .startsWith(PREFIX));
             assertThat(registry.getMeters())
-                    .as("eleven names, and transaction.failures carries two operations")
-                    .hasSize(12);
+                    .as("fourteen names, and transaction.failures carries three operations")
+                    .hasSize(16);
         });
     }
 
@@ -128,14 +150,15 @@ class ObservabilityConfigTest {
                     if (meter.getId().getName().equals(TRANSACTION_FAILURES)) {
                         assertThat(meter.getId().getTag(ObservabilityConfig.OPERATION_TAG))
                                 .isIn(ObservabilityConfig.UPDATE_OPERATION,
-                                        ObservabilityConfig.CYCLE_CLOSE_OPERATION);
+                                        ObservabilityConfig.CYCLE_CLOSE_OPERATION,
+                                        ObservabilityConfig.POSTING_OPERATION);
                     }
                 }));
     }
 
     @Test
-    @DisplayName("nine meters are counters, the update meter is a timer, and all ten read zero")
-    void nineMetersAreCountersAndTheUpdateMeterIsATimer() {
+    @DisplayName("eleven meters are counters, two are timers, and all thirteen read zero")
+    void elevenMetersAreCountersAndTwoAreTimers() {
         RUNNER.run(context -> {
             MeterRegistry registry = context.getBean(MeterRegistry.class);
 
@@ -145,6 +168,7 @@ class ObservabilityConfigTest {
                         .isZero();
             }
             assertThat(timerOf(registry, UPDATE_LATENCY).count()).isZero();
+            assertThat(timerOf(registry, POSTING_LATENCY).count()).isZero();
         });
     }
 
@@ -229,9 +253,24 @@ class ObservabilityConfigTest {
         });
     }
 
+    /**
+     * The events-consumed counter moves once per delivery, and only the listener moves it.
+     *
+     * <p>This test asserted the opposite until this service acquired a listener. It held the counter
+     * at zero and refused a recording method for it, on the grounds that the account service
+     * published on a state change and read no topic. That was true of the service and false of the
+     * platform: {@code transaction.posted} carried the amount that belonged in this service's own
+     * account record, nothing here read it, and the two failures were silent. Cumulative billing-cycle
+     * exposure was never enforced, and {@code GET /accounts/{id}} answered with the balance as it
+     * stood at deployment.
+     *
+     * <p>What survives from the original intent is the separation. Every other recording method is
+     * exercised below and none of them touches the consumed counter, because a state change this
+     * service publishes is not an event it consumed.
+     */
     @Test
-    @DisplayName("the events-consumed counter stays at zero and the facade cannot increment it")
-    void theEventsConsumedCounterStaysAtZeroAndTheFacadeCannotIncrementIt() {
+    @DisplayName("the events-consumed counter moves once per delivery and nothing else moves it")
+    void theEventsConsumedCounterMovesOncePerDeliveryAndNothingElseMovesIt() {
         RUNNER.run(context -> {
             AccountMeters meters = context.getBean(AccountMeters.class);
             MeterRegistry registry = context.getBean(MeterRegistry.class);
@@ -249,10 +288,17 @@ class ObservabilityConfigTest {
             meters.recordDeadLetterFailure();
 
             assertThat(meters.eventsConsumedTotal())
-                    .withFailMessage("the events-consumed counter moved, and this service reads no "
-                            + "topic")
+                    .withFailMessage("a method other than the listener's moved the events-consumed "
+                            + "counter, and a published state change is not a consumed event")
                     .isZero();
             assertThat(counterOf(registry, EVENTS_CONSUMED).count()).isZero();
+
+            meters.recordEventConsumed();
+            assertThat(meters.eventsConsumedTotal())
+                    .withFailMessage("one delivery must count as one, and the reader of this series "
+                            + "cannot separate a missing increment from an idle topic")
+                    .isEqualTo(1.0D);
+            assertThat(counterOf(registry, EVENTS_CONSUMED).count()).isEqualTo(1.0D);
 
             List<String> recordingMethods = Arrays.stream(AccountMeters.class.getDeclaredMethods())
                     .filter(method -> method.getName().startsWith("record"))
@@ -260,10 +306,51 @@ class ObservabilityConfigTest {
                     .sorted()
                     .toList();
             assertThat(recordingMethods)
-                    .withFailMessage("a recording method for the events-consumed counter appeared, "
-                            + "and this service consumes no event")
-                    .doesNotContain("recordEventConsumed", "recordEventsConsumed");
-            assertThat(recordingMethods).hasSize(11);
+                    .withFailMessage("the listener's recording method left the facade, and a "
+                            + "listener whose deliveries are uncounted cannot be shown to run")
+                    .contains("recordEventConsumed");
+            assertThat(recordingMethods).hasSize(16);
+        });
+    }
+
+    /**
+     * The four posting methods move four separate meters.
+     *
+     * <p>An applied posting and a duplicate the marker suppressed both arrive as one delivery, so a
+     * consumed count reports the same number for either. They mean opposite things: the first moved a
+     * balance and the second deliberately moved nothing. Separating them is what makes a redelivery
+     * storm visible as a duplicate count rather than as apparent throughput.
+     */
+    @Test
+    @DisplayName("the four posting methods each move their own meter")
+    void theFourPostingMethodsEachMoveTheirOwnMeter() {
+        RUNNER.run(context -> {
+            AccountMeters meters = context.getBean(AccountMeters.class);
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+
+            meters.recordPostingLatency(Duration.ofMillis(17));
+            meters.recordPostingApplied();
+            meters.recordPostingDuplicateSkipped();
+            meters.recordPostingFailure();
+
+            assertThat(timerOf(registry, POSTING_LATENCY).count()).isEqualTo(1L);
+            assertThat(timerOf(registry, POSTING_LATENCY).totalTime(TimeUnit.MILLISECONDS))
+                    .isEqualTo(17.0D);
+            assertThat(counterOf(registry, POSTING_APPLIED).count()).isEqualTo(1.0D);
+            assertThat(counterOf(registry, POSTING_DUPLICATES_SKIPPED).count()).isEqualTo(1.0D);
+            assertThat(counterOf(registry, TRANSACTION_FAILURES,
+                    ObservabilityConfig.POSTING_OPERATION).count()).isEqualTo(1.0D);
+            assertThat(counterOf(registry, TRANSACTION_FAILURES,
+                    ObservabilityConfig.UPDATE_OPERATION).count())
+                    .withFailMessage("a posting failure counted against the update operation")
+                    .isZero();
+            assertThat(counterOf(registry, UPDATE_APPLIED).count())
+                    .withFailMessage("a posting counted as an account update, and the two reach the "
+                            + "account row by different routes")
+                    .isZero();
+            assertThat(timerOf(registry, UPDATE_LATENCY).count())
+                    .withFailMessage("a posting delivery was timed as an update")
+                    .isZero();
         });
     }
 

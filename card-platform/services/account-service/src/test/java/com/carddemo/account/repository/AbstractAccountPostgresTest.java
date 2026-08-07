@@ -55,16 +55,45 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * across the Java Virtual Machine (JVM) over one container per test class. Two concern the
  * annotations: the {@code SpringBootTest} annotation over the {@code DataJpaTest} slice, and the
  * {@code DynamicPropertySource} method over the {@code ServiceConnection} annotation.
+ *
+ * <p><b>Why the listener is held shut, and why the broker address is still set.</b>
+ * This service acquired a listener when {@code messaging/TransactionPostedConsumer} arrived, and a
+ * booted context starts every listener container it finds. {@code auto-startup=false} above leaves
+ * the container registered and unstarted, which is what the ledger, notification, fraud and
+ * authorization suites do for the same reason.
+ *
+ * <p>That setting alone is not enough. The shipped {@code bootstrap-servers} default names the
+ * compose service {@code kafka}, which resolves nowhere in a test Java Virtual Machine, and a
+ * consumer built against an unresolvable address fails its whole context rather than its one
+ * container. The flag prevents the container starting at refresh, but the test context cache stops
+ * and restarts a cached context when it evicts around it, and a restart starts every registered
+ * container whatever the flag says. Naming a resolvable address the second line is what keeps that
+ * restart harmless: the consumer constructs, finds nothing listening, and retries in the background
+ * while the test reads the database.
+ *
+ * <p>The listener's own behaviour is asserted in
+ * {@code messaging/TransactionPostedConsumerTest} against mocked collaborators, and end to end
+ * against a real broker by {@code docker compose}.
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
+                "spring.kafka.listener.auto-startup=false",
+                "spring.kafka.bootstrap-servers=" + AbstractAccountPostgresTest.UNREACHABLE_BROKER,
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
                 "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
                 "USER_PASSWORD_HASH={noop}not-a-real-user-password",
                 "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password"
         })
 public abstract class AbstractAccountPostgresTest {
+
+    /**
+     * A resolvable address with nothing listening behind it.
+     *
+     * <p>Port 1 is privileged and unused, so a client resolves the host, fails to connect, and
+     * retries. {@code api/AccountControllerIT} names the same address for the same reason.
+     */
+    static final String UNREACHABLE_BROKER = "localhost:1";
 
     /** The image tag {@code card-platform/docker-compose.yml:L128} also names. */
     private static final String POSTGRES_IMAGE = "postgres:18.4";

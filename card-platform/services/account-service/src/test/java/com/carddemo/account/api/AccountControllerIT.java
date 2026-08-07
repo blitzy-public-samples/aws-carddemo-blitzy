@@ -96,6 +96,7 @@ import tools.jackson.databind.json.JsonMapper;
                 "USER_PASSWORD_HASH={noop}" + AccountControllerIT.USER_PASSWORD,
                 "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
                 "spring.kafka.bootstrap-servers=" + AccountControllerIT.UNREACHABLE_BROKER,
+                "spring.kafka.listener.auto-startup=false",
                 "carddemo.outbox.relay.fixed-delay-ms=3600000",
                 "carddemo.retention.sweep-interval-ms=3600000"
         })
@@ -137,8 +138,8 @@ class AccountControllerIT {
     /** Password of the ordinary identity, equally synthetic. */
     static final String USER_PASSWORD = "not-a-real-user-password";
 
-    /** Migrations under {@code src/main/resources/db/migration}, V1 through V5. */
-    private static final int MIGRATION_COUNT = 5;
+    /** Migrations under {@code src/main/resources/db/migration}, V1 through V6. */
+    private static final int MIGRATION_COUNT = 6;
 
     /** Rows {@code V2__seed.sql} loads into {@code account}, from {@code app/data/ASCII/acctdata.txt}. */
     private static final int SEEDED_ACCOUNT_COUNT = 50;
@@ -408,17 +409,17 @@ class AccountControllerIT {
     class MigratedSchema {
 
         @Test
-        @DisplayName("all five migrations applied, each reported successful")
+        @DisplayName("every shipped migration applied, each reported successful")
         void allFiveMigrationsApplied() {
             List<Map<String, Object>> applied = jdbcTemplate.queryForList(
                     "SELECT version, success FROM flyway_schema_history"
                             + " WHERE version IS NOT NULL ORDER BY installed_rank");
 
             assertEquals(MIGRATION_COUNT, applied.size(),
-                    "db/migration carries V1 through V5 and Flyway applied every one");
+                    "db/migration carries V1 through V6 and Flyway applied every one");
             assertTrue(applied.stream().allMatch(row -> Boolean.TRUE.equals(row.get("success"))),
                     "a migration that failed would leave a row reporting failure: " + applied);
-            assertEquals(List.of("1", "2", "3", "4", "5"),
+            assertEquals(List.of("1", "2", "3", "4", "5", "6"),
                     applied.stream().map(row -> String.valueOf(row.get("version"))).toList(),
                     "the versions applied, in the order Flyway applied them");
         }

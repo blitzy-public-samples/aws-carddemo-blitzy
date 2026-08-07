@@ -22,10 +22,24 @@
 account update validation library, and exposes the billing-cycle close operation that authorization
 depends on. The Maven module is `account-service` and the Java package root is `com.carddemo.account`.
 
-The service consumes no event. It publishes only when a state change occurs, which is the boundary the
-requirements set for account and card management: they act as *"supporting services queried by the
-above, not as event producers unless a state change occurs."* An account update publishes. A cycle
-close publishes. An account read and a customer read publish nothing.
+It publishes only when a state change occurs, which is the boundary the requirements set for account
+and card management: they act as *"supporting services queried by the above, not as event producers
+unless a state change occurs."* An account update publishes. A cycle close publishes. An account read
+and a customer read publish nothing.
+
+It reads one topic. `transaction.posted` carries an amount the ledger has already posted, and
+`messaging/TransactionPostedConsumer` adds that amount to the account record here, reproducing
+`app/cbl/CBTRN02C.cbl:L545-L560`. A posting is a state change to the same record — `:L560` rewrites it
+— so the publication rule above holds unchanged: the applied amount produces one
+`AccountStateChanged`.
+
+That listener is what makes the balance this service reports the posted one, and what makes the two
+billing-cycle accumulators move at all. `ACCTDAT` was one dataset with one writer in the source; here
+the record is split across three services that may not call one another. Before the listener existed
+the accumulators stayed at their seeded values, so reason code 102 tested a single amount against the
+credit limit instead of cumulative cycle exposure, and `GET /accounts/{id}` answered with the balance
+as it stood at deployment while the ledger's `GET /balances/{id}` answered with the posted one. Neither
+raised anything.
 
 Every rule here is reimplemented from documented COBOL behaviour, and nothing in this module reaches a
 mainframe. The constraint is stated in full in the requirements: *"Do not modify or require changes to
@@ -103,16 +117,28 @@ in `schemas/account-state-changed-v1.json` is typed `string` and constrained to 
 decimal places. A JSON number would deserialize into a double in most parsers, which puts binary
 floating point back into a system whose arithmetic is fixed-point.
 
-| Topic | Default name | Variable that overrides it |
-| :--- | :--- | :--- |
-| Account state change | `account.state-changed` | `TOPIC_ACCOUNT_STATE_CHANGED` |
-| Customer context change | `customer.context-changed` | `TOPIC_CUSTOMER_CONTEXT_CHANGED` |
-| Dead-letter topic | `carddemo.dead-letter` | `TOPIC_DEAD_LETTER` |
+| Topic | Direction | Default name | Variable that overrides it |
+| :--- | :--- | :--- | :--- |
+| Account state change | Published | `account.state-changed` | `TOPIC_ACCOUNT_STATE_CHANGED` |
+| Customer context change | Published | `customer.context-changed` | `TOPIC_CUSTOMER_CONTEXT_CHANGED` |
+| Posted transaction | Consumed | `transaction.posted` | `TOPIC_TRANSACTION_POSTED` |
+| Dead-letter topic | Published | `carddemo.dead-letter` | `TOPIC_DEAD_LETTER` |
 
-All three variables are documented in `card-platform/.env.example`, and `docker-compose.yml` creates
+All four variables are documented in `card-platform/.env.example`, and `docker-compose.yml` creates
 every topic at broker start. Broker auto-creation is switched off, so a topic no one created is a
 topic no one can publish to. A row the relay cannot publish after its retries are spent goes to the
 dead-letter topic with its diagnostic metadata.
+
+The consumed topic needs a group as well as a name. The listener joins `account-posted`, overridden by
+`GROUP_ACCOUNT_POSTED`, and it is this service's own: the notification service reads the same topic
+under `notification-posted`, so both receive every record. Two services in one group would split the
+partitions between them, and each would apply roughly half the postings without raising anything.
+
+A delivery this service cannot apply is retried under `CONSUMER_MAX_RETRY_ATTEMPTS` and
+`CONSUMER_RETRY_BACKOFF_MS`, then routed to the shared dead-letter topic as a governed
+`DeadLetterEnvelope`. Nothing the refused record carried travels with it — not its key, not its value,
+not one of its headers — because a payload a schema control rejected is the payload most likely to hold
+a card number in the wrong field.
 
 <br/>
 
@@ -142,6 +168,11 @@ L403 to L405, then tests the result against `ACCT-CREDIT-LIMIT` at L407.
 computation. The `ADD WS-TOTAL-INT TO ACCT-CURR-BAL` at `app/cbl/CBACT04C.cbl:L352` is not reproduced,
 because interest calculation stays a scheduled batch process and is not migrated. The route is an
 operational endpoint, not an entry point into the event model for interest processing.
+
+The other half of the same pair is why the posted-transaction listener lives here. Zeroing the counters
+matters only if something moves them, and `app/cbl/CBTRN02C.cbl:L549-L551` is what moves them: the
+amount is added to `ACCT-CURR-CYC-CREDIT` when it is not negative and to `ACCT-CURR-CYC-DEBIT` when it
+is. One operation resets, the other accumulates, and both write the record this service owns.
 
 ### Why account resolves to customer through the cross-reference
 
@@ -375,7 +406,7 @@ shared database across services)."*
 | `us_state_code` | State and territory codes |
 | `us_state_zip_prefix` | Valid state-with-zip-prefix combinations |
 | `outbox_event` | Event rows awaiting and after publication |
-| `processed_event` | Idempotency markers, kept for uniformity because this module consumes nothing |
+| `processed_event` | Idempotency markers, one per delivery the posted-transaction listener claimed |
 
 `V4__card_cross_reference_replica.sql` adds a ninth table, `card_xref`, holding 50 rows. The card
 service owns that record; this copy is read to resolve an account to its customer and is never written
@@ -607,8 +638,9 @@ compares them before it writes. `src/main/resources/openapi.yaml` gives the full
 
 ### Four settings shared with every other service
 
-- Consumer auto-commit is off, with manual acknowledgement after side effects commit. This module
-  registers no listener, and the setting stays for uniformity so a listener added later inherits it.
+- Consumer auto-commit is off, with manual acknowledgement after side effects commit. The
+  posted-transaction listener acknowledges after its transaction commits, so no offset commits ahead of
+  the write it stands for.
 - Producer idempotence is on, with acknowledgement from all replicas.
 - `ddl-auto` is `validate`, never `update` and never `create`. Flyway owns schema creation, which is how
   the derived column types and the ten-character date columns survive.

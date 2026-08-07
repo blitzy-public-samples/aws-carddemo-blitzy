@@ -1,5 +1,6 @@
 package com.carddemo.authorization.repository;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -10,6 +11,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.carddemo.authorization.entity.AuthorizationDecisionEntity;
 import com.carddemo.authorization.entity.CardCrossReferenceEntity;
 import com.carddemo.authorization.entity.OutboxEventEntity;
+import com.carddemo.authorization.entity.ProcessedEventEntity;
+import com.carddemo.authorization.entity.ProcessedEventEntity.ProcessedEventId;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
@@ -87,6 +90,18 @@ class NativeStatementIT {
 
     /** Topic the claimed markers of this class record. */
     private static final String CONSUMED_TOPIC = "account.state-changed";
+
+    /**
+     * The other topic this service reads, and the one that makes the marker key's second half
+     * observable.
+     *
+     * <p>{@code messaging/CardUpdatedConsumer} subscribes to it, while
+     * {@code messaging/AccountStateChangedConsumer} subscribes to {@link #CONSUMED_TOPIC}. Two
+     * producing services assign the event identifiers on those two topics independently, which is
+     * why {@code src/main/resources/db/migration/V6__processed_event_topic_key.sql} keys the marker
+     * on the event and the topic together.
+     */
+    private static final String OTHER_CONSUMED_TOPIC = "card.updated";
 
     /** One seeded card and the account it belongs to, from app/data/ASCII/cardxref.txt. */
     private static final String SEEDED_CARD = "0500024453765740";
@@ -213,19 +228,67 @@ class NativeStatementIT {
                     "the marker names the topic, so a redelivery can be traced to its stream");
         }
 
+        /**
+         * Asserts a claim naming no topic is refused by the schema.
+         *
+         * <p>{@code consumed_topic} became a key column in
+         * {@code src/main/resources/db/migration/V6__processed_event_topic_key.sql}, and a key column
+         * holds no null. A caller with no {@code RECEIVED_TOPIC} header records
+         * {@link ProcessedEventEntity#NO_CONSUMED_TOPIC} instead, which both listeners of this
+         * service do through their own {@code recordedTopic} helper. This test holds the schema half
+         * of that contract: were the column still nullable, a null-topic marker would key a row the
+         * composite guard could never find again.
+         */
         @Test
-        @DisplayName("a claim recording no topic is accepted")
+        @DisplayName("a claim recording no topic is refused, because the topic is half of the key")
         void aClaimRecordingNoTopicIsAccepted() {
             UUID eventId = UUID.randomUUID();
 
-            int claimed = transactionTemplate.execute(status ->
-                    markers.claimEvent(eventId, BASE_MOMENT, null));
+            assertThrows(DataIntegrityViolationException.class,
+                    () -> transactionTemplate.execute(status ->
+                            markers.claimEvent(eventId, BASE_MOMENT, null)),
+                    "consumed_topic is NOT NULL since V6__processed_event_topic_key.sql");
+        }
 
-            assertEquals(1, claimed, "the column is nullable and the statement accepts null");
-            assertNull(jdbcTemplate.queryForObject(
-                    "SELECT consumed_topic FROM processed_event WHERE event_id = ?",
-                    String.class, eventId),
-                    "no topic was recorded");
+        /**
+         * Asserts one identifier is claimable once per topic rather than once per service.
+         *
+         * <p>This is the defect {@code V6__processed_event_topic_key.sql} removes, at the statement
+         * that carries the guard. Both claims below name one event identifier and two different
+         * topics, and both must succeed: they are two different events that happen to share an
+         * identifier, because the card service and the account service assign theirs independently.
+         * Under {@code ON CONFLICT (event_id)} the second returned zero, and the consumer reading
+         * that zero concluded it had already handled the event and applied nothing at all.
+         */
+        @Test
+        @DisplayName("one identifier is claimable once per topic, not once per service")
+        void oneIdentifierIsClaimableOncePerTopic() {
+            UUID eventId = UUID.randomUUID();
+
+            int onAccountStateTopic = transactionTemplate.execute(status ->
+                    markers.claimEvent(eventId, BASE_MOMENT, CONSUMED_TOPIC));
+            int onCardTopic = transactionTemplate.execute(status ->
+                    markers.claimEvent(eventId, BASE_MOMENT, OTHER_CONSUMED_TOPIC));
+            int repeatOnCardTopic = transactionTemplate.execute(status ->
+                    markers.claimEvent(eventId, BASE_MOMENT.plusSeconds(1),
+                            OTHER_CONSUMED_TOPIC));
+
+            assertAll("one identifier across two topics",
+                    () -> assertEquals(1, onAccountStateTopic,
+                            "the first delivery claims its own topic"),
+                    () -> assertEquals(1, onCardTopic,
+                            "a different event sharing an identifier claims its own topic, which "
+                                    + "the narrow key refused"),
+                    () -> assertEquals(ProcessedEventRepository.ALREADY_CLAIMED, repeatOnCardTopic,
+                            "a redelivery on one topic is still suppressed"),
+                    () -> assertEquals(2, markerCount(eventId),
+                            "each topic carries its own marker"),
+                    () -> assertTrue(markers.existsById(
+                                    new ProcessedEventId(eventId, CONSUMED_TOPIC)),
+                            "the account-state marker is found by its whole key"),
+                    () -> assertTrue(markers.existsById(
+                                    new ProcessedEventId(eventId, OTHER_CONSUMED_TOPIC)),
+                            "the card marker is found by its whole key"));
         }
 
         private int markerCount(UUID eventId) {
@@ -557,8 +620,9 @@ class NativeStatementIT {
                             BASE_MOMENT.minus(Duration.ofDays(7)), 1000));
 
             assertEquals(1, removed, "one marker is past the horizon");
-            assertFalse(markers.existsById(expired), "the expired marker is gone");
-            assertTrue(markers.existsById(recent),
+            assertFalse(markers.existsById(new ProcessedEventId(expired, CONSUMED_TOPIC)),
+                    "the expired marker is gone");
+            assertTrue(markers.existsById(new ProcessedEventId(recent, CONSUMED_TOPIC)),
                     "a marker inside the horizon stays, so its redelivery is still refused");
         }
 

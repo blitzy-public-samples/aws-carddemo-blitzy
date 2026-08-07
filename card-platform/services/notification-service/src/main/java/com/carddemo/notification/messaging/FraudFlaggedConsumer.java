@@ -292,6 +292,13 @@ public class FraudFlaggedConsumer {
      * to the dead-letter topic belong to the listener container in
      * {@code com.carddemo.notification.config}.
      *
+     * <p>The level is {@code WARN} because this line reports one attempt and a retry may still
+     * succeed. The terminal outcome is reported once, at {@code ERROR}, by the recoverer in
+     * {@code config/KafkaConsumerConfig} when the attempts are spent, and that line is the one an
+     * alerting rule should watch. Reporting each attempt at {@code ERROR} put three of them on a
+     * record that recovered on the third try, which made a transient fault indistinguishable from a
+     * permanent one.
+     *
      * @param eventId the identifier of the event that failed
      * @param failure the fault this delivery raised
      */
@@ -300,7 +307,7 @@ public class FraudFlaggedConsumer {
                 failure.getClass().getSimpleName(), NOTHING_WRITTEN);
         metrics.failures(failureKind(failure)).increment();
 
-        LOG.atError()
+        LOG.atWarn()
                 .addKeyValue("abendCode", metadata.abendCode())
                 .addKeyValue("abendCulprit", metadata.culprit())
                 .addKeyValue("abendReason", metadata.reason())
@@ -318,6 +325,12 @@ public class FraudFlaggedConsumer {
      * outside the two assessment outcomes repeats on every attempt, and the listener container
      * routes it to the dead-letter topic once its attempts run out.
      *
+     * <p>The level is {@code WARN} because this line reports one attempt, as every per-attempt line
+     * of this platform does. This refusal will repeat until the attempts are spent, and the terminal
+     * outcome is reported once at {@code ERROR} by the recoverer in
+     * {@code config/KafkaConsumerConfig}. Reporting the attempt at {@code ERROR} as well counted the
+     * same record three times at the level an alerting rule watches.
+     *
      * @param event the payload this delivery carried
      * @return the refusal the caller throws, which leaves the offset uncommitted
      */
@@ -327,7 +340,7 @@ public class FraudFlaggedConsumer {
                 DeadLetterMetadata.of(CONTRACT_CODE, CULPRIT, received, UNREADABLE_PAYLOAD);
         metrics.failures(NotificationMetrics.FAILURE_SCHEMA_VALIDATION).increment();
 
-        LOG.atError()
+        LOG.atWarn()
                 .addKeyValue("abendCode", metadata.abendCode())
                 .addKeyValue("abendCulprit", metadata.culprit())
                 .addKeyValue("abendReason", metadata.reason())

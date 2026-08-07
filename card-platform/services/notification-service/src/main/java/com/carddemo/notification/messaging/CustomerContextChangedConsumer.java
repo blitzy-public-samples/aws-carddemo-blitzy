@@ -299,6 +299,13 @@ public class CustomerContextChangedConsumer {
      * reaches a log line. Retry counting and routing to the dead-letter topic belong to the
      * listener container in {@code com.carddemo.notification.config}.
      *
+     * <p>The level is {@code WARN} because this line reports one attempt and a retry may still
+     * succeed. The terminal outcome is reported once, at {@code ERROR}, by the recoverer in
+     * {@code config/KafkaConsumerConfig} when the attempts are spent, and that line is the one an
+     * alerting rule should watch. Reporting each attempt at {@code ERROR} put three of them on a
+     * record that recovered on the third try, which made a transient fault indistinguishable from a
+     * permanent one.
+     *
      * @param eventId the identifier of the event that failed
      * @param failure the fault this delivery raised
      */
@@ -307,7 +314,7 @@ public class CustomerContextChangedConsumer {
                 failure.getClass().getSimpleName(), NOTHING_WRITTEN);
         metrics.failures(failureKind(failure)).increment();
 
-        LOG.atError()
+        LOG.atWarn()
                 .addKeyValue("abendCode", metadata.abendCode())
                 .addKeyValue("abendCulprit", metadata.culprit())
                 .addKeyValue("abendReason", metadata.reason())

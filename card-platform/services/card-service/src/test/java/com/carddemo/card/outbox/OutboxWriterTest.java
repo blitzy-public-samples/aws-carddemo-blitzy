@@ -635,7 +635,8 @@ class OutboxWriterTest {
                 card.applyUpdate(ROLLED_BACK_EMBOSSED_NAME, ROLLED_BACK_EXPIRATION_DATE,
                         CardUpdated.ACTIVE_STATUS_INACTIVE);
                 cards.save(card);
-                processedEvents.save(new ProcessedEventEntity(MARKER_EVENT_ID, Instant.now()));
+                processedEvents.save(new ProcessedEventEntity(MARKER_EVENT_ID, Instant.now(),
+                        ProcessedEventEntity.NO_CONSUMED_TOPIC));
                 throw new ForcedFailure();
             })).isInstanceOf(ForcedFailure.class);
 
@@ -650,7 +651,8 @@ class OutboxWriterTest {
         @DisplayName("a committed marker is found by the same read")
         void aCommittedMarkerIsFoundByTheSameRead() {
             runInNewTransaction(() ->
-                    processedEvents.save(new ProcessedEventEntity(MARKER_EVENT_ID, Instant.now())));
+                    processedEvents.save(new ProcessedEventEntity(MARKER_EVENT_ID, Instant.now(),
+                        ProcessedEventEntity.NO_CONSUMED_TOPIC)));
 
             assertThat(markerExists(MARKER_EVENT_ID))
                     .as("the read above answers true for a marker that committed")
@@ -761,7 +763,7 @@ class OutboxWriterTest {
      * @return {@code true} where the row is present
      */
     private boolean markerExists(UUID eventId) {
-        return inNewTransaction(() -> processedEvents.existsByEventId(eventId));
+        return inNewTransaction(() -> processedEvents.existsByEventIdOnAnyTopic(eventId));
     }
 
     /**

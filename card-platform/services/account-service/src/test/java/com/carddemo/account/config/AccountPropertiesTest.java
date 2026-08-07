@@ -48,6 +48,19 @@ class AccountPropertiesTest {
                     .isEqualTo("account.state-changed");
             assertThat(properties.kafka().topics().customerContextChanged())
                     .isEqualTo("customer.context-changed");
+            assertThat(properties.kafka().topics().transactionPosted())
+                    .as("topic the posted-transaction listener reads")
+                    .isEqualTo("transaction.posted");
+            assertThat(properties.kafka().groups().transactionPosted())
+                    .as("group that listener joins, which is this service's own so the notification "
+                            + "service reading the same topic still receives every record")
+                    .isEqualTo("account-posted");
+            assertThat(properties.consumer().retry().maxAttempts())
+                    .as("deliveries of one record, counting the first")
+                    .isEqualTo(3);
+            assertThat(properties.consumer().retry().backoffMs())
+                    .as("milliseconds between two deliveries")
+                    .isEqualTo(1_000L);
             assertThat(properties.outbox().relay().fixedDelayMs()).isEqualTo(500L);
             assertThat(properties.outbox().relay().batchSize()).isEqualTo(100);
             assertThat(properties.outbox().relay().claimTimeout()).isEqualTo(Duration.ofMinutes(2L));

@@ -139,9 +139,32 @@ class DeadLetterMetadataTest {
     private static final List<String> LISTENER_KEY_PREFIXES =
             List.of("spring.kafka.consumer.", "spring.kafka.listener.");
 
-    /** The two acknowledgement settings all six services carry, in name order. */
-    private static final List<String> UNIFORM_LISTENER_KEYS =
-            List.of("spring.kafka.consumer.enable-auto-commit", "spring.kafka.listener.ack-mode");
+    /**
+     * The consumed-topic key, which arrived with {@code messaging/TransactionPostedConsumer}.
+     *
+     * <p>It is the one key under {@link #TOPIC_KEY_PREFIX} this module reads rather than writes.
+     */
+    private static final String CONSUMED_TOPIC_KEY = TOPIC_KEY_PREFIX + "transaction-posted";
+
+    /** The topic the consumed-topic key resolves to with no override in place. */
+    private static final String CONSUMED_TOPIC_NAME = "transaction.posted";
+
+    /**
+     * Every {@code spring.kafka} consumer and listener key this module declares, in name order.
+     *
+     * <p>The list was two entries long while this module read no topic. It is seven now, and the two
+     * that were always here still carry the acknowledgement contract: auto-commit off, and an
+     * acknowledgement the listener issues itself once its transaction has committed. Without both,
+     * an offset commits ahead of the write it stands for and a crash loses the posting.
+     */
+    private static final List<String> LISTENER_KEYS = List.of(
+            "spring.kafka.consumer.auto-offset-reset",
+            "spring.kafka.consumer.enable-auto-commit",
+            "spring.kafka.consumer.group-id",
+            "spring.kafka.consumer.key-deserializer",
+            "spring.kafka.consumer.properties.spring.deserializer.value.delegate.class",
+            "spring.kafka.consumer.value-deserializer",
+            "spring.kafka.listener.ack-mode");
 
     /** Opening delimiter of a configured placeholder. */
     private static final String PLACEHOLDER_OPEN = "${";
@@ -560,22 +583,30 @@ class DeadLetterMetadataTest {
 
     /**
      * Asserts the module's configured topic surface, read from {@code application.yml} on the test
-     * classpath. The module declares two state-change destinations plus the shared dead-letter topic.
+     * classpath. The module declares two state-change destinations, the topic it reads, and the
+     * shared dead-letter topic.
      *
      * <p>The published topic name arrives as a plain literal and the dead-letter name as a
-     * placeholder holding a default. The module registers no listener, so it names no consumer
-     * group. No application context, database or broker starts here.
+     * placeholder holding a default. The consumed topic and the group the listener joins arrived with
+     * {@code messaging/TransactionPostedConsumer}: this module read no topic before that, and the
+     * amount that belonged in its own account record travelled past it. No application context,
+     * database or broker starts here.
      */
     @Test
-    @DisplayName("The configured topic surface holds both published topics and the dead-letter topic")
-    void theConfiguredTopicSurfaceHoldsBothPublishedTopicsAndTheDeadLetterTopic() {
+    @DisplayName("The configured topic surface holds the published topics, the consumed topic and "
+            + "the dead-letter topic")
+    void theConfiguredTopicSurfaceHoldsThePublishedConsumedAndDeadLetterTopics() {
         Properties configuration = loadConfiguration();
 
         assertThat(configuration.stringPropertyNames())
-                .as("%s declares three topics under %s", CONFIGURATION_RESOURCE, TOPIC_KEY_PREFIX)
+                .as("%s declares four topics under %s", CONFIGURATION_RESOURCE, TOPIC_KEY_PREFIX)
                 .filteredOn(name -> name.startsWith(TOPIC_KEY_PREFIX))
                 .containsExactlyInAnyOrder(PUBLISHED_TOPIC_KEY, CUSTOMER_CONTEXT_TOPIC_KEY,
-                        DEAD_LETTER_TOPIC_KEY);
+                        CONSUMED_TOPIC_KEY, DEAD_LETTER_TOPIC_KEY);
+
+        assertThat(configuredDefault(configuration.getProperty(CONSUMED_TOPIC_KEY)))
+                .as("%s resolves to the topic the ledger publishes a posting on", CONSUMED_TOPIC_KEY)
+                .isEqualTo(CONSUMED_TOPIC_NAME);
 
         String configured = configuration.getProperty(PUBLISHED_TOPIC_KEY);
         assertThat(configured)
@@ -605,8 +636,12 @@ class DeadLetterMetadataTest {
                 .sorted()
                 .toList();
         assertThat(acknowledgementKeys)
-                .as("the module registers no listener, so it names no consumer group")
-                .isEqualTo(UNIFORM_LISTENER_KEYS);
+                .as("the module declares one listener, and its acknowledgement stays manual so no "
+                        + "offset commits ahead of the write it stands for")
+                .isEqualTo(LISTENER_KEYS);
+        assertThat(configuration.getProperty("spring.kafka.consumer.enable-auto-commit"))
+                .as("auto-commit, which must stay off for the marker to guard anything")
+                .isEqualTo("false");
     }
 
     /**
@@ -638,7 +673,10 @@ class DeadLetterMetadataTest {
                 new AccountProperties.Api(65536L),
                 new AccountProperties.Kafka(
                         new AccountProperties.Kafka.Topics(PUBLISHED_TOPIC_NAME,
-                                "customer.context-changed", DEAD_LETTER_TOPIC_NAME)),
+                                "customer.context-changed", "transaction.posted",
+                                DEAD_LETTER_TOPIC_NAME),
+                        new AccountProperties.Kafka.Groups("account-posted")),
+                new AccountProperties.Consumer(new AccountProperties.Consumer.Retry(3, 1_000L)),
                 new AccountProperties.Outbox(
                         new AccountProperties.Outbox.Relay(
                                 500L, 1, "account-relay", java.time.Duration.ofSeconds(30L),

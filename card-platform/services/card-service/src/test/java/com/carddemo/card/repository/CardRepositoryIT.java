@@ -5,6 +5,7 @@ import com.carddemo.card.domain.CardQueryService.CardListRow;
 import com.carddemo.card.domain.CardQueryService;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.entity.OutboxEventEntity;
+import com.carddemo.card.entity.ProcessedEventEntity;
 import com.carddemo.cobol.PanMasker;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -168,8 +169,13 @@ class CardRepositoryIT {
     /** Row count {@code V2__seed.sql} loads into {@code card}. */
     private static final int SEEDED_ROW_COUNT = 50;
 
-    /** The three migration versions Flyway applies, in the order it applies them. */
-    private static final List<String> MIGRATION_VERSIONS = List.of("1", "2");
+    /**
+     * The migration versions Flyway applies, in the order it applies them.
+     *
+     * <p>Version 3 is {@code V3__processed_event_topic_key.sql}, which re-keys
+     * {@code processed_event} on the event and the topic together.
+     */
+    private static final List<String> MIGRATION_VERSIONS = List.of("1", "2", "3");
 
     /**
      * Card number of the row a test inserts to place a second card on one account.
@@ -645,7 +651,7 @@ class CardRepositoryIT {
          * {@code src/main/resources/application.yml} and never from a caller.
          */
         @Test
-        @DisplayName("the Flyway history carries versions 1 through 3, all successful")
+        @DisplayName("the Flyway history carries every shipped version, all successful")
         void flywayAppliedAllMigrations() {
             List<String> versions = jdbcTemplate.queryForList(
                     "SELECT version FROM " + schema + ".flyway_schema_history"
@@ -653,7 +659,7 @@ class CardRepositoryIT {
                             + " ORDER BY installed_rank",
                     String.class);
             assertEquals(MIGRATION_VERSIONS, versions,
-                    "Flyway applied a different set of migrations than the three shipped scripts");
+                    "Flyway applied a different set of migrations than the shipped scripts");
         }
 
         /**
@@ -1558,9 +1564,9 @@ class CardRepositoryIT {
 
             assertAll("the bounded marker delete",
                     () -> assertEquals(1, removed, "one marker precedes the horizon"),
-                    () -> assertFalse(processedEventRepository.existsByEventId(expired),
+                    () -> assertFalse(processedEventRepository.existsByEventIdOnAnyTopic(expired),
                             "the expired marker is gone"),
-                    () -> assertTrue(processedEventRepository.existsByEventId(recent),
+                    () -> assertTrue(processedEventRepository.existsByEventIdOnAnyTopic(recent),
                             "a marker inside the horizon stays"));
         }
 
@@ -1572,8 +1578,10 @@ class CardRepositoryIT {
          */
         private void storeMarker(UUID eventId, Instant processedAt) {
             jdbcTemplate.update(
-                    "INSERT INTO processed_event (event_id, processed_at) VALUES (?, ?)",
-                    eventId, java.sql.Timestamp.from(processedAt));
+                    "INSERT INTO processed_event (event_id, processed_at, consumed_topic)"
+                            + " VALUES (?, ?, ?)",
+                    eventId, java.sql.Timestamp.from(processedAt),
+                    ProcessedEventEntity.NO_CONSUMED_TOPIC);
         }
     }
 

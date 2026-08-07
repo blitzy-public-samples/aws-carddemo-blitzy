@@ -21,6 +21,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link StreamNameReport} exists to expose. The second test asserts the other half an operator
  * depends on: every entry names a real variable and describes what the name is for, so a line in
  * {@code kubectl logs} can be acted on without reading the source.
+ *
+ * <p>Two of the five names are the topic this service reads and the group its listener joins. Both
+ * arrived with {@code messaging/TransactionPostedConsumer}, and both belong in the report for a
+ * practical reason: a listener reading a misnamed topic and a listener reading an idle topic look
+ * identical from outside, and only the resolved name separates them.
  */
 @DisplayName("StreamNameReport, the stream names the account service resolved")
 class StreamNameReportTest {
@@ -48,11 +53,15 @@ class StreamNameReportTest {
                     .extracting(StreamNameReport.ReportedName::environmentKey)
                     .containsExactly("TOPIC_ACCOUNT_STATE_CHANGED",
                             "TOPIC_CUSTOMER_CONTEXT_CHANGED",
+                            "TOPIC_TRANSACTION_POSTED",
+                            "GROUP_ACCOUNT_POSTED",
                             "TOPIC_DEAD_LETTER");
             assertThat(report.reportedNames())
                     .extracting(StreamNameReport.ReportedName::value)
                     .containsExactly("account.state-changed",
                             "customer.context-changed",
+                            "transaction.posted",
+                            "account-posted",
                             "carddemo.dead-letter");
         });
     }

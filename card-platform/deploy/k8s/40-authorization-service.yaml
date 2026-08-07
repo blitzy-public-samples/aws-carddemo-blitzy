@@ -395,16 +395,17 @@ spec:
       ports:
         - port: 9092
           protocol: TCP
-    # The authorization rules query the account and card services synchronously.
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: account-service
-              app.kubernetes.io/part-of: card-platform
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: card-service
-              app.kubernetes.io/part-of: card-platform
-      ports:
-        - port: 8080
-          protocol: TCP
+    # No egress to the account or card service, deliberately. AAP Figure 0.2 draws the
+    # authorization rules reading both synchronously; this implementation replicates their
+    # state by event instead, and card_xref and account_credit_snapshot are the local
+    # replicas the rules read. The deviation is recorded in docs/decision-log.md and it
+    # strengthens the "must not block the authorization response" requirement of AAP 0.8.2
+    # rather than weakening it: an authorization decision cannot be delayed or failed by a
+    # service it never calls.
+    #
+    # An earlier revision of this file granted egress to both on 8080 with a comment saying
+    # the rules query them synchronously. No such call exists: this service holds no HTTP
+    # client, no service-URL environment variable and opens no socket to either. A granted
+    # permission nothing uses is worse than absent, because it tells the next reader the call
+    # is expected and it is the first thing a future change will reach for instead of an
+    # event. The grant is therefore removed rather than merely re-commented.

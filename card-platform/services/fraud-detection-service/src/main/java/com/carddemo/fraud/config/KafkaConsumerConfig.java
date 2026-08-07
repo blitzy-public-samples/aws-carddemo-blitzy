@@ -20,6 +20,8 @@ import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
@@ -88,6 +90,14 @@ import org.springframework.util.backoff.FixedBackOff;
  */
 @Configuration
 public class KafkaConsumerConfig {
+
+    /**
+     * Where the one terminal line of a spent record goes.
+     *
+     * <p>Declared here rather than on the listener because the terminal outcome is this class's to
+     * report: the listener sees each attempt and cannot know which one was the last.
+     */
+    private static final Logger LOG = LoggerFactory.getLogger(KafkaConsumerConfig.class);
 
     /** Bean name of the listener container factory, and the name a listener of this service names. */
     public static final String LISTENER_CONTAINER_FACTORY_BEAN =
@@ -544,6 +554,20 @@ public class KafkaConsumerConfig {
             if (isPayloadFailure(failure)) {
                 meters.recordDeserializeFailure();
             }
+
+            // One ERROR per record, at the moment the record becomes terminal. Each individual
+            // attempt is logged at WARN by the listener, because a retry may still succeed and a
+            // level that says otherwise trains an operator to ignore it. This line is the level an
+            // alerting rule should watch, and every consumer of this platform emits it here: see
+            // the same line in the notification, authorization and ledger services. It carries the
+            // record coordinates and the four components of 01 ABEND-DATA at
+            // app/cpy/CSMSG02Y.cpy:L21-L29, and no payload, no key and no exception chain.
+            DeadLetterMetadata metadata = metadataOf(failure);
+            LOG.error("Routing one record to the dead-letter topic."
+                    + " topic={} partition={} offset={} code={} culprit={} reason={} message={}",
+                    record.topic(), record.partition(), record.offset(), metadata.abendCode(),
+                    metadata.culprit(), metadata.reason(), metadata.message());
+
             try {
                 delegate.accept(record, failure);
             } catch (RuntimeException undelivered) {

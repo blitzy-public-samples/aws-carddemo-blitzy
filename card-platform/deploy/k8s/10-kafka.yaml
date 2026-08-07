@@ -387,6 +387,11 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: GROUP_LEDGER_ACCOUNT
+            - name: GROUP_ACCOUNT_POSTED
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_ACCOUNT_POSTED
             - name: GROUP_FRAUD_DETECTION
               valueFrom:
                 configMapKeyRef:
@@ -670,15 +675,28 @@ spec:
                   "${TOPIC_CUSTOMER_CONTEXT_CHANGED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
                 grant_producer "${NOTIFICATION_KAFKA_USER}" "${TOPIC_DEAD_LETTER}" || return 1
 
-                # Account and card: each publishes its own state-change event when a state
-                # change occurs, and consumes nothing. Each also holds one entry on the
-                # shared dead-letter topic, because an outbox relay that exhausts its
-                # attempts on a row names that row there and nowhere else. Neither holds a
-                # consumer entry on it: they write a diagnostic and never read one.
+                # Account: publishes its own state-change events when a state change occurs,
+                # and reads one stream. The consumer entry closes the cycle-accumulator
+                # chain: the ledger owns the posting arithmetic and this service owns the
+                # account record, so a posted amount travels between them as
+                # transaction.posted. Without it the account record never moves, the state
+                # change carrying the two accumulators to the authorization replica is never
+                # published, and reason code 102 at app/cbl/CBTRN02C.cbl:L403-L413 tests one
+                # amount against the credit limit instead of the cycle exposure.
+                #
+                # Card: publishes its own state-change event and consumes nothing.
+                #
+                # Each also holds one entry on the shared dead-letter topic, because an
+                # outbox relay that exhausts its attempts on a row names that row there and
+                # nowhere else, and because this service's listener routes a spent delivery
+                # to the same topic as a governed envelope. Neither holds a consumer entry on
+                # it: they write a diagnostic and never read one.
                 grant_producer "${ACCOUNT_KAFKA_USER}" \
                   "${TOPIC_ACCOUNT_STATE_CHANGED}" || return 1
                 grant_producer "${ACCOUNT_KAFKA_USER}" \
                   "${TOPIC_CUSTOMER_CONTEXT_CHANGED}" || return 1
+                grant_consumer "${ACCOUNT_KAFKA_USER}" "${TOPIC_TRANSACTION_POSTED}" \
+                  "${GROUP_ACCOUNT_POSTED}" || return 1
                 grant_producer "${ACCOUNT_KAFKA_USER}" "${TOPIC_DEAD_LETTER}" || return 1
                 grant_producer "${CARD_KAFKA_USER}" "${TOPIC_CARD_UPDATED}" || return 1
                 grant_producer "${CARD_KAFKA_USER}" "${TOPIC_DEAD_LETTER}" || return 1

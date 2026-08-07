@@ -4,6 +4,7 @@ import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
 import com.carddemo.ledger.domain.PostingService;
 import com.carddemo.ledger.entity.ProcessedEventEntity;
+import com.carddemo.ledger.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.ledger.repository.ProcessedEventRepository;
 import java.time.Clock;
 import java.time.Duration;
@@ -130,6 +131,7 @@ public class TransactionAuthorizedConsumer {
      * @param event          the validated event this delivery carries
      * @param messageKey     the key the record arrived under, which must name the aggregate the
      *                       payload names
+     * @param consumedTopic  the topic the record arrived on, which is half of the marker key
      * @param acknowledgment the offset commit, invoked after the commit
      * @throws NullPointerException     if {@code event} or {@code acknowledgment} is {@code null}
      * @throws IllegalArgumentException if the key is absent or names another aggregate
@@ -139,6 +141,7 @@ public class TransactionAuthorizedConsumer {
             containerFactory = CONTAINER_FACTORY)
     public void onTransactionAuthorized(TransactionAuthorized event,
             @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String messageKey,
+            @Header(name = KafkaHeaders.RECEIVED_TOPIC, required = false) String consumedTopic,
             Acknowledgment acknowledgment) {
         Objects.requireNonNull(event, "event is required");
         Objects.requireNonNull(acknowledgment, "acknowledgment is required");
@@ -147,17 +150,23 @@ public class TransactionAuthorizedConsumer {
         long startedAt = System.nanoTime();
         try {
             requireKeyNamesAggregate(messageKey, event);
-            if (Boolean.TRUE.equals(
-                    transactionTemplate.execute(status -> applyOneEvent(event, messageKey)))) {
+            if (Boolean.TRUE.equals(transactionTemplate.execute(
+                    status -> applyOneEvent(event, messageKey, consumedTopic)))) {
                 meters.recordTransactionPosted();
             } else {
                 meters.recordDuplicateSkipped();
             }
         } catch (RuntimeException failure) {
             meters.recordProcessFailure();
-            LOG.error("Event {} was not applied. Diagnostic {}. The offset stays uncommitted, and a"
-                    + " record the container gives up on is addressed to {}.", event.eventId(),
-                    describe(failure), deadLetterTopic);
+            // WARN rather than ERROR, because this line reports ONE ATTEMPT and a retry may still
+            // succeed. The terminal outcome is reported once, at ERROR, by the recoverer in
+            // config/KafkaConsumerConfig when the attempts are spent. Logging each attempt at ERROR
+            // made a transient fault indistinguishable from a permanent one and put three ERRORs on
+            // a record that recovered on the third try; the sibling listener of this module and the
+            // fraud listener already take this level.
+            LOG.warn("Event {} was not applied on this attempt. Diagnostic {}. The offset stays"
+                    + " uncommitted, and a record the container gives up on is addressed to {}.",
+                    event.eventId(), describe(failure), deadLetterTopic);
             throw failure;
         } finally {
             meters.recordProcessingLatency(Duration.ofNanos(System.nanoTime() - startedAt));
@@ -172,17 +181,19 @@ public class TransactionAuthorizedConsumer {
      * <p>The three updates {@code app/cbl/CBTRN02C.cbl:L440-L442} fixes run in that order inside
      * {@code domain/PostingService}.
      *
-     * @param event      the validated event to apply
-     * @param messageKey the key the record arrived under, which
-     *                   {@link #requireKeyNamesAggregate} has already checked against the payload
+     * @param event         the validated event to apply
+     * @param messageKey    the key the record arrived under, which
+     *                      {@link #requireKeyNamesAggregate} has already checked against the payload
+     * @param consumedTopic the topic the record arrived on, half of the marker key
      * @return {@code true} when this delivery posted, and {@code false} when a marker already
-     *         covered the event
+     *         covered the event on the topic it arrived on
      */
-    private boolean applyOneEvent(TransactionAuthorized event, String messageKey) {
+    private boolean applyOneEvent(TransactionAuthorized event, String messageKey,
+            String consumedTopic) {
         UUID eventId = event.eventId();
-        if (processedEvents.existsById(eventId)) {
-            LOG.debug("Event {} already carries a marker, so this delivery posted nothing.",
-                    eventId);
+        if (processedEvents.existsById(markerKey(eventId, consumedTopic))) {
+            LOG.debug("Event {} already carries a marker for the topic it arrived on, so this"
+                    + " delivery posted nothing.", eventId);
             return false;
         }
 
@@ -190,7 +201,7 @@ public class TransactionAuthorizedConsumer {
         // back out of the payload. PostingService makes the same check, and a check whose two
         // operands come from one field can never fail.
         postingService.postTransaction(event, messageKey);
-        processedEvents.save(marker(eventId));
+        processedEvents.save(marker(eventId, consumedTopic));
         return true;
     }
 
@@ -232,15 +243,45 @@ public class TransactionAuthorizedConsumer {
     }
 
     /**
-     * Builds the marker this delivery records, naming the topic it arrived on.
+     * Builds the marker this delivery records, keyed on the event and the topic it arrived on.
      *
-     * @param eventId identifier of the applied event
+     * @param eventId       identifier of the applied event
+     * @param consumedTopic the topic the delivery arrived on, possibly absent
      * @return the marker to store
      */
-    private ProcessedEventEntity marker(UUID eventId) {
-        ProcessedEventEntity marker = new ProcessedEventEntity(eventId, clock.instant());
-        marker.setConsumedTopic(authorizedTopic);
-        return marker;
+    private ProcessedEventEntity marker(UUID eventId, String consumedTopic) {
+        return new ProcessedEventEntity(eventId, clock.instant(), recordedTopic(consumedTopic));
+    }
+
+    /**
+     * Builds the key this delivery claims, which is its event and the topic it arrived on.
+     *
+     * @param eventId       identifier of the event this delivery carries
+     * @param consumedTopic the topic the delivery arrived on, possibly absent
+     * @return the whole marker key
+     */
+    private ProcessedEventId markerKey(UUID eventId, String consumedTopic) {
+        return new ProcessedEventId(eventId, recordedTopic(consumedTopic));
+    }
+
+    /**
+     * Returns the topic a marker records for this delivery.
+     *
+     * <p>The {@code RECEIVED_TOPIC} header is preferred over the configured topic name, because a
+     * marker should record what the delivery carried rather than what this listener was configured
+     * to read. The two agree in every ordinary case, and where they do not the header is the fact.
+     * The configured name is the fallback for a delivery that arrived with no header at all, and
+     * {@link ProcessedEventEntity#NO_CONSUMED_TOPIC} is the last resort, because the topic is half of
+     * the key and a key column holds no null.</p>
+     *
+     * @param consumedTopic the {@code RECEIVED_TOPIC} header, possibly absent or blank
+     * @return the topic to record, never blank
+     */
+    private String recordedTopic(String consumedTopic) {
+        if (consumedTopic != null && !consumedTopic.isBlank()) {
+            return consumedTopic;
+        }
+        return authorizedTopic.isBlank() ? ProcessedEventEntity.NO_CONSUMED_TOPIC : authorizedTopic;
     }
 
     /**

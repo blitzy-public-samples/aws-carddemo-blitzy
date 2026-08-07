@@ -1,6 +1,7 @@
 package com.carddemo.authorization.messaging;
 
 import com.carddemo.authorization.entity.ProcessedEventEntity;
+import com.carddemo.authorization.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.ProcessedEventRepository;
@@ -69,6 +70,26 @@ class ReplicaConsumerTest {
     /** The producer's clock on both fixtures. */
     private static final String OCCURRED_AT = "2026-08-04T12:00:00Z";
 
+    /** The topic the account-state listener reads, and half of every marker key it writes. */
+    private static final String ACCOUNT_STATE_TOPIC = "account.state-changed";
+
+    /** The topic the card listener reads, and half of every marker key it writes. */
+    private static final String CARD_UPDATED_TOPIC = "card.updated";
+
+    /**
+     * The whole marker key one delivery of {@link #EVENT_ID} on the account-state topic carries.
+     *
+     * <p>{@code src/main/resources/db/migration/V6__processed_event_topic_key.sql} made the consumed
+     * topic half of the key, so a stub that answered on the identifier alone would answer for both
+     * listeners at once and hide exactly the defect that migration removed.
+     */
+    private static final ProcessedEventId ACCOUNT_STATE_KEY =
+            new ProcessedEventId(EVENT_ID, ACCOUNT_STATE_TOPIC);
+
+    /** The whole marker key one delivery of {@link #EVENT_ID} on the card topic carries. */
+    private static final ProcessedEventId CARD_UPDATED_KEY =
+            new ProcessedEventId(EVENT_ID, CARD_UPDATED_TOPIC);
+
     private AccountCreditSnapshotRepository snapshots;
     private CardCrossReferenceRepository crossReferences;
     private ProcessedEventRepository processedEvents;
@@ -97,12 +118,12 @@ class ReplicaConsumerTest {
         @Test
         @DisplayName("applies every replicated field and records one marker")
         void appliesEveryReplicatedFieldAndRecordsOneMarker() {
-            when(processedEvents.existsById(EVENT_ID)).thenReturn(false);
+            when(processedEvents.existsById(ACCOUNT_STATE_KEY)).thenReturn(false);
             when(snapshots.applyStateChange(anyString(), any(), anyString(), any(), any(), any(),
                     any(), any())).thenReturn(1);
 
             consumer.onAccountStateChanged(accountMessage(), acknowledgment,
-                    "account.state-changed");
+                    ACCOUNT_STATE_TOPIC);
 
             verify(snapshots).applyStateChange(eq(ACCOUNT_ID), eq(new BigDecimal("5000.00")),
                     eq("2026-12-31"), eq(new BigDecimal("120.50")), eq(new BigDecimal("80.25")),
@@ -112,17 +133,17 @@ class ReplicaConsumerTest {
                     ArgumentCaptor.forClass(ProcessedEventEntity.class);
             verify(processedEvents).save(marker.capture());
             assertThat(marker.getValue().getEventId()).isEqualTo(EVENT_ID);
-            assertThat(marker.getValue().getConsumedTopic()).isEqualTo("account.state-changed");
+            assertThat(marker.getValue().getConsumedTopic()).isEqualTo(ACCOUNT_STATE_TOPIC);
             verify(acknowledgment).acknowledge();
         }
 
         @Test
         @DisplayName("applies nothing on a repeat delivery and still acknowledges")
         void appliesNothingOnARepeatDeliveryAndStillAcknowledges() {
-            when(processedEvents.existsById(EVENT_ID)).thenReturn(true);
+            when(processedEvents.existsById(ACCOUNT_STATE_KEY)).thenReturn(true);
 
             consumer.onAccountStateChanged(accountMessage(), acknowledgment,
-                    "account.state-changed");
+                    ACCOUNT_STATE_TOPIC);
 
             verify(snapshots, never()).applyStateChange(anyString(), any(), anyString(), any(),
                     any(), any(), any(), any());
@@ -138,12 +159,12 @@ class ReplicaConsumerTest {
         @Test
         @DisplayName("records the marker when a newer change already holds the row")
         void recordsTheMarkerWhenANewerChangeAlreadyHoldsTheRow() {
-            when(processedEvents.existsById(EVENT_ID)).thenReturn(false);
+            when(processedEvents.existsById(ACCOUNT_STATE_KEY)).thenReturn(false);
             when(snapshots.applyStateChange(anyString(), any(), anyString(), any(), any(), any(),
                     any(), any())).thenReturn(0);
 
             consumer.onAccountStateChanged(accountMessage(), acknowledgment,
-                    "account.state-changed");
+                    ACCOUNT_STATE_TOPIC);
 
             verify(processedEvents).save(any(ProcessedEventEntity.class));
             verify(acknowledgment).acknowledge();
@@ -152,19 +173,19 @@ class ReplicaConsumerTest {
         @Test
         @DisplayName("acknowledges a proven duplicate and rethrows every other integrity failure")
         void acknowledgesAProvenDuplicateAndRethrowsEveryOther() {
-            when(processedEvents.existsById(EVENT_ID)).thenReturn(false, true);
+            when(processedEvents.existsById(ACCOUNT_STATE_KEY)).thenReturn(false, true);
             when(snapshots.applyStateChange(anyString(), any(), anyString(), any(), any(), any(),
                     any(), any())).thenThrow(new DataIntegrityViolationException("marker key"));
 
             consumer.onAccountStateChanged(accountMessage(), acknowledgment,
-                    "account.state-changed");
+                    ACCOUNT_STATE_TOPIC);
             verify(acknowledgment).acknowledge();
 
             Acknowledgment second = Mockito.mock(Acknowledgment.class);
-            when(processedEvents.existsById(EVENT_ID)).thenReturn(false, false);
+            when(processedEvents.existsById(ACCOUNT_STATE_KEY)).thenReturn(false, false);
 
             assertThatThrownBy(() -> consumer.onAccountStateChanged(accountMessage(), second,
-                    "account.state-changed"))
+                    ACCOUNT_STATE_TOPIC))
                     .isInstanceOf(DataIntegrityViolationException.class);
             verifyNoInteractions(second);
         }
@@ -173,7 +194,7 @@ class ReplicaConsumerTest {
         @DisplayName("refuses a tombstone, which this contract never produces")
         void refusesATombstone() {
             assertThatThrownBy(() ->
-                    consumer.onAccountStateChanged(null, acknowledgment, "account.state-changed"))
+                    consumer.onAccountStateChanged(null, acknowledgment, ACCOUNT_STATE_TOPIC))
                     .isInstanceOf(IllegalArgumentException.class);
             verifyNoInteractions(acknowledgment);
         }
@@ -211,11 +232,11 @@ class ReplicaConsumerTest {
         @Test
         @DisplayName("refreshes on the account and the visible digits, and records one marker")
         void refreshesOnTheAccountAndTheVisibleDigits() {
-            when(processedEvents.existsById(EVENT_ID)).thenReturn(false);
+            when(processedEvents.existsById(CARD_UPDATED_KEY)).thenReturn(false);
             when(crossReferences.refreshObservation(anyString(), anyString(), any(), any(), any()))
                     .thenReturn(1);
 
-            consumer.onCardUpdated(cardMessage(), acknowledgment, "card.updated");
+            consumer.onCardUpdated(cardMessage(), acknowledgment, CARD_UPDATED_TOPIC);
 
             verify(crossReferences).refreshObservation(eq(ACCOUNT_ID), eq("%7065"), eq(EVENT_ID),
                     eq(Instant.parse(OCCURRED_AT)), any(Instant.class));
@@ -231,11 +252,11 @@ class ReplicaConsumerTest {
         @Test
         @DisplayName("records the marker when the account has no matching row")
         void recordsTheMarkerWhenTheAccountHasNoMatchingRow() {
-            when(processedEvents.existsById(EVENT_ID)).thenReturn(false);
+            when(processedEvents.existsById(CARD_UPDATED_KEY)).thenReturn(false);
             when(crossReferences.refreshObservation(anyString(), anyString(), any(), any(), any()))
                     .thenReturn(0);
 
-            consumer.onCardUpdated(cardMessage(), acknowledgment, "card.updated");
+            consumer.onCardUpdated(cardMessage(), acknowledgment, CARD_UPDATED_TOPIC);
 
             verify(processedEvents).save(any(ProcessedEventEntity.class));
             verify(acknowledgment).acknowledge();
@@ -244,9 +265,9 @@ class ReplicaConsumerTest {
         @Test
         @DisplayName("refreshes nothing on a repeat delivery and still acknowledges")
         void refreshesNothingOnARepeatDelivery() {
-            when(processedEvents.existsById(EVENT_ID)).thenReturn(true);
+            when(processedEvents.existsById(CARD_UPDATED_KEY)).thenReturn(true);
 
-            consumer.onCardUpdated(cardMessage(), acknowledgment, "card.updated");
+            consumer.onCardUpdated(cardMessage(), acknowledgment, CARD_UPDATED_TOPIC);
 
             verify(crossReferences, never()).refreshObservation(anyString(), anyString(), any(),
                     any(), any());
@@ -256,14 +277,14 @@ class ReplicaConsumerTest {
         @Test
         @DisplayName("rethrows when it cannot establish that a duplicate committed")
         void rethrowsWhenItCannotEstablishThatADuplicateCommitted() {
-            when(processedEvents.existsById(EVENT_ID))
+            when(processedEvents.existsById(CARD_UPDATED_KEY))
                     .thenReturn(false)
                     .thenThrow(new QueryTimeoutException("the marker read timed out"));
             when(crossReferences.refreshObservation(anyString(), anyString(), any(), any(), any()))
                     .thenThrow(new DataIntegrityViolationException("some other constraint"));
 
             assertThatThrownBy(() ->
-                    consumer.onCardUpdated(cardMessage(), acknowledgment, "card.updated"))
+                    consumer.onCardUpdated(cardMessage(), acknowledgment, CARD_UPDATED_TOPIC))
                     .isInstanceOf(DataIntegrityViolationException.class);
             verifyNoInteractions(acknowledgment);
         }

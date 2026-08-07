@@ -136,7 +136,7 @@ The tested money-moving sites are:
 | Overlimit working balance | `app/cbl/CBTRN02C.cbl:L403-L405` | Cycle credit minus cycle debit plus amount |
 | Category balance create | `app/cbl/CBTRN02C.cbl:L508` | Add amount to an initialized balance |
 | Category balance update | `app/cbl/CBTRN02C.cbl:L527` | Add amount to an existing balance |
-| Account balance and cycle accumulators | `app/cbl/CBTRN02C.cbl:L547-L551` | Add amount, then route by sign |
+| Account balance and cycle accumulators | `app/cbl/CBTRN02C.cbl:L547-L551` | Add amount, then route by sign. Reproduced in two places, because the record is split across two services: `ledger-posting-service` writes its balance projection from the authorization event, and `account-service` writes the account record itself from the posted event |
 | Online bill payment | `app/cbl/COBIL00C.cbl:L234` | Subtract the copied opening balance |
 | Interest accrual | `app/cbl/CBACT04C.cbl:L464-L467` | Multiply by rate, divide by 1200, then accumulate |
 

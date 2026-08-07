@@ -1903,7 +1903,8 @@ class PostingEquivalenceTest {
                     TransactionAuthorized event = authorizationEventFor(record, accountId);
                     Acknowledgment acknowledgment = acknowledgments::incrementAndGet;
 
-                    consumer.onTransactionAuthorized(event, accountId, acknowledgment);
+                    consumer.onTransactionAuthorized(event, accountId, AUTHORIZED_TOPIC,
+                            acknowledgment);
                     approvedIds.add(record.transactionId());
                 } else {
                     declinedOutcomes.add(record.transactionId() + "," + reason.code());
@@ -1942,7 +1943,7 @@ class PostingEquivalenceTest {
                             + result.getString("category_code") + ","
                             + money(result.getBigDecimal("category_balance")));
 
-            assertEquals(List.of("1", "2", "3", "4"), jdbc.queryForList(
+            assertEquals(List.of("1", "2", "3", "4", "5"), jdbc.queryForList(
                             "SELECT version FROM flyway_schema_history "
                                     + "WHERE success AND version IS NOT NULL "
                                     + "ORDER BY installed_rank",
@@ -1954,7 +1955,9 @@ class PostingEquivalenceTest {
                             + "the posting path this test drives writes neither of them. V4 writes "
                             + "only comments, recording that the three value columns this "
                             + "comparison reads are derived by the posting arithmetic and that no "
-                            + "arriving account change replaces them");
+                            + "arriving account change replaces them. V5 re-keys processed_event on "
+                            + "the event and the topic together, which is the guard the consumer "
+                            + "this test drives writes on every delivery");
             assertEquals(expectedCount("posting", "record_count"), offset,
                     "the real path must inspect the whole feed");
             assertEquals(expectedCount("posting", "approved_count"), approvedIds.size(),
@@ -2341,9 +2344,8 @@ class PostingEquivalenceTest {
      */
     private static int claimMarker(Map<UUID, ProcessedEventEntity> markers,
             TransactionAuthorized event) {
-        ProcessedEventEntity marker =
-                new ProcessedEventEntity(event.eventId(), FIXED_EVENT_INSTANT);
-        marker.setConsumedTopic(AUTHORIZED_TOPIC);
+        ProcessedEventEntity marker = new ProcessedEventEntity(event.eventId(),
+                FIXED_EVENT_INSTANT, AUTHORIZED_TOPIC);
         return markers.putIfAbsent(event.eventId(), marker) == null
                 ? CLAIM_TAKEN
                 : CLAIM_REFUSED;

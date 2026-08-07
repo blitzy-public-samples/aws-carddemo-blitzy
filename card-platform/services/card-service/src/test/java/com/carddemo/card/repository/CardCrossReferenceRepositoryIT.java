@@ -200,6 +200,20 @@ class CardCrossReferenceRepositoryIT {
      */
     private static final Instant BASE_INSTANT = Instant.parse("2024-03-01T12:00:00Z");
 
+    /**
+     * One of the two topic names the marker tests key on.
+     *
+     * <p>{@code consumed_topic} is half of the primary key of {@code processed_event} since
+     * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql}. The card service
+     * reads no topic today, so these two names stand in for the two a consumer added here would
+     * read. They are the names two other services of this platform already read, so nothing about
+     * them is invented.
+     */
+    private static final String FIRST_TOPIC = "transaction.authorized";
+
+    /** The second of the two topic names the marker tests key on. See {@link #FIRST_TOPIC}. */
+    private static final String SECOND_TOPIC = "account.state-changed";
+
     /** Reads whether one named index of one named table is unique, from the system catalog. */
     private static final String INDEX_IS_UNIQUE_SQL = """
             SELECT i.indisunique
@@ -454,14 +468,32 @@ class CardCrossReferenceRepositoryIT {
      * inserting, and a merge over an existing row updates it. A statement is what puts the primary
      * key of {@code processed_event} in the position of refusing a second row.
      *
-     * @param eventId     the event identifier, the primary key
+     * <p>The topic half of the key takes {@link #FIRST_TOPIC}, so two calls collide on the key.
+     *
+     * @param eventId     the event identifier, one half of the primary key
      * @param processedAt when the consumer handled the delivery
      */
     private void insertMarker(UUID eventId, Instant processedAt) {
+        insertMarker(eventId, processedAt, FIRST_TOPIC);
+    }
+
+    /**
+     * Inserts one marker for one event on one named topic, through a statement.
+     *
+     * <p>{@code consumed_topic} is half of the primary key since
+     * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql}, so a caller that
+     * means to test the key has to choose the topic rather than leave it to a default.
+     *
+     * @param eventId       the event identifier, one half of the primary key
+     * @param processedAt   when the consumer handled the delivery
+     * @param consumedTopic the topic the delivery arrived on, the other half of the primary key
+     */
+    private void insertMarker(UUID eventId, Instant processedAt, String consumedTopic) {
         jdbcTemplate.update(
-                "INSERT INTO " + schema + ".processed_event (event_id, processed_at)"
-                        + " VALUES (?, ?)",
-                eventId, Timestamp.from(processedAt));
+                "INSERT INTO " + schema
+                        + ".processed_event (event_id, processed_at, consumed_topic)"
+                        + " VALUES (?, ?, ?)",
+                eventId, Timestamp.from(processedAt), consumedTopic);
     }
 
     /**
@@ -686,16 +718,28 @@ class CardCrossReferenceRepositoryIT {
         }
 
         /**
-         * Asserts {@code event_id} is the primary key of {@code processed_event}.
+         * Asserts {@code event_id} and {@code consumed_topic} together are the primary key of
+         * {@code processed_event}, in that order.
          *
          * <p>The primary key is the duplicate-delivery guard as well as the key, which is what
-         * makes a second insert for one identifier fail instead of passing.
+         * makes a second insert for one identifier on one topic fail instead of passing.
+         *
+         * <p>The column order matters. {@code event_id} leads, so the index the key builds serves a
+         * lookup that names the event alone, which is the read
+         * {@code ProcessedEventRepository.existsByEventIdOnAnyTopic} makes. Leading with the topic
+         * would leave that read scanning.
+         *
+         * <p>{@code src/main/resources/db/migration/V3__processed_event_topic_key.sql} widened the
+         * key from {@code event_id} alone, because a delivery is identified by its event and the
+         * stream it arrived on: two producing services assign identifiers independently, so the
+         * narrow key suppressed a different event that happened to share one.
          */
         @Test
-        @DisplayName("event_id is the primary key of processed_event")
+        @DisplayName("event_id and consumed_topic are the primary key of processed_event")
         void theMarkerPrimaryKeyIsTheEventIdentifier() {
-            assertEquals(List.of("event_id"), primaryKeyColumns("processed_event"),
-                    "one identifier reaches at most one marker row");
+            assertEquals(List.of("event_id", "consumed_topic"),
+                    primaryKeyColumns("processed_event"),
+                    "one identifier reaches at most one marker row per topic");
         }
     }
 
@@ -1033,7 +1077,7 @@ class CardCrossReferenceRepositoryIT {
         @Test
         @DisplayName("an unseen event identifier is not yet processed")
         void anUnseenIdentifierIsNotYetProcessed() {
-            assertFalse(processedEventRepository.existsByEventId(UUID.randomUUID()),
+            assertFalse(processedEventRepository.existsByEventIdOnAnyTopic(UUID.randomUUID()),
                     "the table starts empty, so no identifier is marked");
         }
 
@@ -1050,38 +1094,85 @@ class CardCrossReferenceRepositoryIT {
             UUID eventId = UUID.randomUUID();
             UUID otherEventId = UUID.randomUUID();
 
-            processedEventRepository.save(new ProcessedEventEntity(eventId, BASE_INSTANT));
+            processedEventRepository.save(
+                    new ProcessedEventEntity(eventId, BASE_INSTANT, FIRST_TOPIC));
             entityManager.flush();
 
             assertAll(
-                    () -> assertTrue(processedEventRepository.existsByEventId(eventId),
+                    () -> assertTrue(processedEventRepository.existsByEventIdOnAnyTopic(eventId),
                             "the marker names the delivery the consumer handled"),
-                    () -> assertFalse(processedEventRepository.existsByEventId(otherEventId),
+                    () -> assertFalse(processedEventRepository.existsByEventIdOnAnyTopic(otherEventId),
                             "one marker answers for one identifier only"),
                     () -> assertEquals(1L, rowCount("processed_event"),
                             "the save wrote exactly one marker"));
         }
 
         /**
-         * Asserts the primary key refuses a second marker for one identifier.
+         * Asserts the primary key refuses a second marker for one identifier on one topic.
          *
          * <p>The refusal is what makes the guard durable, not advisory: two consumers racing
          * one delivery cannot both write a marker. The statement runs last in this test, because
          * PostgreSQL aborts the surrounding transaction once it fails. The source has no such
          * guard, and a repeated key there reaches the abend routine by way of
          * {@code app/cbl/CBTRN02C.cbl:L562-L579}.
+         *
+         * <p>Both inserts name {@link #FIRST_TOPIC}, so they collide on the whole key. That is the
+         * redelivery case, and suppressing it is the purpose of the guard.
          */
         @Test
-        @DisplayName("a second marker for one identifier is refused by the primary key")
+        @DisplayName("a second marker for one identifier on one topic is refused by the primary key")
         void aSecondMarkerForOneIdentifierIsRefused() {
             UUID eventId = UUID.randomUUID();
-            insertMarker(eventId, BASE_INSTANT);
+            insertMarker(eventId, BASE_INSTANT, FIRST_TOPIC);
 
-            assertTrue(processedEventRepository.existsByEventId(eventId),
+            assertTrue(processedEventRepository.existsByEventIdOnAnyTopic(eventId),
                     "the first marker must be present before the second insert is attempted");
             assertThrows(DataIntegrityViolationException.class,
-                    () -> insertMarker(eventId, BASE_INSTANT.plusSeconds(1)),
-                    "pk_processed_event must refuse a second row for one event identifier");
+                    () -> insertMarker(eventId, BASE_INSTANT.plusSeconds(1), FIRST_TOPIC),
+                    "pk_processed_event must refuse a second row for one event identifier on one"
+                            + " topic");
+        }
+
+        /**
+         * Asserts one identifier is claimable once per topic rather than once per service.
+         *
+         * <p>This is the property {@code V3__processed_event_topic_key.sql} exists for. Event
+         * identifiers are assigned by the service that publishes the event, and different producing
+         * services assign them independently, so two different events on two topics may carry one
+         * identifier without either producer being at fault. Keyed on the identifier alone, the
+         * second insert below was refused, and a consumer reading that refusal concluded it had
+         * already handled the event and wrote nothing at all: right for a redelivery, and a silently
+         * dropped effect for a different event. Keyed on the identifier and the topic, both rows are
+         * accepted and each topic keeps its own guard.
+         *
+         * <p>The card service reads no topic today, so no listener here can reach the defect. The
+         * test holds the property for the first consumer this schema serves, which is the same reason
+         * the table is declared at all.
+         */
+        @Test
+        @DisplayName("one identifier is claimable once per topic, not once per service")
+        void oneIdentifierIsClaimableOncePerTopic() {
+            UUID sharedEventId = UUID.randomUUID();
+
+            insertMarker(sharedEventId, BASE_INSTANT, FIRST_TOPIC);
+            insertMarker(sharedEventId, BASE_INSTANT.plusSeconds(1), SECOND_TOPIC);
+
+            assertAll("one identifier on two topics",
+                    () -> assertEquals(2L, rowCount("processed_event"),
+                            "both deliveries claimed, because a delivery is identified by its event"
+                                    + " and the topic it arrived on"),
+                    () -> assertTrue(processedEventRepository.existsById(
+                                    new ProcessedEventEntity.ProcessedEventId(sharedEventId,
+                                            FIRST_TOPIC)),
+                            "the first topic carries its own marker"),
+                    () -> assertTrue(processedEventRepository.existsById(
+                                    new ProcessedEventEntity.ProcessedEventId(sharedEventId,
+                                            SECOND_TOPIC)),
+                            "the second topic carries its own marker, which the narrow key refused"),
+                    () -> assertFalse(processedEventRepository.existsById(
+                                    new ProcessedEventEntity.ProcessedEventId(sharedEventId,
+                                            ProcessedEventEntity.NO_CONSUMED_TOPIC)),
+                            "a topic no delivery named carries no marker"));
         }
     }
 }

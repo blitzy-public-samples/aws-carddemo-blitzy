@@ -34,13 +34,13 @@ The delivered runtime creates seven business topics, five source-specific dead-l
 | --- | --- | --- | --- |
 | `transaction.authorized` | `TransactionAuthorized` | authorization-service | `ledger-posting`, `fraud-detection`, `notification-authorized` |
 | `transaction.declined` | `TransactionDeclined` versions 1 and 2 | authorization-service and the ledger feed-validation reject path | None in the demo |
-| `transaction.posted` | `TransactionPosted` versions 1 and 2 | ledger-posting-service | `notification-posted` |
+| `transaction.posted` | `TransactionPosted` versions 1 and 2 | ledger-posting-service | `account-posted`, `notification-posted` |
 | `fraud.assessed` | `FraudFlagged`, `FraudCleared` | fraud-detection-service | `notification-fraud` |
 | `account.state-changed` | `AccountStateChanged` | account-service | `authorization-account-state`, `ledger-account-state` |
 | `customer.context-changed` | `CustomerContextChanged` | account-service | `notification-customer` |
 | `card.updated` | `CardUpdated` versions 1 and 2 | card-service | `authorization-card-updated` |
 | `<source>.DLT` | 134-character fixed-width abend diagnostic | Ledger, fraud, and notification listener error handlers | Human inspection and replay tooling |
-| `carddemo.dead-letter` | `DeadLetterEnvelope` | Authorization listener error handlers, the four outbox relays on abandonment, and any handler whose source topic cannot be resolved | Human inspection and replay tooling |
+| `carddemo.dead-letter` | `DeadLetterEnvelope` | Authorization and account listener error handlers, the four outbox relays on abandonment, and any handler whose source topic cannot be resolved | Human inspection and replay tooling |
 
 The five source-specific dead-letter topics are `transaction.authorized.DLT`, `account.state-changed.DLT`, `transaction.posted.DLT`, `fraud.assessed.DLT`, and `customer.context-changed.DLT`. `card.updated` needs none, because its one consumer routes a spent record to the shared fallback as a governed envelope.
 
@@ -107,6 +107,12 @@ The new balance is the value after `app/cbl/CBTRN02C.cbl:L547`. Notification ref
 
 The processing timestamp carries two significant fractional digits and four zeros. [Business-rule flag 8](business-rule-flags.md) and the [equivalence results](equivalence-results.md) define the comparison tolerance.
 
+Two groups read this topic, for unrelated reasons. `notification-posted` inserts a statement row. `account-posted` adds the amount to the account record, reproducing `app/cbl/CBTRN02C.cbl:L545-L560`: the balance moves, and the amount reaches `current_cycle_credit` when it is not negative and `current_cycle_debit` when it is.
+
+That second group is what makes the two accumulators move at all. `ACCTDAT` was one dataset in the source, so the posting program at `:L545-L560` and the credit-limit test at `:L403-L413` read and wrote the same record. Here the record is split across three services that may not call one another, and this event is the only path from the writer to the copy the account service owns. Without it the accumulators stayed at their seeded values, the credit-limit rule tested one amount against the limit rather than cumulative cycle exposure, and `GET /accounts/{id}` reported the balance as it stood at deployment while `GET /balances/{id}` reported the posted one. Neither raised anything.
+
+The account listener applies the amount and never the event's `newBalance`. A balance copied across a service boundary is a value with two owners; an amount applied to a locally held balance keeps one owner and stays correct under redelivery, because the marker suppresses the repeat rather than the arithmetic having to be idempotent.
+
 ### `FraudFlagged`
 
 `FraudFlagged` is additive in full because no COBOL fraud module exists. It carries transaction and account identifiers, a score, triggered rule identifiers, and assessment time.
@@ -121,7 +127,9 @@ The notification listener acknowledges a valid cleared event without rendering a
 
 ### `AccountStateChanged`
 
-The account service publishes `AccountStateChanged` only after an account update or cycle close commits, and an update publishes it only when the account record itself changed. An update that raises a credit limit publishes it; one that changes only an address publishes `CustomerContextChanged` instead. The event carries the complete authorization credit snapshot.
+The account service publishes `AccountStateChanged` after any committed change to the account record: an update, a cycle close, or a posted amount applied by the `account-posted` group. An update publishes it only when the account record itself changed — one that raises a credit limit publishes it, one that changes only an address publishes `CustomerContextChanged` instead. The event carries the complete authorization credit snapshot.
+
+A posting is a state change to `ACCTDAT` in the source too: `app/cbl/CBTRN02C.cbl:L560` rewrites the record. So the publication rule this service follows, that it publishes only on a state change, holds unchanged.
 
 | Field | Authorization target in `account_credit_snapshot` | Ledger target in `account_balance_projection` |
 | --- | --- | --- |
@@ -136,6 +144,10 @@ The account service publishes `AccountStateChanged` only after an account update
 Both groups apply the snapshot monotonically: a change whose `occurredAt` is not after the stored value discards itself rather than moving a cycle balance backwards. Each stores its event marker in the same transaction as the projection write.
 
 Authorization then reads its local projection and calls no account service during a decision. The ledger consumes the same event for a different reason: `V2__seed.sql` loaded a projection row per fixture account and nothing else told the table when the account service moved the original, so without this consumer an account opened after deployment had no row at all, and a billing cycle closed at `app/cbl/CBACT04C.cbl:L353-L354` never reached the ledger's copy of the two accumulators. A posting is a delta the ledger owns; it advances neither provenance column, because clearing them would let an already-applied change apply twice.
+
+The event a posting produces closes the loop the credit-limit rule depends on. `transaction.posted` carries the amount to the account service, which applies it and publishes the moved accumulators here, and the `authorization-account-state` group writes them into the snapshot reason code 102 reads. The ledger ignores the value columns of that particular event by design, and `ledger-posting-service` documents why: it applied the same amount itself a moment earlier, so taking the account service's copy would overwrite a correct value with one that is behind by every posting the account service has yet to hear about.
+
+The chain therefore has one writer per copy. The ledger writes its own projection from the authorization event, the account service writes its record from the posted event, and the authorization replica is written only from what the account service publishes.
 
 ### `CustomerContextChanged`
 
@@ -172,6 +184,9 @@ sequenceDiagram
     participant FraudRelay as Fraud relay
     participant Notification
     participant NotifyDB as Notification DB
+    participant Account
+    participant AccountDB as Account DB
+    participant AccountRelay as Account relay
 
     Client->>Authorization: POST /authorizations
     Authorization->>AuthDB: Write decision and one outbox row
@@ -202,6 +217,13 @@ sequenceDiagram
     Kafka-->>Notification: Fraud assessment
     Notification->>NotifyDB: Render flagged alert and write attempt
     NotifyDB-->>Notification: Commit before acknowledge
+
+    Kafka-->>Account: TransactionPosted
+    Account->>AccountDB: Claim event, add the amount, queue the state change
+    AccountDB-->>Account: Commit balance, accumulator and outbox row
+    AccountRelay->>Kafka: Publish AccountStateChanged
+    Kafka-->>Authorization: AccountStateChanged
+    Authorization->>AuthDB: Refresh the credit snapshot reason 102 reads
 ```
 
 **Legend**
@@ -210,8 +232,10 @@ sequenceDiagram
 - Arrows through Kafka are asynchronous and occur after the authorization response.
 - Each database response marked `Commit` closes one local transaction.
 - A declined authorization publishes only `TransactionDeclined`; no consumer receives an authorized event.
-- Ledger, fraud, and notification share no direct call edge.
+- Ledger, fraud, notification, and account share no direct call edge.
 - Three arrows carry `TransactionAuthorized` out of Kafka, one per independent consumer group.
+- Two arrows carry `TransactionPosted` out of Kafka, to notification and to account.
+- The last four arrows are the cycle-accumulator chain. They start at a posted amount and end at the snapshot the credit-limit rule reads, so cumulative cycle exposure reaches the next authorization without any consumer calling another service.
 
 ## State-change projection flow
 
@@ -219,9 +243,13 @@ sequenceDiagram
 
 Figure 2 shows the state paths that replace synchronous owner-service lookups. One `account.state-changed` event feeds two independent replicas: authorization's credit snapshot and the ledger's balance projection. Card updates refresh only authorization's observation metadata, and customer-context changes refresh notification's renderer context.
 
+Three things produce `account.state-changed`, not two. An update and a cycle close both arrive through the web surface. A posted amount arrives on `transaction.posted` instead, and it is the one path that runs with no request behind it. Figure 2 draws it because the credit-limit rule reads what it writes: without that path the two accumulators in the snapshot never move, and reason code 102 tests one amount against the limit rather than cumulative cycle exposure.
+
 ```mermaid
 graph LR
     AAPI["Account update or cycle close"]
+    PTOPIC{{"transaction.posted"}}
+    APOST["Account posted-transaction consumer"]
     ADB[("account row and outbox row")]
     ARELAY["Account outbox relay"]
     ATOPIC{{"account.state-changed"}}
@@ -241,6 +269,8 @@ graph LR
     XREF[("card_xref and processed_event")]
 
     AAPI -->|"one local transaction"| ADB
+    PTOPIC ==> APOST
+    APOST -->|"one local transaction"| ADB
     ADB --> ARELAY
     ARELAY ==> ATOPIC
     ARELAY ==> CTXTOPIC
@@ -263,6 +293,8 @@ graph LR
 - A cylinder naming two tables means both rows commit in one local transaction.
 - Thick arrows cross Kafka.
 - `account.state-changed` has two consumer groups, `authorization-account-state` and `ledger-account-state`, so each replica advances on its own offsets.
+- `transaction.posted` reaches the account service under `account-posted`, its own group, so the notification service reading the same topic still receives every record.
+- The account row has two writers and they write different things: a request writes the submitted values, and the posted-transaction consumer adds an amount to the balance and to one of the two accumulators. Both queue one outbox row, so both reach the authorization snapshot by the same path.
 - `card.updated` has the `authorization-card-updated` consumer group.
 - `customer.context-changed` has the `notification-customer` consumer group.
 - Every replica applies a snapshot monotonically against the producer timestamp, so an older or replayed event cannot move a projection backwards.

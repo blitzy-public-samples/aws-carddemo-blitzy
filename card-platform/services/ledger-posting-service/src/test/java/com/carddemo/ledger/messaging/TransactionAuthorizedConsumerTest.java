@@ -21,6 +21,7 @@ import com.carddemo.ledger.domain.AccountBalanceUpdater.AccountBalanceRowMissing
 import com.carddemo.ledger.domain.PostingService;
 import com.carddemo.ledger.domain.RejectRecorder;
 import com.carddemo.ledger.entity.ProcessedEventEntity;
+import com.carddemo.ledger.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.ledger.outbox.OutboxWriter;
 import com.carddemo.ledger.repository.ProcessedEventRepository;
 import io.micrometer.core.instrument.Counter;
@@ -275,7 +276,7 @@ final class TransactionAuthorizedConsumerTest {
 
     /** Answers the guard with no marker, so this delivery is the first to hold the identifier. */
     private void markerAbsent() {
-        when(processedEvents.existsById(any(UUID.class))).thenAnswer(invocation -> {
+        when(processedEvents.existsById(any(ProcessedEventId.class))).thenAnswer(invocation -> {
             journal.add(EXISTS);
             return false;
         });
@@ -283,7 +284,7 @@ final class TransactionAuthorizedConsumerTest {
 
     /** Answers the guard with a marker, so a delivery of this event has already been applied. */
     private void markerPresent() {
-        when(processedEvents.existsById(any(UUID.class))).thenAnswer(invocation -> {
+        when(processedEvents.existsById(any(ProcessedEventId.class))).thenAnswer(invocation -> {
             journal.add(EXISTS);
             return true;
         });
@@ -435,7 +436,7 @@ final class TransactionAuthorizedConsumerTest {
         void theSixCallsArriveInOrder() {
             markerAbsent();
 
-            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
 
             assertEquals(List.of(BEGIN, EXISTS, POST, SAVE, COMMIT, ACK), journal,
                     "the guard reads first, the marker follows the posting, and the offset is"
@@ -449,7 +450,7 @@ final class TransactionAuthorizedConsumerTest {
             markerAbsent();
             TransactionAuthorized event = anEvent();
 
-            consumer.onTransactionAuthorized(event, ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(event, ACCOUNT_ID, TOPIC, acknowledgment);
 
             assertEquals(ACCOUNT_ID, event.aggregateId(),
                     "the key is the account identifier of app/cpy/CVACT03Y.cpy:L7");
@@ -468,7 +469,7 @@ final class TransactionAuthorizedConsumerTest {
             markerAbsent();
             TransactionAuthorized event = anEvent();
 
-            consumer.onTransactionAuthorized(event, ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(event, ACCOUNT_ID, TOPIC, acknowledgment);
 
             assertNotNull(savedMarker, "one new delivery saves one marker");
             assertEquals(event.eventId(), savedMarker.getEventId(),
@@ -487,7 +488,7 @@ final class TransactionAuthorizedConsumerTest {
             markerAbsent();
 
             Instant before = Instant.now();
-            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
             Instant after = Instant.now();
 
             Instant stamped = savedMarker.getProcessedAt();
@@ -506,7 +507,7 @@ final class TransactionAuthorizedConsumerTest {
         void onePostingCountsItsOutcome() {
             markerAbsent();
 
-            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
 
             assertEquals(1.0d, registry.get(CONSUMED_METER).counter().count(),
                     "one delivery is one consumed event, after app/cbl/CBTRN02C.cbl:L206");
@@ -533,7 +534,7 @@ final class TransactionAuthorizedConsumerTest {
             markerAbsent();
 
             assertThrows(IllegalArgumentException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), "00000000099",
+                    () -> consumer.onTransactionAuthorized(anEvent(), "00000000099", TOPIC,
                             acknowledgment),
                     "the partition this record arrived on does not order the account it names");
 
@@ -552,7 +553,7 @@ final class TransactionAuthorizedConsumerTest {
             markerAbsent();
 
             assertThrows(IllegalArgumentException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), null, acknowledgment),
+                    () -> consumer.onTransactionAuthorized(anEvent(), null, TOPIC, acknowledgment),
                     "a record with no key was partitioned at random");
 
             assertNull(postedEvent, "nothing is posted");
@@ -566,7 +567,7 @@ final class TransactionAuthorizedConsumerTest {
             markerAbsent();
 
             assertThrows(IllegalArgumentException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), "   ", acknowledgment),
+                    () -> consumer.onTransactionAuthorized(anEvent(), "   ", TOPIC, acknowledgment),
                     "a blank key names no account");
 
             assertNull(postedEvent, "nothing is posted");
@@ -579,7 +580,7 @@ final class TransactionAuthorizedConsumerTest {
             markerAbsent();
 
             assertThrows(IllegalArgumentException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), "00000000099",
+                    () -> consumer.onTransactionAuthorized(anEvent(), "00000000099", TOPIC,
                             acknowledgment));
 
             assertEquals(1.0d, registry.get(CONSUMED_METER).counter().count(),
@@ -594,7 +595,7 @@ final class TransactionAuthorizedConsumerTest {
         void theKeyThatTravelsIsTheOneTheRecordCarried() {
             markerAbsent();
 
-            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
 
             assertEquals(ACCOUNT_ID, postedKey,
                     "the posting takes the record key, so its own check has two independent"
@@ -615,7 +616,7 @@ final class TransactionAuthorizedConsumerTest {
         void theGuardEndsTheDelivery() {
             markerPresent();
 
-            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
 
             assertEquals(List.of(BEGIN, EXISTS, COMMIT, ACK), journal,
                     "no posting and no marker sit between the guard and the commit");
@@ -628,9 +629,9 @@ final class TransactionAuthorizedConsumerTest {
             markerPresent();
             TransactionAuthorized event = anEvent();
 
-            consumer.onTransactionAuthorized(event, ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(event, ACCOUNT_ID, TOPIC, acknowledgment);
 
-            verify(processedEvents).existsById(event.eventId());
+            verify(processedEvents).existsById(new ProcessedEventId(event.eventId(), TOPIC));
             assertFalse(journal.contains(SAVE), "the guard writes no second marker");
         }
 
@@ -642,10 +643,10 @@ final class TransactionAuthorizedConsumerTest {
         @DisplayName("two deliveries of one identifier post once")
         void twoDeliveriesPostOnce() {
             markerAbsent();
-            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
             markerPresent();
 
-            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
 
             assertEquals(List.of(BEGIN, EXISTS, POST, SAVE, COMMIT, ACK,
                     BEGIN, EXISTS, COMMIT, ACK), journal,
@@ -662,7 +663,7 @@ final class TransactionAuthorizedConsumerTest {
         void aDuplicateCountsNoFailure() {
             markerPresent();
 
-            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
 
             assertEquals(1.0d,
                     outcomeCounter("duplicate").count(),
@@ -684,7 +685,7 @@ final class TransactionAuthorizedConsumerTest {
         void aDuplicateIsLoggedQuietly(CapturedOutput consoleOutput) {
             markerPresent();
 
-            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
 
             String all = consoleOutput.getAll();
             assertFalse(all.contains("ERROR"), "a duplicate is not an error");
@@ -711,7 +712,7 @@ final class TransactionAuthorizedConsumerTest {
             postingFails(new AccountBalanceRowMissingException(ACCOUNT_ID));
 
             assertThrows(AccountBalanceRowMissingException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment),
+                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment),
                     "the fault reaches the container, which decides the next attempt");
 
             assertEquals(List.of(BEGIN, EXISTS, POST, ROLLBACK), journal,
@@ -726,7 +727,7 @@ final class TransactionAuthorizedConsumerTest {
             postingFails(aStoreFault());
 
             assertThrows(DataAccessException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment),
+                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment),
                     "the fault reaches the container unchanged");
 
             assertEquals(List.of(BEGIN, EXISTS, POST, ROLLBACK), journal,
@@ -741,7 +742,7 @@ final class TransactionAuthorizedConsumerTest {
             postingFails(aStoreFault());
 
             assertThrows(DataAccessException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment));
+                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment));
 
             assertEquals(1.0d, failureCounter("process").count(),
                     "the fault is counted as the fault it is");
@@ -758,7 +759,7 @@ final class TransactionAuthorizedConsumerTest {
             postingFails(aStoreFault());
 
             assertThrows(DataAccessException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment));
+                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment));
 
             assertEquals(1L, registry.get(LATENCY_METER).timer().count(),
                     "one delivery is timed whatever became of it");
@@ -769,10 +770,10 @@ final class TransactionAuthorizedConsumerTest {
         @DisplayName("neither argument may be absent")
         void neitherArgumentMayBeAbsent() {
             assertThrows(NullPointerException.class,
-                    () -> consumer.onTransactionAuthorized(null, ACCOUNT_ID, acknowledgment),
+                    () -> consumer.onTransactionAuthorized(null, ACCOUNT_ID, TOPIC, acknowledgment),
                     "a delivery with no event has nothing to apply");
             assertThrows(NullPointerException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, null),
+                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, null),
                     "a delivery with no acknowledgement could never commit its offset");
         }
     }
@@ -796,7 +797,7 @@ final class TransactionAuthorizedConsumerTest {
             postingFails(aStoreFault());
 
             assertThrows(DataAccessException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment));
+                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment));
 
             String diagnostic = theOneDiagnostic(consoleOutput);
             assertTrue(diagnostic.contains(CULPRIT),
@@ -819,7 +820,7 @@ final class TransactionAuthorizedConsumerTest {
             postingFails(aStoreFault());
 
             assertThrows(DataAccessException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment));
+                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment));
 
             String diagnostic = theOneDiagnostic(consoleOutput);
             assertCarriesNoLongDigitRun(diagnostic, "the diagnostic");
@@ -844,7 +845,7 @@ final class TransactionAuthorizedConsumerTest {
             postingFails(talkative);
 
             assertThrows(DataAccessException.class,
-                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment));
+                    () -> consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment));
 
             String diagnostic = theOneDiagnostic(consoleOutput);
             assertTrue(diagnostic.contains(talkative.getClass().getSimpleName()),
@@ -927,25 +928,60 @@ final class TransactionAuthorizedConsumerTest {
         }
 
         /**
-         * One record per invocation, and the record's own key travels beside the payload. The key
-         * is a parameter rather than a field read off the payload because the ordering guarantee
-         * of AAP 0.3.1 is a property of the record, not of the document inside it: only the key
-         * decides the partition, so only the key can be checked against the aggregate the payload
+         * One record per invocation, and two of the record's own headers travel beside the payload.
+         *
+         * <p>The key is a parameter rather than a field read off the payload because the ordering
+         * guarantee of AAP 0.3.1 is a property of the record, not of the document inside it: only the
+         * key decides the partition, so only the key can be checked against the aggregate the payload
          * names.
+         *
+         * <p>The topic is a parameter for the same kind of reason. It is half of the marker's primary
+         * key since {@code src/main/resources/db/migration/V5__processed_event_topic_key.sql}, and a
+         * marker should record the stream the delivery actually arrived on rather than the stream this
+         * listener was configured to read. The two agree in every ordinary case, and where they do not
+         * the header is the fact.
          */
         @Test
-        @DisplayName("the method takes one event, its record key and one acknowledgement")
+        @DisplayName("the method takes one event, its record key, its topic and one acknowledgement")
         void theMethodTakesThreeParameters() {
             Method listener = listenerMethod();
 
-            assertEquals(3, listener.getParameterCount(), "one record per invocation");
+            assertEquals(4, listener.getParameterCount(), "one record per invocation");
             assertEquals(TransactionAuthorized.class, listener.getParameterTypes()[0],
                     "the first parameter is the deserialized payload");
             assertEquals(String.class, listener.getParameterTypes()[1],
                     "the second parameter is the record key, which decides the partition");
-            assertEquals(Acknowledgment.class, listener.getParameterTypes()[2],
-                    "the third parameter is the offset commit");
+            assertEquals(String.class, listener.getParameterTypes()[2],
+                    "the third parameter is the topic, which is half of the marker key");
+            assertEquals(Acknowledgment.class, listener.getParameterTypes()[3],
+                    "the fourth parameter is the offset commit");
             assertEquals(void.class, listener.getReturnType(), "a listener returns nothing");
+        }
+
+        /**
+         * The topic parameter binds the received-topic header, and binds it optionally.
+         *
+         * <p>Optional rather than required for the same reason the key binding is: a required binding
+         * lets the container reject a record before this listener can count it and route it. The
+         * listener falls back to the configured topic name and then to
+         * {@code ProcessedEventEntity.NO_CONSUMED_TOPIC}, so the marker key is never left half unset.
+         */
+        @Test
+        @DisplayName("the topic parameter binds the received-topic header, and binds it optionally")
+        void theTopicParameterBindsTheReceivedTopicHeader() {
+            Header header = null;
+            for (Annotation annotation : listenerMethod().getParameterAnnotations()[2]) {
+                if (annotation instanceof Header candidate) {
+                    header = candidate;
+                }
+            }
+
+            assertNotNull(header, "the topic arrives as a header, so it needs the header binding");
+            assertEquals(KafkaHeaders.RECEIVED_TOPIC, header.name(),
+                    "the marker records the stream the delivery arrived on");
+            assertFalse(header.required(),
+                    "a required binding would let the container refuse a record this listener has "
+                            + "to count and route");
         }
 
         /**
@@ -1012,7 +1048,7 @@ final class TransactionAuthorizedConsumerTest {
         @DisplayName("no meter name and no tag value carries an identifier")
         void noMeterCarriesAnIdentifier() {
             markerAbsent();
-            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, acknowledgment);
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
 
             registry.getMeters().forEach(meter -> {
                 String rendered = meter.getId().getName() + " " + meter.getId().getTags();

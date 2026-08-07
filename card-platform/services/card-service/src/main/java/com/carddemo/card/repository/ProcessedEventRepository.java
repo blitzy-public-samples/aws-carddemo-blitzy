@@ -1,6 +1,7 @@
 package com.carddemo.card.repository;
 
 import com.carddemo.card.entity.ProcessedEventEntity;
+import com.carddemo.card.entity.ProcessedEventEntity.ProcessedEventId;
 import java.time.Instant;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.Modifying;
@@ -10,14 +11,13 @@ import org.springframework.data.repository.query.Param;
 
 /**
  * Reads and writes {@code processed_event}, the table naming every event identifier this service
- * has already handled.
+ * has already handled and the topic each arrived on.
  *
  * <p>Transformed from the called input and output subroutine {@code app/cbl/CBSTM03B.CBL}, whose
  * parameter area spans {@code app/cbl/CBSTM03B.CBL:L100-L112}. {@code LK-M03B-KEY PIC X(25)} at
- * {@code app/cbl/CBSTM03B.CBL:L110} holds the key, and a Universally Unique Identifier
- * ({@link UUID}) takes it over. {@code LK-M03B-FLDT PIC X(1000)} at
- * {@code app/cbl/CBSTM03B.CBL:L112} holds the record, and {@link ProcessedEventEntity} takes it
- * over.
+ * {@code app/cbl/CBSTM03B.CBL:L110} holds the key, and {@link ProcessedEventId} takes it over.
+ * {@code LK-M03B-FLDT PIC X(1000)} at {@code app/cbl/CBSTM03B.CBL:L112} holds the record, and
+ * {@link ProcessedEventEntity} takes it over.
  *
  * <p>{@code LK-M03B-DD PIC X(08)} at {@code app/cbl/CBSTM03B.CBL:L101} selects a dataset, and one
  * interface serves one table. {@code LK-M03B-RC PIC X(02)} at {@code app/cbl/CBSTM03B.CBL:L109}
@@ -27,7 +27,7 @@ import org.springframework.data.repository.query.Param;
  *
  * <p>Two of the six operation codes declared at {@code app/cbl/CBSTM03B.CBL:L103-L108} reach a
  * method. Code {@code 'K'}, the condition {@code M03B-READ-K} at
- * {@code app/cbl/CBSTM03B.CBL:L106}, becomes the lookup below and the inherited {@code findById}.
+ * {@code app/cbl/CBSTM03B.CBL:L106}, becomes the inherited {@code existsById} and {@code findById}.
  * Code {@code 'W'}, the condition {@code M03B-WRITE} at {@code app/cbl/CBSTM03B.CBL:L107},
  * becomes the inherited {@code save}. {@code app/cbl/CBSTM03B.CBL} declares that write code and
  * implements it nowhere, opening each of its four datasets for input at
@@ -40,11 +40,19 @@ import org.springframework.data.repository.query.Param;
  * statements and cleans nothing up. Each of the eight file definitions in {@code
  * app/csd/CARDDEMO.CSD} carries {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
  *
+ * <p><b>The marker is keyed by the event and the topic together.</b> An identifier is assigned by
+ * the service that publishes the event, and two producing services assign them independently, so the
+ * identifier alone does not identify a delivery once a service reads two topics.
+ * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql} carries the reasoning at
+ * length, and it applies here even though this service reads no topic yet: a contract inherited
+ * narrow reintroduces the defect silently on the day a second listener is added.
+ *
  * <p>The card service consumes no topic today. Every service of this platform declares the same
  * marker over its own schema. A consumer added here inherits that table and the discipline the
- * method below describes.
+ * methods below describe.
  */
-public interface ProcessedEventRepository extends ListCrudRepository<ProcessedEventEntity, UUID> {
+public interface ProcessedEventRepository
+        extends ListCrudRepository<ProcessedEventEntity, ProcessedEventId> {
 
     /**
      * Deletes at most {@code limit} markers written before the given instant, and returns how many
@@ -60,6 +68,11 @@ public interface ProcessedEventRepository extends ListCrudRepository<ProcessedEv
      * horizon shorter than the broker's own retention lets a redelivery arrive after its marker is
      * gone, and the delivery is then applied a second time.
      *
+     * <p>The subquery selects and the delete matches on both key columns. Matching on the event
+     * identifier alone would remove a marker of the same identifier on another topic whose own
+     * {@code processed_at} is newer than the horizon, which would unguard a delivery the retention
+     * rule was not asked to forget.
+     *
      * @param horizon the instant before which a marker is removed
      * @param limit   the most markers one statement removes, at least one
      * @return the number of markers removed, and 0 when none is past the horizon
@@ -67,28 +80,34 @@ public interface ProcessedEventRepository extends ListCrudRepository<ProcessedEv
     @Modifying
     @Query(value = """
             DELETE FROM processed_event
-            WHERE event_id IN (SELECT event_id
-                                 FROM processed_event
-                                WHERE processed_at < :horizon
-                                ORDER BY processed_at
-                                LIMIT :limit)
+            WHERE (event_id, consumed_topic) IN (SELECT event_id, consumed_topic
+                                                   FROM processed_event
+                                                  WHERE processed_at < :horizon
+                                                  ORDER BY processed_at
+                                                  LIMIT :limit)
             """, nativeQuery = true)
     int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon,
             @Param("limit") int limit);
 
     /**
-     * Answers whether one event identifier has already been processed.
+     * Answers whether one event identifier has already been processed on any topic.
      *
-     * <p>A {@code true} result means the caller skips its side effects and acknowledges the
-     * message. A {@code false} result means the caller applies those side effects, then writes the
-     * marker through the inherited {@code save}. That write and those side effects commit in the
-     * same local transaction, and the caller acknowledges only after that transaction commits.
+     * <p>This is a diagnostic and retention read rather than the idempotency guard. The guard is the
+     * inherited {@code existsById}, which takes the whole key: a delivery is identified by its event
+     * and the stream it arrived on, so a consumer that asked this question instead would refuse a
+     * different event that happens to share an identifier with one already handled elsewhere. The
+     * name says {@code OnAnyTopic} so that no caller reaches for it by accident.
      *
-     * <p>Column {@code event_id} is the primary key of {@code processed_event}, so at most one row
-     * carries any one identifier, and this lookup reads the primary-key index.
+     * <p>A {@code true} result from the guard means the caller skips its side effects and
+     * acknowledges the message. A {@code false} result means the caller applies those side effects,
+     * then writes the marker through the inherited {@code save}. That write and those side effects
+     * commit in the same local transaction, and the caller acknowledges only after that transaction
+     * commits.
      *
      * @param eventId the event identifier the producing service assigned
-     * @return {@code true} when the table already holds a marker for {@code eventId}
+     * @return {@code true} when the table holds a marker for {@code eventId} on any topic
      */
-    boolean existsByEventId(UUID eventId);
+    @Query("SELECT COUNT(marker) > 0 FROM ProcessedEventEntity marker "
+            + "WHERE marker.id.eventId = :eventId")
+    boolean existsByEventIdOnAnyTopic(@Param("eventId") UUID eventId);
 }

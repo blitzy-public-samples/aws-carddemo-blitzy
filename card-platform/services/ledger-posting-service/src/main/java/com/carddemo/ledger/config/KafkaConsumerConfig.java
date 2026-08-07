@@ -22,6 +22,8 @@ import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.kafka.autoconfigure.KafkaConnectionDetails;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.context.annotation.Bean;
@@ -60,6 +62,14 @@ import org.springframework.util.backoff.FixedBackOff;
  */
 @Configuration
 public class KafkaConsumerConfig {
+
+    /**
+     * Where the one terminal line of a spent record goes.
+     *
+     * <p>Declared here rather than on the listener because the terminal outcome is this class's to
+     * report: the listener sees each attempt and cannot know which one was the last.
+     */
+    private static final Logger LOG = LoggerFactory.getLogger(KafkaConsumerConfig.class);
 
     /** The {@code abendCode} of a dead letter. Its schema admits one to four of {@code [0-9A-Z]}. */
     private static final String DEAD_LETTER_ABEND_CODE = "DEAD";
@@ -602,6 +612,18 @@ public class KafkaConsumerConfig {
                             .equals(failureKind)) {
                 meters.recordDeserializeFailure();
             }
+
+            // One ERROR per record, at the moment the record becomes terminal. Each individual
+            // attempt is logged at WARN by the listener, because a retry may still succeed and a
+            // level that says otherwise trains an operator to ignore it. This line is the level an
+            // alerting rule should watch, and every consumer of this platform emits it here: see
+            // the same line in the notification, authorization and fraud services. It carries the
+            // record coordinates and the four components of 01 ABEND-DATA at
+            // app/cpy/CSMSG02Y.cpy:L21-L29, and no payload, no key and no exception chain.
+            LOG.error("Routing one record to the dead-letter topic."
+                    + " topic={} partition={} offset={} code={} culprit={} reason={} message={}",
+                    failedRecord.topic(), failedRecord.partition(), failedRecord.offset(),
+                    DEAD_LETTER_ABEND_CODE, POSTING_JOB_NAME, failureKind, DEAD_LETTER_MESSAGE);
 
             try {
                 route.accept(failedRecord, failure);

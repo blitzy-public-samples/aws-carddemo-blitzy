@@ -369,6 +369,7 @@ services:
       GROUP_AUTHORIZATION_ACCOUNT: ${GROUP_AUTHORIZATION_ACCOUNT:-authorization-account-state}
       GROUP_AUTHORIZATION_CARD: ${GROUP_AUTHORIZATION_CARD:-authorization-card-updated}
       GROUP_LEDGER_ACCOUNT: ${GROUP_LEDGER_ACCOUNT:-ledger-account-state}
+      GROUP_ACCOUNT_POSTED: ${GROUP_ACCOUNT_POSTED:-account-posted}
       # One node holds one copy of every partition.
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
@@ -603,9 +604,24 @@ services:
             "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
           grant_producer "$${NOTIFICATION_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
 
-          # Account and card: each publishes its own state-change event when a state
-          # change occurs, and consumes nothing. The account service publishes two: the
-          # account fields on one topic and the ten cardholder fields on the other.
+          # Account: publishes its own state-change events when a state change occurs, and
+          # reads one stream. It publishes two topics: the account fields on one and the ten
+          # cardholder fields on the other.
+          #
+          # The consumer entry is what closes the cycle-accumulator chain. The ledger owns
+          # the posting arithmetic and the account service owns the account record, so the
+          # posted amount travels between them as transaction.posted. Without this entry the
+          # account record never moves, the state change that carries the two accumulators to
+          # the authorization replica is never published, and reason code 102 at
+          # app/cbl/CBTRN02C.cbl:L403-L413 tests one amount against the credit limit instead
+          # of the cycle exposure it is meant to test. The group is this service's own, so the
+          # notification service reading the same topic still receives every record.
+          #
+          # No entry on a source-specific dead-letter topic. This service routes both its
+          # terminal diagnostics — a spent outbox row and a delivery no attempt could apply —
+          # to the shared topic below as a governed DeadLetterEnvelope.
+          #
+          # Card: publishes its own state-change event and consumes nothing.
           #
           # Each also holds one entry on the shared dead-letter topic, and neither is
           # optional. An outbox relay that exhausts its attempts on a row names that row
@@ -614,6 +630,8 @@ services:
           # entry on that topic: they write a diagnostic and never read one.
           grant_producer "$${ACCOUNT_KAFKA_USER}" "$${TOPIC_ACCOUNT_STATE_CHANGED}" || return 1
           grant_producer "$${ACCOUNT_KAFKA_USER}" "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}" || return 1
+          grant_consumer "$${ACCOUNT_KAFKA_USER}" "$${TOPIC_TRANSACTION_POSTED}" \
+            "$${GROUP_ACCOUNT_POSTED}" || return 1
           grant_producer "$${ACCOUNT_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
           grant_producer "$${CARD_KAFKA_USER}" "$${TOPIC_CARD_UPDATED}" || return 1
           grant_producer "$${CARD_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
@@ -1002,9 +1020,10 @@ services:
       - carddemo
     restart: unless-stopped
 
-  # Account service container. Configured with the account database, its schema
-  # and the outbox relay settings. It subscribes to no topic; its endpoints write
-  # account changes and its relay publishes them.
+  # Account service container. Configured with the account database, its schema,
+  # the outbox relay settings and the one stream it reads. Its endpoints write
+  # account changes, its listener applies posted amounts to the account record, and
+  # its relay publishes every resulting state change.
   account-service:
     # The tag this image carries once built. One tag serves the three places that name
     # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
@@ -1034,15 +1053,25 @@ services:
       SPRING_FLYWAY_SCHEMAS: ${ACCOUNT_DB_SCHEMA:-account_service}
       SPRING_FLYWAY_DEFAULT_SCHEMA: ${ACCOUNT_DB_SCHEMA:-account_service}
       SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA: ${ACCOUNT_DB_SCHEMA:-account_service}
+      # Two Flyway locations, for the same reason the authorization service names two.
+      # db/migration reproduces app/data/ASCII/acctdata.txt value for value, and all 50 of
+      # its expiries fall in 2025. db/demo extends them to 2099-12-31 and touches nothing
+      # else. The two copies of this record carry one overlay or neither: this service
+      # publishes its expiry on every state change and the authorization replica applies it,
+      # so extending the replica alone would have the first posted transaction write a past
+      # expiry back over the extension. Drop the second location here and in the
+      # authorization service together for a run compared against the fixture.
+      SPRING_FLYWAY_LOCATIONS: ${ACCOUNT_FLYWAY_LOCATIONS:-classpath:db/migration,classpath:db/demo}
       # This service's own broker identity. The entries the broker installs for it
       # cover exactly what its configuration needs: it publishes
-      # account.state-changed when a state change occurs. An entry naming another
+      # account.state-changed and customer.context-changed when a state change occurs,
+      # and reads transaction.posted under its own group. An entry naming another
       # service's topic or group is absent, so a compromise here reaches neither. A
       # username is not a credential and carries a fallback; the password carries
       # none.
       KAFKA_SASL_USERNAME: ${ACCOUNT_KAFKA_USER:-carddemo-account}
       KAFKA_SASL_PASSWORD: ${ACCOUNT_KAFKA_PASSWORD:?ACCOUNT_KAFKA_PASSWORD must be set; copy .env.example to .env and give this service its own broker password}
-      # The one topic this service publishes, on a mutation only. Its payload
+      # The first topic this service publishes, on a mutation only. Its payload
       # matches schemas/account-state-changed-v1.json in event-contracts.
       TOPIC_ACCOUNT_STATE_CHANGED: ${TOPIC_ACCOUNT_STATE_CHANGED:-account.state-changed}
       # The second topic this service publishes, on a cardholder-field change. The
@@ -1054,7 +1083,20 @@ services:
       # would create and consume the new name while this producer kept writing the
       # old one.
       TOPIC_CUSTOMER_CONTEXT_CHANGED: ${TOPIC_CUSTOMER_CONTEXT_CHANGED:-customer.context-changed}
-      # The producer contract also validates the shared source-less fallback envelope.
+      # The one topic this service reads. messaging/TransactionPostedConsumer adds each
+      # posted amount to the account record, reproducing app/cbl/CBTRN02C.cbl:L545-L560,
+      # and the state change it queues carries the two billing-cycle accumulators to the
+      # authorization replica the credit-limit rule reads.
+      TOPIC_TRANSACTION_POSTED: ${TOPIC_TRANSACTION_POSTED:-transaction.posted}
+      # The group that listener joins, named twice on purpose: Spring reads the first key
+      # and config/StreamNameReport reports the second, so a deployment that renames the
+      # group is visible in the start-up log rather than only in the broker.
+      SPRING_KAFKA_CONSUMER_GROUP_ID: ${GROUP_ACCOUNT_POSTED:-account-posted}
+      GROUP_ACCOUNT_POSTED: ${GROUP_ACCOUNT_POSTED:-account-posted}
+      CONSUMER_MAX_RETRY_ATTEMPTS: ${CONSUMER_MAX_RETRY_ATTEMPTS:-3}
+      CONSUMER_RETRY_BACKOFF_MS: ${CONSUMER_RETRY_BACKOFF_MS:-1000}
+      # The producer contract also validates the shared source-less fallback envelope, and
+      # the listener's own dead-letter route sends a governed envelope to the same topic.
       TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}

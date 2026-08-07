@@ -140,6 +140,54 @@ class ConfigurationInventoryContractTest {
                 "all six service containers must inherit the shared environment");
     }
 
+    /**
+     * The composition has to grant and wire the topic the account service reads.
+     *
+     * <p>Three things have to agree, and a mismatch in any one is quiet. The access control matrix
+     * must carry a consumer entry, or the Kafka authorizer refuses every delivery. The container must
+     * receive the topic name and the group name, or the listener joins the wrong stream. And the
+     * group must be the account service's own: two services in one group split the partitions, so
+     * each would apply roughly half the postings and neither would raise anything.
+     *
+     * <p>The retry settings are asserted here too, because the shipped configuration binds them and a
+     * container that never receives them takes each record once. That turns a transient database
+     * failure into a dead-lettered posting, which is a balance the account record never receives.
+     */
+    @Test
+    void composeGrantsAndWiresTheTopicTheAccountServiceReads() {
+        String compose = read(platformDirectory().resolve("docker-compose.yml"));
+
+        assertTrue(compose.contains(
+                        "grant_consumer \"$${ACCOUNT_KAFKA_USER}\" \"$${TOPIC_TRANSACTION_POSTED}\""),
+                "the access control matrix must let the account service read transaction.posted, or "
+                        + "the authorizer refuses every delivery");
+        assertTrue(compose.contains("\"$${GROUP_ACCOUNT_POSTED}\" || return 1"),
+                "the consumer entry must name the group the account listener joins");
+        assertTrue(compose.contains(
+                        "grant_producer \"$${ACCOUNT_KAFKA_USER}\" \"$${TOPIC_DEAD_LETTER}\""),
+                "a record the account listener cannot apply has to reach the shared dead-letter "
+                        + "topic");
+
+        String account = serviceBlock(compose, "account-service");
+        assertTrue(account.contains(
+                        "TOPIC_TRANSACTION_POSTED: ${TOPIC_TRANSACTION_POSTED:-transaction.posted}"),
+                "the account container must receive the topic it reads");
+        assertTrue(account.contains(
+                        "SPRING_KAFKA_CONSUMER_GROUP_ID: ${GROUP_ACCOUNT_POSTED:-account-posted}"),
+                "the account container must receive the group its listener joins");
+        assertTrue(account.contains("CONSUMER_MAX_RETRY_ATTEMPTS:")
+                        && account.contains("CONSUMER_RETRY_BACKOFF_MS:"),
+                "the account container must receive the retry policy, or one transient failure "
+                        + "dead-letters a posting");
+
+        String notification = serviceBlock(compose, "notification-service");
+        assertTrue(notification.contains("GROUP_NOTIFICATION_POSTED:"),
+                "the notification service must keep its own group on the same topic, or the two "
+                        + "consumers split the partitions between them");
+        assertFalse(notification.contains("GROUP_ACCOUNT_POSTED:"),
+                "no other container may join the account group");
+    }
+
     @Test
     void theKubernetesConfigMapCarriesTheSameSevenStringDefaults() {
         String configMap =

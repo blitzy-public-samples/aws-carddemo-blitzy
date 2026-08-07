@@ -245,6 +245,14 @@ paths:
                   the
                   only Oregon prefix among the 240 combinations app/cpy/CSLKPCDY.cpy lists.
                   phoneNumber2 area code 493 becomes 503, which the general-purpose band holds.
+
+
+                  expirationDate is the fixture value. A deployment that applies the
+                  classpath:db/demo overlay reads 2099-12-31 for this account instead, and submitting
+                  20230309 there replaces that extension with a past date, publishes it, and declines
+                  every later authorization on this account with reason code 103. Send back the value
+                  the read returned. card-platform/docs/onboarding.md carries the pitfall and a body
+                  that keeps both copies of the expiry in step.
                 value:
                   accountData:
                     activeStatus: 'Y'

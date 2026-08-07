@@ -94,6 +94,18 @@ class SchemaColumnTypeTest extends AbstractAccountPostgresTest {
     private static final String ADDITIVE_SOURCE = "src/main/resources/db/migration/V1__schema.sql";
 
     /**
+     * The migration that re-keyed {@code processed_event} on the event and the topic together.
+     *
+     * <p>{@code V1__schema.sql} keyed it on {@code event_id} alone and recorded
+     * {@code consumed_topic} beside it as description. An event identifier is assigned by the service
+     * that publishes the event and different producers assign them independently, so the identifier
+     * alone does not identify a delivery: a second topic's event carrying the same identifier lost
+     * its claim and its effect in silence.
+     */
+    private static final String MARKER_KEY_SOURCE =
+            "src/main/resources/db/migration/V6__processed_event_topic_key.sql";
+
+    /**
      * Supplies the four calendar columns as table name, column name and source locator.
      *
      * <p>Two test methods read these four rows, one for the declared length and one for the
@@ -376,7 +388,7 @@ class SchemaColumnTypeTest extends AbstractAccountPostgresTest {
         "disclosure_group, 'account_group_id transaction_type_code transaction_category_code', "
                 + "DIS-GROUP-KEY at app/cpy/CVTRA02Y.cpy:L5-L8",
         "outbox_event,     event_id,    " + ADDITIVE_SOURCE,
-        "processed_event,  event_id,    " + ADDITIVE_SOURCE
+        "processed_event,  'event_id consumed_topic', " + MARKER_KEY_SOURCE
     })
     void primaryKeyIsComposedOfTheKeyColumns(String table, String keyColumns, String source) {
         assertThat(primaryKeys.get(table))

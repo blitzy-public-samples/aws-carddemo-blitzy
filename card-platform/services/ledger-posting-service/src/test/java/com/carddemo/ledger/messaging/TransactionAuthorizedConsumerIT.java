@@ -11,6 +11,7 @@ import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.ledger.LedgerApplication;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
+import com.carddemo.ledger.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
 import com.carddemo.ledger.repository.ProcessedEventRepository;
 import io.micrometer.core.instrument.Counter;
@@ -685,16 +686,18 @@ public class TransactionAuthorizedConsumerIT {
     }
 
     private void awaitApplied(UUID eventId) {
+        ProcessedEventId markerKey = new ProcessedEventId(eventId, authorizedTopic());
         Awaitility.await("transaction and marker commit")
                 .atMost(ARRIVAL_TIMEOUT)
                 .pollInterval(POLL_INTERVAL)
                 .until(() -> transactionCount(FIXTURE.transactionId()) == ONE_ROW
-                        && processedEvents.existsById(eventId));
+                        && processedEvents.existsById(markerKey));
         assertAll("committed source event",
                 () -> assertEquals(ONE_ROW, transactionCount(FIXTURE.transactionId()),
                         "one transaction row exists"),
-                () -> assertTrue(processedEvents.existsById(eventId),
-                        "the processed-event marker exists"));
+                () -> assertTrue(processedEvents.existsById(markerKey),
+                        "the processed-event marker exists, keyed on the event and the topic the"
+                                + " delivery arrived on"));
     }
 
     private long transactionCount(String transactionId) {

@@ -887,7 +887,10 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
                 new AccountProperties.Api(65536L),
                 new AccountProperties.Kafka(
                         new AccountProperties.Kafka.Topics(DEFAULT_TOPIC,
-                                "customer.context-changed", DEAD_LETTER_TOPIC)),
+                                "customer.context-changed", "transaction.posted",
+                                DEAD_LETTER_TOPIC),
+                        new AccountProperties.Kafka.Groups("account-posted")),
+                new AccountProperties.Consumer(new AccountProperties.Consumer.Retry(3, 1_000L)),
                 new AccountProperties.Outbox(
                         new AccountProperties.Outbox.Relay(
                                 FIXED_DELAY_MS, batchSize, "account-relay",

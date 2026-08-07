@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Supplies the one bean the account service records its measurements through.
  *
- * <p>{@link AccountMeters} holds twelve series in four groups: events consumed, processing latency,
+ * <p>{@link AccountMeters} holds sixteen series in four groups: events consumed, processing latency,
  * throughput, and failure count. Every name opens with {@code carddemo.account.}, which is the
  * namespace the fraud detection and notification services use.
  *
@@ -27,9 +27,12 @@ import org.springframework.context.annotation.Configuration;
  * recorded anywhere yet. Summing them into one failure count would hide the third and fourth
  * behind the first, which is the distinction an operator most needs.
  *
- * <p>The events-consumed counter stays at zero. The account service publishes on a state change and
- * consumes no event, and the counter is registered so every service exposes the same four metric
- * families. {@link AccountMeters} offers no method that increments it.
+ * <p>The events-consumed counter carries the posted transactions this service applied.
+ * {@code messaging/TransactionPostedConsumer} increments it once per delivery, times each one on
+ * {@code posting.latency}, and separates three outcomes: a posting applied, a duplicate delivery
+ * skipped, and a delivery that failed. The failure joins {@code transaction.failures} under the
+ * {@code posting} operation, so the three transactional paths of this service report their failures
+ * on one series with one bounded tag rather than on three names.
  *
  * <p>Every meter surfaces under {@code /actuator}, where the service exposes
  * {@code health,metrics,prometheus} and answers its container probe at
@@ -58,6 +61,15 @@ public class ObservabilityConfig {
 
     /** Failure tag value for the billing-cycle close transaction. */
     public static final String CYCLE_CLOSE_OPERATION = "cycle-close";
+
+    /**
+     * Failure tag value for the posted-transaction transaction.
+     *
+     * <p>{@code messaging/TransactionPostedConsumer} opens one transaction per delivery, carrying the
+     * processed-event marker, the account row and the outbox row, so a failure there is a rollback of
+     * the same kind the other two operations report.
+     */
+    public static final String POSTING_OPERATION = "posting";
 
     /**
      * Registers the account meter set and publishes it as one injectable bean.
@@ -101,7 +113,15 @@ public class ObservabilityConfig {
      * {@link AccountMeters#recordPublishFailure()},
      * {@link AccountMeters#recordOutboxAbandoned()},
      * {@link AccountMeters#recordDeadLetterPublished()} and
-     * {@link AccountMeters#recordDeadLetterFailure()}. The relay is the sole caller of those five
+     * {@link AccountMeters#recordDeadLetterFailure()};
+     * {@code messaging/TransactionPostedConsumer.java} calls
+     * {@link AccountMeters#recordEventConsumed()},
+     * {@link AccountMeters#recordPostingLatency(Duration)},
+     * {@link AccountMeters#recordPostingApplied()},
+     * {@link AccountMeters#recordPostingDuplicateSkipped()} and
+     * {@link AccountMeters#recordPostingFailure()}; and {@code config/KafkaConsumerConfig.java}
+     * calls the two dead-letter methods for a record it routes. The relay is the sole caller of the
+     * five relay methods
      * and records them once its transaction has committed, so no publisher, repository or template
      * increments a meter behind it. The events-consumed counter has no caller and takes none. Every
      * meter registers at start-up, so each one is scrapable before its caller records against
@@ -110,11 +130,38 @@ public class ObservabilityConfig {
     public static final class AccountMeters {
 
         /**
-         * Events this service consumed. The count stays at zero: the account service publishes on a
-         * state change and reads no topic. The meter is registered so the events-consumed family
-         * appears on every service, and this class declares no method that increments it.
+         * Events this service consumed, one increment per {@code TransactionPosted} delivery.
+         *
+         * <p>{@code messaging/TransactionPostedConsumer} increments it as a delivery is read, before
+         * the marker decides whether it is a duplicate, so the count is deliveries taken from the
+         * topic rather than postings applied. {@link #postingApplied} and
+         * {@link #postingDuplicatesSkipped} separate those two outcomes.
          */
         private final Counter eventsConsumed;
+
+        /**
+         * Wall time of one posted-transaction delivery, from the read to the commit or the failure.
+         *
+         * <p>No COBOL ancestor: the batch posting program counted records at
+         * {@code app/cbl/CBTRN02C.cbl:L185} and timed nothing.
+         */
+        private final Timer postingLatency;
+
+        /**
+         * Posted amounts applied to the account record, one per committed delivery.
+         *
+         * <p>Each increment is one reproduction of {@code app/cbl/CBTRN02C.cbl:L545-L560} on the
+         * record this service owns.
+         */
+        private final Counter postingApplied;
+
+        /**
+         * Duplicate deliveries the processed-event marker suppressed.
+         *
+         * <p>Kafka delivers at least once, so this rising is ordinary rather than a fault. It rising
+         * without {@link #postingApplied} rising is the signal that a partition is being redelivered.
+         */
+        private final Counter postingDuplicatesSkipped;
 
         /**
          * Wall time of one account update, from request entry to commit. No COBOL ancestor: the
@@ -190,7 +237,17 @@ public class ObservabilityConfig {
         AccountMeters(MeterRegistry registry) {
             Objects.requireNonNull(registry, "registry");
             this.eventsConsumed = Counter.builder("carddemo.account.events.consumed")
-                    .description("Events this service consumed, which stays at zero")
+                    .description("Posted-transaction deliveries this service read")
+                    .register(registry);
+            this.postingLatency = Timer.builder("carddemo.account.posting.latency")
+                    .description("Wall time of one posted-transaction delivery")
+                    .register(registry);
+            this.postingApplied = Counter.builder("carddemo.account.posting.applied")
+                    .description("Posted amounts applied to the account record")
+                    .register(registry);
+            this.postingDuplicatesSkipped = Counter
+                    .builder("carddemo.account.posting.duplicates.skipped")
+                    .description("Duplicate posted-transaction deliveries the marker suppressed")
                     .register(registry);
             this.updateLatency = Timer.builder("carddemo.account.update.latency")
                     .description("Wall time of one account update, from request entry to commit")
@@ -221,7 +278,8 @@ public class ObservabilityConfig {
                     .description("Terminal diagnostic attempts the broker refused")
                     .register(registry);
             Map<String, Counter> failures = new LinkedHashMap<>();
-            for (String operation : java.util.List.of(UPDATE_OPERATION, CYCLE_CLOSE_OPERATION)) {
+            for (String operation : java.util.List.of(UPDATE_OPERATION, CYCLE_CLOSE_OPERATION,
+                    POSTING_OPERATION)) {
                 failures.put(operation, Counter.builder("carddemo.account.transaction.failures")
                         .tag(OPERATION_TAG, operation)
                         .description("Account transactions that rolled back or failed to commit")
@@ -231,13 +289,53 @@ public class ObservabilityConfig {
         }
 
         /**
-         * Reads the events-consumed count, which stays at zero for this service. No method here
-         * increments it.
+         * Reads the events-consumed count.
          *
-         * @return the number of events this service consumed, always zero
+         * @return the number of posted-transaction deliveries this service has read
          */
         public double eventsConsumedTotal() {
             return eventsConsumed.count();
+        }
+
+        /**
+         * Records one posted-transaction delivery read from the topic.
+         *
+         * <p>Called as the delivery is read, ahead of the marker check, so the count reports what
+         * arrived rather than what was applied.
+         */
+        public void recordEventConsumed() {
+            eventsConsumed.increment();
+        }
+
+        /**
+         * Records how long one posted-transaction delivery took.
+         *
+         * @param elapsed the wall time of the delivery, whether it committed or failed
+         */
+        public void recordPostingLatency(Duration elapsed) {
+            postingLatency.record(elapsed);
+        }
+
+        /** Records one posted amount applied to the account record. */
+        public void recordPostingApplied() {
+            postingApplied.increment();
+        }
+
+        /** Records one duplicate delivery the processed-event marker suppressed. */
+        public void recordPostingDuplicateSkipped() {
+            postingDuplicatesSkipped.increment();
+        }
+
+        /**
+         * Records one posted-transaction delivery whose transaction rolled back.
+         *
+         * <p>Counted once per failed attempt. A record the container gives up on is counted again as
+         * a terminal outcome by {@link #recordDeadLetterPublished()} or
+         * {@link #recordDeadLetterFailure()}, so an attempt and a spent record are never read as one
+         * number.
+         */
+        public void recordPostingFailure() {
+            transactionFailures.get(POSTING_OPERATION).increment();
         }
 
         /**

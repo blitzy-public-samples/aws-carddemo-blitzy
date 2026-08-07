@@ -2,6 +2,7 @@ package com.carddemo.ledger.messaging;
 
 import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
 import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
+import com.carddemo.ledger.entity.ProcessedEventEntity;
 import com.carddemo.ledger.repository.ProcessedEventRepository;
 import java.time.Clock;
 import java.time.Duration;
@@ -223,7 +224,8 @@ public class AccountStateChangedConsumer {
     public boolean applyOneEvent(AccountStateChanged event, String consumedTopic) {
         Objects.requireNonNull(event, "event is required");
 
-        if (processedEvents.claimEvent(event.eventId(), clock.instant(), consumedTopic) == 0) {
+        if (processedEvents.claimEvent(event.eventId(), clock.instant(),
+                recordedTopic(consumedTopic)) == 0) {
             LOG.debug("Change {} carries a marker already, so this delivery writes nothing.",
                     event.eventId());
             return false;
@@ -255,5 +257,24 @@ public class AccountStateChangedConsumer {
         LOG.info("Cycle close {} zeroed both billing-cycle accumulators of account {}, and left the"
                 + " balance the posting path derives.", event.eventId(), maskedAccountId);
         return true;
+    }
+
+    /**
+     * Returns the topic to record on the marker, never blank.
+     *
+     * <p>The topic is half of the marker's primary key since
+     * {@code src/main/resources/db/migration/V5__processed_event_topic_key.sql}, and a key
+     * column holds no null. A delivery that carried no topic header records
+     * {@link ProcessedEventEntity#NO_CONSUMED_TOPIC}, which states that absence rather than leaving
+     * the key half unset. That sentinel holds spaces and parentheses and a Kafka topic name holds
+     * only {@code [a-zA-Z0-9._-]}, so it can never collide with a real topic name.</p>
+     *
+     * @param consumedTopic the topic the delivery arrived on, possibly absent or blank
+     * @return the topic name, or {@link ProcessedEventEntity#NO_CONSUMED_TOPIC}
+     */
+    private static String recordedTopic(String consumedTopic) {
+        return consumedTopic == null || consumedTopic.isBlank()
+                ? ProcessedEventEntity.NO_CONSUMED_TOPIC
+                : consumedTopic;
     }
 }

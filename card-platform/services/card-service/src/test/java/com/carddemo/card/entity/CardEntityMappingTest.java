@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import jakarta.persistence.Column;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
@@ -289,13 +290,21 @@ class CardEntityMappingTest {
     }
 
     /**
-     * Returns the persistent fields an entity class declares, in declaration order.
+     * Returns the persistent fields an entity class declares, in declaration order, with an
+     * {@link EmbeddedId} replaced by the fields of the embeddable it holds.
      *
      * <p>A static field carries no column and a synthetic field is one the compiler adds, so
      * neither is a mapped attribute.
      *
+     * <p>An {@code @EmbeddedId} field carries no {@link Column} of its own: the columns belong to
+     * the embeddable, one per key part. Flattening it here keeps every scan below reading columns
+     * rather than attributes, which is what each of them asserts about. {@code ProcessedEventEntity}
+     * is the one entity of this service that holds a composite key, since
+     * {@code src/main/resources/db/migration/V3__processed_event_topic_key.sql} made the consumed
+     * topic half of it.
+     *
      * @param entity the entity class to read
-     * @return the mapped fields, in the order the class declares them
+     * @return the mapped fields, in the order the class declares them, embedded key parts inlined
      */
     private static List<Field> mappedFields(Class<?> entity) {
         List<Field> fields = new ArrayList<>();
@@ -303,9 +312,40 @@ class CardEntityMappingTest {
             if (Modifier.isStatic(field.getModifiers()) || field.isSynthetic()) {
                 continue;
             }
+            if (field.isAnnotationPresent(EmbeddedId.class)) {
+                fields.addAll(mappedFields(field.getType()));
+                continue;
+            }
             fields.add(field);
         }
         return fields;
+    }
+
+    /**
+     * Returns the columns that carry an entity's identity, in key order.
+     *
+     * <p>A single {@link Id} field answers one column. An {@link EmbeddedId} answers one column per
+     * field of the embeddable it holds, in the order that class declares them, which is the order the
+     * migration declares the key in.
+     *
+     * @param entity the entity class to read
+     * @return the identifier columns, and an empty list when the class declares no identity
+     */
+    private static List<String> identifierColumns(Class<?> entity) {
+        List<String> columns = new ArrayList<>();
+        for (Field field : entity.getDeclaredFields()) {
+            if (Modifier.isStatic(field.getModifiers()) || field.isSynthetic()) {
+                continue;
+            }
+            if (field.isAnnotationPresent(EmbeddedId.class)) {
+                for (Field part : mappedFields(field.getType())) {
+                    columns.add(columnName(part));
+                }
+            } else if (field.isAnnotationPresent(Id.class)) {
+                columns.add(columnName(field));
+            }
+        }
+        return columns;
     }
 
     /**
@@ -733,9 +773,11 @@ class CardEntityMappingTest {
                                 TABLE_NAMES.get(ProcessedEventEntity.class),
                                 "the entity inventory includes the shared marker"),
                         () -> assertEquals(
-                                List.of("event_id", "processed_at", "consumed_topic"),
+                                List.of("event_id", "consumed_topic", "processed_at"),
                                 columnNames(ProcessedEventEntity.class),
-                                "the marker maps its identifier, processing time and source topic"),
+                                "the marker maps its two key parts and its processing time; the"
+                                        + " identifier and the consumed topic are the key since"
+                                        + " V3__processed_event_topic_key.sql"),
                         () -> assertFalse(
                                 columnFacts(connection, schema, "processed_event").isEmpty(),
                                 "the migration creates the marker table"));
@@ -817,27 +859,27 @@ class CardEntityMappingTest {
         }
 
         @Test
-        @DisplayName("each entity declares one identifier field, from its KEYS parameter")
+        @DisplayName("each entity declares the identifier columns of its KEYS parameter")
         void eachEntityDeclaresOneIdentifierField() {
-            Map<Class<?>, String> identifiers = new LinkedHashMap<>();
+            Map<Class<?>, List<String>> identifiers = new LinkedHashMap<>();
             for (Class<?> entity : ENTITY_CLASSES) {
-                for (Field field : mappedFields(entity)) {
-                    if (field.isAnnotationPresent(Id.class)) {
-                        assertNull(identifiers.put(entity, columnName(field)),
-                                entity.getSimpleName() + " declares more than one identifier");
-                    }
-                }
+                assertNull(identifiers.put(entity, identifierColumns(entity)),
+                        entity.getSimpleName() + " is listed twice");
             }
             assertAll(
-                    () -> assertEquals("card_number", identifiers.get(CardEntity.class),
+                    () -> assertEquals(List.of("card_number"), identifiers.get(CardEntity.class),
                             "KEYS(16 0) at app/jcl/CARDFILE.jcl:L54"),
-                    () -> assertEquals("card_number",
+                    () -> assertEquals(List.of("card_number"),
                             identifiers.get(CardCrossReferenceEntity.class),
                             "KEYS(16 0) at app/jcl/XREFFILE.jcl:L43"),
-                    () -> assertEquals("event_id", identifiers.get(OutboxEventEntity.class),
+                    () -> assertEquals(List.of("event_id"),
+                            identifiers.get(OutboxEventEntity.class),
                             "the event identifier is the outbox key"),
-                    () -> assertEquals("event_id", identifiers.get(ProcessedEventEntity.class),
-                            "the event identifier is the duplicate-delivery guard"));
+                    () -> assertEquals(List.of("event_id", "consumed_topic"),
+                            identifiers.get(ProcessedEventEntity.class),
+                            "the duplicate-delivery guard keys on the event and the topic the"
+                                    + " delivery arrived on, from"
+                                    + " V3__processed_event_topic_key.sql"));
         }
     }
 

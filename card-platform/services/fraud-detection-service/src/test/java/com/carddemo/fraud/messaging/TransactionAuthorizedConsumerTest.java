@@ -30,6 +30,7 @@ import com.carddemo.fraud.domain.RiskScoringService;
 import com.carddemo.fraud.domain.RiskScoringService.RiskAssessment;
 import com.carddemo.fraud.entity.FraudAssessmentEntity;
 import com.carddemo.fraud.entity.ProcessedEventEntity;
+import com.carddemo.fraud.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.fraud.outbox.OutboxWriter;
 import com.carddemo.fraud.repository.FraudAssessmentRepository;
 import com.carddemo.fraud.repository.OutboxEventRepository;
@@ -38,9 +39,9 @@ import com.carddemo.fraud.repository.VelocityWindowRepository;
 import jakarta.persistence.AttributeConverter;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
+import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Converter;
 import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
@@ -525,17 +526,36 @@ class TransactionAuthorizedConsumerTest {
     @DisplayName("Marker, assessment and store shape")
     class MarkerAndAssessmentShape {
 
+        /**
+         * Asserts the marker keys on a supplied event identifier and a supplied topic, and generates
+         * neither.
+         *
+         * <p>{@code src/main/resources/db/migration/V4__processed_event_topic_key.sql} made the
+         * consumed topic half of the key, so the identity is an {@code @EmbeddedId} carrying both
+         * columns. Neither half is generated: the producer assigns the identifier while building the
+         * envelope, and the delivery carries the topic in its own header.
+         */
         @Test
-        @DisplayName("the marker keys on a supplied event identifier and generates no value")
+        @DisplayName("the marker keys on a supplied event identifier and topic, and generates "
+                + "neither")
         void theMarkerKeysOnASuppliedEventIdentifier() throws NoSuchFieldException {
-            Field eventId = ProcessedEventEntity.class.getDeclaredField("eventId");
+            Field id = ProcessedEventEntity.class.getDeclaredField("id");
+            Field eventId = ProcessedEventId.class.getDeclaredField("eventId");
+            Field consumedTopic = ProcessedEventId.class.getDeclaredField("consumedTopic");
 
+            assertEquals(ProcessedEventId.class, id.getType(), "identity type");
+            assertTrue(id.isAnnotationPresent(EmbeddedId.class), "composite key on id");
+            assertFalse(id.isAnnotationPresent(GeneratedValue.class),
+                    "generation strategy on id");
             assertEquals(UUID.class, eventId.getType(), "identifier type");
-            assertTrue(eventId.isAnnotationPresent(Id.class), "primary key on eventId");
-            assertFalse(eventId.isAnnotationPresent(GeneratedValue.class),
-                    "generation strategy on eventId");
-            assertEquals("event_id", columnOf(ProcessedEventEntity.class, "eventId").name(),
+            assertEquals(String.class, consumedTopic.getType(), "topic type");
+            assertEquals("event_id", columnOf(ProcessedEventId.class, "eventId").name(),
                     "identifier column name");
+            assertEquals("consumed_topic",
+                    columnOf(ProcessedEventId.class, "consumedTopic").name(),
+                    "topic column name");
+            assertFalse(columnOf(ProcessedEventId.class, "consumedTopic").nullable(),
+                    "nullable consumedTopic, and a key column holds no null");
             assertFalse(columnOf(ProcessedEventEntity.class, "processedAt").nullable(),
                     "nullable processedAt");
         }
@@ -543,7 +563,12 @@ class TransactionAuthorizedConsumerTest {
         @Test
         @DisplayName("the marker carries none of the seven retry or routing column names")
         void theMarkerCarriesNoRetryOrRoutingColumn() {
-            for (String column : columnNames(ProcessedEventEntity.class)) {
+            List<String> columns = new ArrayList<>(columnNames(ProcessedEventEntity.class));
+            columns.addAll(columnNames(ProcessedEventId.class));
+
+            assertEquals(List.of("processed_at", "event_id", "consumed_topic"), columns,
+                    "the marker maps its processing time and its two key parts, and nothing else");
+            for (String column : columns) {
                 assertFalse(EXCLUDED_MARKER_COLUMNS.contains(column),
                         "excluded column " + column + " on processed_event");
             }

@@ -983,7 +983,9 @@ class ConcurrentChangeDetectorTest {
                 new AccountProperties.Api(65_536L),
                 new AccountProperties.Kafka(new AccountProperties.Kafka.Topics(
                         "account.state-changed", "customer.context-changed",
-                        "carddemo.dead-letter")),
+                        "transaction.posted", "carddemo.dead-letter"),
+                        new AccountProperties.Kafka.Groups("account-posted")),
+                new AccountProperties.Consumer(new AccountProperties.Consumer.Retry(3, 1_000L)),
                 new AccountProperties.Outbox(new AccountProperties.Outbox.Relay(500L, 100,
                         "account-relay", java.time.Duration.ofMinutes(2L), 1_000L,
                         java.time.Duration.ofSeconds(10L)), 168L),

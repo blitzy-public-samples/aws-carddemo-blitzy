@@ -2,9 +2,11 @@ package com.carddemo.account.config;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.PositiveOrZero;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -26,15 +28,15 @@ import org.springframework.validation.annotation.Validated;
  * non-positive relay delay therefore stops start-up with the offending property named.
  *
  * <p>{@code AccountApplication} carries {@code @ConfigurationPropertiesScan}, which registers this
- * record as a bean. An injected instance is immutable. This module consumes no event, so it carries
- * no consumer group and no retry setting.
+ * record as a bean. An injected instance is immutable.
  *
  * <p>Decisions: {@code card-platform/docs/decision-log.md}.
  *
- * @param api    the request-body ceiling of the web surface
- * @param kafka  the topic name this service publishes to
- * @param outbox the relay sweep settings
- * @param write  the bound on how long one locked read waits
+ * @param api      the request-body ceiling of the web surface
+ * @param kafka    the topic and group names this service uses
+ * @param consumer the delivery-attempt policy of the one listener this service runs
+ * @param outbox   the relay sweep settings
+ * @param write    the bound on how long one locked read waits
  */
 @ConfigurationProperties(prefix = "carddemo")
 @Validated
@@ -43,6 +45,8 @@ public record AccountProperties(
         @NotNull @Valid Api api,
 
         @NotNull @Valid Kafka kafka,
+
+        @NotNull @Valid Consumer consumer,
 
         @NotNull @Valid Outbox outbox,
 
@@ -81,19 +85,25 @@ public record AccountProperties(
     /**
      * The broker-facing names this service uses.
      *
-     * @param topics the topics this service publishes to
+     * @param topics the topics this service publishes to and the one it reads
+     * @param groups the consumer group the one listener of this service runs under
      */
-    public record Kafka(@NotNull @Valid Topics topics) {
+    public record Kafka(@NotNull @Valid Topics topics, @NotNull @Valid Groups groups) {
 
         /**
-         * The published topics. An account read publishes nothing.
+         * The topic names. An account read publishes nothing and reads nothing.
          *
-         * @param accountStateChanged     the topic an account update and a billing-cycle close
-         *                                travel on. The cycle close reproduces the two accumulator
-         *                                statements at {@code app/cbl/CBACT04C.cbl:L353-L354}
+         * @param accountStateChanged     the topic an account update, a billing-cycle close and a
+         *                                posted transaction travel on. The cycle close reproduces
+         *                                the two accumulator statements at
+         *                                {@code app/cbl/CBACT04C.cbl:L353-L354}
          * @param customerContextChanged  the topic the ten cardholder fields of
          *                                {@code app/cpy/CVCUS01Y.cpy:L6-L22} travel on when a
          *                                customer update changes one of them
+         * @param transactionPosted       the topic this service reads, carrying one posted amount per
+         *                                record. {@code messaging/TransactionPostedConsumer} adds
+         *                                that amount to the account record, reproducing
+         *                                {@code app/cbl/CBTRN02C.cbl:L545-L560}
          * @param deadLetter              the one topic every record no listener could consume
          *                                reaches, shared by every service
          */
@@ -103,7 +113,44 @@ public record AccountProperties(
 
                 @NotBlank String customerContextChanged,
 
+                @NotBlank String transactionPosted,
+
                 @NotBlank String deadLetter) {
+        }
+
+        /**
+         * The consumer groups this service reads under, one per listener.
+         *
+         * @param transactionPosted the group the posted-transaction listener joins. It is this
+         *                          service's own, so the notification service reading the same topic
+         *                          under its own group receives every record too
+         */
+        public record Groups(@NotBlank String transactionPosted) {
+        }
+    }
+
+    /**
+     * The delivery-attempt policy of the one listener this service runs.
+     *
+     * @param retry how many times a record is taken, and how long the wait between two attempts is
+     */
+    public record Consumer(@NotNull @Valid Retry retry) {
+
+        /**
+         * How many times a listener takes one record before the record routes to the dead-letter
+         * topic, and how long it waits between two attempts.
+         *
+         * <p>No COBOL ancestor. {@code app/cbl/CBTRN02C.cbl:L707-L711} answered a fault by calling
+         * the abend service on the first failure, so the source retried nothing.
+         *
+         * @param maxAttempts deliveries of one record, counting the first
+         * @param backoffMs   milliseconds between two deliveries
+         */
+        public record Retry(
+
+                @Min(1) int maxAttempts,
+
+                @PositiveOrZero long backoffMs) {
         }
     }
 

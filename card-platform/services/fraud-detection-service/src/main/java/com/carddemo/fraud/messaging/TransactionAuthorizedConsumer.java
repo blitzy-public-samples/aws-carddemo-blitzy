@@ -7,6 +7,7 @@ import com.carddemo.fraud.config.ObservabilityConfig.FraudMeters;
 import com.carddemo.fraud.domain.RiskScoringService;
 import com.carddemo.fraud.domain.RiskScoringService.RiskAssessment;
 import com.carddemo.fraud.entity.FraudAssessmentEntity;
+import com.carddemo.fraud.entity.ProcessedEventEntity;
 import com.carddemo.fraud.outbox.OutboxWriter;
 import com.carddemo.fraud.repository.FraudAssessmentRepository;
 import com.carddemo.fraud.repository.ProcessedEventRepository;
@@ -194,7 +195,7 @@ public class TransactionAuthorizedConsumer {
         long startedAt = System.nanoTime();
         try {
             self.getObject()
-                    .assessOneEvent(event, consumerRecord.topic())
+                    .assessOneEvent(event, recordedTopic(consumerRecord.topic()))
                     .ifPresent(this::countOutcome);
         } catch (RuntimeException failure) {
             meters.recordProcessFailure();
@@ -244,7 +245,8 @@ public class TransactionAuthorizedConsumer {
     public Optional<String> assessOneEvent(TransactionAuthorized event, String consumedTopic) {
         Objects.requireNonNull(event, "event must be present");
         UUID eventId = event.eventId();
-        int claimed = processedEvents.claimEvent(eventId, Instant.now(), consumedTopic);
+        int claimed =
+                processedEvents.claimEvent(eventId, Instant.now(), recordedTopic(consumedTopic));
 
         if (claimed == ALREADY_CLAIMED) {
             LOG.debug("Event {} carries a marker already, so this delivery writes nothing.",
@@ -308,5 +310,24 @@ public class TransactionAuthorizedConsumer {
         } else {
             meters.recordAssessmentCleared();
         }
+    }
+
+    /**
+     * Returns the topic to record on the marker, never blank.
+     *
+     * <p>The topic is half of the marker's primary key since
+     * {@code src/main/resources/db/migration/V4__processed_event_topic_key.sql}, and a key
+     * column holds no null. A delivery that carried no topic header records
+     * {@link ProcessedEventEntity#NO_CONSUMED_TOPIC}, which states that absence rather than leaving
+     * the key half unset. That sentinel holds spaces and parentheses and a Kafka topic name holds
+     * only {@code [a-zA-Z0-9._-]}, so it can never collide with a real topic name.</p>
+     *
+     * @param consumedTopic the topic the delivery arrived on, possibly absent or blank
+     * @return the topic name, or {@link ProcessedEventEntity#NO_CONSUMED_TOPIC}
+     */
+    private static String recordedTopic(String consumedTopic) {
+        return consumedTopic == null || consumedTopic.isBlank()
+                ? ProcessedEventEntity.NO_CONSUMED_TOPIC
+                : consumedTopic;
     }
 }

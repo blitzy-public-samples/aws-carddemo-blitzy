@@ -168,10 +168,10 @@ data:
   TOPIC_DEAD_LETTER_SUFFIX: ".DLT"
 
   # Consumer groups
-  # Seven groups, one per active listener. Each group receives its own copy of
+  # Ten groups, one per active listener. Each group receives its own copy of
   # every event, and two listeners sharing one group would split the events
-  # between them. Ledger posting and fraud detection are the two independent
-  # readers of transaction.authorized.
+  # between them. Ledger posting, fraud detection and notification are the three
+  # independent readers of transaction.authorized.
   GROUP_LEDGER_POSTING: "ledger-posting"
   # Active: the fraud service reads transaction.authorized under this group.
   GROUP_FRAUD_DETECTION: "fraud-detection"
@@ -193,6 +193,12 @@ data:
   # splitting the partitions between them.
   GROUP_LEDGER_ACCOUNT: "ledger-account-state"
   GROUP_AUTHORIZATION_CARD: "authorization-card-updated"
+  # Consumer group of the account service's posted-transaction listener. It adds each
+  # posted amount to the account record, reproducing app/cbl/CBTRN02C.cbl:L545-L560, and the
+  # state change it publishes is what carries the two billing-cycle accumulators to the
+  # authorization replica reason code 102 reads. A second reader of transaction.posted under
+  # a group of its own, so the notification service still receives every record.
+  GROUP_ACCOUNT_POSTED: "account-posted"
 
   # Authorization replicas
   # No key here names one service to another, because no service calls another. The

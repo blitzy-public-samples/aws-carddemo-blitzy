@@ -200,7 +200,10 @@ class KafkaEventPublisherTest {
         return new AccountProperties(
                 new AccountProperties.Api(65536L),
                 new AccountProperties.Kafka(new AccountProperties.Kafka.Topics(STATE_TOPIC,
-                        "customer.context-changed", "carddemo.dead-letter")),
+                        "customer.context-changed", "transaction.posted",
+                        "carddemo.dead-letter"),
+                        new AccountProperties.Kafka.Groups("account-posted")),
+                new AccountProperties.Consumer(new AccountProperties.Consumer.Retry(3, 1_000L)),
                 new AccountProperties.Outbox(
                         new AccountProperties.Outbox.Relay(500L, 100, "publisher-test",
                                 Duration.ofSeconds(30L), 5_000L, publishTimeout), 168L),

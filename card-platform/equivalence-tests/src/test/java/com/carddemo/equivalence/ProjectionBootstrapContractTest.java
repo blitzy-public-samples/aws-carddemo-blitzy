@@ -187,7 +187,7 @@ class ProjectionBootstrapContractTest {
     private static final List<String> EFFECT_CALLS = List.of(".save(", ".applyStateChange(",
             ".insertMissingProjection(", ".closeBillingCycle(",
             ".applyContextChange(", "postingService.", "rejectRecorder.", "notificationService.",
-            "riskScoringService.");
+            "riskScoringService.", "postedTransactionService.");
 
     /**
      * Every projection and replica table, keyed by module name and table, with what it holds a copy
@@ -997,8 +997,8 @@ class ProjectionBootstrapContractTest {
          * reads the rows back.</p>
          */
         @Test
-        @DisplayName("the platform declares exactly the nine listeners named here, and no other")
-        void thePlatformDeclaresExactlyTheNineNamedListeners() {
+        @DisplayName("the platform declares exactly the ten listeners named here, and no other")
+        void thePlatformDeclaresExactlyTheTenNamedListeners() {
             assertEquals(EXPECTED_LISTENERS, listenerSources().keySet(),
                     "a listener added or removed changes what consumes the one event an "
                             + "authorization call publishes, and the fan-out is the property this "
@@ -1023,7 +1023,7 @@ class ProjectionBootstrapContractTest {
          *
          * <p>The floor is a minimum and not an equality. A fourth independent consumer would satisfy
          * the requirement too, and the exact inventory is pinned by
-         * {@link #thePlatformDeclaresExactlyTheNineNamedListeners()} instead.
+         * {@link #thePlatformDeclaresExactlyTheTenNamedListeners()} instead.
          */
         @Test
         @DisplayName("the authorization event has at least three independent direct consumers")
@@ -1161,6 +1161,72 @@ class ProjectionBootstrapContractTest {
 
             assertEquals(List.of(), broken,
                     "a listener breaks the order that makes a redelivery harmless: " + broken);
+        }
+
+        /**
+         * Holds one severity convention across every consumer of the platform.
+         *
+         * <p>A delivery that fails is retried, so an individual attempt is not a terminal outcome
+         * and no listener reports one at {@code ERROR}. The terminal outcome is reported once, by
+         * the recoverer that addresses the record to the dead-letter topic, and that line is what an
+         * alerting rule watches. Two consumers reported the attempt at {@code ERROR} and the
+         * terminal route not at all, which put three {@code ERROR} lines on a record that recovered
+         * on the third try and none on a record that was given up on.</p>
+         *
+         * <p>Both halves are asserted, because either alone leaves the same reader misled: a
+         * listener silent at {@code ERROR} is only correct if the route speaks there, and a route
+         * that speaks is only readable if the attempts do not.</p>
+         *
+         * <p>Both spellings of the level are searched for. A logger reaches {@code ERROR} through
+         * {@code error(} and through the fluent {@code atError()}, and four listeners of this
+         * platform used the second: a search for the first alone reported them clean while they were
+         * writing three {@code ERROR} lines per retried record.</p>
+         */
+        @Test
+        @DisplayName("no listener reports an attempt at ERROR, and every route reports once there")
+        void everyConsumerLogsAttemptsAtWarnAndTheDeadLetterRouteAtError() {
+            Map<String, String> listeners = listenerSources();
+            assertEquals(EXPECTED_LISTENERS, listeners.keySet(),
+                    "this convention covers exactly the listeners this platform declares");
+
+            List<String> broken = new ArrayList<>();
+            for (Map.Entry<String, String> listener : listeners.entrySet()) {
+                String code = codeOf(listener.getValue());
+                if (code.contains(".error(") || code.contains("atError(")) {
+                    broken.add(listener.getKey() + " reports one attempt at ERROR");
+                }
+            }
+
+            for (String module : listeners.keySet().stream()
+                    .map(name -> name.split(" ")[0])
+                    .distinct()
+                    .toList()) {
+
+                Path configuration = REPOSITORY_ROOT.get()
+                        .resolve(SERVICES_DIRECTORY)
+                        .resolve(module)
+                        .resolve("src/main/java/com/carddemo")
+                        .resolve(module.replace("-service", "").replace("-detection", "")
+                                .replace("-posting", ""))
+                        .resolve("config/KafkaConsumerConfig.java");
+
+                if (!Files.isRegularFile(configuration)) {
+                    broken.add(module + " declares a listener and no consumer configuration");
+                    continue;
+                }
+                String code = codeOf(readText(configuration));
+                int reported = occurrences(code, ".error(") + occurrences(code, "atError(");
+                if (reported != 1) {
+                    broken.add(module + " does not report the dead-letter route exactly once at"
+                            + " ERROR, but " + reported + " times");
+                }
+                if (!code.contains("ConsumerRecordRecoverer")) {
+                    broken.add(module + " declares no recoverer to report the route from");
+                }
+            }
+
+            assertEquals(List.of(), broken,
+                    "a consumer breaks the severity convention: " + broken);
         }
 
         /**
@@ -1314,7 +1380,7 @@ class ProjectionBootstrapContractTest {
          * listener silently lost or silently added a build failure: a count, or an emptiness check,
          * passes with one listener and hides the other eight.
          *
-         * <p>Four services consume. The authorization service reads the two state-change events
+         * <p>Five services consume. The authorization service reads the two state-change events
          * that keep the projections its decline rules read current. Ledger posting, fraud detection
          * and notification each read the authorization event under a group of their own, which is
          * the three independent consumers AAP 0.1.1 and 0.8.3 require. Ledger posting also reads the
@@ -1328,6 +1394,17 @@ class ProjectionBootstrapContractTest {
          * account it holds no row for, and the two accumulator zeroes a closed billing cycle carries
          * after {@code app/cbl/CBACT04C.cbl:L353-L354}. It never takes an account-held reading of
          * the three value columns its own posting arithmetic derives. Neither reads the other's copy.
+         *
+         * <p>The tenth listener closes the loop those two replicas depend on.
+         * {@code account-service TransactionPostedConsumer} reads {@code transaction.posted} and adds
+         * the posted amount to the account record itself, reproducing
+         * {@code app/cbl/CBTRN02C.cbl:L545-L560} on the record that program rewrote. The state change
+         * it queues is what carries the two billing-cycle accumulators to the authorization replica
+         * that reason code 102 reads at {@code app/cbl/CBTRN02C.cbl:L403-L413}. Without it the source
+         * had one {@code ACCTDAT} record and the target had three copies of parts of it with nothing
+         * joining the writer to the readers: the accumulators never moved, so that rule tested one
+         * amount against the credit limit rather than the cycle exposure, and the account view
+         * reported the balance as it stood at deployment.
          */
         private static final Set<String> EXPECTED_LISTENERS = new LinkedHashSet<>(List.of(
                 "authorization-service AccountStateChangedConsumer.java",
@@ -1338,7 +1415,8 @@ class ProjectionBootstrapContractTest {
                 "notification-service CustomerContextChangedConsumer.java",
                 "notification-service FraudFlaggedConsumer.java",
                 "notification-service TransactionAuthorizedConsumer.java",
-                "notification-service TransactionPostedConsumer.java"));
+                "notification-service TransactionPostedConsumer.java",
+                "account-service TransactionPostedConsumer.java"));
 
         /**
          * The reader set of each consumed topic, keyed by the property the listener resolves.
@@ -1366,7 +1444,8 @@ class ProjectionBootstrapContractTest {
                 "carddemo.kafka.topics.fraud-assessed",
                 List.of("notification-service FraudFlaggedConsumer.java"),
                 "carddemo.kafka.topics.transaction-posted",
-                List.of("notification-service TransactionPostedConsumer.java"));
+                List.of("account-service TransactionPostedConsumer.java",
+                        "notification-service TransactionPostedConsumer.java"));
 
         /**
          * Reads the configuration property one listener resolves its topic through.

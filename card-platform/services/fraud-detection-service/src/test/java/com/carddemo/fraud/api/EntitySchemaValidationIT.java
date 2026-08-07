@@ -215,6 +215,24 @@ class EntitySchemaValidationIT {
     /** Topic the claimed markers of this class record. */
     private static final String CONSUMED_TOPIC = "transaction.authorized";
 
+    /**
+     * Topic the marker rows written directly by a statement in this class record.
+     *
+     * <p>{@code consumed_topic} is half of the primary key since
+     * {@code src/main/resources/db/migration/V4__processed_event_topic_key.sql}, so a statement that
+     * writes a marker has to name it.
+     */
+    private static final String MARKER_CONSUMED_TOPIC = CONSUMED_TOPIC;
+
+    /**
+     * A second topic name, which is what makes the second half of the key observable.
+     *
+     * <p>This service reads one topic today. The name below stands in for a topic a second listener
+     * would read, and it is a topic two other services of this platform already read, so nothing
+     * about it is invented.
+     */
+    private static final String OTHER_CONSUMED_TOPIC = "account.state-changed";
+
     /** What the marker statement reports when this caller took the event. */
     private static final int CLAIMED = 1;
 
@@ -330,7 +348,8 @@ class EntitySchemaValidationIT {
     }
 
     @Test
-    @DisplayName("Flyway created the one schema both properties name, and applied versions 1 and 3")
+    @DisplayName("Flyway created the one schema both properties name, and applied versions 1, 3 "
+            + "and 4")
     void flywayCreatedTheSchemaAndAppliedItsTwoMigrations() {
         String schema = schema();
         Integer schemaRows = jdbc.queryForObject(
@@ -343,6 +362,9 @@ class EntitySchemaValidationIT {
                 Integer.class);
         Boolean versionThreeApplied = jdbc.queryForObject(
                 "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '3'",
+                Boolean.class);
+        Boolean versionFourApplied = jdbc.queryForObject(
+                "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '4'",
                 Boolean.class);
         Integer versionRows = jdbc.queryForObject(
                 "SELECT count(*) FROM " + qualified(FLYWAY_HISTORY) + " WHERE version IS NOT NULL",
@@ -357,8 +379,10 @@ class EntitySchemaValidationIT {
                 () -> assertEquals(Integer.valueOf(0), versionTwoRows,
                         "a version 2 migration row exists, and no seed migration ships"),
                 () -> assertEquals(Boolean.TRUE, versionThreeApplied, "migration version 3"),
-                () -> assertEquals(Integer.valueOf(2), versionRows,
-                        "the two versioned migrations this service ships"));
+                () -> assertEquals(Boolean.TRUE, versionFourApplied, "migration version 4, "
+                        + "V4__processed_event_topic_key.sql"),
+                () -> assertEquals(Integer.valueOf(3), versionRows,
+                        "the three versioned migrations this service ships"));
     }
 
     @Test
@@ -386,9 +410,18 @@ class EntitySchemaValidationIT {
         assertAll(absenceChecks(PROCESSED_EVENT, present, PROCESSED_EVENT_ABSENT_COLUMNS));
     }
 
+    /**
+     * Asserts both key columns are supplied rather than generated, and that the primary key names
+     * them in that order.
+     *
+     * <p>{@code src/main/resources/db/migration/V4__processed_event_topic_key.sql} widened the key
+     * from {@code event_id} alone, because a delivery is identified by its event and the stream it
+     * arrived on. {@code event_id} leads, so the index the key builds still serves a lookup naming
+     * the event alone.
+     */
     @Test
-    @DisplayName("processed_event.event_id is a supplied identifier: type uuid, primary key, no "
-            + "default and no identity generation")
+    @DisplayName("processed_event keys on a supplied identifier and a supplied topic: uuid and "
+            + "varchar, both NOT NULL, neither defaulted nor generated")
     void processedEventKeyIsASuppliedIdentifier() {
         Map<String, Object> eventId = column(PROCESSED_EVENT, COLUMN_EVENT_ID);
         Map<String, Object> processedAt = column(PROCESSED_EVENT, COLUMN_PROCESSED_AT);
@@ -400,15 +433,20 @@ class EntitySchemaValidationIT {
                         COLUMN_EVENT_ID + " carries a default"),
                 () -> assertEquals("NO", eventId.get("is_identity"),
                         COLUMN_EVENT_ID + " generates its own value"),
-                () -> assertEquals(List.of(COLUMN_EVENT_ID), keyColumns(PK_PROCESSED_EVENT),
-                        PK_PROCESSED_EVENT),
+                () -> assertEquals(List.of(COLUMN_EVENT_ID, COLUMN_CONSUMED_TOPIC),
+                        keyColumns(PK_PROCESSED_EVENT), PK_PROCESSED_EVENT),
                 () -> assertEquals(TYPE_TIMESTAMP_WITH_TIME_ZONE, processedAt.get("data_type"),
                         COLUMN_PROCESSED_AT),
                 () -> assertEquals("NO", processedAt.get("is_nullable"), COLUMN_PROCESSED_AT),
                 () -> assertEquals(TYPE_CHARACTER_VARYING, consumedTopic.get("data_type"),
                         COLUMN_CONSUMED_TOPIC),
                 () -> assertEquals(Integer.valueOf(CONSUMED_TOPIC_WIDTH),
-                        consumedTopic.get("character_maximum_length"), COLUMN_CONSUMED_TOPIC));
+                        consumedTopic.get("character_maximum_length"), COLUMN_CONSUMED_TOPIC),
+                () -> assertEquals("NO", consumedTopic.get("is_nullable"),
+                        COLUMN_CONSUMED_TOPIC + " is half of the key, and a key column holds no "
+                                + "null"),
+                () -> assertNull(consumedTopic.get("column_default"),
+                        COLUMN_CONSUMED_TOPIC + " carries a default"));
     }
 
     @Test
@@ -420,18 +458,61 @@ class EntitySchemaValidationIT {
     }
 
     @Test
-    @DisplayName("processed_event returns the identifier and the instant a marker row carries")
+    @DisplayName("processed_event returns the identifier, the topic and the instant a marker row "
+            + "carries")
     void processedEventRoundTripsOneMarker() {
         jdbc.update("INSERT INTO " + qualified(PROCESSED_EVENT)
-                        + " (" + COLUMN_EVENT_ID + ", " + COLUMN_PROCESSED_AT + ") VALUES (?, ?)",
-                MARKER_EVENT_ID, atUtc(MARKER_PROCESSED_AT));
+                        + " (" + COLUMN_EVENT_ID + ", " + COLUMN_PROCESSED_AT + ", "
+                        + COLUMN_CONSUMED_TOPIC + ") VALUES (?, ?, ?)",
+                MARKER_EVENT_ID, atUtc(MARKER_PROCESSED_AT), MARKER_CONSUMED_TOPIC);
         UUID storedId = jdbc.queryForObject("SELECT " + COLUMN_EVENT_ID + " FROM "
                 + qualified(PROCESSED_EVENT), UUID.class);
         Instant storedInstant = instant("SELECT " + COLUMN_PROCESSED_AT + " FROM "
                 + qualified(PROCESSED_EVENT));
+        String storedTopic = jdbc.queryForObject("SELECT " + COLUMN_CONSUMED_TOPIC + " FROM "
+                + qualified(PROCESSED_EVENT), String.class);
         assertAll(
                 () -> assertEquals(MARKER_EVENT_ID, storedId, COLUMN_EVENT_ID),
-                () -> assertEquals(MARKER_PROCESSED_AT, storedInstant, COLUMN_PROCESSED_AT));
+                () -> assertEquals(MARKER_PROCESSED_AT, storedInstant, COLUMN_PROCESSED_AT),
+                () -> assertEquals(MARKER_CONSUMED_TOPIC, storedTopic, COLUMN_CONSUMED_TOPIC));
+    }
+
+    /**
+     * Asserts one identifier is storable once per topic rather than once per schema.
+     *
+     * <p>This is the property {@code V4__processed_event_topic_key.sql} exists for, read at the
+     * table. Two producing services assign event identifiers independently, so one identifier can
+     * arrive on two topics carrying two different events. Under the narrow key the second insert was
+     * refused, and the consumer reading that refusal concluded the event was already handled and
+     * applied nothing at all.
+     */
+    @Test
+    @DisplayName("processed_event accepts one identifier once per topic and refuses a repeat on "
+            + "one topic")
+    void processedEventKeysOnTheEventAndTheTopicTogether() {
+        String sql = "INSERT INTO " + qualified(PROCESSED_EVENT)
+                + " (" + COLUMN_EVENT_ID + ", " + COLUMN_PROCESSED_AT + ", "
+                + COLUMN_CONSUMED_TOPIC + ") VALUES (?, ?, ?)";
+        jdbc.update(sql, MARKER_EVENT_ID, atUtc(MARKER_PROCESSED_AT), MARKER_CONSUMED_TOPIC);
+        jdbc.update(sql, MARKER_EVENT_ID, atUtc(MARKER_PROCESSED_AT), OTHER_CONSUMED_TOPIC);
+
+        Integer rows = jdbc.queryForObject(
+                "SELECT count(*) FROM " + qualified(PROCESSED_EVENT), Integer.class);
+
+        assertAll(
+                () -> assertEquals(Integer.valueOf(2), rows,
+                        "each topic carries its own marker for the shared identifier"),
+                () -> assertThrows(DataIntegrityViolationException.class,
+                        () -> jdbc.update(sql, MARKER_EVENT_ID, atUtc(MARKER_PROCESSED_AT),
+                                MARKER_CONSUMED_TOPIC),
+                        "a redelivery on one topic is still refused by " + PK_PROCESSED_EVENT),
+                () -> assertThrows(DataIntegrityViolationException.class,
+                        () -> jdbc.update("INSERT INTO " + qualified(PROCESSED_EVENT)
+                                        + " (" + COLUMN_EVENT_ID + ", " + COLUMN_PROCESSED_AT
+                                        + ", " + COLUMN_CONSUMED_TOPIC + ") VALUES (?, ?, ?)",
+                                MARKER_EVENT_ID, atUtc(MARKER_PROCESSED_AT), "   "),
+                        "a blank topic names no topic, and "
+                                + "ck_processed_event_consumed_topic refuses one"));
     }
 
     @Test
