@@ -1,36 +1,36 @@
 # Suggested Next Tasks
 
-Every item below was discovered during this migration and left outside its scope. None is performed by this engagement. Each task states what to change, where to start, and what to verify afterwards. The source findings remain indexed in [Business Rule Flags](business-rule-flags.md).
+Every item below was discovered during this migration and left outside its scope. None is performed by this engagement. Each task states what to change, where to start, what to verify afterwards, and whether the change moves an outcome. The findings behind them are indexed in [Business Rule Flags](business-rule-flags.md), and the reasoning for each choice this migration made is in the [decision log](decision-log.md).
 
 ## Correctness decisions requiring a human
 
 ### Widen the credit-limit working precision
 
-- **Change:** Decide whether `CreditLimitRule` should stop reproducing the lost high-order digit.
-- **Where:** `WS-TEMP-BAL PIC S9(09)V99` is at `app/cbl/CBTRN02C.cbl:L187`; source operands use `S9(10)V99` at `app/cpy/CVACT01Y.cpy:L8` and `L13-L14`.
-- **Check:** Re-baseline the synthetic one-billion boundary. The corrected rule should decline the transaction that source-equivalent narrowing approves.
-- **Behavior change:** Yes. Register item 7.
+- **Change:** Widen the working precision in `CreditLimitRule` so a cycle balance at or above one billion stops losing its high-order digit. Losing that digit turns a decline into an approval, because the comparison approves whenever the limit is greater than or equal to the working value.
+- **Where:** `WS-TEMP-BAL PIC S9(09)V99` at `app/cbl/CBTRN02C.cbl:L187`. Two operands feed it: `ACCT-CURR-CYC-CREDIT` at `app/cpy/CVACT01Y.cpy:L13` and `ACCT-CURR-CYC-DEBIT` at `:L14`. It is compared against `ACCT-CREDIT-LIMIT` at `:L8`, at `app/cbl/CBTRN02C.cbl:L407`. All three of those are `PIC S9(10)V99`, one integer digit wider.
+- **Check:** The constructed boundary case in `AuthorizationDecisionEquivalenceTest` must flip from reproducing the source approval to declining, and every existing equivalence assertion must be re-baselined against the widened rule.
+- **Behavior change:** Yes, which is why only the project owner can authorise it. Register item 7.
 
 ### Correct the refund sign convention
 
-- **Change:** Define how a negative amount should affect cycle debit and available credit.
-- **Where:** `app/cbl/CBTRN02C.cbl:L551` adds the negative amount; line 404 subtracts that accumulator.
-- **Check:** A refund followed by another authorization must not reduce available credit unless the owner chooses that policy.
+- **Change:** Decide the intended treatment of a negative amount, then correct the accumulator routing in `AccountBalanceUpdater` and the formula in `CreditLimitRule` together.
+- **Where:** `app/cbl/CBTRN02C.cbl:L551` adds a negative amount to `ACCT-CURR-CYC-DEBIT`, making that accumulator more negative, and the credit-limit formula subtracts it at `:L404`. A refund therefore raises the tested balance and tightens the next authorization.
+- **Check:** A refund followed by an authorization must leave available credit no tighter than before the refund, unless the project owner chooses that policy deliberately.
 - **Behavior change:** Yes. Register item 6.
 
 ### Decide whether current balance belongs in the limit rule
 
-- **Change:** Define the relationship between `ACCT-CURR-BAL` and the two cycle accumulators.
-- **Where:** `app/cbl/CBTRN02C.cbl:L403-L407` ignores current balance.
-- **Check:** Re-baseline authorization and posting equivalence against the approved business rule.
+- **Change:** Establish the intended relationship between `ACCT-CURR-BAL` and the two cycle accumulators, then revise `CreditLimitRule` if the intent differs from what the source does.
+- **Where:** `app/cbl/CBTRN02C.cbl:L403-L407` works from the two accumulators alone and ignores the current balance entirely. Two notions of balance therefore coexist in one account record with no documented relationship between them.
+- **Check:** Re-baseline the posting and authorization equivalence suites against the approved intent.
 - **Behavior change:** Yes. Register item 5.
 
 ### Confirm the target meaning of reason 109
 
-- **Change:** Confirm that an account-update failure should retry and then reach the dead-letter topic.
-- **Where:** `app/cbl/CBTRN02C.cbl:L556-L558` assigns reason 109 after an earlier write, and no source statement checks it.
-- **Check:** Force the target write failure and verify one governed `DeadLetterEnvelope`.
-- **Behavior change:** Already additive; owner confirmation remains. Register item 9.
+- **Change:** Confirm that turning an account-update failure into a retried consumer failure that ends on the dead-letter topic is the treatment the project owner wants.
+- **Where:** `app/cbl/CBTRN02C.cbl:L556-L558` assigns reason 109 on a failed account rewrite, after the category balance has already been written, and no source statement ever inspects it. In the source it therefore changes nothing.
+- **Check:** Force the account write to fail and confirm one `DeadLetterEnvelope` carrying the reason, rather than a silently swallowed failure.
+- **Behavior change:** Already made and already declared. What remains is the owner's confirmation. Register item 9.
 
 ## Validations deliberately not added
 
@@ -38,47 +38,50 @@ These checks are reasonable improvements, but each changes source-equivalent out
 
 ### Add card-number checksum validation
 
-- **Change:** Add a Luhn rule to the card validation layer.
-- **Where:** `app/cbl/COCRDUPC.cbl:L193-L194` and line 784 check only 16 numeric digits.
-- **Check:** Update validation and schema tests deliberately while preserving existing source messages.
-- **Behavior change:** Yes. Register item 24.
+- **Change:** Add a Luhn check to the card service's validation layer.
+- **Where:** The source validates a card number only as sixteen numeric digits. `app/cbl/COCRDUPC.cbl:L193-L194` carries the condition name and its message, and `:L784` is the second site, which tests the filter field for numeric content alone.
+- **Check:** Update `ValidationEquivalenceTest` deliberately rather than incidentally, and confirm the six verbatim card messages still reproduce character for character.
+- **Behavior change:** Yes. A card number that passes today would begin failing. Register item 24.
 
 ### Add card-status authorization
 
-- **Change:** Add a decline rule that reads card active status.
-- **Where:** `app/cbl/CBTRN02C.cbl:L29-L57` selects six files without the card file; `app/jcl/POSTTRAN.jcl` also omits it.
-- **Check:** Add an additive decline reason and keep old event schemas readable.
-- **Behavior change:** Yes. Register item 3.
+- **Change:** Add a decline rule that reads `CARD-ACTIVE-STATUS`.
+- **Where:** The posting program never opens the card file. Its six `SELECT` statements sit at `app/cbl/CBTRN02C.cbl:L29`, `:L34`, `:L40`, `:L46`, `:L51` and `:L57`. They name the daily feed, the transaction file, the cross-reference, the reject file, the account file and the category-balance file. `app/jcl/POSTTRAN.jcl` confirms the omission by never allocating the card dataset.
+- **Check:** Extend the declined-event schema's enumerated reason list additively, and confirm `SchemaBackwardCompatibilityTest` still passes so an existing consumer keeps reading the old payload.
+- **Behavior change:** Yes, and it needs a new decline reason code, which makes it an event-schema change as well. Register item 3.
 
 ### Add account-status authorization
 
 - **Change:** Add a decline rule for `ACCT-ACTIVE-STATUS`.
-- **Where:** The field exists at `app/cpy/CVACT01Y.cpy:L6`, but source posting never tests it.
-- **Check:** Extend the decline schema and equivalence baseline under an owner-approved rule.
-- **Behavior change:** Yes. Register item 4.
+- **Where:** The field exists at `app/cpy/CVACT01Y.cpy:L6` and no program tests it before posting, so a closed account still posts.
+- **Check:** The same as the card-status task: an additive reason code, a passing backward-compatibility test, and a re-baselined equivalence suite.
+- **Behavior change:** Yes, with the same schema consequence as the card-status task. Register item 4.
 
 ## Interest and cycle ownership
 
 ### Migrate interest calculation
 
-- **Change:** Move interest processing only after its batch boundary is approved for migration.
-- **Where:** Rate fallback is at `app/cbl/CBACT04C.cbl:L415-L460`; computation and accumulation are at `L462-L470`.
-- **Check:** Extend `InterestCalculationEquivalenceTest` from rate resolution to computed account results.
+- **Change:** Move interest processing only after its batch boundary is approved for migration. Two slices of the program were already carried over: `InterestCalculationEquivalenceTest` verifies the rate rules, and the account service reproduces the cycle-counter reset at `app/cbl/CBACT04C.cbl:L353-L354`. The computation itself is not migrated.
+- **Where:** The computation is at `app/cbl/CBACT04C.cbl:L464-L465`, and it accumulates at `L467`. Three things a migrator meets on the way:
+  - **The same precision narrowing lives here.** `WS-MONTHLY-INT` and `WS-TOTAL-INT` are both `PIC S9(09)V99` at `L168-L169`, and the total lands in `ACCT-CURR-BAL PIC S9(10)V99` at `L352`. That is the shape of register item 7 in a second program.
+  - **A rate lookup that misses substitutes a literal.** `1200-GET-INTEREST-RATE` at `L415` accepts the record-not-found status alongside the normal one at `L416-L419`. It then moves the literal `'DEFAULT'` into the group key at `L436` and re-reads at `L438`. An account whose disclosure group is absent is charged the default group's rate, not zero.
+  - **Fees are an empty paragraph.** `1400-COMPUTE-FEES` at `L518` carries the comment `To be implemented` at `L519` and does nothing else. Anyone migrating interest inherits a fee obligation the source never wrote.
+- **Check:** Extend `InterestCalculationEquivalenceTest` from verifying rate resolution to verifying computed interest per account, including one account whose group is absent and one whose monthly total crosses the ninth integer digit.
 - **Behavior change:** Yes. Register item 11.
 
 ### Assign a production cycle-close owner
 
-- **Change:** Decide whether a scheduler, operator, or another bounded service triggers cycle close.
-- **Where:** The account endpoint reproduces only `app/cbl/CBACT04C.cbl:L353-L354`.
-- **Check:** Demonstrate that every account resets before its cycle accumulators cause persistent declines.
-- **Behavior change:** Operational ownership only.
+- **Change:** Decide whether a scheduler, an operator, or another bounded service triggers cycle close in a real deployment. Today it is an endpoint a caller invokes, because the only source code that zeroes the accumulators sits in a program the project owner placed out of scope.
+- **Where:** The account endpoint reproduces `app/cbl/CBACT04C.cbl:L353-L354` and nothing else from that program.
+- **Check:** Demonstrate that every account resets before its accumulators cause persistent declines. Without a reset owner, available credit shrinks with every authorization until all of them decline, which is [pitfall 5 in the onboarding guide](onboarding.md#5-cycle-counters-need-an-explicit-reset-owner).
+- **Behavior change:** Operational ownership only. No rule changes.
 
 ## Projection and lifecycle work
 
 ### Extend the cardholder-context bootstrap beyond the fixture accounts
 
 - **Change:** Add a controlled backfill for accounts the repository fixtures do not contain, so a real cutover starts with a complete renderer projection.
-- **Where:** `V2__seed.sql` in the notification service now bootstraps `cardholder_context` with one row per fixture account, read from `app/data/ASCII/custdata.txt` and resolved through `app/data/ASCII/cardxref.txt`. That closes the demo gap. An account outside those fifty still has no row until the account service publishes its first `CustomerContextChanged`, and a real migration carries far more than fifty accounts.
+- **Where:** `services/notification-service/src/main/resources/db/migration/V2__seed.sql` now bootstraps `cardholder_context` with one row per fixture account, read from `app/data/ASCII/custdata.txt` and resolved through `app/data/ASCII/cardxref.txt`. That closes the demo gap. An account outside those fifty still has no row until the account service publishes its first `CustomerContextChanged`, and a real migration carries far more than fifty accounts.
 - **Check:** Import a customer set larger than the fixture, then render an alert for one of the imported accounts without first editing its customer record. No render may report an absent projection.
 - **Behavior change:** No authorization change. The notification read model becomes complete for a population the fixtures do not describe.
 
@@ -100,10 +103,10 @@ These checks are reasonable improvements, but each changes source-equivalent out
 
 ### Define legacy credential import
 
-- **Change:** Define how plaintext `USRSEC` records become encoded service credentials during a real migration.
-- **Where:** The source comparison is plaintext at `app/cbl/COSGN00C.cbl:L223`; the target refuses hashes without a `{bcrypt}` prefix.
-- **Check:** Import a test record, authenticate with the original password, and verify that no plaintext password remains.
-- **Behavior change:** Security migration, not authorization-rule parity.
+- **Change:** Define how plaintext `USRSEC` records become encoded service credentials during a real migration. Of every task on this list, this is the one whose case for changing is strongest.
+- **Where:** The source compares the stored and supplied password directly at `app/cbl/COSGN00C.cbl:L223`. Hashing that comparison would have broken equivalence, so it was preserved and kept out of the authorization path. The platform's own credentials are already hashed: it refuses any stored value without a `{bcrypt}` prefix, which is why the open work is the import rather than the encoder.
+- **Check:** Import a test record, authenticate with the original password, and confirm no plaintext password survives anywhere. An unmigrated record must fail only in the way the chosen import strategy intends.
+- **Behavior change:** Yes, but to credential storage rather than to any authorization rule, so no equivalence assertion moves.
 
 ### Turn over the card-token key
 
@@ -120,30 +123,30 @@ The following tasks modify the read-only legacy tree. They belong to the source 
 ### Remove the dead duplicate copybook
 
 - **Change:** Delete `app/cpy/UNUSED1Y.cpy`.
-- **Where:** It duplicates the widths of `app/cpy/CSUSR01Y.cpy:L17-L23` and has no reference.
-- **Check:** Confirm a repository-wide search finds no include before deletion.
-- **Behavior change:** No. Register item 26.
+- **Where:** Its six fields clone the widths of the security user record at `app/cpy/CSUSR01Y.cpy:L17-L23` byte for byte, with every name rewritten to an unused-prefixed one. Its version stamp is later than the copybook it clones, so it is an abandoned copy rather than the original.
+- **Check:** A repository-wide search for the copybook name and for its record name must return no reference before deletion. Today the only hit is the definition itself.
+- **Behavior change:** No. Nothing includes it. Register item 26.
 
 ### Reconcile the customer copybook fork
 
-- **Change:** Converge `CVCUS01Y.cpy` and `CUSTREC.cpy`, then repoint the statement program.
-- **Where:** The only field-name difference is at line 19; `app/cbl/CBSTM03A.CBL:L55` uses the fork.
-- **Check:** Compile every including program and parse the 500-byte customer fixture.
-- **Behavior change:** No intended behavior change. Register item 12.
+- **Change:** Converge `app/cpy/CVCUS01Y.cpy` and `app/cpy/CUSTREC.cpy`, then repoint the statement program at the surviving copy. `CVCUS01Y` was adopted as canonical here.
+- **Where:** The two carry identical field lists and identical Picture clauses. The sole difference is one field name at line 19 of each, `CUST-DOB-YYYY-MM-DD` against `CUST-DOB-YYYYMMDD`. One file is indented with literal tab characters, and their version stamps are one second apart, which is what makes the pair a fork rather than a design. `app/cbl/CBSTM03A.CBL:L55` is the single binding to the non-canonical copy.
+- **Check:** Every program that includes either copybook still compiles, and the customer fixture still parses at 500 bytes per record.
+- **Behavior change:** None intended. The two layouts are already byte-identical. Register item 12.
 
 ### Remove orphan CICS definitions
 
-- **Change:** Remove program `COCRDSEC` and transaction `CDV1`.
-- **Where:** `app/csd/CARDDEMO.CSD:L211`, `L388`, and `L390`; no matching source program exists.
-- **Check:** Install the resource definitions after removal.
+- **Change:** Remove the Customer Information Control System (CICS) definitions of program `COCRDSEC` and transaction `CDV1`.
+- **Where:** `DEFINE PROGRAM(COCRDSEC)` at `app/csd/CARDDEMO.CSD:L211`, and `DEFINE TRANSACTION(CDV1)` at `:L388` naming `PROGRAM(COCRDSEC)` at `:L390`. `COCRDSEC` is absent from all 28 members of `app/cbl/`, so neither definition can ever load a program.
+- **Check:** The resource definition file still installs after the removal.
 - **Behavior change:** Dead configuration only. Register item 17.
 
 ### Correct expiry identifiers in the source
 
-- **Change:** Correct `ACCT-EXPIRAION-DATE` and `CARD-EXPIRAION-DATE`.
+- **Change:** Correct the transposed spelling in `ACCT-EXPIRAION-DATE` and `CARD-EXPIRAION-DATE`. The target column and field names already read `expiration`, and the traceability matrix records the rename.
 - **Where:** `app/cpy/CVACT01Y.cpy:L11` and `app/cpy/CVACT02Y.cpy:L9`.
-- **Check:** Compile every program referencing either field.
-- **Behavior change:** No.
+- **Check:** Every program referencing either field still compiles.
+- **Behavior change:** No. Nothing in the source depends on the identifier text.
 
 ### Reconcile the customer sample data with the area-code table
 
@@ -172,34 +175,34 @@ The following tasks modify the read-only legacy tree. They belong to the source 
 ### Add a source fixture that reaches the precision boundary
 
 - **Change:** Add an owner-approved fixed-width account and transaction fixture whose cycle value reaches one billion.
-- **Where:** Current fixtures cannot reach register item 7; the suite therefore uses a synthetic record.
-- **Check:** The source-derived fixture and the synthetic case must produce the same narrowed result.
+- **Where:** No record among the 300 in `app/data/ASCII/dailytran.txt` reaches that magnitude, so the boundary of register item 7 is unreachable from the shipped data. `AuthorizationDecisionEquivalenceTest` therefore constructs the record instead of loading it, and [equivalence results](equivalence-results.md) states the gap. A fixture under `app/data/` belongs to the source owner.
+- **Check:** The source-derived fixture and the constructed case must produce the same narrowed result, so that the constructed case can be read as a stand-in rather than as an assumption.
 - **Behavior change:** Test data only.
 
 ### Capture a controlled original processing timestamp
 
-- **Change:** Capture original output under a known source clock and compiler configuration.
-- **Where:** Current parity normalizes the hundredths field at `app/cbl/CBTRN02C.cbl:L173-L174` and the four zeros at line 701.
-- **Check:** Compare all 26 timestamp characters under the controlled clock, while retaining normalized tests for ordinary runs.
-- **Behavior change:** Test evidence only.
+- **Change:** Capture original output under a known source clock and compiler configuration, so a full-width timestamp comparison becomes possible.
+- **Where:** `DB2-FORMAT-TS PIC X(26)` at `app/cbl/CBTRN02C.cbl:L159` redefines into a two-digit fractional field and a four-character remainder at `:L173-L174`, and `:L701` moves the literal `'0000'` into that remainder. The field therefore carries two significant fractional digits, and the harness truncates to hundredths before comparing.
+- **Check:** Compare all 26 characters under the controlled clock. Keep the truncating comparison for ordinary runs, so a raw comparison never fails a suite for a reason unrelated to the logic under test.
+- **Behavior change:** Test evidence only. Register item 8.
 
 ### Add an ASCII security-user fixture
 
-- **Change:** Add a text twin for `app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS`.
-- **Where:** The binary record follows `app/cpy/CSUSR01Y.cpy`; no file exists under `app/data/ASCII/`.
-- **Check:** Load each record at 80 bytes and retire constructed signon fixtures where appropriate.
-- **Behavior change:** Test data only.
+- **Change:** Add a text twin for `app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS`, so signon fixtures can be loaded rather than constructed.
+- **Where:** `README.md:L148` lists that member as fixed-block, 80 bytes, laid out by `app/cpy/CSUSR01Y.cpy`, and names no equivalent text file. The nine files under `app/data/ASCII/` confirm the absence: every other binary member has a text twin, and this one does not.
+- **Check:** Load each record at 80 bytes against the copybook widths, then retire the constructed signon fixtures the suite builds today.
+- **Behavior change:** Test data only. This task adds a file under `app/data/`, so it belongs to the source owner.
 
 ## Documentation
 
 ### Correct the legacy sample-data path
 
 - **Change:** Correct the stale `main/-/data/EBCDIC/` path in the root `README.md`.
-- **Where:** The unchanged legacy instructions name it at line 65; the repository path is `app/data/EBCDIC/`.
+- **Where:** The unchanged legacy instructions name it at `README.md:L144`; the repository path is `app/data/EBCDIC/`. Line 144 is where the sentence sits after this engagement added its modernization section above it, so a reader of the original file finds the same sentence at line 65.
 - **Check:** Resolve every legacy sample-data link after the source owner approves the edit.
 - **Behavior change:** Documentation only.
 
-That path remains unchanged here because Rule 3 required a surgical modernization section, not unrelated edits to accurate legacy instructions.
+That path stays as it is here for a scope reason, not an oversight. Correcting it has nothing to do with this migration, so it was recorded rather than folded into a scope the project owner deliberately constrained. Rule 3 also asks a contributor to fill gaps rather than edit content that is already accurate for its own audience. Apart from this one path, the legacy instructions are accurate.
 
 ## Work the integration remediation surfaced
 
@@ -208,7 +211,7 @@ Three items were measured while resolving review findings and left deliberately 
 ### Count a notification dead letter after its route, not before
 
 - **Change:** Move the increment of `carddemo.notification.records.dead.lettered` to after the delegating recoverer returns, and add a separate increment for a refused publication.
-- **Where:** The `CountingRecoverer` inside `services/notification-service/.../config/KafkaConsumerConfig.java` increments before it routes, so a diagnostic the broker refused still reads as dead-lettered. The ledger and fraud recoverers were corrected to count after the delegate returns, and separately before a rethrow, under review finding MN-18. Notification was not named by that finding and already had a per-record terminal series distinct from its per-attempt series, so it was recorded rather than changed.
+- **Where:** The `CountingRecoverer` inside `services/notification-service/src/main/java/com/carddemo/notification/config/KafkaConsumerConfig.java` increments before it routes, so a diagnostic the broker refused still reads as dead-lettered. The ledger and fraud recoverers were corrected to count after the delegate returns, and separately before a rethrow, under review finding MN-18. Notification was not named by that finding and already had a per-record terminal series distinct from its per-attempt series, so it was recorded rather than changed.
 - **Check:** Point the recoverer at a topic its principal cannot write and assert the published series stays at zero while a refusal series moves.
 - **Behavior change:** None. A metric reads correctly where it previously over-reported by one on a refusal.
 
@@ -247,7 +250,7 @@ Three items were measured while resolving runtime findings and confirmed rather 
 ### Confirm the printable-text contract for cardholder-facing values
 
 - **Change:** Confirm that refusing a non-ASCII merchant name or description is intended, or add a transliteration step ahead of rendering.
-- **Where:** The notification contract constrains rendered text with `^[ -~]*$`, because the renderers reproduce the column-oriented layout at `app/cbl/CBSTM03A.CBL:L86-L159` where each field occupies fixed character positions. A record carrying a multi-byte character is dead-lettered rather than rendered misaligned.
+- **Where:** `PRINTABLE_TEXT_PATTERN`, declared as `^[ -~]*$` on `TransactionAuthorized` and `TransactionPosted` in `libs/event-contracts`, and applied again to the free-text fields of the authorization, account and customer update requests. The event records enforce it on construction, so a posted event carrying an accented character is dead-lettered rather than rendered. The reason lies downstream: the notification renderers reproduce the column-oriented layout at `app/cbl/CBSTM03A.CBL:L86-L159`, where every field occupies counted character positions. Register item D2.
 - **Check:** Publish an event carrying an accented merchant name and confirm the intended outcome, whether that is a dead letter or a transliterated alert.
 - **Behavior change:** Transliteration would put a value in a cardholder-facing alert that no source field held, which is why the decision belongs to a person.
 
@@ -267,7 +270,7 @@ log](decision-log.md) carries the reasoning for every choice named here.
 ### Decide whether the velocity accumulator should saturate rather than widen again
 
 - **Change:** Confirm that `NUMERIC(15,2)` is enough headroom for one bucket, or replace the ceiling with a saturating add that reports the ceiling instead of failing the statement.
-- **Where:** `velocity_window.total_amount` after `V3__velocity_total_headroom.sql`, the matching `VelocityWindowEntity.TOTAL_AMOUNT_PRECISION`, and the database-side addition in `VelocityWindowRepository.addAuthorization`. Fifteen digits hold ten thousand maximum-magnitude authorizations in one bucket, and `authorization_count` is an `INTEGER`, so the count reaches its own ceiling first.
+- **Where:** `velocity_window.total_amount` after `services/fraud-detection-service/src/main/resources/db/migration/V3__velocity_total_headroom.sql`, the matching `VelocityWindowEntity.TOTAL_AMOUNT_PRECISION`, and the database-side addition in `VelocityWindowRepository.addAuthorization`. Fifteen digits hold ten thousand maximum-magnitude authorizations in one bucket, and `authorization_count` is an `INTEGER`, so the count reaches its own ceiling first.
 - **Check:** Accumulate past the ceiling in one bucket and confirm the intended outcome, whether that is a refused statement or a saturated total.
 - **Behavior change:** Saturating would report a total that is not the total, which changes what the amount threshold means at the extreme.
 
@@ -280,8 +283,8 @@ log](decision-log.md) carries the reasoning for every choice named here.
 
 ### Bound the outbox publication window in the account service the way fraud now does
 
-- **Change:** Decide whether `account-service` should adopt the relationship fraud now holds between its producer delivery window and its relay pass deadline.
-- **Where:** `services/account-service/src/main/resources/application.yml` sets `delivery.timeout.ms` to 120000 while `carddemo.outbox.relay.max-duration-ms` is 5000, and `services/account-service/.../outbox/OutboxRelay.java` bounds a send by the time left in the pass. That service also carries its own `publish-timeout`, so its timing is not the same shape as fraud's and a copied change would be careless. The fraud finding and its fix are recorded in the [decision log](decision-log.md).
+- **Change:** Decide whether `account-service` should adopt the relationship fraud now holds between its producer delivery window and the time budget of one relay pass.
+- **Where:** `services/account-service/src/main/resources/application.yml` sets `delivery.timeout.ms` to 120000 while `carddemo.outbox.relay.max-duration-ms` is 5000, and `services/account-service/src/main/java/com/carddemo/account/outbox/OutboxRelay.java` bounds a send by the time left in the pass. That service also carries its own `publish-timeout`, so its timing is not the same shape as fraud's and a copied change would be careless. The fraud finding and its fix are recorded in the [decision log](decision-log.md).
 - **Check:** Freeze the broker while a pending row is relayed, restore it, and count the records that reach the topic for that row.
 - **Behavior change:** A duplicate publication is harmless to a consumer that records processed event identifiers, and every consumer on this platform does. The change lowers how often one occurs.
 

@@ -1,0 +1,618 @@
+# evaluation_model NOT_APPLICABLE: this file measures the 50 records of app/data/ASCII/tcatbal.txt as seeded, before any daily transaction posts. No accumulator has advanced, so neither Model A nor Model B applies. Consuming test InterestCalculationEquivalenceTest. Record count 50: the seeded category-balance keys, one per account, in ascending account order. Data row count 616: 11 rows for each of the 50 keys, then 66 mechanics rows. The mechanics sections carry rate resolution, the accrual driver, the interest-transaction shape, the cycle-close boundary, the summary counts, the scope boundary and the prohibitions. Monetary values carry scale 2. Space-padded alphanumeric values are quoted at their declared width.
+evaluation_model,derived_from,record_seq,entity_key,expected_field,expected_value,pic_clause,source_locator
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,1,00000000001|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,1,00000000001|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,1,00000000001|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,1,00000000001|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,1,00000000001|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,1,00000000001|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,1,00000000001|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,1,00000000001|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,1,00000000001|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,1,00000000001|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,1,00000000001|01|0001,interest_transaction_id,2022071800000001,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,2,00000000002|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,2,00000000002|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,2,00000000002|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,2,00000000002|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,2,00000000002|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,2,00000000002|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,2,00000000002|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,2,00000000002|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,2,00000000002|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,2,00000000002|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,2,00000000002|01|0001,interest_transaction_id,2022071800000002,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,3,00000000003|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,3,00000000003|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,3,00000000003|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,3,00000000003|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,3,00000000003|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,3,00000000003|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,3,00000000003|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,3,00000000003|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,3,00000000003|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,3,00000000003|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,3,00000000003|01|0001,interest_transaction_id,2022071800000003,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,4,00000000004|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,4,00000000004|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,4,00000000004|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,4,00000000004|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,4,00000000004|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,4,00000000004|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,4,00000000004|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,4,00000000004|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,4,00000000004|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,4,00000000004|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,4,00000000004|01|0001,interest_transaction_id,2022071800000004,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,5,00000000005|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,5,00000000005|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,5,00000000005|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,5,00000000005|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,5,00000000005|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,5,00000000005|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,5,00000000005|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,5,00000000005|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,5,00000000005|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,5,00000000005|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,5,00000000005|01|0001,interest_transaction_id,2022071800000005,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,6,00000000006|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,6,00000000006|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,6,00000000006|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,6,00000000006|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,6,00000000006|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,6,00000000006|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,6,00000000006|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,6,00000000006|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,6,00000000006|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,6,00000000006|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,6,00000000006|01|0001,interest_transaction_id,2022071800000006,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,7,00000000007|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,7,00000000007|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,7,00000000007|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,7,00000000007|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,7,00000000007|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,7,00000000007|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,7,00000000007|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,7,00000000007|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,7,00000000007|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,7,00000000007|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,7,00000000007|01|0001,interest_transaction_id,2022071800000007,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,8,00000000008|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,8,00000000008|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,8,00000000008|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,8,00000000008|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,8,00000000008|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,8,00000000008|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,8,00000000008|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,8,00000000008|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,8,00000000008|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,8,00000000008|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,8,00000000008|01|0001,interest_transaction_id,2022071800000008,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,9,00000000009|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,9,00000000009|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,9,00000000009|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,9,00000000009|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,9,00000000009|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,9,00000000009|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,9,00000000009|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,9,00000000009|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,9,00000000009|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,9,00000000009|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,9,00000000009|01|0001,interest_transaction_id,2022071800000009,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,10,00000000010|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,10,00000000010|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,10,00000000010|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,10,00000000010|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,10,00000000010|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,10,00000000010|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,10,00000000010|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,10,00000000010|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,10,00000000010|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,10,00000000010|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,10,00000000010|01|0001,interest_transaction_id,2022071800000010,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,11,00000000011|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,11,00000000011|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,11,00000000011|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,11,00000000011|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,11,00000000011|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,11,00000000011|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,11,00000000011|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,11,00000000011|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,11,00000000011|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,11,00000000011|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,11,00000000011|01|0001,interest_transaction_id,2022071800000011,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,12,00000000012|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,12,00000000012|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,12,00000000012|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,12,00000000012|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,12,00000000012|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,12,00000000012|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,12,00000000012|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,12,00000000012|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,12,00000000012|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,12,00000000012|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,12,00000000012|01|0001,interest_transaction_id,2022071800000012,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,13,00000000013|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,13,00000000013|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,13,00000000013|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,13,00000000013|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,13,00000000013|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,13,00000000013|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,13,00000000013|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,13,00000000013|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,13,00000000013|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,13,00000000013|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,13,00000000013|01|0001,interest_transaction_id,2022071800000013,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,14,00000000014|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,14,00000000014|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,14,00000000014|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,14,00000000014|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,14,00000000014|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,14,00000000014|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,14,00000000014|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,14,00000000014|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,14,00000000014|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,14,00000000014|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,14,00000000014|01|0001,interest_transaction_id,2022071800000014,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,15,00000000015|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,15,00000000015|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,15,00000000015|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,15,00000000015|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,15,00000000015|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,15,00000000015|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,15,00000000015|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,15,00000000015|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,15,00000000015|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,15,00000000015|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,15,00000000015|01|0001,interest_transaction_id,2022071800000015,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,16,00000000016|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,16,00000000016|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,16,00000000016|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,16,00000000016|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,16,00000000016|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,16,00000000016|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,16,00000000016|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,16,00000000016|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,16,00000000016|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,16,00000000016|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,16,00000000016|01|0001,interest_transaction_id,2022071800000016,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,17,00000000017|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,17,00000000017|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,17,00000000017|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,17,00000000017|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,17,00000000017|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,17,00000000017|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,17,00000000017|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,17,00000000017|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,17,00000000017|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,17,00000000017|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,17,00000000017|01|0001,interest_transaction_id,2022071800000017,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,18,00000000018|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,18,00000000018|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,18,00000000018|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,18,00000000018|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,18,00000000018|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,18,00000000018|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,18,00000000018|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,18,00000000018|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,18,00000000018|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,18,00000000018|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,18,00000000018|01|0001,interest_transaction_id,2022071800000018,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,19,00000000019|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,19,00000000019|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,19,00000000019|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,19,00000000019|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,19,00000000019|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,19,00000000019|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,19,00000000019|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,19,00000000019|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,19,00000000019|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,19,00000000019|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,19,00000000019|01|0001,interest_transaction_id,2022071800000019,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,20,00000000020|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,20,00000000020|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,20,00000000020|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,20,00000000020|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,20,00000000020|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,20,00000000020|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,20,00000000020|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,20,00000000020|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,20,00000000020|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,20,00000000020|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,20,00000000020|01|0001,interest_transaction_id,2022071800000020,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,21,00000000021|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,21,00000000021|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,21,00000000021|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,21,00000000021|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,21,00000000021|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,21,00000000021|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,21,00000000021|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,21,00000000021|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,21,00000000021|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,21,00000000021|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,21,00000000021|01|0001,interest_transaction_id,2022071800000021,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,22,00000000022|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,22,00000000022|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,22,00000000022|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,22,00000000022|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,22,00000000022|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,22,00000000022|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,22,00000000022|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,22,00000000022|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,22,00000000022|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,22,00000000022|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,22,00000000022|01|0001,interest_transaction_id,2022071800000022,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,23,00000000023|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,23,00000000023|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,23,00000000023|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,23,00000000023|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,23,00000000023|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,23,00000000023|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,23,00000000023|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,23,00000000023|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,23,00000000023|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,23,00000000023|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,23,00000000023|01|0001,interest_transaction_id,2022071800000023,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,24,00000000024|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,24,00000000024|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,24,00000000024|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,24,00000000024|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,24,00000000024|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,24,00000000024|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,24,00000000024|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,24,00000000024|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,24,00000000024|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,24,00000000024|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,24,00000000024|01|0001,interest_transaction_id,2022071800000024,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,25,00000000025|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,25,00000000025|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,25,00000000025|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,25,00000000025|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,25,00000000025|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,25,00000000025|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,25,00000000025|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,25,00000000025|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,25,00000000025|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,25,00000000025|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,25,00000000025|01|0001,interest_transaction_id,2022071800000025,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,26,00000000026|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,26,00000000026|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,26,00000000026|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,26,00000000026|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,26,00000000026|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,26,00000000026|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,26,00000000026|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,26,00000000026|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,26,00000000026|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,26,00000000026|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,26,00000000026|01|0001,interest_transaction_id,2022071800000026,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,27,00000000027|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,27,00000000027|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,27,00000000027|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,27,00000000027|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,27,00000000027|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,27,00000000027|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,27,00000000027|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,27,00000000027|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,27,00000000027|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,27,00000000027|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,27,00000000027|01|0001,interest_transaction_id,2022071800000027,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,28,00000000028|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,28,00000000028|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,28,00000000028|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,28,00000000028|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,28,00000000028|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,28,00000000028|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,28,00000000028|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,28,00000000028|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,28,00000000028|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,28,00000000028|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,28,00000000028|01|0001,interest_transaction_id,2022071800000028,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,29,00000000029|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,29,00000000029|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,29,00000000029|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,29,00000000029|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,29,00000000029|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,29,00000000029|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,29,00000000029|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,29,00000000029|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,29,00000000029|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,29,00000000029|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,29,00000000029|01|0001,interest_transaction_id,2022071800000029,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,30,00000000030|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,30,00000000030|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,30,00000000030|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,30,00000000030|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,30,00000000030|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,30,00000000030|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,30,00000000030|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,30,00000000030|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,30,00000000030|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,30,00000000030|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,30,00000000030|01|0001,interest_transaction_id,2022071800000030,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,31,00000000031|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,31,00000000031|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,31,00000000031|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,31,00000000031|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,31,00000000031|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,31,00000000031|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,31,00000000031|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,31,00000000031|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,31,00000000031|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,31,00000000031|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,31,00000000031|01|0001,interest_transaction_id,2022071800000031,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,32,00000000032|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,32,00000000032|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,32,00000000032|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,32,00000000032|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,32,00000000032|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,32,00000000032|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,32,00000000032|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,32,00000000032|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,32,00000000032|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,32,00000000032|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,32,00000000032|01|0001,interest_transaction_id,2022071800000032,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,33,00000000033|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,33,00000000033|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,33,00000000033|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,33,00000000033|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,33,00000000033|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,33,00000000033|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,33,00000000033|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,33,00000000033|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,33,00000000033|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,33,00000000033|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,33,00000000033|01|0001,interest_transaction_id,2022071800000033,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,34,00000000034|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,34,00000000034|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,34,00000000034|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,34,00000000034|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,34,00000000034|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,34,00000000034|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,34,00000000034|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,34,00000000034|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,34,00000000034|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,34,00000000034|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,34,00000000034|01|0001,interest_transaction_id,2022071800000034,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,35,00000000035|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,35,00000000035|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,35,00000000035|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,35,00000000035|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,35,00000000035|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,35,00000000035|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,35,00000000035|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,35,00000000035|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,35,00000000035|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,35,00000000035|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,35,00000000035|01|0001,interest_transaction_id,2022071800000035,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,36,00000000036|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,36,00000000036|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,36,00000000036|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,36,00000000036|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,36,00000000036|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,36,00000000036|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,36,00000000036|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,36,00000000036|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,36,00000000036|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,36,00000000036|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,36,00000000036|01|0001,interest_transaction_id,2022071800000036,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,37,00000000037|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,37,00000000037|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,37,00000000037|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,37,00000000037|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,37,00000000037|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,37,00000000037|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,37,00000000037|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,37,00000000037|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,37,00000000037|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,37,00000000037|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,37,00000000037|01|0001,interest_transaction_id,2022071800000037,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,38,00000000038|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,38,00000000038|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,38,00000000038|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,38,00000000038|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,38,00000000038|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,38,00000000038|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,38,00000000038|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,38,00000000038|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,38,00000000038|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,38,00000000038|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,38,00000000038|01|0001,interest_transaction_id,2022071800000038,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,39,00000000039|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,39,00000000039|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,39,00000000039|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,39,00000000039|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,39,00000000039|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,39,00000000039|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,39,00000000039|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,39,00000000039|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,39,00000000039|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,39,00000000039|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,39,00000000039|01|0001,interest_transaction_id,2022071800000039,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,40,00000000040|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,40,00000000040|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,40,00000000040|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,40,00000000040|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,40,00000000040|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,40,00000000040|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,40,00000000040|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,40,00000000040|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,40,00000000040|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,40,00000000040|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,40,00000000040|01|0001,interest_transaction_id,2022071800000040,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,41,00000000041|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,41,00000000041|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,41,00000000041|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,41,00000000041|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,41,00000000041|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,41,00000000041|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,41,00000000041|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,41,00000000041|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,41,00000000041|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,41,00000000041|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,41,00000000041|01|0001,interest_transaction_id,2022071800000041,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,42,00000000042|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,42,00000000042|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,42,00000000042|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,42,00000000042|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,42,00000000042|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,42,00000000042|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,42,00000000042|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,42,00000000042|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,42,00000000042|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,42,00000000042|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,42,00000000042|01|0001,interest_transaction_id,2022071800000042,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,43,00000000043|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,43,00000000043|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,43,00000000043|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,43,00000000043|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,43,00000000043|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,43,00000000043|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,43,00000000043|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,43,00000000043|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,43,00000000043|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,43,00000000043|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,43,00000000043|01|0001,interest_transaction_id,2022071800000043,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,44,00000000044|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,44,00000000044|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,44,00000000044|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,44,00000000044|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,44,00000000044|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,44,00000000044|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,44,00000000044|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,44,00000000044|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,44,00000000044|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,44,00000000044|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,44,00000000044|01|0001,interest_transaction_id,2022071800000044,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,45,00000000045|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,45,00000000045|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,45,00000000045|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,45,00000000045|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,45,00000000045|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,45,00000000045|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,45,00000000045|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,45,00000000045|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,45,00000000045|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,45,00000000045|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,45,00000000045|01|0001,interest_transaction_id,2022071800000045,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,46,00000000046|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,46,00000000046|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,46,00000000046|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,46,00000000046|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,46,00000000046|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,46,00000000046|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,46,00000000046|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,46,00000000046|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,46,00000000046|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,46,00000000046|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,46,00000000046|01|0001,interest_transaction_id,2022071800000046,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,47,00000000047|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,47,00000000047|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,47,00000000047|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,47,00000000047|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,47,00000000047|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,47,00000000047|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,47,00000000047|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,47,00000000047|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,47,00000000047|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,47,00000000047|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,47,00000000047|01|0001,interest_transaction_id,2022071800000047,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,48,00000000048|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,48,00000000048|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,48,00000000048|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,48,00000000048|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,48,00000000048|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,48,00000000048|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,48,00000000048|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,48,00000000048|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,48,00000000048|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,48,00000000048|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,48,00000000048|01|0001,interest_transaction_id,2022071800000048,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,49,00000000049|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,49,00000000049|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,49,00000000049|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,49,00000000049|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,49,00000000049|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,49,00000000049|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,49,00000000049|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,49,00000000049|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,49,00000000049|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,49,00000000049|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,49,00000000049|01|0001,interest_transaction_id,2022071800000049,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,50,00000000050|01|0001,tran_cat_bal_seeded,0.00,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,50,00000000050|01|0001,acct_group_id_on_account_record,"          ",X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,50,00000000050|01|0001,discgrp_key_first_read,"          010001",NONE,app/cbl/CBACT04C.cbl:L210-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,50,00000000050|01|0001,discgrp_status_first_read,23,X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,50,00000000050|01|0001,dis_acct_group_id_after_fallback,"DEFAULT   ",X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/discgrp.txt,50,00000000050|01|0001,dis_int_rate_resolved,15.00,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,50,00000000050|01|0001,interest_compute_gate_opens,yes,NONE,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,50,00000000050|01|0001,ws_monthly_int_accrued,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,50,00000000050|01|0001,ws_total_int_at_account_break,0.00,S9(09)V99,app/cbl/CBACT04C.cbl:L467
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,50,00000000050|01|0001,interest_transaction_written,yes,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,50,00000000050|01|0001,interest_transaction_id,2022071800000050,X(16),app/cbl/CBACT04C.cbl:L476-L480
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,RATE-RESOLUTION,1200-GET-INTEREST-RATE,first_read_accepted_statuses,"00,23",X(02),app/cbl/CBACT04C.cbl:L422
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,RATE-RESOLUTION,1200-GET-INTEREST-RATE,first_read_invalid_key_message_1,DISCLOSURE GROUP RECORD MISSING,NONE,app/cbl/CBACT04C.cbl:L418
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,RATE-RESOLUTION,1200-GET-INTEREST-RATE,first_read_invalid_key_message_2,TRY WITH DEFAULT GROUP CODE,NONE,app/cbl/CBACT04C.cbl:L419
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,RATE-RESOLUTION,1200-GET-INTEREST-RATE,fallback_trigger_status,23,X(02),app/cbl/CBACT04C.cbl:L436
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,RATE-RESOLUTION,1200-GET-INTEREST-RATE,fallback_substitutes_group_id_only,yes,X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,RATE-RESOLUTION,1200-GET-INTEREST-RATE,fallback_preserves_type_and_category,yes,NONE,app/cbl/CBACT04C.cbl:L211-L212
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,RATE-RESOLUTION,1200-GET-INTEREST-RATE,retry_count_before_abend,1,NONE,app/cbl/CBACT04C.cbl:L443-L446
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,RATE-RESOLUTION,1200-GET-INTEREST-RATE,retry_read_accepted_statuses,00,X(02),app/cbl/CBACT04C.cbl:L446
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,RATE-RESOLUTION,1200-GET-INTEREST-RATE,retry_read_has_invalid_key_clause,no,NONE,app/cbl/CBACT04C.cbl:L444
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,RATE-RESOLUTION,1200-GET-INTEREST-RATE,second_miss_abend_message,ERROR READING DEFAULT DISCLOSURE GROUP,NONE,app/cbl/CBACT04C.cbl:L455
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,RATE-RESOLUTION,1200-GET-INTEREST-RATE,second_miss_abends,yes,NONE,app/cbl/CBACT04C.cbl:L458
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,ACCRUAL-DRIVER,procedure-division-main-loop,sequential_read_eof_status,10,X(02),app/cbl/CBACT04C.cbl:L330
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,ACCRUAL-DRIVER,procedure-division-main-loop,account_break_condition_field,TRANCAT-ACCT-ID,9(11),app/cbl/CBACT04C.cbl:L194
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,ACCRUAL-DRIVER,procedure-division-main-loop,ws_total_int_reset_on_account_break,yes,S9(09)V99,app/cbl/CBACT04C.cbl:L200
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,ACCRUAL-DRIVER,procedure-division-main-loop,account_data_read_only_on_break,yes,NONE,app/cbl/CBACT04C.cbl:L203
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,ACCRUAL-DRIVER,procedure-division-main-loop,xref_data_read_only_on_break,yes,NONE,app/cbl/CBACT04C.cbl:L205
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,ACCRUAL-DRIVER,procedure-division-main-loop,first_account_suppresses_update,yes,X(01),app/cbl/CBACT04C.cbl:L195-L198
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,ACCRUAL-DRIVER,procedure-division-main-loop,eof_flushes_final_account_update,yes,NONE,app/cbl/CBACT04C.cbl:L219-L220
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,ACCRUAL-DRIVER,procedure-division-main-loop,account_updates_performed,50,NONE,app/cbl/CBACT04C.cbl:L196
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,ACCRUAL-DRIVER,procedure-division-main-loop,records_read,50,9(09),app/cbl/CBACT04C.cbl:L192
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,ACCRUAL-DRIVER,procedure-division-main-loop,rate_zero_gates_out_compute_and_fees,yes,S9(04)V99,app/cbl/CBACT04C.cbl:L214
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,ACCRUAL-DRIVER,procedure-division-main-loop,commented_out_key_diagnostics_present,yes,NONE,app/cbl/CBACT04C.cbl:L207-L209
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,ACCRUAL-DRIVER,procedure-division-main-loop,fee_paragraph_is_unimplemented_stub,yes,NONE,app/cbl/CBACT04C.cbl:L518-L520
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,tran_type_cd,01,X(02),app/cbl/CBACT04C.cbl:L482
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,tran_cat_cd,0005,9(04),app/cbl/CBACT04C.cbl:L483
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,tran_source,System,X(10),app/cbl/CBACT04C.cbl:L484
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,tran_desc_prefix,"Int. for a/c ",X(100),app/cbl/CBACT04C.cbl:L485-L489
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,tran_amt_source_field,WS-MONTHLY-INT,S9(09)V99,app/cbl/CBACT04C.cbl:L490
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,tran_merchant_id,000000000,9(09),app/cbl/CBACT04C.cbl:L491
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,tran_merchant_name_is_spaces,yes,X(50),app/cbl/CBACT04C.cbl:L492
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,tran_merchant_city_is_spaces,yes,X(50),app/cbl/CBACT04C.cbl:L493
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,tran_merchant_zip_is_spaces,yes,X(10),app/cbl/CBACT04C.cbl:L494
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,tran_card_num_source_field,XREF-CARD-NUM,X(16),app/cbl/CBACT04C.cbl:L495
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,one_timestamp_into_both_ts_fields,yes,X(26),app/cbl/CBACT04C.cbl:L497-L498
+NOT_APPLICABLE,app/jcl/INTCALC.jcl,INTEREST-TXN,1300-B-WRITE-TX,tran_id_parm_date_component,2022071800,X(10),app/jcl/INTCALC.jcl:L22
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,tran_id_suffix_starts_at,000001,9(06),app/cbl/CBACT04C.cbl:L474
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,write_accepted_status,00,X(02),app/cbl/CBACT04C.cbl:L501
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,INTEREST-TXN,1300-B-WRITE-TX,write_failure_abends,yes,NONE,app/cbl/CBACT04C.cbl:L513
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,CYCLE-CLOSE,1050-UPDATE-ACCOUNT,interest_added_to_balance_in_source,yes,S9(10)V99,app/cbl/CBACT04C.cbl:L352
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,CYCLE-CLOSE,1050-UPDATE-ACCOUNT,interest_add_reproduced_by_cycle_close,no,S9(10)V99,app/cbl/CBACT04C.cbl:L352
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,CYCLE-CLOSE,1050-UPDATE-ACCOUNT,cyc_credit_zeroed,0.00,S9(10)V99,app/cbl/CBACT04C.cbl:L353
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,CYCLE-CLOSE,1050-UPDATE-ACCOUNT,cyc_debit_zeroed,0.00,S9(10)V99,app/cbl/CBACT04C.cbl:L354
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,CYCLE-CLOSE,1050-UPDATE-ACCOUNT,account_rewrite_accepted_status,00,X(02),app/cbl/CBACT04C.cbl:L357
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,CYCLE-CLOSE,1050-UPDATE-ACCOUNT,cycle_close_is_only_reproduced_statement_pair,yes,NONE,app/cbl/CBACT04C.cbl:L353-L354
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,SUMMARY,tcatbal_seed_accrual,seeded_category_balance_keys,50,NONE,app/cpy/CVTRA01Y.cpy:L5-L8
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,SUMMARY,tcatbal_seed_accrual,seeded_record_width_bytes,50,NONE,app/cpy/CVTRA01Y.cpy:L4-L10
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,SUMMARY,tcatbal_seed_accrual,distinct_seeded_balances,1,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,SUMMARY,tcatbal_seed_accrual,distinct_seeded_type_codes,1,X(02),app/cpy/CVTRA01Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,SUMMARY,tcatbal_seed_accrual,distinct_seeded_category_codes,1,9(04),app/cpy/CVTRA01Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,SUMMARY,tcatbal_seed_accrual,fallback_fires_on_seeded_key_count,50,X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,SUMMARY,tcatbal_seed_accrual,fallback_fires_on_model_b_closing_key_count,99,X(10),app/cbl/CBACT04C.cbl:L437
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,SUMMARY,tcatbal_seed_accrual,accounts_with_ten_space_group_id,50,X(10),app/cpy/CVACT01Y.cpy:L16
+NOT_APPLICABLE,app/data/ASCII/acctdata.txt,SUMMARY,tcatbal_seed_accrual,acct_addr_zip_holds_a_real_group_id,A000000000,X(10),app/cpy/CVACT01Y.cpy:L15
+NOT_APPLICABLE,app/data/ASCII/tcatbal.txt,SUMMARY,tcatbal_seed_accrual,divide_is_unobservable_on_seeded_data,yes,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,SUMMARY,tcatbal_seed_accrual,interest_transactions_written,50,NONE,app/cbl/CBACT04C.cbl:L500
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,SCOPE,c8_carve_out,interest_rate_rules_equivalence_verified,yes,NONE,app/cbl/CBACT04C.cbl:L462-L470
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,SCOPE,c8_carve_out,interest_computation_migrated_to_a_service,no,NONE,app/cbl/CBACT04C.cbl:L462-L470
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,SCOPE,c8_carve_out,interest_remains_a_batch_process,yes,NONE,app/jcl/INTCALC.jcl:L22
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,SCOPE,c8_carve_out,interest_publishes_no_event,yes,NONE,app/cbl/CBACT04C.cbl:L462-L470
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,SCOPE,c8_carve_out,interest_consumes_no_event,yes,NONE,app/cbl/CBACT04C.cbl:L462-L470
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,SCOPE,c8_carve_out,cycle_close_endpoint_is_operational_not_event_driven,yes,NONE,app/cbl/CBACT04C.cbl:L353-L354
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,PROHIBITION,interest_scope,no_interest_service_exists,yes,NONE,app/cbl/CBACT04C.cbl:L462-L470
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,PROHIBITION,interest_scope,no_interest_event_schema_exists,yes,NONE,app/cbl/CBACT04C.cbl:L468
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,PROHIBITION,interest_scope,fee_computation_not_implemented,yes,NONE,app/cbl/CBACT04C.cbl:L518-L520
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,PROHIBITION,interest_scope,interest_add_to_balance_not_reproduced,yes,S9(10)V99,app/cbl/CBACT04C.cbl:L352
+NOT_APPLICABLE,app/cbl/CBACT04C.cbl,PROHIBITION,interest_scope,rounding_mode_down_applies_to_the_divide,yes,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465

@@ -4,7 +4,7 @@ This document follows every published event from commit through consumption. One
 
 ## The envelope
 
-Every event carries one flat envelope beside its payload. A consumer can route, validate, order, and deduplicate before interpreting business fields.
+Every event carries one flat envelope beside its payload. A consumer can route, validate, order, and deduplicate before interpreting business fields. Deduplicating is what keeps consumption idempotent, meaning a repeated event causes no repeated business effect.
 
 | Field | Purpose |
 | --- | --- |
@@ -20,15 +20,15 @@ A reason-0100 decline has no resolved account. Its envelope uses the 16-characte
 
 Money travels as a two-place decimal string, never as a JSON number. A decimal string prevents a client from silently changing fixed-point money into binary floating point.
 
-The account identifier is the Kafka key whenever an account is known. A Kafka partition is an ordered shard of a topic, so one account’s ledger updates stay ordered.
+The account identifier is the Kafka key whenever an account is known. A Kafka partition is an ordered shard of a topic, so one account’s ledger updates stay ordered. Every topic runs three partitions at replication factor one in the demo configuration.
 
-Card-number masking and tokenization occur after the authorization decision. The full 16-character card number performs the cross-reference lookup. Events, responses, logs, and notification keys receive only the masked display form or the irreversible 64-character card token.
+Card-number masking is an addition, because no masking exists anywhere in the source. The order matters. The full 16-character card number performs the cross-reference lookup first, exactly as the source does, and masking happens only at the serialization boundary. Masking before that lookup would break every authorization. Events, responses, logs, and notification keys therefore carry only the masked display form or the irreversible 64-character card token.
 
-The card verification value at `app/cpy/CVACT02Y.cpy:L7` is stored only by the card service. No event, log entry, or API response contains it.
+The card verification value at `app/cpy/CVACT02Y.cpy:L7` is three numeric digits, and only the card service stores it. No event, no log entry, and no application programming interface response carries it. `CardholderDataExposureTest` asserts that, so the guarantee is tested rather than merely claimed.
 
 ## Topics and consumer groups
 
-The delivered runtime creates seven business topics, five source-specific dead-letter topics, and one shared fallback. A dead-letter topic holds records that could not complete processing after validation and retry handling.
+The delivered runtime creates seven business topics, five source-specific dead-letter topics, and one shared fallback. A dead-letter topic holds records that could not complete processing after validation and retry handling. A consumer group is the named set of listener instances that share one subscription.
 
 | Topic | Events carried | Producer | Consumer groups |
 | --- | --- | --- | --- |
@@ -40,13 +40,13 @@ The delivered runtime creates seven business topics, five source-specific dead-l
 | `customer.context-changed` | `CustomerContextChanged` | account-service | `notification-customer` |
 | `card.updated` | `CardUpdated` versions 1 and 2 | card-service | `authorization-card-updated` |
 | `<source>.DLT` | 134-character fixed-width abend diagnostic | Ledger, fraud, and notification listener error handlers | Human inspection and replay tooling |
-| `carddemo.dead-letter` | `DeadLetterEnvelope` | Authorization and account listener error handlers, the four outbox relays on abandonment, and any handler whose source topic cannot be resolved | Human inspection and replay tooling |
+| `carddemo.dead-letter` | `DeadLetterEnvelope` | Authorization and account listener error handlers, the four business-event relays on abandonment, and any handler whose source topic cannot be resolved | Human inspection and replay tooling |
 
 The five source-specific dead-letter topics are `transaction.authorized.DLT`, `account.state-changed.DLT`, `transaction.posted.DLT`, `fraud.assessed.DLT`, and `customer.context-changed.DLT`. `card.updated` needs none, because its one consumer routes a spent record to the shared fallback as a governed envelope.
 
-A consumer group is the named set of listener instances that share one subscription. Nine groups serve four listening services: authorization consumes two replica streams, ledger consumes the authorization stream and one replica stream, fraud consumes the authorization stream, and notification consumes four streams.
+Ten groups serve five listening services. Authorization takes two for its replicas, and ledger takes one for the authorization stream and one for its balance replica. Fraud takes one, notification four for four independent inputs, and account one for the posted amount it applies. The card service registers no listener.
 
-Three of those nine groups read `transaction.authorized`. That is the fan-out the requirements set a floor on, and it is visible in the group names alone: `ledger-posting`, `fraud-detection`, and `notification-authorized` each hold their own offsets, so none of the three can slow, block, or starve another.
+Three of those ten groups read `transaction.authorized`, which is the fan-out the requirements set a floor on. The group names alone show it: `ledger-posting`, `fraud-detection`, and `notification-authorized` each hold their own offsets. None of the three can slow, block, or starve another.
 
 `FraudFlagged` and `FraudCleared` share `fraud.assessed`. The envelope’s `eventType` distinguishes them before notification applies verdict-specific behavior.
 
@@ -54,7 +54,7 @@ Three of those nine groups read `transaction.authorized`. That is the fan-out th
 
 ### `TransactionAuthorized`
 
-The authorization service publishes `TransactionAuthorized` after an approval commits with its outbox row.
+The authorization service publishes `TransactionAuthorized` after an approval commits with its outbox row, a row in the service's own database that holds the event until publication.
 
 | Field | Source or status |
 | --- | --- |
@@ -109,13 +109,15 @@ The processing timestamp carries two significant fractional digits and four zero
 
 Two groups read this topic, for unrelated reasons. `notification-posted` inserts a statement row. `account-posted` adds the amount to the account record, reproducing `app/cbl/CBTRN02C.cbl:L545-L560`: the balance moves, and the amount reaches `current_cycle_credit` when it is not negative and `current_cycle_debit` when it is.
 
-That second group is what makes the two accumulators move at all. `ACCTDAT` was one dataset in the source, so the posting program at `:L545-L560` and the credit-limit test at `:L403-L413` read and wrote the same record. Here the record is split across three services that may not call one another, and this event is the only path from the writer to the copy the account service owns. Without it the accumulators stayed at their seeded values, the credit-limit rule tested one amount against the limit rather than cumulative cycle exposure, and `GET /accounts/{id}` reported the balance as it stood at deployment while `GET /balances/{id}` reported the posted one. Neither raised anything.
+That second group is what makes the two accumulators move at all. `ACCTDAT` was one dataset in the source, so the posting program at `:L545-L560` and the credit-limit test at `:L403-L413` read and wrote the same record. Here that record is split across three services that may not call one another. This event is the only path from the writer to the copy the account service owns.
 
-The account listener applies the amount and never the event's `newBalance`. A balance copied across a service boundary is a value with two owners; an amount applied to a locally held balance keeps one owner and stays correct under redelivery, because the marker suppresses the repeat rather than the arithmetic having to be idempotent.
+Without it the accumulators stayed at their seeded values. The credit-limit rule then tested one amount against the limit instead of cumulative cycle exposure. Meanwhile `GET /accounts/{id}` reported the balance as it stood at deployment, and `GET /balances/{id}` reported the posted one. Neither raised anything.
+
+The account listener applies the amount and never the event's `newBalance`. A balance copied across a service boundary is a value with two owners. An amount applied to a locally held balance keeps one owner, and it stays correct under redelivery because the marker suppresses the repeat. The arithmetic itself never has to be idempotent.
 
 ### `FraudFlagged`
 
-`FraudFlagged` is additive in full because no COBOL fraud module exists. It carries transaction and account identifiers, a score, triggered rule identifiers, and assessment time.
+`FraudFlagged` is additive in full, because the repository holds no fraud module of any kind: no scoring, no pattern analysis, no velocity checking, and no rules engine. It carries transaction and account identifiers, a score, triggered rule identifiers, and assessment time.
 
 The notification fraud listener renders an alert with its private cardholder projection. It also writes one metadata-only `notification_log` row with masked card, transaction, channel, and attempt time.
 
@@ -129,7 +131,7 @@ The notification listener acknowledges a valid cleared event without rendering a
 
 The account service publishes `AccountStateChanged` after any committed change to the account record: an update, a cycle close, or a posted amount applied by the `account-posted` group. An update publishes it only when the account record itself changed — one that raises a credit limit publishes it, one that changes only an address publishes `CustomerContextChanged` instead. The event carries the complete authorization credit snapshot.
 
-A posting is a state change to `ACCTDAT` in the source too: `app/cbl/CBTRN02C.cbl:L560` rewrites the record. So the publication rule this service follows, that it publishes only on a state change, holds unchanged.
+A posting is a state change to `ACCTDAT` in the source too, where `app/cbl/CBTRN02C.cbl:L554` rewrites the account record. So the publication rule this service follows, that it publishes only on a state change, holds unchanged.
 
 | Field | Authorization target in `account_credit_snapshot` | Ledger target in `account_balance_projection` |
 | --- | --- | --- |
@@ -143,17 +145,21 @@ A posting is a state change to `ACCTDAT` in the source too: `app/cbl/CBTRN02C.cb
 
 Both groups apply the snapshot monotonically: a change whose `occurredAt` is not after the stored value discards itself rather than moving a cycle balance backwards. Each stores its event marker in the same transaction as the projection write.
 
-Authorization then reads its local projection and calls no account service during a decision. The ledger consumes the same event for a different reason: `V2__seed.sql` loaded a projection row per fixture account and nothing else told the table when the account service moved the original, so without this consumer an account opened after deployment had no row at all, and a billing cycle closed at `app/cbl/CBACT04C.cbl:L353-L354` never reached the ledger's copy of the two accumulators. A posting is a delta the ledger owns; it advances neither provenance column, because clearing them would let an already-applied change apply twice.
+Authorization then reads its local projection and calls no account service during a decision. The ledger consumes the same event for a different reason. `V2__seed.sql` loaded a projection row per fixture account, and nothing else told that table when the account service moved the original. So without this consumer, an account opened after deployment had no row at all, and a billing cycle closed at `app/cbl/CBACT04C.cbl:L353-L354` never reached the ledger's copy of the two accumulators.
 
-The event a posting produces closes the loop the credit-limit rule depends on. `transaction.posted` carries the amount to the account service, which applies it and publishes the moved accumulators here, and the `authorization-account-state` group writes them into the snapshot reason code 102 reads. The ledger ignores the value columns of that particular event by design, and `ledger-posting-service` documents why: it applied the same amount itself a moment earlier, so taking the account service's copy would overwrite a correct value with one that is behind by every posting the account service has yet to hear about.
+A posting is a delta the ledger owns, so it advances neither provenance column. Clearing them would let an already-applied change apply twice.
 
-The chain therefore has one writer per copy. The ledger writes its own projection from the authorization event, the account service writes its record from the posted event, and the authorization replica is written only from what the account service publishes.
+The event a posting produces closes the loop the credit-limit rule depends on. `transaction.posted` carries the amount to the account service, which applies it and publishes the moved accumulators here. The `authorization-account-state` group then writes them into the snapshot reason code 102 reads.
+
+The ledger ignores the value columns of that particular event by design, and `ledger-posting-service` documents why. It applied the same amount itself a moment earlier. Taking the account service's copy would overwrite a correct value with a stale one, behind by every posting the account service has yet to hear about.
+
+The chain therefore has one writer per copy. The ledger writes its own projection from the authorization event. The account service writes its record from the posted event, and the authorization replica takes only what the account service publishes.
 
 ### `CustomerContextChanged`
 
 The account service publishes `CustomerContextChanged` when the customer record changes beside an account update, and not when the update left it as it stood. It carries the ten name, address, country, postal-code, and credit-score fields the source statement renderer reads.
 
-The comparison that decides both publications is the one `app/cbl/COACTUPC.cbl:L1684-L1768` draws, applied to each record on its own rather than to the pair. The two rewrites at `:L4066` and `:L4086` run unconditionally, each writing back the values the caller submitted, so a record whose submitted values equal its fetched values is rewritten with what it already held and has no change to announce. Reaching those rewrites requires the submitted pair to differ from the fetched pair, so every committed write publishes at least one of the two events.
+The comparison that decides both publications is the one `app/cbl/COACTUPC.cbl:L1684-L1768` draws, applied to each record on its own rather than to the pair. The two rewrites at `:L4066` and `:L4086` run unconditionally, each writing back the values the caller submitted. A record whose submitted values equal its fetched values is therefore rewritten with what it already held, and it has no change to announce. Reaching those rewrites requires the submitted pair to differ from the fetched pair, so every committed write publishes at least one of the two events.
 
 The `notification-customer` group applies the event to `cardholder_context` and stores the duplicate marker in the same local transaction. A producer timestamp prevents an older or replayed event from moving the projection backwards.
 
@@ -243,7 +249,7 @@ sequenceDiagram
 
 Figure 2 shows the state paths that replace synchronous owner-service lookups. One `account.state-changed` event feeds two independent replicas: authorization's credit snapshot and the ledger's balance projection. Card updates refresh only authorization's observation metadata, and customer-context changes refresh notification's renderer context.
 
-Three things produce `account.state-changed`, not two. An update and a cycle close both arrive through the web surface. A posted amount arrives on `transaction.posted` instead, and it is the one path that runs with no request behind it. Figure 2 draws it because the credit-limit rule reads what it writes: without that path the two accumulators in the snapshot never move, and reason code 102 tests one amount against the limit rather than cumulative cycle exposure.
+Three things produce `account.state-changed`, not two. An update and a cycle close both arrive through the web surface. A posted amount arrives on `transaction.posted` instead, and it is the one path that runs with no request behind it. Figure 2 draws that third path because the credit-limit rule reads what it writes. Without it the two accumulators in the snapshot never move, and reason code 102 tests one amount against the limit instead of cumulative cycle exposure.
 
 ```mermaid
 graph LR
@@ -301,25 +307,35 @@ graph LR
 
 ## Delivery mechanics
 
-An outbox is a database table written with the business change. A relay publishes those committed rows later, avoiding a split database-and-broker write inside request handling.
+The outbox exists so no service has to write its database and the broker in one step. A handler commits the business change and the event row together, and a relay publishes those committed rows afterwards. That single-transaction property is the whole guarantee: a committed change always has an event waiting for it, and an uncommitted one leaves nothing behind.
 
-The demo relay checks every 500 milliseconds and claims at most 100 rows. Producers enable idempotence and require acknowledgements from all broker replicas.
+The outbox, the `processed_event` marker, and the dead-letter route are additions rather than translations. The source detects no duplicates, and it rolls back none of its three posting writes, so the last two have no counterpart in it. Only the outbox has a source ancestor, named at the end of this document.
+
+The demo relay checks every 500 milliseconds and claims at most 100 rows. Producers enable idempotence and require acknowledgements from all broker replicas. Those four values are configuration, not measured limits.
 
 Kafka delivery is at least once. Rebalances, restarts, or a crash after side effects but before offset commit can deliver the same event again.
 
-**Publication is also at least once, and the producer window is what bounds how often a duplicate occurs.** A relay row is published exactly once in the database — `published` and `published_at` move only after the broker acknowledges the send — but a topic can carry a second copy of one `eventId`. A relay tick bounds itself so a broker that accepts a connection and never answers cannot hold the scheduled thread. A tick that gave up on a send the producer still held left that record to arrive up to two minutes later, while the tick's retry published another copy. The fraud relay closes that window: `max.block.ms` plus `delivery.timeout.ms` stays below `carddemo.outbox.relay.max-duration-ms`, and a send the relay has issued is waited out rather than abandoned.
+**Publication is also at least once, and the producer window bounds how often a duplicate occurs.** The database marks a relay row published one time only, because `published` and `published_at` move after the broker acknowledges the send. A topic can still carry a second copy of one `eventId`.
 
-One duplicate path is not a platform choice. A broker that has already appended a record can lose the acknowledgement, so the producer reports a failure the log does not share and the next attempt appends a second copy. No producer setting removes that, and `enable.idempotence` does not either, because the two copies come from two `send` calls carrying their own sequence numbers. Both copies carry the same `eventId`, so every consumer's `processed_event` marker suppresses the second one. A test asserts the timing relationship, so moving one value without the other fails the build; the [decision log](decision-log.md) records the choice with its measurements, and [suggested next tasks](suggested-next-tasks.md) carries the same relationship for the account service.
+A relay tick bounds itself, so a broker that accepts a connection and never answers cannot hold the scheduled thread. A tick that gave up on a send the producer still held left that record to arrive up to two minutes later, while the tick's retry published another copy. The fraud relay closes that window. `max.block.ms` plus `delivery.timeout.ms` stays below `carddemo.outbox.relay.max-duration-ms`, and the relay waits out a send it has already issued.
 
-Idempotency means a repeated event has no repeated business effect. Each consumer checks or claims `processed_event` by `eventId`, performs its work, and commits the marker with the effect.
+One duplicate path is not a platform choice. A broker that has already appended a record can lose the acknowledgement. The producer then reports a failure the log does not share, and the next attempt appends a second copy. No producer setting removes that, and `enable.idempotence` does not either, because the two copies come from two `send` calls carrying their own sequence numbers. Both copies carry the same `eventId`, so every consumer's `processed_event` marker suppresses the second one.
 
-Auto-commit is disabled. Manual acknowledgement occurs only after the database transaction commits.
+A test asserts the timing relationship, so moving one value without the other fails the build. The [decision log](decision-log.md) records the choice with its measurements, and [suggested next tasks](suggested-next-tasks.md) carries the same relationship for the account service.
+
+Each consumer checks or claims `processed_event` by `eventId`, performs its work, and commits the marker with the effect. A second delivery of the same `eventId` finds that marker and changes nothing.
+
+Auto-commit is disabled. Manual acknowledgement occurs only after the database transaction commits. Without that ordering the duplicate guard is decorative, because an offset committed early lets a crash skip work that never happened.
 
 The demo permits three processing attempts with a one-second backoff. Two terminal routes exist, and which one a failure takes depends on what failed.
 
-A spent consumer record takes the listener route. Ledger, fraud, and notification send a 134-character fixed-width abend diagnostic to the source topic plus `.DLT`, and fall back to `carddemo.dead-letter` when the source topic cannot be resolved. Authorization sends a governed `DeadLetterEnvelope` to `carddemo.dead-letter` directly. Neither form republishes the failed payload, the failed key, or any inbound header outside a fixed allowlist, so a poison record cannot carry a card number or a card verification value onto a dead-letter topic. Malformed schema input reaches the same sanitized route without unsafe business processing.
+A spent consumer record takes the listener route. Ledger, fraud, and notification send a 134-character fixed-width abend diagnostic to the source topic name plus the `.DLT` suffix, short for dead-letter topic. Each falls back to `carddemo.dead-letter` when the source topic cannot be resolved. Authorization sends a governed `DeadLetterEnvelope` to `carddemo.dead-letter` directly.
 
-An abandoned outbox row takes the relay route. The four relays that publish business events — authorization, ledger, account, and card — send a governed `DeadLetterEnvelope` to `carddemo.dead-letter` once a row is spent, so a change that can never be published still leaves a durable diagnostic naming the row, the event type, the attempt count, and the reason. Each terminal outcome increments a counter distinct from the per-attempt failure counter, so retries and permanently spent work are never summed together.
+Neither form republishes the failed payload, the failed key, or any inbound header outside a fixed allowlist. A poison record therefore cannot carry a card number or a card verification value onto a dead-letter topic. Malformed schema input reaches the same sanitized route without unsafe business processing.
+
+An abandoned outbox row takes the relay route. Four relays publish business events: authorization, ledger, account, and card. Each sends a governed `DeadLetterEnvelope` to `carddemo.dead-letter` once a row is spent. A change that can never be published therefore still leaves a durable diagnostic, naming the row, the event type, the attempt count, and the reason.
+
+Each terminal outcome increments a counter distinct from the per-attempt failure counter, so retries and permanently spent work are never summed together.
 
 Kafka transactions do not make a database write atomic with a broker write. The platform still needs an outbox on producers and a marker transaction on consumers.
 
@@ -379,10 +395,10 @@ Notification tags by what failed, because it validates, persists, and renders. T
 
 Publishing validates the exact pair of `eventType` and `schemaVersion`, so malformed output never reaches a business topic. Consumption validates before domain code changes a table.
 
-The contract library governs eight business event types and the dead-letter envelope across thirteen schema documents. `TransactionAuthorized`, `TransactionDeclined`, `TransactionPosted`, and `CardUpdated` each retain versions 1 and 2.
+The contract library governs eight business event types and the dead-letter envelope across thirteen schema documents. `TransactionAuthorized`, `TransactionDeclined`, `TransactionPosted`, and `CardUpdated` each retain versions 1 and 2. Every schema is a JSON Schema Draft 2020-12 document whose version sits in its filename, as in `transaction-authorized-v2.json`.
 
-Compatibility tests enforce additive evolution. An older payload remains valid under the document that originally governed it.
+Compatibility tests enforce additive evolution, and they fail the build rather than warn. An older payload stays valid under the document that first governed it, so a new consumer can be added without breaking an existing one.
 
 ## The source ancestor
 
-The source’s only asynchronous handoff is `EXEC CICS WRITEQ TD` at `app/cbl/CORPT00C.cbl:L517`, followed by `QUEUE ('JOBS')` and `FROM (JCL-RECORD)` at lines 518-519. The target generalizes that “write now, process later” shape to every cross-service event.
+The legacy application ran its screens under CICS, the Customer Information Control System, which is the IBM mainframe transaction monitor that hosted each program. In all of it, one handoff is asynchronous: `EXEC CICS WRITEQ TD` at `app/cbl/CORPT00C.cbl:L517`, followed by `QUEUE ('JOBS')` and `FROM (JCL-RECORD)` at lines 518-519. That statement writes a batch job description to a Transient Data Queue, a mainframe queue the operating system reads on its own, which then submits the job. The program never waits for the result, and the target generalizes that same "write now, process later" shape to every cross-service event.
