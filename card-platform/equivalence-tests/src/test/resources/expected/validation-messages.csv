@@ -1,0 +1,138 @@
+# evaluation_model NOT_APPLICABLE: message-text equivalence does not depend on accumulator state. Reportable records: 7 condition names at app/cbl/COCRDUPC.cbl:L189-L202 carrying 6 distinct texts and 1 assembled message at app/cbl/COACTUPC.cbl:L2521-L2526. 136 data rows. Lengths count the characters of the literal and exclude the COBOL statement period. Consuming test: ValidationEquivalenceTest.
+evaluation_model,derived_from,record_seq,entity_key,expected_field,expected_value,pic_clause,source_locator
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,1,SEARCHED-ACCT-ZEROES,message_text,Account number must be a non zero 11 digit number,X(75),app/cbl/COCRDUPC.cbl:L190
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,1,SEARCHED-ACCT-ZEROES,message_text_length,49,NONE,app/cbl/COCRDUPC.cbl:L190
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,1,SEARCHED-ACCT-ZEROES,message_ends_with_period,no,NONE,app/cbl/COCRDUPC.cbl:L190
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,1,SEARCHED-ACCT-ZEROES,fixture_occurrences,0,NONE,app/cpy/CVACT02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,1,SEARCHED-ACCT-ZEROES,fixture_reachable,no,NONE,app/cpy/CVACT02Y.cpy:L6
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,2,SEARCHED-ACCT-NOT-NUMERIC,message_text,Account number must be a non zero 11 digit number,X(75),app/cbl/COCRDUPC.cbl:L192
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,2,SEARCHED-ACCT-NOT-NUMERIC,message_text_length,49,NONE,app/cbl/COCRDUPC.cbl:L192
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,2,SEARCHED-ACCT-NOT-NUMERIC,message_ends_with_period,no,NONE,app/cbl/COCRDUPC.cbl:L192
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,2,SEARCHED-ACCT-NOT-NUMERIC,fixture_occurrences,0,NONE,app/cpy/CVACT02Y.cpy:L6
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,2,SEARCHED-ACCT-NOT-NUMERIC,fixture_reachable,no,NONE,app/cpy/CVACT02Y.cpy:L6
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,3,SEARCHED-CARD-NOT-NUMERIC,message_text,Card number if supplied must be a 16 digit number,X(75),app/cbl/COCRDUPC.cbl:L194
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,3,SEARCHED-CARD-NOT-NUMERIC,message_text_length,49,NONE,app/cbl/COCRDUPC.cbl:L194
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,3,SEARCHED-CARD-NOT-NUMERIC,message_ends_with_period,no,NONE,app/cbl/COCRDUPC.cbl:L194
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,3,SEARCHED-CARD-NOT-NUMERIC,fixture_occurrences,0,NONE,app/cpy/CVACT02Y.cpy:L5
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,3,SEARCHED-CARD-NOT-NUMERIC,fixture_reachable,no,NONE,app/cpy/CVACT02Y.cpy:L5
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,4,CARD-STATUS-MUST-BE-YES-NO,message_text,Card Active Status must be Y or N,X(75),app/cbl/COCRDUPC.cbl:L196
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,4,CARD-STATUS-MUST-BE-YES-NO,message_text_length,33,NONE,app/cbl/COCRDUPC.cbl:L196
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,4,CARD-STATUS-MUST-BE-YES-NO,message_ends_with_period,no,NONE,app/cbl/COCRDUPC.cbl:L196
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,4,CARD-STATUS-MUST-BE-YES-NO,fixture_occurrences,0,NONE,app/cpy/CVACT02Y.cpy:L10
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,4,CARD-STATUS-MUST-BE-YES-NO,fixture_reachable,no,NONE,app/cpy/CVACT02Y.cpy:L10
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,5,CARD-EXPIRY-MONTH-NOT-VALID,message_text,Card expiry month must be between 1 and 12,X(75),app/cbl/COCRDUPC.cbl:L198
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,5,CARD-EXPIRY-MONTH-NOT-VALID,message_text_length,42,NONE,app/cbl/COCRDUPC.cbl:L198
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,5,CARD-EXPIRY-MONTH-NOT-VALID,message_ends_with_period,no,NONE,app/cbl/COCRDUPC.cbl:L198
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,5,CARD-EXPIRY-MONTH-NOT-VALID,fixture_occurrences,0,NONE,app/cbl/COCRDUPC.cbl:L95
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,5,CARD-EXPIRY-MONTH-NOT-VALID,fixture_reachable,no,NONE,app/cbl/COCRDUPC.cbl:L95
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,6,CARD-EXPIRY-YEAR-NOT-VALID,message_text,Invalid card expiry year,X(75),app/cbl/COCRDUPC.cbl:L200
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,6,CARD-EXPIRY-YEAR-NOT-VALID,message_text_length,24,NONE,app/cbl/COCRDUPC.cbl:L200
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,6,CARD-EXPIRY-YEAR-NOT-VALID,message_ends_with_period,no,NONE,app/cbl/COCRDUPC.cbl:L200
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,6,CARD-EXPIRY-YEAR-NOT-VALID,fixture_occurrences,0,NONE,app/cbl/COCRDUPC.cbl:L99
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,6,CARD-EXPIRY-YEAR-NOT-VALID,fixture_reachable,no,NONE,app/cbl/COCRDUPC.cbl:L99
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,7,DID-NOT-FIND-ACCT-IN-CARDXREF,message_text,Did not find this account in cards database,X(75),app/cbl/COCRDUPC.cbl:L202
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,7,DID-NOT-FIND-ACCT-IN-CARDXREF,message_text_length,43,NONE,app/cbl/COCRDUPC.cbl:L202
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,7,DID-NOT-FIND-ACCT-IN-CARDXREF,message_ends_with_period,no,NONE,app/cbl/COCRDUPC.cbl:L202
+NOT_APPLICABLE,app/data/ASCII/cardxref.txt,7,DID-NOT-FIND-ACCT-IN-CARDXREF,fixture_occurrences,0,NONE,app/cpy/CVACT03Y.cpy:L7
+NOT_APPLICABLE,app/data/ASCII/cardxref.txt,7,DID-NOT-FIND-ACCT-IN-CARDXREF,fixture_reachable,no,NONE,app/cpy/CVACT03Y.cpy:L7
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO,1275-EDIT-FICO-SCORE,message_text,FICO Score: should be between 300 and 850,X(75),app/cbl/COACTUPC.cbl:L2521-L2526
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO,1275-EDIT-FICO-SCORE,message_text_length,41,NONE,app/cbl/COACTUPC.cbl:L2521-L2526
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO,1275-EDIT-FICO-SCORE,message_ends_with_period,no,NONE,app/cbl/COACTUPC.cbl:L2523
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO,1275-EDIT-FICO-SCORE,variable_name_component,FICO Score,X(25),app/cbl/COACTUPC.cbl:L1545
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO,1275-EDIT-FICO-SCORE,variable_name_component_length,10,NONE,app/cbl/COACTUPC.cbl:L1545
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO,1275-EDIT-FICO-SCORE,literal_suffix_component,": should be between 300 and 850",NONE,app/cbl/COACTUPC.cbl:L2523
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO,1275-EDIT-FICO-SCORE,literal_suffix_component_length,31,NONE,app/cbl/COACTUPC.cbl:L2523
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO,1275-EDIT-FICO-SCORE,variable_name_field_pic,X(25),X(25),app/cbl/COACTUPC.cbl:L53
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO,1275-EDIT-FICO-SCORE,return_msg_field_pic,X(75),X(75),app/cbl/COACTUPC.cbl:L479
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO,1275-EDIT-FICO-SCORE,trim_applied_to_variable_name,yes,X(25),app/cbl/COACTUPC.cbl:L2522
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO,1275-EDIT-FICO-SCORE,distinct_occurrences_of_phrase_in_app_cbl,1,NONE,app/cbl/COACTUPC.cbl:L2523
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO-RANGE,FICO-RANGE-IS-VALID,range_low_bound,300,9(03),app/cbl/COACTUPC.cbl:L848
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO-RANGE,FICO-RANGE-IS-VALID,range_high_bound,850,9(03),app/cbl/COACTUPC.cbl:L849
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO-RANGE,FICO-RANGE-IS-VALID,low_bound_inclusive,yes,9(03),app/cbl/COACTUPC.cbl:L848-L849
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO-RANGE,FICO-RANGE-IS-VALID,high_bound_inclusive,yes,9(03),app/cbl/COACTUPC.cbl:L848-L849
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO-RANGE,FICO-RANGE-IS-VALID,score_field_pic_alphanumeric,X(03),X(03),app/cbl/COACTUPC.cbl:L845
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO-RANGE,FICO-RANGE-IS-VALID,score_field_pic_numeric_redefines,9(03),9(03),app/cbl/COACTUPC.cbl:L846-L847
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,FICO-RANGE,FICO-RANGE-IS-VALID,customer_record_score_pic,9(03),9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,customer_records_evaluated,50,9(09),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,scores_inside_inclusive_range,29,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,scores_outside_inclusive_range,21,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,scores_below_low_bound,21,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,scores_above_high_bound,0,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,scores_exactly_at_low_bound,0,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,scores_exactly_at_high_bound,0,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,minimum_score_in_fixture,001,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,maximum_score_in_fixture,793,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,minimum_in_range_score,326,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,maximum_in_range_score,793,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,invalid_branch_is_fixture_reachable,yes,NONE,app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,boundary_cases_are_fixture_reachable,no,NONE,app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000001,fico_score_out_of_range,274,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000002,fico_score_out_of_range,268,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000008,fico_score_out_of_range,051,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000011,fico_score_out_of_range,209,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000013,fico_score_out_of_range,053,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000014,fico_score_out_of_range,243,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000017,fico_score_out_of_range,054,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000019,fico_score_out_of_range,259,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000021,fico_score_out_of_range,163,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000026,fico_score_out_of_range,001,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000027,fico_score_out_of_range,078,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000028,fico_score_out_of_range,114,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000030,fico_score_out_of_range,133,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000031,fico_score_out_of_range,058,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000032,fico_score_out_of_range,221,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000034,fico_score_out_of_range,104,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000036,fico_score_out_of_range,266,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000040,fico_score_out_of_range,284,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000042,fico_score_out_of_range,044,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000044,fico_score_out_of_range,145,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,000000049,fico_score_out_of_range,148,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,FICO-REACHABILITY,custdata_fico_scores,boundary_cases_file,synthetic-boundary-cases.csv,NONE,app/cbl/COACTUPC.cbl:L848-L849
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,EDIT-MECHANICS,return_msg_gate,first_error_wins,yes,X(75),app/cbl/COACTUPC.cbl:L2520
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,EDIT-MECHANICS,return_msg_gate,gate_condition_name,WS-RETURN-MSG-OFF,X(75),app/cbl/COACTUPC.cbl:L2520
+NOT_APPLICABLE,app/cpy/CVCRD01Y.cpy,EDIT-MECHANICS,return_msg_gate,gate_off_value_is_low_values,yes,X(75),app/cpy/CVCRD01Y.cpy:L30
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,EDIT-MECHANICS,return_msg_gate,card_program_uses_same_gate,yes,X(75),app/cbl/COCRDUPC.cbl:L787
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,EDIT-MECHANICS,return_msg_gate,input_error_flag_set_independently_of_message,yes,NONE,app/cbl/COACTUPC.cbl:L2518
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,EDIT-MECHANICS,return_msg_gate,edit_exits_via_go_to_on_failure,yes,NONE,app/cbl/COACTUPC.cbl:L2528
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,EDIT-MECHANICS,dual_set_sites,month_condition_set_site_not_supplied,yes,X(02),app/cbl/COCRDUPC.cbl:L889
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,EDIT-MECHANICS,dual_set_sites,month_condition_set_site_out_of_range,yes,X(02),app/cbl/COCRDUPC.cbl:L904
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,EDIT-MECHANICS,dual_set_sites,year_condition_set_site_not_supplied,yes,X(04),app/cbl/COCRDUPC.cbl:L922
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,EDIT-MECHANICS,dual_set_sites,year_condition_set_site_out_of_range,yes,X(04),app/cbl/COCRDUPC.cbl:L940
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,EDIT-MECHANICS,dual_set_sites,not_supplied_tests_low_values_spaces_zeros,yes,NONE,app/cbl/COCRDUPC.cbl:L883-L885
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,EDIT-MECHANICS,dual_set_sites,valid_month_range,"1 THRU 12",9(02),app/cbl/COCRDUPC.cbl:L95
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,EDIT-MECHANICS,dual_set_sites,valid_year_range,"1950 THRU 2099",9(04),app/cbl/COCRDUPC.cbl:L99
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,EDIT-MECHANICS,dual_set_sites,expiry_decomposed_year_month_day,yes,X(10),app/cbl/COCRDUPC.cbl:L117-L121
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,EDIT-MECHANICS,dual_set_sites,card_number_validated_as_16_numeric_only,yes,9(16),app/cbl/COCRDUPC.cbl:L111-L112
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,NO-CHANGES-DETECTED,message_text,No change detected with respect to values fetched.,X(75),app/cbl/COCRDUPC.cbl:L188
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,NO-CHANGES-DETECTED,message_ends_with_period,yes,NONE,app/cbl/COCRDUPC.cbl:L188
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,NO-CHANGES-DETECTED,message_text_length,50,NONE,app/cbl/COCRDUPC.cbl:L188
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,DATA-WAS-CHANGED-BEFORE-UPDATE,message_text,Record changed by some one else. Please review,X(75),app/cbl/COCRDUPC.cbl:L208
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,DATA-WAS-CHANGED-BEFORE-UPDATE,message_has_internal_period,yes,NONE,app/cbl/COCRDUPC.cbl:L208
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,DATA-WAS-CHANGED-BEFORE-UPDATE,message_ends_with_period,no,NONE,app/cbl/COCRDUPC.cbl:L208
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,WS-NAME-MUST-BE-ALPHA,message_text,Card name can only contain alphabets and spaces,X(75),app/cbl/COCRDUPC.cbl:L184
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,INLINE-MOVE-NO-CONDITION-NAME,message_text,"CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER",X(75),app/cbl/COCRDUPC.cbl:L789
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,INLINE-MOVE-NO-CONDITION-NAME,message_text_length,52,NONE,app/cbl/COCRDUPC.cbl:L789
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,INLINE-MOVE-NO-CONDITION-NAME,declared_as_condition_name,no,NONE,app/cbl/COCRDUPC.cbl:L788-L790
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,INLINE-MOVE-NO-CONDITION-NAME,duplicates_rule_of_condition_name,SEARCHED-CARD-NOT-NUMERIC,NONE,app/cbl/COCRDUPC.cbl:L194
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,CONTRAST,INLINE-MOVE-NO-CONDITION-NAME,differs_in_case_and_punctuation,yes,NONE,app/cbl/COCRDUPC.cbl:L789
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,FINDING,fixture_data_quality,embossed_names_failing_alphabetic_rule,1,X(50),app/cbl/COCRDUPC.cbl:L184
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,FINDING,fixture_data_quality,embossed_name_with_apostrophe,Lucious O'Connell,X(50),app/cpy/CVACT02Y.cpy:L8
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,FINDING,fixture_data_quality,expiry_month_11_absent_from_fixture,yes,X(02),app/cpy/CVACT02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,FINDING,fixture_data_quality,distinct_card_expiry_dates,50,X(10),app/cpy/CVACT02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,FINDING,fixture_data_quality,earliest_card_expiry,2023-01-06,X(10),app/cpy/CVACT02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,FINDING,fixture_data_quality,latest_card_expiry,2025-12-28,X(10),app/cpy/CVACT02Y.cpy:L9
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,FINDING,fixture_data_quality,card_cvv_all_three_numeric_digits,yes,9(03),app/cpy/CVACT02Y.cpy:L7
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,SUMMARY,validation_messages,committed_condition_names,7,NONE,app/cbl/COCRDUPC.cbl:L189-L202
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,SUMMARY,validation_messages,committed_distinct_texts,6,NONE,app/cbl/COCRDUPC.cbl:L189-L202
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,SUMMARY,validation_messages,duplicate_text_pair,SEARCHED-ACCT-ZEROES and SEARCHED-ACCT-NOT-NUMERIC,NONE,app/cbl/COCRDUPC.cbl:L190
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,SUMMARY,validation_messages,committed_texts_ending_in_period,0,NONE,app/cbl/COCRDUPC.cbl:L189-L202
+NOT_APPLICABLE,app/data/ASCII/carddata.txt,SUMMARY,validation_messages,committed_texts_fixture_reachable,0,NONE,app/cpy/CVACT02Y.cpy:L4-L11
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,SUMMARY,validation_messages,fico_message_count,1,NONE,app/cbl/COACTUPC.cbl:L2523
+NOT_APPLICABLE,app/data/ASCII/custdata.txt,SUMMARY,validation_messages,fico_invalid_branch_fixture_occurrences,21,9(03),app/cpy/CVCUS01Y.cpy:L22
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,PROHIBITION,message_discipline,no_message_text_may_be_reworded,yes,NONE,app/cbl/COCRDUPC.cbl:L189-L202
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,PROHIBITION,message_discipline,no_trailing_period_may_be_added,yes,NONE,app/cbl/COCRDUPC.cbl:L189-L202
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,PROHIBITION,message_discipline,no_case_normalisation_permitted,yes,NONE,app/cbl/COCRDUPC.cbl:L196
+NOT_APPLICABLE,app/cbl/COCRDUPC.cbl,PROHIBITION,message_discipline,no_luhn_check_may_be_added,yes,9(16),app/cbl/COCRDUPC.cbl:L111-L112
+NOT_APPLICABLE,app/cpy/CVACT02Y.cpy,PROHIBITION,message_discipline,no_card_status_check_in_authorization_path,yes,X(01),app/cpy/CVACT02Y.cpy:L10
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,PROHIBITION,message_discipline,all_errors_collection_would_diverge,yes,X(75),app/cbl/COACTUPC.cbl:L2520
+NOT_APPLICABLE,app/cbl/COACTUPC.cbl,PROHIBITION,message_discipline,exclusive_fico_bound_would_diverge_on_two_values,yes,9(03),app/cbl/COACTUPC.cbl:L848-L849

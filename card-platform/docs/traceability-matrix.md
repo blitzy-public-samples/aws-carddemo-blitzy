@@ -1,8 +1,10 @@
 # Traceability Matrix
 
-Rule 1 requires every source construct to reach a target or a documented exclusion. The matrix also reads backward from every target module to source provenance or a net-new marker. Coverage arithmetic closes each source inventory before any mapping detail. Design rationale lives in the [decision log](decision-log.md).
+Rule 1 requires every source construct to reach a target or a documented exclusion. The matrix also reads backward from every target module to source provenance or a net-new marker. Coverage arithmetic closes each source inventory before any mapping detail. Design rationale lives in the [decision log](decision-log.md), flagged source ambiguities in [business-rule flags](business-rule-flags.md), and the paired architecture views in [architecture before and after](architecture-before-after.md).
 
 ## Coverage summary
+
+Every count in this document was measured in the repository. Where a measurement contradicts prose written elsewhere, the measured value is the one recorded here.
 
 | Source location | Members | Classification breakdown | Sums to |
 | --- | ---: | --- | ---: |
@@ -41,22 +43,22 @@ Rule 1 requires every source construct to reach a target or a documented exclusi
 | `app/cbl/CBSTM03B.CBL` | Generic operation-code input and output subroutine | Repository-interface shape |
 | `app/cbl/CORPT00C.cbl` | Only source asynchronous handoff | Transactional-outbox provenance |
 | `app/cbl/COMEN01C.cbl` | Effective menu role behavior and dead identity moves | Request security and business-rule flags 20-21 |
-| `app/cbl/CBACT01C.cbl` | Print-only account report, with zero writes or rewrites | Negative evidence; no migration target |
-| `app/cbl/CBACT02C.cbl` | Print-only account report, with zero writes or rewrites | Negative evidence; no migration target |
-| `app/cbl/CBACT03C.cbl` | Print-only account report, with zero writes or rewrites | Negative evidence; no migration target |
-| `app/cbl/CBCUS01C.cbl` | Print-only customer report, with zero writes or rewrites | Negative evidence; no migration target |
-| `app/cbl/CBTRN01C.cbl` | Print-only transaction report; opens all files for input and is the batch card-file reader | Proves that posting does not check card status |
+| `app/cbl/CBACT01C.cbl` | Print-only account report reading `ACCTFILE` at `:L29`, with zero writes or rewrites | Negative evidence; no migration target |
+| `app/cbl/CBACT02C.cbl` | Print-only card report reading `CARDFILE` at `:L29`, with zero writes or rewrites | Negative evidence; no migration target |
+| `app/cbl/CBACT03C.cbl` | Print-only cross-reference report reading `XREFFILE` at `:L29`, with zero writes or rewrites | Negative evidence; no migration target |
+| `app/cbl/CBCUS01C.cbl` | Print-only customer report reading `CUSTFILE` at `:L29`, with zero writes or rewrites | Negative evidence; no migration target |
+| `app/cbl/CBTRN01C.cbl` | Print-only transaction report; the only batch program that opens the card file beside the daily feed | Proves that posting does not check card status |
 
-The five print-only batch programs contain no `WRITE` or `REWRITE` operation. Each opens its datasets for input only.
+The five print-only programs contain no `WRITE` and no `REWRITE`, and each opens every dataset for input only. Four of them open a single dataset each. `CBTRN01C.cbl` opens six, at `:L254`, `:L273`, `:L291`, `:L309`, `:L327`, and `:L345`. Only two batch programs name the card file: `CBACT02C.cbl:L29` reads it alone to print it, and `CBTRN01C.cbl:L46` reads it beside the daily feed. `CBTRN02C.cbl` names it nowhere, and that measurement is what business-rule flag 3 rests on.
 
 ### Partially in scope
 
 | Source file | Included slice | Target |
 | --- | --- | --- |
-| `app/cbl/CBACT04C.cbl` | Lines 350-356 for cycle-counter reset; lines 415-470 for equivalence only | `BillingCycleService`, `InterestCalculationEquivalenceTest`, and `DecimalTruncationEquivalenceTest` |
-| `app/cbl/CBSTM03A.CBL` | Lines 86-159 for statement content and rendering structure | Notification plain-text and HTML renderers |
+| `app/cbl/CBACT04C.cbl` | Lines 350-356 for the cycle-counter reset: paragraph `1050-UPDATE-ACCOUNT` at `:L350`, `MOVE 0 TO ACCT-CURR-CYC-CREDIT` at `:L353`, `MOVE 0 TO ACCT-CURR-CYC-DEBIT` at `:L354`, and the rewrite at `:L356`. Lines 415-470 for equivalence only | `BillingCycleService`, `InterestCalculationEquivalenceTest`, and `DecimalTruncationEquivalenceTest` |
+| `app/cbl/CBSTM03A.CBL` | Lines 86-159 for statement content and rendering structure. Both renderers sit in that slice: the `STATEMENT-LINES` group header at `:L85` opens the plain-text layout that begins at `:L86`, and the markup literals run from `01 HTML-LINES` at `:L148` with `88 HTML-L01` at `:L150` | Notification plain-text and HTML renderers |
 
-Interest accrual and full statement generation remain outside the runtime migration.
+Interest accrual and full statement generation remain outside the runtime migration. The cycle-counter reset is carried across only because the credit-limit rule reads the two counters it zeroes.
 
 ### Excluded programs
 
@@ -69,32 +71,34 @@ Interest accrual and full statement generation remain outside the runtime migrat
 | `app/cbl/COADM01C.cbl` | Administrator management, excluded by scope |
 | `app/cbl/CBTRN03C.cbl` | Printed transaction reporting, excluded by scope |
 
-**Program closure:** 12 + 8 + 2 + 6 = 28.
+**Program member closure:** 12 + 8 + 2 + 6 = 28.
 
 ## Forward: copybooks
 
 ### Record layouts
 
-| Source copybook | Target |
-| --- | --- |
-| `app/cpy/CVACT01Y.cpy` | Account entity, ledger balance projection, authorization credit snapshot, migrations, and events |
-| `app/cpy/CVACT02Y.cpy` | Card entity, migration, card API, and `CardUpdated` |
-| `app/cpy/CVACT03Y.cpy` | Private `card_xref` tables and authorization event account resolution |
-| `app/cpy/CVCUS01Y.cpy` | Canonical customer entity and notification cardholder projection |
-| `app/cpy/CVTRA01Y.cpy` | Ledger transaction-category balance entity and composite key |
-| `app/cpy/CVTRA05Y.cpy` | Ledger transaction entity and posted-event provenance |
-| `app/cpy/CVTRA06Y.cpy` | Inbound authorization event and fixture parser |
-| `app/cpy/COSTM01.CPY` | Notification statement-transaction read model |
-| `app/cpy/CVTRA02Y.cpy` | Disclosure-group entity and interest-equivalence input |
-| `app/cpy/CVTRA03Y.cpy` | Seven transaction-type seed rows |
-| `app/cpy/CVTRA04Y.cpy` | Eighteen transaction-category seed rows |
-| `app/cpy/CSUSR01Y.cpy` | Security-record semantics and signon evidence; no user-management entity is migrated |
+Widths are the record lengths the copybook headers declare. Column types are derived in the [data model](data-model.md) rather than here.
+
+| Source copybook | Declared width | Target |
+| --- | ---: | --- |
+| `app/cpy/CVACT01Y.cpy` | 300 | Account entity, ledger balance projection, authorization credit snapshot, migrations, and events |
+| `app/cpy/CVACT02Y.cpy` | 150 | Card entity, migration, card API, and `CardUpdated` |
+| `app/cpy/CVACT03Y.cpy` | 50 | Private `card_xref` tables and authorization event account resolution |
+| `app/cpy/CVCUS01Y.cpy` | 500 | Canonical customer entity and notification cardholder projection |
+| `app/cpy/CVTRA01Y.cpy` | 50 | Ledger transaction-category balance entity and composite key |
+| `app/cpy/CVTRA05Y.cpy` | 350 | Ledger transaction entity and posted-event provenance |
+| `app/cpy/CVTRA06Y.cpy` | 350 | Inbound authorization event and fixture parser; the field list matches `CVTRA05Y.cpy` byte for byte under a different prefix |
+| `app/cpy/COSTM01.CPY` | 350 | Notification statement-transaction read model, re-keyed on card number and transaction identifier at `:L21-L23` |
+| `app/cpy/CVTRA02Y.cpy` | 50 | Disclosure-group entity and interest-equivalence input |
+| `app/cpy/CVTRA03Y.cpy` | 60 | Seven transaction-type seed rows |
+| `app/cpy/CVTRA04Y.cpy` | 60 | Eighteen transaction-category seed rows |
+| `app/cpy/CSUSR01Y.cpy` | 80 | Security-record semantics and signon evidence; no user-management entity is migrated |
 
 ### Reference and semantics inputs
 
 | Source copybook | Target influence |
 | --- | --- |
-| `app/cpy/CSLKPCDY.cpy` | Three generated validation-reference classes and three account reference tables |
+| `app/cpy/CSLKPCDY.cpy` | Three generated validation-reference classes and three account reference tables. The file spans 1318 lines and carries 1276 literals: 980 telephone area codes from `:L24`, 56 state codes from `:L1012`, and 240 state-and-ZIP-prefix combinations from `:L1071` |
 | `app/cpy/CSUTLDPY.cpy` | Shared date-validator input contract |
 | `app/cpy/CSUTLDWY.cpy` | Shared date-validator working semantics |
 | `app/cpy/CSMSG02Y.cpy` | Dead-letter metadata fields |
@@ -107,18 +111,20 @@ Interest accrual and full statement generation remain outside the runtime migrat
 
 | Source copybook | Handling |
 | --- | --- |
-| `app/cpy/CUSTREC.cpy` | Read only to document its one-name fork from `CVCUS01Y.cpy`; the statement program binds to it at `app/cbl/CBSTM03A.CBL:L55` |
+| `app/cpy/CUSTREC.cpy` | Read only to document its one-name fork from `CVCUS01Y.cpy`, which names the date of birth `CUST-DOB-YYYYMMDD` at `:L19` where the canonical copy names it `CUST-DOB-YYYY-MM-DD`. Exactly one program binds the fork: `app/cbl/CBSTM03A.CBL:L55`. Six bind the canonical copy: `COACTVWC.cbl:L254`, `COACTUPC.cbl:L646`, `COCRDSLC.cbl:L240`, `COCRDUPC.cbl:L359`, `CBCUS01C.cbl:L45`, and `CBTRN01C.cbl:L104`. Business-rule flag 12 carries the evidence |
 
 ### Excluded copybooks
 
-| Source copybook | Exclusion |
+Each row names what the copybook holds, which is also why it has no target. Four carry screen and terminal state, excluded with the presentation layer. One carries administrator menu state, excluded with the administrator programs. One carries a print report layout, excluded with reporting.
+
+| Source copybook | What it holds, and therefore the exclusion |
 | --- | --- |
-| `app/cpy/COADM02Y.cpy` | Administrator menu state |
-| `app/cpy/COTTL01Y.cpy` | Terminal title and presentation state |
-| `app/cpy/CSDAT01Y.cpy` | Screen and date presentation helper |
-| `app/cpy/CSSETATY.cpy` | Terminal attribute helper |
-| `app/cpy/CSSTRPFY.cpy` | String and screen presentation helper |
-| `app/cpy/CVTRA07Y.cpy` | Printed transaction report layout |
+| `app/cpy/COADM02Y.cpy` | Administrator menu state; excluded with the administrator programs |
+| `app/cpy/COTTL01Y.cpy` | Terminal title and presentation state; excluded with the presentation layer |
+| `app/cpy/CSDAT01Y.cpy` | Screen and date presentation helper; excluded with the presentation layer |
+| `app/cpy/CSSETATY.cpy` | Terminal attribute helper; excluded with the presentation layer |
+| `app/cpy/CSSTRPFY.cpy` | String and screen presentation helper; excluded with the presentation layer |
+| `app/cpy/CVTRA07Y.cpy` | Printed transaction report layout; excluded with reporting |
 
 ### Dead copybook
 
@@ -139,7 +145,7 @@ No Job Control Language member becomes a scheduler, cron entry, or workflow. Dat
 | `ACCTFILE.jcl` | Account key, record size, and account seed migration |
 | `CARDFILE.jcl` | Card primary key, account alternate index, record size, and card seed |
 | `CUSTFILE.jcl` | Customer key, record size, and customer seed |
-| `XREFFILE.jcl` | Card-number key, account alternate index, record size, and cross-reference seed |
+| `XREFFILE.jcl` | Card-number key `KEYS(16 0)` at `:L43` and `RECORDSIZE(50 50)` at `:L44` become the primary key and width; the alternate index at `:L72-L77` with `KEYS(11,25)` at `:L74` becomes the secondary index on account identifier; the seed follows the `REPRO` step |
 | `TRANFILE.jcl` | Transaction primary storage definition |
 | `TRANIDX.jcl` | Transaction access-path evidence |
 | `TCATBALF.jcl` | Category-balance composite key, record size, and seed |
@@ -154,9 +160,9 @@ Their `REPRO` steps are the source loading mechanism. For example, `app/jcl/XREF
 
 | Member | Target use |
 | --- | --- |
-| `POSTTRAN.jcl` | `CBTRN02C` becomes the ledger consumer; dataset allocations prove the card file is absent; reject `LRECL=430` defines the reject width |
-| `INTCALC.jcl` | Interest equivalence and the cycle-close dependency; no event-driven interest service |
-| `CREASTMT.JCL` | Card-plus-transaction sort key for the notification read model |
+| `POSTTRAN.jcl` | `STEP15 EXEC PGM=CBTRN02C` at `:L23` becomes the ledger consumer. The step allocates six datasets at `:L28`, `:L30`, `:L32`, `:L34`, `:L39`, and `:L41`, and the card file is not among them. The reject Generation Data Group at `:L34-L38` carries `LRECL=430`, which sets the reject width |
+| `INTCALC.jcl` | Interest equivalence and the cycle-close dependency. `STEP15 EXEC PGM=CBACT04C,PARM='2022071800'` at `:L22` shows the run date arriving as a hard-coded parameter. No event-driven interest service exists |
+| `CREASTMT.JCL` | The card-plus-transaction key for the notification read model. `KEYS(32 0)` at `:L30` defines the 32-byte composite key, and the sort step at `:L44` with `SORT FIELDS=(263,16,CH,A,1,16,CH,A)` at `:L53` shows card number ahead of transaction identifier |
 
 ### Excluded utility and report jobs
 
@@ -181,6 +187,8 @@ Their `REPRO` steps are the source loading mechanism. For example, `app/jcl/XREF
 **Job closure:** 11 + 3 + 15 = 29.
 
 ## Forward: CICS resource definitions
+
+`app/csd/CARDDEMO.CSD` defines the resources of the Customer Information Control System, the transaction monitor the source runs under. The file declares 8 files, 17 mapsets, 18 programs, and 18 transactions. Each of the four inventories closes in its own subsection below.
 
 ### File definitions
 
@@ -222,7 +230,35 @@ Every file definition has `JOURNAL(NO)` and `RECOVERY(NONE)`. The source contain
 | `CU02` → `COUSR02C` | Excluded user update |
 | `CU03` → `COUSR03C` | Excluded user deletion |
 
-The CICS resource file defines 17 mapsets, 18 programs, and 18 transactions. `COCRDSEC` is the program without a source member.
+**Transaction closure:** 18 definitions, each naming exactly one program.
+
+### Program definitions
+
+Each of the 18 program definitions is classified by whether a source member stands behind it. The 17 that have one are already classified in the program buckets above, so this table records the classification rather than repeating the mapping.
+
+| Program definitions | Count | Where the mapping lives |
+| --- | ---: | --- |
+| Backed by a member and migrated as a primary source | 10 | `COACTUPC`, `COACTVWC`, `COBIL00C`, `COCRDLIC`, `COCRDSLC`, `COCRDUPC`, `COSGN00C`, `COTRN00C`, `COTRN01C`, `COTRN02C` in Primary migration sources |
+| Backed by a member and read for reference | 2 | `COMEN01C` and `CORPT00C` in Reference-only programs |
+| Backed by a member and excluded by scope | 5 | `COADM01C` and `COUSR00C` through `COUSR03C` in Excluded programs |
+| Backed by no member | 1 | `COCRDSEC`, the orphan row below |
+
+| Orphan definition | Locator | Handling |
+| --- | --- | --- |
+| `DEFINE PROGRAM(COCRDSEC)` | `app/csd/CARDDEMO.CSD:L211` | Excluded as dead configuration. No member of `app/cbl/` carries the name, and the name appears nowhere under `app/` outside this one resource file |
+| `DEFINE TRANSACTION(CDV1)`, which names that program | `app/csd/CARDDEMO.CSD:L388` with `PROGRAM(COCRDSEC)` at `:L390` | Excluded with the program it points at. Business-rule flag 17 carries the evidence |
+
+**Program definition closure:** 10 + 2 + 5 + 1 = 18.
+
+### Mapset definitions
+
+All 17 mapset definitions are excluded for one reason: a 3270 screen definition has no counterpart in a JSON interface, and no application user interface is in scope.
+
+| Mapset definitions | Locators | Handling |
+| --- | --- | --- |
+| `COACTUP`, `COACTVW`, `COADM01`, `COBIL00`, `COCRDLI`, `COCRDSL`, `COCRDUP`, `COMEN01`, `CORPT00`, `COSGN00`, `COTRN00`, `COTRN01`, `COTRN02`, `COUSR00`, `COUSR01`, `COUSR02`, `COUSR03` | `app/csd/CARDDEMO.CSD` lines 100, 105, 110, 114, 118, 123, 128, 133, 137, 141, 145, 149, 153, 157, 161, 165, and 169 | All 17 excluded. Each name matches one file in `app/bms/` and one in `app/cpy-bms/`, covered in the next section |
+
+**Mapset closure:** 17 excluded, 0 mapped.
 
 ## Forward: presentation layer
 
@@ -270,13 +306,15 @@ The missing ASCII security twin is why signon tests construct their records. The
 
 ## Backward: target modules and provenance
 
+Reading the other direction, every target names where it came from. The Classification column distinguishes a direct migration from a synthesis, a partial port, and an addition with no ancestor.
+
 | Target module or artifact | Source provenance | Classification |
 | --- | --- | --- |
 | `libs/event-contracts` | Transaction and account fields from `CVTRA05Y`, `CVTRA06Y`, `CVACT01Y`, `CVACT02Y`, and `CVACT03Y`; decline codes from `CBTRN02C` | Mixed source-derived and additive |
 | `libs/cobol-compat` | Picture clauses, `NUMVAL-C`, `CSUTLDTC`, and `CSLKPCDY` | Source-derived compatibility layer |
-| `authorization-service` | Synthesized from `CBTRN02C`, `COTRN02C`, and `COSGN00C`; `COPAUA0C` and `CP00` verified absent | Synthesized migration |
+| `authorization-service` | Synthesized from three programs: decision rules from `CBTRN02C`, the request contract from `COTRN02C`, the authentication and role fork from `COSGN00C`. The program the requirements name has no member: `COPAUA0C` returns zero matches across `app/`, and `CP00` returns zero matches in `app/csd/CARDDEMO.CSD`. Business-rule flag 1 carries both searches | Synthesized migration, declared rather than presented as a single-program port |
 | `ledger-posting-service` | `CBTRN02C`, `POSTTRAN.jcl`, `CVTRA05Y`, `CVTRA01Y`, and `CVACT01Y` | Direct migration |
-| `fraud-detection-service` | No COBOL fraud ancestor; only field widths come from transaction and cross-reference layouts | Net new |
+| `fraud-detection-service` | No COBOL ancestor. The source scores no risk, checks no velocity, and runs no rules engine. Field widths come from the transaction and cross-reference layouts, and the rule-object shape is borrowed from the authorization decline chain so the two services read alike. Neither borrowing is provenance | Net new |
 | `notification-service` | `CBSTM03A.CBL`, `COSTM01.CPY`, `CREASTMT.JCL`, customer and cross-reference fixtures | Partial migration plus additive alerting |
 | `account-service` | `COACTVWC`, `COACTUPC`, `CBACT04C:L350-L356`, account and customer layouts | Direct and partial migration |
 | `card-service` | `COCRDLIC`, `COCRDSLC`, `COCRDUPC`, card and cross-reference layouts | Direct migration |
@@ -298,6 +336,8 @@ The missing ASCII security twin is why signon tests construct their records. The
 | `.github/workflows/ci.yml` | Build, test, equivalence, schema, and container requirements | Rule-mandated addition |
 
 ### Rule-mandated and platform artifacts
+
+The build, container, deployment, and document deliverables trace to a rule or a plan requirement rather than to a source member. A few appear in the table above as well; the rows here name the authority that requires them.
 
 | Target artifact | Authority or provenance | Classification |
 | --- | --- | --- |
@@ -343,6 +383,8 @@ The missing ASCII security twin is why signon tests construct their records. The
 | Category-balance filler, 22 bytes | `app/cpy/CVTRA01Y.cpy:L10` | Carries no business data | [Decision log](decision-log.md) |
 | Card filler, 59 bytes | `app/cpy/CVACT02Y.cpy:L11` | Carries no business data | [Decision log](decision-log.md) |
 
+Two of the copybooks above are partial exclusions rather than whole ones. `CVCRD01Y.cpy` keeps its card, account, and customer identifier fields at `:L34`, `:L37`, and `:L40`, which shape the card request and response objects. Only its three navigation fields are dropped. `COCOM01Y.cpy` keeps the two role condition names at `:L27-L28` and drops the seven navigation and context fields listed here.
+
 ## Renames recorded
 
 | Source identifier | Locator | Target identifier | Why the rename is safe |
@@ -352,6 +394,8 @@ The missing ASCII security twin is why signon tests construct their records. The
 | `FC-INVALID-DATE` | `app/cbl/CSUTLDTC.cbl:L62` | Success-oriented target condition | The all-zero token means validation succeeded |
 
 ## Copy inclusion to target dependency
+
+A COBOL `COPY` statement pastes a layout into a program. The table traces each one a migrated program uses to the target type that replaces it, so a reader following a `COPY` in the source can find where it went.
 
 | Source inclusion | Target dependency |
 | --- | --- |
@@ -366,4 +410,7 @@ The missing ASCII security twin is why signon tests construct their records. The
 | `COPY CSUTLDPY` and `COPY CSUTLDWY` | Shared date validator |
 | `COPY CSLKPCDY` | Phone, state, and state-ZIP reference classes |
 | `COPY CSMSG02Y` | Dead-letter metadata |
-| `COPY COCOM01Y` | No target import; presentation and navigation state are omitted |
+| `COPY CVCRD01Y` | Card request and response fields only. The next-program and next-map fields carry across to nothing |
+| `COPY COCOM01Y` | Nothing. The communication area holds screen and navigation state, which a stateless request does not have |
+
+One structural gain closes this section. Textual inclusion gave each program its own copy of a layout, and `CUSTREC.cpy` is the source's own proof that two copies drifted apart. A compiled module dependency cannot drift that way.
